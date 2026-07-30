@@ -49,6 +49,7 @@ function renderSubmitHook({
 }: SubmitHarnessOptions = {}) {
   const resolvedSurfaceId = surfaceId === undefined ? `test-surface-${++surfaceSequence}` : surfaceId
   const draftRef = { current: text }
+  const draftScopeRef = { current: sessionKey }
   const editor = window.document.createElement('div')
   editor.dataset.slot = 'composer-rich-input'
   editor.textContent = text
@@ -104,6 +105,7 @@ function renderSubmitHook({
         compacting,
         clearDraft,
         disabled: false,
+        draftScopeRef,
         draftRef,
         drainNextQueued: vi.fn(async () => false),
         editorRef,
@@ -127,6 +129,7 @@ function renderSubmitHook({
 
   return {
     clearDraft,
+    draftScopeRef,
     hook,
     onCancel,
     onSteer,
@@ -453,6 +456,46 @@ describe('useComposerSubmit busy-turn routing', () => {
     await waitFor(() =>
       expect(onSubmit).toHaveBeenCalledWith('hello', expect.objectContaining({ composerScope: 'stored-session' }))
     )
+  })
+
+  it('keeps a rejected submit out of the composer after switching sessions', async () => {
+    let resolveSubmit!: (accepted: boolean) => void
+
+    const pendingSubmit = new Promise<boolean>(resolve => {
+      resolveSubmit = resolve
+    })
+
+    const { draftScopeRef, hook, loadIntoComposer, onSubmit, stashAt } = renderSubmitHook()
+    onSubmit.mockImplementationOnce(() => pendingSubmit)
+
+    act(() => {
+      hook.result.current.dispatchSubmit('draft from session A')
+    })
+
+    draftScopeRef.current = 'stored-session-b'
+
+    act(() => {
+      resolveSubmit(false)
+    })
+
+    await waitFor(() =>
+      expect(stashAt).toHaveBeenCalledWith('stored-session', 'draft from session A', [])
+    )
+    expect(loadIntoComposer).not.toHaveBeenCalled()
+  })
+
+  it('repaints a rejected submit while its composer remains loaded', async () => {
+    const { hook, loadIntoComposer, onSubmit, stashAt } = renderSubmitHook()
+    onSubmit.mockResolvedValueOnce(false)
+
+    act(() => {
+      hook.result.current.dispatchSubmit('draft from this session')
+    })
+
+    await waitFor(() =>
+      expect(stashAt).toHaveBeenCalledWith('stored-session', 'draft from this session', [])
+    )
+    expect(loadIntoComposer).toHaveBeenCalledWith('draft from this session', [])
   })
 })
 
