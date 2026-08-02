@@ -1,3 +1,5 @@
+import DOMPurify from 'dompurify'
+
 import { isDesktopFsRemoteMode, readDesktopFileDataUrl, readDesktopFileText } from '@/lib/desktop-fs'
 import type { PreviewTarget } from '@/store/preview'
 
@@ -112,9 +114,15 @@ export function remoteHtmlPreviewDocument(dataUrl: string): string | null {
     Uint8Array.from(atob(validated.slice(validated.indexOf(',') + 1)), char => char.charCodeAt(0))
   )
 
-  const document = new DOMParser().parseFromString(html, 'text/html')
+  const document = new DOMParser().parseFromString(
+    DOMPurify.sanitize(html, {
+      WHOLE_DOCUMENT: true,
+      FORBID_TAGS: ['script', 'template', 'iframe', 'frame', 'object', 'embed'],
+      FORBID_ATTR: ['href', 'xlink:href', 'action', 'formaction', 'target']
+    }),
+    'text/html'
+  )
 
-  document.querySelectorAll('iframe, frame, object, embed').forEach(element => element.remove())
   document.querySelectorAll('meta[http-equiv]').forEach(element => {
     if (element.getAttribute('http-equiv')?.toLowerCase() === 'refresh') {
       element.remove()

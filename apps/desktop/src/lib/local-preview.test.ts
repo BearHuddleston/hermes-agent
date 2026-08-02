@@ -73,6 +73,27 @@ describe('remote HTML previews', () => {
     expect(document).not.toContain('https://example.test')
   })
 
+  it('strips scripts from remote HTML', () => {
+    const html =
+      '<p>safe</p><script>document.body.textContent = "SCRIPT-RAN"</script><template><script>TEMPLATE-SCRIPT</script></template>'
+
+    const document = remoteHtmlPreviewDocument(`data:text/html;base64,${btoa(html)}`)
+
+    expect(document).toContain('<p>safe</p>')
+    expect(document).not.toContain('<script')
+    expect(document).not.toContain('SCRIPT-RAN')
+    expect(document).not.toContain('TEMPLATE-SCRIPT')
+  })
+
+  it('does not create scripts when sanitized HTML is reparsed', () => {
+    const html = '<form><math><mtext></form><form><mglyph><style></math><script>MUTATION-SCRIPT</script>'
+
+    const sanitized = remoteHtmlPreviewDocument(`data:text/html;base64,${btoa(html)}`)
+
+    expect(sanitized).not.toContain('<script')
+    expect(new DOMParser().parseFromString(sanitized ?? '', 'text/html').querySelector('script')).toBeNull()
+  })
+
   it('decodes remote HTML as UTF-8', () => {
     const html = '<p>café 😀</p>'
     const payload = btoa(String.fromCharCode(...new TextEncoder().encode(html)))
