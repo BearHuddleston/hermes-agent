@@ -34,6 +34,7 @@ from tools.registry import (
     check_fn_cache_scope,
     discover_builtin_tools,
     registry,
+    tool_availability_platform,
     tool_error,
 )
 from toolsets import resolve_toolset, validate_toolset
@@ -273,8 +274,9 @@ _LEGACY_TOOLSET_MAP = {
 # get_tool_definitions  (the main schema provider)
 # =============================================================================
 
-# Module-level memoization for get_tool_definitions(). Keyed on
-# (frozenset(enabled_toolsets), frozenset(disabled_toolsets), registry._generation).
+# Module-level memoization for get_tool_definitions(). The key covers toolset
+# filters, registry/config state, execution-context flags, profile scope, and
+# the session platform used for availability checks.
 # Hot callers (gateway runner, AIAgent.__init__) invoke this on every turn
 # with quiet_mode=True; caching avoids ~7 ms of registry walking + schema
 # filtering + check_fn probing per call. Only active when quiet_mode=True
@@ -307,6 +309,7 @@ def get_tool_definitions(
     disabled_toolsets: Optional[List[str]] = None,
     quiet_mode: bool = False,
     skip_tool_search_assembly: bool = False,
+    platform: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
     """
     Get tool definitions for model API calls with toolset-based filtering.
@@ -322,6 +325,7 @@ def get_tool_definitions(
             tool_search / tool_describe bridge handlers so they can read the
             real catalog, not the already-collapsed one. Public callers should
             leave this False.
+        platform: Session surface whose platform-gated tools are being assembled.
 
     Returns:
         Filtered list of OpenAI-format tool definitions.
@@ -335,6 +339,7 @@ def get_tool_definitions(
     # mode, discord action allowlist, etc.) without needing an explicit
     # invalidate hook on every config-writer.
     cache_key = None
+    availability_platform = str(platform or "").strip().lower()
     if quiet_mode:
         try:
             from hermes_cli.config import get_config_path
@@ -355,6 +360,7 @@ def get_tool_definitions(
                 _is_delegated_child_context(),
                 _is_dispatcher_owned_worker(),
                 profile_scope,
+                availability_platform,
             )
         cached = _tool_defs_cache.get(cache_key) if cache_key is not None else None
         if cached is not None:
@@ -366,8 +372,13 @@ def get_tool_definitions(
             # schemas are treated as read-only by all known callers.
             return list(cached)
 
-    result = _compute_tool_definitions(enabled_toolsets, disabled_toolsets, quiet_mode,
-                                       skip_tool_search_assembly=skip_tool_search_assembly)
+    result = _compute_tool_definitions(
+        enabled_toolsets,
+        disabled_toolsets,
+        quiet_mode,
+        skip_tool_search_assembly=skip_tool_search_assembly,
+        platform=availability_platform,
+    )
     if quiet_mode and cache_key is not None:
         # Cache the freshly-computed list, but hand callers a shallow copy so
         # downstream mutations (e.g. run_agent appending memory/LCM tool
@@ -393,6 +404,7 @@ def _compute_tool_definitions(
     disabled_toolsets: Optional[List[str]] = None,
     quiet_mode: bool = False,
     skip_tool_search_assembly: bool = False,
+    platform: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
     """Uncached implementation of :func:`get_tool_definitions`."""
     # Determine which tool names the caller wants
@@ -481,7 +493,8 @@ def _compute_tool_definitions(
     # other toolset.
 
     # Ask the registry for schemas (only returns tools whose check_fn passes)
-    filtered_tools = registry.get_definitions(tools_to_include, quiet=quiet_mode)
+    with tool_availability_platform(platform):
+        filtered_tools = registry.get_definitions(tools_to_include, quiet=quiet_mode)
 
     # The set of tool names that actually passed check_fn filtering.
     # Use this (not tools_to_include) for any downstream schema that references

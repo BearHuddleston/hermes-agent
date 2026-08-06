@@ -21,10 +21,33 @@ import logging
 import sys
 import threading
 import time
+from contextlib import contextmanager
+from contextvars import ContextVar
 from pathlib import Path
-from typing import Callable, Dict, List, Optional, Set
+from typing import Callable, Dict, Iterator, List, Optional, Set
 
 logger = logging.getLogger(__name__)
+
+
+_TOOL_AVAILABILITY_PLATFORM: ContextVar[str] = ContextVar(
+    "tool_availability_platform", default=""
+)
+
+
+def current_tool_availability_platform() -> str:
+    """Return the session platform whose tool schemas are being assembled."""
+    return _TOOL_AVAILABILITY_PLATFORM.get()
+
+
+@contextmanager
+def tool_availability_platform(platform: Optional[str]) -> Iterator[None]:
+    """Scope availability probes to one agent surface without mutating the process env."""
+    normalized = str(platform or "").strip().lower()
+    token = _TOOL_AVAILABILITY_PLATFORM.set(normalized)
+    try:
+        yield
+    finally:
+        _TOOL_AVAILABILITY_PLATFORM.reset(token)
 
 
 def _is_registry_register_call(node: ast.AST) -> bool:
@@ -219,9 +242,9 @@ _CHECK_FN_TTL_SECONDS = 30.0
 # so a genuinely-down backend is reflected within a couple of turns.
 _CHECK_FN_FAILURE_GRACE_SECONDS = 60.0
 _CHECK_FN_CACHE_MAX = 512
-_check_fn_cache: Dict[tuple[Callable, Optional[str]], tuple[float, bool]] = {}
+_check_fn_cache: Dict[tuple[Callable, Optional[str], str], tuple[float, bool]] = {}
 # Monotonic timestamp of the most recent True result per check_fn.
-_check_fn_last_good: Dict[tuple[Callable, Optional[str]], float] = {}
+_check_fn_last_good: Dict[tuple[Callable, Optional[str], str], float] = {}
 _check_fn_cache_lock = threading.Lock()
 CHECK_FN_CACHE_BYPASS = ""
 
@@ -290,7 +313,7 @@ def _check_fn_cached(fn: Callable) -> bool:
                 exc_info=True,
             )
             return False
-    cache_key = (fn, scope)
+    cache_key = (fn, scope, current_tool_availability_platform())
     with _check_fn_cache_lock:
         _prune_check_fn_caches(now)
         cached = _check_fn_cache.get(cache_key)
@@ -361,7 +384,9 @@ def get_cached_check_fn_result(fn: Callable) -> Optional[bool]:
         # trustworthy cached verdict to report.
         return None
     with _check_fn_cache_lock:
-        cached = _check_fn_cache.get((fn, scope))
+        cached = _check_fn_cache.get(
+            (fn, scope, current_tool_availability_platform())
+        )
         if cached is None:
             return None
         ts, value = cached

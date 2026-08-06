@@ -1,17 +1,18 @@
 #!/usr/bin/env python3
 """Open a URL, dev server, or file in the Hermes desktop GUI's preview pane.
 
-Gated on ``HERMES_DESKTOP`` (like ``read_terminal`` / ``close_terminal``) so it
-never appears outside the GUI. Emits ``preview.open`` through the shared
-``desktop_ui`` bridge; the renderer opens the pane beside the chat for the
-window that asked and never steals focus for a background session.
+Available to Desktop sessions, with ``HERMES_DESKTOP`` retained for locally
+managed gateways, so it never appears outside the GUI. Emits ``preview.open``
+through the shared ``desktop_ui`` bridge; the renderer opens the pane beside
+the chat for the window that asked and never steals focus for a background
+session.
 """
 
 import json
 import re
 
 from tools import desktop_ui
-from tools.registry import registry, tool_error
+from tools.registry import current_tool_availability_platform, registry, tool_error
 from utils import env_var_enabled
 
 
@@ -53,8 +54,11 @@ def open_preview_tool(url: str, label: str = "") -> str:
 
 
 def check_open_preview_requirements() -> bool:
-    """Desktop GUI only — HERMES_DESKTOP is set on the gateway the app spawns."""
-    return env_var_enabled("HERMES_DESKTOP")
+    """Desktop GUI only — including Desktop sessions on an external gateway."""
+    return (
+        env_var_enabled("HERMES_DESKTOP")
+        or current_tool_availability_platform() == "desktop"
+    )
 
 
 OPEN_PREVIEW_SCHEMA = {

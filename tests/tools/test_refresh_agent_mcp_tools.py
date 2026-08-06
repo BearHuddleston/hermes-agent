@@ -27,6 +27,25 @@ def _agent(tool_names, *, enabled=None, disabled=None):
     return a
 
 
+def test_refresh_preserves_remote_desktop_preview_tools(monkeypatch):
+    """MCP/tool reloads must rebuild using the agent's Desktop surface."""
+    monkeypatch.delenv("HERMES_DESKTOP", raising=False)
+    monkeypatch.delenv("HERMES_DESKTOP_TERMINAL", raising=False)
+
+    import model_tools
+    from tools.registry import invalidate_check_fn_cache
+
+    model_tools._clear_tool_defs_cache()
+    invalidate_check_fn_cache()
+
+    agent = _agent(["open_preview", "read_preview"], enabled=["terminal"])
+    agent.platform = "desktop"
+
+    mcp_tool.refresh_agent_mcp_tools(agent)
+
+    assert {"open_preview", "read_preview"} <= agent.valid_tool_names
+
+
 def test_refresh_adds_late_landing_tools(monkeypatch):
     """A server that registers after build → its tools land in the snapshot."""
     agent = _agent(["read_file", "terminal"])

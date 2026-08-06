@@ -12,7 +12,7 @@ dispatcher over the platform-injected callback.
 import json
 from typing import Callable, Optional
 
-from tools.registry import registry, tool_error
+from tools.registry import current_tool_availability_platform, registry, tool_error
 from utils import env_var_enabled
 
 
@@ -50,8 +50,11 @@ def read_preview_tool(
 
 
 def check_read_preview_requirements() -> bool:
-    """Desktop GUI only — HERMES_DESKTOP is set on the gateway the app spawns."""
-    return env_var_enabled("HERMES_DESKTOP")
+    """Desktop GUI only — including Desktop sessions on an external gateway."""
+    return (
+        env_var_enabled("HERMES_DESKTOP")
+        or current_tool_availability_platform() == "desktop"
+    )
 
 
 READ_PREVIEW_SCHEMA = {

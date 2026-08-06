@@ -6,7 +6,7 @@ from tools import read_preview_tool as rp
 
 
 def test_gated_on_desktop(monkeypatch):
-    """Hidden unless HERMES_DESKTOP is set (mirrors read_terminal)."""
+    """The legacy process flag still exposes the tool outside session assembly."""
     monkeypatch.delenv("HERMES_DESKTOP", raising=False)
     assert rp.check_read_preview_requirements() is False
 

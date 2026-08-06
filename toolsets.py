@@ -35,8 +35,9 @@ _HERMES_CORE_TOOLS = [
     "terminal", "process",
     # Desktop GUI affordances: read the embedded terminal pane, close an agent's
     # read-only terminal tab, open a URL/file in the preview pane, focus a
-    # pane, and react to a message with an emoji (all gated on HERMES_DESKTOP
-    # via check_fn — hidden outside the GUI).
+    # pane, and react to a message with an emoji (all use check_fn and are
+    # hidden outside the GUI; preview tools also accept external Desktop
+    # session context).
     "read_terminal", "close_terminal", "open_preview", "read_preview", "focus_pane", "react_to_message",
     # File manipulation
     "read_file", "write_file", "patch", "search_files",
