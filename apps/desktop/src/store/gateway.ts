@@ -22,8 +22,10 @@ const normKey = (profile: string | null | undefined): string => (profile ?? '').
 // narrow the getter to a constant across guards (it genuinely changes).
 const isOpen = (gateway: HermesGateway | null): boolean => gateway?.connectionState === 'open'
 
+type DesktopGatewayEvent = GatewayEvent & { connectionId?: string }
+
 interface RegistryConfig {
-  onEvent: (event: GatewayEvent) => void
+  onEvent: (event: DesktopGatewayEvent) => void
 }
 
 // ── Secondary (pool) backends ──────────────────────────────────────────────
@@ -258,10 +260,11 @@ function createSecondary(profile: string, connectionId: null | string = null): S
     wantOpen: true
   }
 
-  // Events keep carrying the bare profile — session routing is profile-keyed
-  // everywhere. connectionId rides along for surfaces that need the source.
+  // Both provenance fields are stamped locally. Registry sockets retain
+  // their exact immutable connection ID; legacy sockets explicitly clear any
+  // wire-supplied ID instead of letting it establish routing authority.
   entry.offEvent = gateway.onEvent(event =>
-    g.config?.onEvent({ ...event, profile, ...(connectionId ? { connectionId } : {}) })
+    g.config?.onEvent({ ...event, connectionId: connectionId || undefined, profile })
   )
   entry.offState = gateway.onState(state => {
     reportGatewayState(scope, state)

@@ -50,7 +50,9 @@ function AttachmentPill({ attachment, onRemove }: { attachment: ComposerAttachme
 
   // The tile's cwd when this pill lives in a tile composer, not the primary's:
   // a relative attachment path has to resolve against its own session's root.
-  const cwd = useStore(useSessionView().$cwd)
+  const sessionView = useSessionView()
+  const cwd = useStore(sessionView.$cwd)
+  const profile = useStore(sessionView.$profile)
   const isUploading = attachment.uploadState === 'uploading'
   const hasUploadError = attachment.uploadState === 'error'
 
@@ -134,7 +136,7 @@ function AttachmentPill({ attachment, onRemove }: { attachment: ComposerAttachme
     }
 
     try {
-      const preview = await normalizeOrLocalPreviewTarget(target, cwd || undefined)
+      const preview = await normalizeOrLocalPreviewTarget(target, cwd || undefined, profile)
 
       if (!preview) {
         throw new Error(c.couldNotPreview(attachment.label))

@@ -10,6 +10,8 @@ import {
   progressPreviewServerRestart,
   requestPreviewReload
 } from '@/store/preview'
+import { recordPreviewSessionProfile } from '@/store/preview-status'
+import { normalizeProfileKey } from '@/store/profile'
 import { $activeSessionId, $currentCwd } from '@/store/session'
 import { $focusedRuntimeId, $sessionTiles } from '@/store/session-states'
 import type { RpcEvent } from '@/types/hermes'
@@ -59,6 +61,14 @@ export function usePreviewRouting({ baseHandleGatewayEvent, currentCwd, requestG
 
   const handleDesktopGatewayEvent = useCallback<EventHandler>(
     event => {
+      if (event.session_id && event.profile) {
+        recordPreviewSessionProfile(
+          event.session_id,
+          normalizeProfileKey(event.profile),
+          String(event.connectionId || '').trim()
+        )
+      }
+
       baseHandleGatewayEvent(event)
 
       if (event.type === 'preview.open') {
@@ -81,7 +91,12 @@ export function usePreviewRouting({ baseHandleGatewayEvent, currentCwd, requestG
           $sessionTiles.get().some(tile => tile.runtimeId === sid)
 
         if (target && (!event.session_id || onScreen(event.session_id))) {
-          void normalizeOrLocalPreviewTarget(target, $currentCwd.get() || currentCwd || undefined).then(resolved => {
+          void normalizeOrLocalPreviewTarget(
+            target,
+            $currentCwd.get() || currentCwd || undefined,
+            normalizeProfileKey(event.profile),
+            String(event.connectionId || '').trim()
+          ).then(resolved => {
             if (resolved) {
               const trimmedLabel = typeof label === 'string' ? label.trim() : ''
               openPreview(trimmedLabel ? { ...resolved, label: trimmedLabel } : resolved, 'tool-result')

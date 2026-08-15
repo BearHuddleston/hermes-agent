@@ -448,6 +448,8 @@ export interface PaginatedSessions {
 }
 
 export interface RpcEvent<T = unknown> {
+  /** Locally stamped registry connection; never trusted from the wire. */
+  connectionId?: string
   payload?: T
   profile?: string
   session_id?: string

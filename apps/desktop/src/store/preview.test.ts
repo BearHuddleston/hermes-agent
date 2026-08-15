@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { $rightRailActiveTabId } from './layout'
 import {
@@ -80,6 +80,46 @@ describe('preview store', () => {
     expect(urlTabs).toHaveLength(1)
     expect(urlTabs[0].target.url).toBe('https://www.reddit.com')
     expect($rightRailActiveTabId.get()).toBe(urlTabs[0].id)
+  })
+
+  it('releases a forwarded Browser target when another URL replaces it', () => {
+    const releasePreviewForward = vi.fn(async () => true)
+    Object.defineProperty(window, 'hermesDesktop', {
+      configurable: true,
+      value: { releasePreviewForward }
+    })
+
+    const forwarded = {
+      ...urlTarget('http://127.0.0.1:8765/report.html'),
+      previewPartition: 'hermes-preview-forwarded-00000000-0000-4000-8000-000000000001',
+      transient: true,
+      url: 'http://127.0.0.1:49152/report.html'
+    }
+
+    openPreview(forwarded, 'tool-result')
+    openPreview(urlTarget('https://example.com'), 'tool-result')
+
+    expect(releasePreviewForward).toHaveBeenCalledWith(forwarded.previewPartition)
+  })
+
+  it('releases a forwarded Browser target when its tab closes', () => {
+    const releasePreviewForward = vi.fn(async () => true)
+    Object.defineProperty(window, 'hermesDesktop', {
+      configurable: true,
+      value: { releasePreviewForward }
+    })
+
+    const forwarded = {
+      ...urlTarget('http://127.0.0.1:8765/report.html'),
+      previewPartition: 'hermes-preview-forwarded-00000000-0000-4000-8000-000000000002',
+      transient: true,
+      url: 'http://127.0.0.1:49153/report.html'
+    }
+
+    openPreview(forwarded, 'tool-result')
+    closeRightRailTab(previewTabId(forwarded))
+
+    expect(releasePreviewForward).toHaveBeenCalledWith(forwarded.previewPartition)
   })
 
   it('re-fronts an existing tab instead of duplicating it, refreshing its target', () => {

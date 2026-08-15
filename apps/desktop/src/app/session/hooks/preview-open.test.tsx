@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { assistantTextPart, type ChatMessage } from '@/lib/chat-messages'
 import { $previewTabs, $previewTarget, closeRightRail, type PreviewTarget } from '@/store/preview'
+import { $previewStatusBySession, clearPreviewArtifacts, recordPreviewArtifact } from '@/store/preview-status'
 import { $activeSessionId, $currentCwd, $messages, $selectedStoredSessionId } from '@/store/session'
 import type { RpcEvent } from '@/types/hermes'
 
@@ -52,6 +53,7 @@ describe('open_preview', () => {
     $currentCwd.set('/work')
     $messages.set([])
     closeRightRail()
+    clearPreviewArtifacts(RUNTIME_SESSION_ID)
     window.localStorage.clear()
 
     Object.defineProperty(window, 'hermesDesktop', {
@@ -64,6 +66,7 @@ describe('open_preview', () => {
     cleanup()
     $messages.set([])
     closeRightRail()
+    clearPreviewArtifacts(RUNTIME_SESSION_ID)
     $activeSessionId.set(null)
     $selectedStoredSessionId.set(null)
     window.localStorage.clear()
@@ -96,6 +99,45 @@ describe('open_preview', () => {
     })
 
     expect($previewTarget.get()?.path).toBe('/tmp/artifact-test.html')
+  })
+
+  it('routes normalization with the locally stamped source profile', async () => {
+    render(<Harness />)
+
+    await act(async () => {
+      handleEvent({
+        connectionId: 'grace-ssh',
+        payload: { url: 'http://127.0.0.1:8765/report.html' },
+        profile: 'grace-profile',
+        session_id: RUNTIME_SESSION_ID,
+        type: 'preview.open'
+      } as unknown as RpcEvent)
+    })
+
+    await waitFor(() =>
+      expect(window.hermesDesktop.normalizePreviewTarget).toHaveBeenCalledWith(
+        'http://127.0.0.1:8765/report.html',
+        '/work',
+        'grace-profile',
+        'grace-ssh'
+      )
+    )
+  })
+
+  it('retains the stamped profile for a later status-row normalization', async () => {
+    render(<Harness />)
+
+    await act(async () => {
+      handleEvent({
+        payload: { text: 'server ready' },
+        profile: 'grace-profile',
+        session_id: RUNTIME_SESSION_ID,
+        type: 'message.delta'
+      } as unknown as RpcEvent)
+    })
+    recordPreviewArtifact(RUNTIME_SESSION_ID, 'http://127.0.0.1:8765/report.html', '/work')
+
+    expect($previewStatusBySession.get()[RUNTIME_SESSION_ID]?.[0].profile).toBe('grace-profile')
   })
 
   it('ignores an open from a session that is not the one on screen', async () => {

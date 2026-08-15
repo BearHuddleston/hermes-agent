@@ -474,6 +474,13 @@ test('no-mux: open() classifies auth failure', async () => {
   await assert.rejects(conn.open(), (err: any) => err.kind === 'auth-failed')
 })
 
+test('mux cancelForward rejects a non-zero OpenSSH cancellation result', async () => {
+  const spawnFn = scriptedSpawn([{ code: 255, stderr: 'cancel failed: unknown port forwarding' }])
+  const conn = new SshConnection({ host: 'box', user: 'me' }, { spawnFn, controlDir: '/tmp/d', mux: true })
+
+  await assert.rejects(conn.cancelForward(49152, 8765), /cancel failed: unknown port forwarding/)
+})
+
 test('no-mux: forward spawns a persistent -N -L child; cancel + close kill it', async () => {
   // Real listener stands in for the tunnel's local end so waitForLocalPort sees it.
   const net = await import('node:net')
@@ -839,6 +846,38 @@ test('failed ControlMaster close disowns the master instead of retrying it', asy
   await conn.close()
   assert.equal(conn._opened, false)
   assert.equal(spawnFn.calls.length, 1)
+})
+
+test('forceClose escalates retained no-mux tunnel children to SIGKILL', async () => {
+  const child: any = new EventEmitter()
+  const signals: unknown[] = []
+  child.exitCode = null
+  child.signalCode = null
+
+  child.kill = (signal?: unknown) => {
+    signals.push(signal)
+
+    if (signal === 'SIGKILL') {
+      process.nextTick(() => {
+        child.signalCode = 'SIGKILL'
+        child.emit('exit', null, 'SIGKILL')
+      })
+
+      return true
+    }
+
+    return false
+  }
+
+  const conn = new SshConnection({ host: 'box', user: 'me' }, { mux: false })
+  conn._opened = true
+  conn._tunnels.set('preview', { alive: true, child })
+
+  await conn.forceClose()
+
+  assert.deepEqual(signals, ['SIGKILL'])
+  assert.equal(conn._tunnels.size, 0)
+  assert.equal(conn._opened, false)
 })
 
 test('stopTunnelChild waits for process exit', async () => {

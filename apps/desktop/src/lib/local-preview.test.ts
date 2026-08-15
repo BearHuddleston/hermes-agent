@@ -144,6 +144,23 @@ describe('remote HTML previews', () => {
     expect(openPreviewInBrowser).toHaveBeenCalledWith(remoteTarget.url)
   })
 
+  it('refuses to open a forwarded target outside its restricted partition', async () => {
+    const openPreviewInBrowser = vi.fn(async () => undefined)
+    window.hermesDesktop = { openPreviewInBrowser } as never
+
+    await expect(
+      openPreviewTargetInBrowser({
+        kind: 'url',
+        label: 'report.html',
+        previewPartition: 'hermes-preview-forwarded-00000000-0000-4000-8000-000000000004',
+        source: 'http://127.0.0.1:8765/report.html',
+        transient: true,
+        url: 'http://127.0.0.1:49155/report.html'
+      })
+    ).rejects.toThrow(/restricted preview partition/i)
+    expect(openPreviewInBrowser).not.toHaveBeenCalled()
+  })
+
   it('keeps local HTML source browser opens on their existing path', async () => {
     const openPreviewInBrowser = vi.fn(async () => undefined)
     window.hermesDesktop = { openPreviewInBrowser } as never
@@ -195,5 +212,64 @@ describe('PDF previews', () => {
       previewKind: 'pdf'
     })
     expect(readDesktopFileDataUrl).not.toHaveBeenCalled()
+  })
+
+  it('passes immutable connection and profile provenance to main-process normalization', async () => {
+    const normalizePreviewTarget = vi.fn(async () => null)
+    window.hermesDesktop = { normalizePreviewTarget } as never
+
+    await normalizeOrLocalPreviewTarget(
+      'http://127.0.0.1:8765/report.html',
+      '/work',
+      'grace-profile',
+      'grace-ssh'
+    )
+
+    expect(normalizePreviewTarget).toHaveBeenCalledWith(
+      'http://127.0.0.1:8765/report.html',
+      '/work',
+      'grace-profile',
+      'grace-ssh'
+    )
+  })
+
+  it('rejects an old main-process loopback result that lacks profile validation', async () => {
+    window.hermesDesktop = {
+      normalizePreviewTarget: vi.fn(async target => ({
+        kind: 'url',
+        label: 'report.html',
+        source: target,
+        url: target
+      }))
+    } as never
+
+    const target = await normalizeOrLocalPreviewTarget('http://127.0.0.1:8765/report.html', '/work', 'grace-profile')
+
+    expect(target).toBeNull()
+  })
+
+  it('fails closed when a loopback URL has no locally stamped profile provenance', async () => {
+    window.hermesDesktop = {
+      normalizePreviewTarget: vi.fn(async target => ({
+        kind: 'url',
+        label: 'report.html',
+        source: target,
+        url: target
+      }))
+    } as never
+
+    const target = await normalizeOrLocalPreviewTarget('http://127.0.0.1:8765/report.html', '/work')
+
+    expect(target).toBeNull()
+  })
+
+  it('does not reopen a rejected SSH loopback target against client localhost', async () => {
+    window.hermesDesktop = {
+      normalizePreviewTarget: vi.fn(async () => null)
+    } as never
+
+    const target = await normalizeOrLocalPreviewTarget('http://127.0.0.1:8765/report.html', '/work', 'grace-profile')
+
+    expect(target).toBeNull()
   })
 })

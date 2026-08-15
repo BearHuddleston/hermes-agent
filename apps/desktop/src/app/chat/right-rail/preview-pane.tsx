@@ -76,12 +76,14 @@ function isModuleMimeError(message: string): boolean {
 }
 
 function PreviewLoadError({
+  allowExternal = true,
   consoleHeight = 0,
   error,
   onRestartServer,
   onRetry,
   restarting
 }: {
+  allowExternal?: boolean
   consoleHeight?: number
   error: PreviewLoadErrorState
   onRestartServer?: () => void
@@ -95,17 +97,24 @@ function PreviewLoadError({
     <PreviewEmptyState
       body={
         <>
-          <a
-            className="pointer-events-auto block font-mono text-muted-foreground/90 underline decoration-current/20 underline-offset-4 transition-colors hover:text-foreground"
-            href={error.url}
-            onClick={event => {
-              event.preventDefault()
-              void window.hermesDesktop?.openExternal(error.url)
-            }}
-          >
-            {compactUrl(error.url)}
-            {error.code ? ` (${error.code})` : ''}
-          </a>
+          {allowExternal ? (
+            <a
+              className="pointer-events-auto block font-mono text-muted-foreground/90 underline decoration-current/20 underline-offset-4 transition-colors hover:text-foreground"
+              href={error.url}
+              onClick={event => {
+                event.preventDefault()
+                void window.hermesDesktop?.openExternal(error.url)
+              }}
+            >
+              {compactUrl(error.url)}
+              {error.code ? ` (${error.code})` : ''}
+            </a>
+          ) : (
+            <span className="block font-mono text-muted-foreground/90">
+              {compactUrl(error.url)}
+              {error.code ? ` (${error.code})` : ''}
+            </span>
+          )}
           <div className="mt-1 text-[0.6875rem] text-muted-foreground/70">{error.description}</div>
         </>
       }
@@ -267,7 +276,7 @@ export function PreviewPane({ embedded = false, onRestartServer, reloadRequest =
 
     try {
       const context = consoleState.$logs.get().slice(-12).map(formatLogLine).join('\n')
-      const taskId = await onRestartServer(currentUrl, context || undefined)
+      const taskId = await onRestartServer(target.previewPartition ? target.source : currentUrl, context || undefined)
 
       appendConsoleEntry({
         level: 1,
@@ -287,7 +296,7 @@ export function PreviewPane({ embedded = false, onRestartServer, reloadRequest =
       })
       notifyError(error, copy.restartFailed)
     }
-  }, [appendConsoleEntry, consoleState, copy, currentUrl, onRestartServer])
+  }, [appendConsoleEntry, consoleState, copy, currentUrl, onRestartServer, target.previewPartition, target.source])
 
   const toggleDevTools = useCallback(() => {
     const webview = webviewRef.current
@@ -556,7 +565,7 @@ export function PreviewPane({ embedded = false, onRestartServer, reloadRequest =
 
     const webview = document.createElement('webview') as PreviewWebview
     webview.className = 'flex h-full w-full flex-1 bg-transparent'
-    webview.setAttribute('partition', 'persist:hermes-preview')
+    webview.setAttribute('partition', target.previewPartition || 'persist:hermes-preview')
     webview.setAttribute('src', target.url)
     webview.setAttribute('webpreferences', 'contextIsolation=yes,nodeIntegration=no,sandbox=yes')
 
@@ -650,7 +659,7 @@ export function PreviewPane({ embedded = false, onRestartServer, reloadRequest =
       webview.removeEventListener('did-stop-loading', onStop)
       webview.remove()
     }
-  }, [appendConsoleEntry, consoleState, copy, isRemoteHtml, isWebPreview, target.url])
+  }, [appendConsoleEntry, consoleState, copy, isRemoteHtml, isWebPreview, target.previewPartition, target.url])
 
   return (
     <aside className="relative flex h-full w-full min-w-0 flex-col overflow-hidden bg-transparent text-muted-foreground">
@@ -661,15 +670,17 @@ export function PreviewPane({ embedded = false, onRestartServer, reloadRequest =
               <Tip label={copy.openTarget(currentUrl)}>
                 <a
                   className="pointer-events-auto inline max-w-full truncate text-left text-xs font-medium text-foreground underline-offset-4 decoration-current/20 transition-colors hover:text-primary hover:underline"
-                  href={isRemoteHtmlTarget ? undefined : currentUrl}
+                  href={isRemoteHtmlTarget || target.previewPartition ? undefined : currentUrl}
                   onClick={event => {
                     if (isRemoteHtmlTarget) {
                       event.preventDefault()
                       void openPreviewTargetInBrowser(target).catch(error => notifyError(error, t.preview.unavailable))
+                    } else if (target.previewPartition) {
+                      event.preventDefault()
                     }
                   }}
                   rel="noreferrer"
-                  target={isRemoteHtmlTarget ? undefined : '_blank'}
+                  target={isRemoteHtmlTarget || target.previewPartition ? undefined : '_blank'}
                 >
                   {previewLabel || copy.fallbackTitle}
                 </a>
@@ -706,6 +717,7 @@ export function PreviewPane({ embedded = false, onRestartServer, reloadRequest =
             ))}
           {loadError && (
             <PreviewLoadError
+              allowExternal={!target.previewPartition}
               consoleHeight={consoleOpen ? consoleHeight : 0}
               error={loadError}
               onRestartServer={target.kind === 'url' && onRestartServer ? () => void restartServer() : undefined}

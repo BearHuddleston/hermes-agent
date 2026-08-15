@@ -126,6 +126,7 @@ import {
   stopFind
 } from './find-in-page'
 import { createFirstRunSetupGate } from './first-run-setup-gate'
+import { leaseForwardedPreviewSession } from './forwarded-preview-session'
 import { readDirForIpc } from './fs-read-dir'
 import {
   filenameFromContentDisposition,
@@ -208,6 +209,7 @@ import { runNativeLogin } from './native-oauth-login'
 import { loadNativeTokenSet, type NativeTokenStoreIo, persistNativeTokenSet } from './native-token-store'
 import { serializeJsonBody, setJsonRequestHeaders } from './oauth-net-request'
 import { createKeepAwake } from './power-save'
+import { classifyPreviewBackendRoute } from './preview-backend-route'
 import { FirstRunSetupResetError, runPrimaryBackendStartup } from './primary-backend-startup'
 import { rehomePrimaryConnection } from './primary-connection-rehome'
 import { decideProfileDeleteAction, profileNameFromDeleteRequest, resolveRouteProfile } from './profile-delete-routing'
@@ -245,6 +247,13 @@ import {
   redactSecrets,
   SshConnection
 } from './ssh-connection'
+import { refreshSshOwner, SshOwnerRegistry } from './ssh-owner-registry'
+import {
+  isLoopbackPreviewTarget,
+  openSshPreviewForward,
+  parseSshPreviewTarget,
+  revokeSshPreviewCapabilities
+} from './ssh-preview-target'
 import { createStreamThrottle } from './stream-throttle'
 import { nativeOverlayWidth as computeNativeOverlayWidth, macTitleBarOverlayHeight } from './titlebar-overlay-width'
 import {
@@ -5328,7 +5337,7 @@ async function previewFileTarget(rawTarget, baseDir) {
   }
 }
 
-function previewUrlTarget(rawTarget) {
+function previewUrlTarget(rawTarget, allowPublic = false) {
   const raw = String(rawTarget || '').trim()
   const url = new URL(raw)
 
@@ -5336,7 +5345,7 @@ function previewUrlTarget(rawTarget) {
     return null
   }
 
-  if (!LOCAL_PREVIEW_HOSTS.has(url.hostname.toLowerCase())) {
+  if (!allowPublic && !LOCAL_PREVIEW_HOSTS.has(url.hostname.toLowerCase())) {
     return null
   }
 
@@ -5352,7 +5361,142 @@ function previewUrlTarget(rawTarget) {
   }
 }
 
-async function normalizePreviewTarget(rawTarget, baseDir) {
+async function sshForwardedPreviewTarget(rawTarget, sourceProfile, sourceConnectionId) {
+  if (!isLoopbackPreviewTarget(rawTarget)) {
+    return undefined
+  }
+
+  const profile = String(sourceProfile || '').trim()
+  const connectionId = String(sourceConnectionId || '').trim()
+  const config = readDesktopConnectionConfig()
+
+  const registryConnection = connectionId
+    ? readDesktopConnectionsRegistry().connections.find(connection => connection.id === connectionId)
+    : null
+
+  const route = classifyPreviewBackendRoute({
+    globalMode: config.mode,
+    hasEnvRemote: Boolean(process.env.HERMES_DESKTOP_REMOTE_URL),
+    hasProfileRemote: Boolean(profileRemoteOverride(config, profile)),
+    hasProfileSsh: Boolean(profileSshOverride(config, profile)),
+    registryConnectionKind: registryConnection?.kind ?? null,
+    sourceConnectionId: connectionId,
+    sourceProfile: profile
+  })
+
+  if (route === 'untrusted' || route === 'remote') {
+    return null
+  }
+
+  if (route === 'local') {
+    return previewUrlTarget(rawTarget)
+  }
+
+  const sshTarget = connectionId
+    ? (() => {
+        const scope = backendScopeKey(connectionId, profile)
+        const state = sshConnections.get(scope)
+
+        return state?.ssh ? { scope, ssh: state.ssh } : 'pending'
+      })()
+    : activeSshTerminalTarget(profile)
+
+  if (!sshTarget || sshTarget === 'pending' || process.platform !== 'win32') {
+    return null
+  }
+
+  const target = parseSshPreviewTarget(rawTarget)
+  const state = sshConnections.get(sshTarget.scope)
+
+  if (!target || !state || state.ssh !== sshTarget.ssh) {
+    return null
+  }
+
+  state.previewForwards ??= new Set()
+  let capability
+  let partition = ''
+  let partitionLease
+
+  const forwardLease = await openSshPreviewForward(target, {
+    cancel: (localPort, remotePort) => sshTarget.ssh.cancelForward(localPort, remotePort),
+    closeTransport: async () => {
+      if (sshConnections.get(sshTarget.scope) === state && state.ssh === sshTarget.ssh) {
+        await teardownSshConnectionByScope(sshTarget.scope, state, capability)
+
+        return
+      }
+
+      // Owner-wide cleanup is already closing this exact state. Do not await
+      // the in-flight teardown from a sibling close callback (that would cycle
+      // teardown -> sibling.close -> teardown).
+      if (sshConnections.getClosing(sshTarget.scope) === state) {
+        return
+      }
+
+      await revokeSshPreviewCapabilities(state.previewForwards || [], capability)
+      await sshTarget.ssh.close()
+    },
+    forward: (localPort, remotePort) => sshTarget.ssh.forward(localPort, remotePort),
+    isCurrent: () => sshConnections.get(sshTarget.scope) === state && state.ssh === sshTarget.ssh,
+    onClose: () => capability?.revoke(),
+    pickLocalPort: async () => Number(await pickLocalPort())
+  })
+
+  if (!forwardLease) {
+    return null
+  }
+
+  if (sshConnections.get(sshTarget.scope) !== state || state.ssh !== sshTarget.ssh) {
+    await forwardLease.close()
+
+    return null
+  }
+
+  partition = `hermes-preview-forwarded-${crypto.randomUUID()}`
+
+  try {
+    partitionLease = leaseForwardedPreviewSession(
+      session.fromPartition(partition, { cache: false }),
+      forwardLease.rewrittenUrl,
+      forwardLease.expiresAt
+    )
+  } catch {
+    await forwardLease.close()
+
+    return null
+  }
+
+  if (!partitionLease) {
+    await forwardLease.close()
+
+    return null
+  }
+
+  capability = {
+    close: async () => {
+      capability.revoke()
+      await forwardLease.close()
+    },
+    revoke: () => {
+      partitionLease.revoke()
+      state.previewForwards.delete(capability)
+      sshPreviewForwardsByPartition.delete(partition)
+    }
+  }
+  sshPreviewForwardsByPartition.set(partition, capability)
+  state.previewForwards.add(capability)
+
+  return {
+    kind: 'url',
+    label: previewLabelForUrl(new URL(target.sourceUrl)),
+    previewPartition: partition,
+    source: target.sourceUrl,
+    transient: true,
+    url: forwardLease.rewrittenUrl
+  }
+}
+
+async function normalizePreviewTarget(rawTarget, baseDir, sourceProfile, sourceConnectionId) {
   const raw = String(rawTarget || '').trim()
 
   if (!raw) {
@@ -5361,6 +5505,19 @@ async function normalizePreviewTarget(rawTarget, baseDir) {
 
   try {
     if (/^https?:\/\//i.test(raw)) {
+      const profile = String(sourceProfile || '').trim()
+      const routed = await sshForwardedPreviewTarget(raw, profile, sourceConnectionId)
+
+      if (routed !== undefined) {
+        return routed ? { ...routed, profileValidated: true } : null
+      }
+
+      if (profile) {
+        const normalized = previewUrlTarget(raw, true)
+
+        return normalized ? { ...normalized, profileValidated: true } : null
+      }
+
       return previewUrlTarget(raw)
     }
 
@@ -8363,7 +8520,9 @@ async function buildRemoteConnection(
   }
 }
 
-const sshConnections = new Map<string, any>()
+const sshConnections = new SshOwnerRegistry<any>()
+const sshTeardownRetryTimers = new Map<string, ReturnType<typeof setTimeout>>()
+const sshPreviewForwardsByPartition = new Map<string, { close: () => Promise<void> }>()
 const desktopInstallationId = loadOrCreateInstallationId(DESKTOP_INSTALLATION_PATH)
 
 const sshBootstrapCoordinator = createBootstrapCoordinator()
@@ -8399,43 +8558,76 @@ async function sshProbeReuseProof(baseUrl, token, spawnNonce) {
   }
 }
 
-async function teardownSshConnection(profile) {
-  const scope = sshScopeKey(profile)
-  const state = sshConnections.get(scope)
-
-  if (!state) {
+function scheduleSshTeardownRetry(scope, state) {
+  if (sshTeardownRetryTimers.has(scope)) {
     return
   }
 
-  sshConnections.delete(scope)
+  const timer = setTimeout(() => {
+    sshTeardownRetryTimers.delete(scope)
+    void teardownSshConnectionByScope(scope, state).catch(() => undefined)
+  }, 1_000)
 
-  for (const [id, info] of [...terminalSessions.entries()]) {
-    if (info.sshScope === scope) {
-      disposeTerminalSession(id)
-    }
-  }
+  timer.unref?.()
+  sshTeardownRetryTimers.set(scope, timer)
+}
 
+async function teardownSshConnectionByScope(scope, expectedState = undefined, excludedPreviewForward = undefined) {
   try {
-    if (state.localPort && state.remotePort) {
-      await state.ssh.cancelForward(state.localPort, state.remotePort)
-    }
-  } catch {
-    // best effort
-  }
+    const claimed = await sshConnections.teardown(scope, expectedState, async state => {
+      // Registry teardown removes this owner from active routing before cleanup,
+      // while retaining it in the closing set until close() proves authoritative
+      // transport death. Revoke every sibling partition before touching SSH.
+      await revokeSshPreviewCapabilities(state.previewForwards || [], excludedPreviewForward)
 
-  try {
-    await state.ssh.close()
-  } catch {
-    // best effort
+      for (const [id, info] of [...terminalSessions.entries()]) {
+        if (info.sshScope === scope) {
+          disposeTerminalSession(id)
+        }
+      }
+
+      try {
+        if (state.localPort && state.remotePort) {
+          await state.ssh.cancelForward(state.localPort, state.remotePort)
+        }
+      } catch {
+        // The authoritative close below tears down every listener on the owner.
+      }
+
+      await state.ssh.close()
+    })
+
+    if (claimed) {
+      const timer = sshTeardownRetryTimers.get(scope)
+
+      if (timer) {
+        clearTimeout(timer)
+        sshTeardownRetryTimers.delete(scope)
+      }
+    }
+
+    return claimed
+  } catch (error) {
+    const state = expectedState || sshConnections.getClosing(scope)
+
+    if (state) {
+      scheduleSshTeardownRetry(scope, state)
+    }
+
+    throw error
   }
+}
+
+async function teardownSshConnection(profile, excludedPreviewForward = undefined) {
+  return teardownSshConnectionByScope(sshScopeKey(profile), undefined, excludedPreviewForward)
 }
 
 // CRITICAL: this must mirror resolveRemoteBackend's precedence, not just return
 // any cached SSH state. A per-profile token/OAuth override wins over a global
 // SSH connection — so if the active profile resolves to a NON-SSH backend, the
 // terminal must NOT fall through to a global SSH host.
-function activeSshTerminalTarget() {
-  const profile = primaryProfileKey()
+function activeSshTerminalTarget(optionalProfile) {
+  const profile = String(optionalProfile || '').trim() || primaryProfileKey()
   const config = readDesktopConnectionConfig()
 
   if (profileSshOverride(config, profile)) {
@@ -8498,6 +8690,12 @@ async function bootstrapSshConnection(profile, sshConfig, reuseToken, source) {
 async function bootstrapSshConnectionInner(profile, sshConfig, reuseToken, source, fingerprint, lease) {
   const scope = sshScopeKey(profile)
   const hostLabel = sshConfig.user ? `${sshConfig.user}@${sshConfig.host}` : sshConfig.host
+  const closing = sshConnections.getClosing(scope)
+
+  if (closing) {
+    await teardownSshConnectionByScope(scope, closing)
+  }
+
   const existing = sshConnections.get(scope)
 
   if (existing && existing.fingerprint !== fingerprint) {
@@ -8507,14 +8705,8 @@ async function bootstrapSshConnectionInner(profile, sshConfig, reuseToken, sourc
   let ssh = sshConnections.get(scope)?.ssh
 
   if (ssh && !(await ssh.isAlive())) {
-    try {
-      await ssh.close()
-    } catch {
-      void 0
-    }
-
+    await teardownSshConnection(profile)
     ssh = null
-    sshConnections.delete(scope)
   }
 
   const created = !ssh
@@ -8586,9 +8778,16 @@ async function bootstrapSshConnectionInner(profile, sshConfig, reuseToken, sourc
   persistSshConnectionToken(profile, source, result.token)
 
   removeForceCleanup()
-  sshConnections.set(scope, {
+
+  const previousOwner = sshConnections.get(scope)
+
+  const previousPreviewForwards =
+    previousOwner?.ssh === ssh ? previousOwner.previewForwards || new Set() : new Set()
+
+  refreshSshOwner(sshConnections, scope, {
     ssh,
     fingerprint,
+    previewForwards: previousPreviewForwards,
     localPort: result.localPort,
     remotePort: result.remotePort,
     pid: result.pid,
@@ -12830,9 +13029,30 @@ ipcMain.handle('hermes:saveClipboardImage', async () => {
   return ''
 })
 
-ipcMain.handle('hermes:normalizePreviewTarget', (_event, target, baseDir) =>
-  normalizePreviewTarget(String(target || ''), baseDir ? String(baseDir) : '')
+ipcMain.handle('hermes:normalizePreviewTarget', (_event, target, baseDir, profile, connectionId) =>
+  normalizePreviewTarget(
+    String(target || ''),
+    baseDir ? String(baseDir) : '',
+    profile ? String(profile) : '',
+    connectionId ? String(connectionId) : ''
+  )
 )
+
+ipcMain.handle('hermes:releasePreviewForward', async (_event, rawPartition) => {
+  const capability = sshPreviewForwardsByPartition.get(String(rawPartition || ''))
+
+  if (!capability) {
+    return false
+  }
+
+  try {
+    await capability.close()
+
+    return true
+  } catch {
+    return false
+  }
+})
 
 ipcMain.handle('hermes:watchPreviewFile', (_event, url) => watchPreviewFile(String(url || '')))
 
@@ -14288,18 +14508,27 @@ app.on('before-quit', event => {
     })
   }
 
-  if ((sshConnections.size > 0 || sshBootstrapCoordinator.promises().length > 0) && !sshQuitTeardownDone) {
+  if (
+    (sshConnections.size > 0 ||
+      sshConnections.promises().length > 0 ||
+      sshBootstrapCoordinator.promises().length > 0) &&
+    !sshQuitTeardownDone
+  ) {
     event.preventDefault()
     sshBootstrapCoordinator.cancelAll()
     const scopes = [...sshConnections.keys()]
 
     const pending = Promise.allSettled([
-      ...scopes.map(scope => teardownSshConnection(scope || null)),
+      ...scopes.map(scope => teardownSshConnectionByScope(scope)),
+      ...sshConnections.promises(),
       ...sshBootstrapCoordinator.promises()
     ])
 
     void Promise.race([pending, new Promise(resolve => setTimeout(resolve, 4_000))]).then(async () => {
-      await sshBootstrapCoordinator.forceCleanupAll()
+      await Promise.allSettled([
+        sshBootstrapCoordinator.forceCleanupAll(),
+        sshConnections.forceCleanup(state => state.ssh.forceClose())
+      ])
       sshQuitTeardownDone = true
       app.quit()
     })

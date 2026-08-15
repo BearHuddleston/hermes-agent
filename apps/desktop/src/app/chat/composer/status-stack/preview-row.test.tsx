@@ -30,7 +30,7 @@ describe('PreviewStatusRow', () => {
     fireEvent.pointerMove(screen.getByText('preview.html'), { pointerType: 'mouse' })
     await screen.findByRole('tooltip')
 
-    const content = document.querySelector<HTMLElement>('[data-slot="tooltip-content"]')
+    const content = globalThis.document.querySelector<HTMLElement>('[data-slot="tooltip-content"]')
     const label = content?.firstElementChild?.firstElementChild
 
     expect(content).not.toBeNull()
@@ -72,6 +72,51 @@ describe('PreviewStatusRow', () => {
     await waitFor(() => {
       expect($previewTabs.get()).toEqual([
         expect.objectContaining({ target: expect.objectContaining({ kind: 'file', path: remotePath }) })
+      ])
+    })
+    expect(openPreviewInBrowser).not.toHaveBeenCalled()
+  })
+
+  it('keeps forwarded SSH artifacts in their restricted in-app partition', async () => {
+    const source = 'http://127.0.0.1:8765/report.html'
+    const openPreviewInBrowser = vi.fn(async () => undefined)
+
+    Object.defineProperty(window, 'hermesDesktop', {
+      configurable: true,
+      value: {
+        normalizePreviewTarget: vi.fn(async () => ({
+          kind: 'url',
+          label: 'report.html',
+          previewPartition: 'hermes-preview-forwarded-00000000-0000-4000-8000-000000000003',
+          profileValidated: true,
+          source,
+          transient: true,
+          url: 'http://127.0.0.1:49154/report.html'
+        })),
+        openPreviewInBrowser
+      }
+    })
+
+    render(
+      <PreviewStatusRow
+        item={{
+          connectionId: 'grace-ssh',
+          cwd: '/home/agent',
+          id: source,
+          label: 'report.html',
+          profile: 'grace-profile',
+          target: source
+        }}
+        onDismiss={() => undefined}
+      />
+    )
+
+    fireEvent.click(screen.getByText('report.html'))
+
+    await waitFor(() => {
+      expect(window.hermesDesktop.normalizePreviewTarget).toHaveBeenCalledWith(source, '/home/agent', 'grace-profile', 'grace-ssh')
+      expect($previewTabs.get()).toEqual([
+        expect.objectContaining({ target: expect.objectContaining({ previewPartition: expect.any(String), source }) })
       ])
     })
     expect(openPreviewInBrowser).not.toHaveBeenCalled()

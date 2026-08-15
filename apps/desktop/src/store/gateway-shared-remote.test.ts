@@ -15,6 +15,8 @@ const gatewayMocks = vi.hoisted(() => ({
   connect: vi.fn(async (_wsUrl: string): Promise<void> => {
     throw new Error('dialed a socket for a shared-primary profile')
   }),
+  eventHandlers: [] as Array<(event: Record<string, unknown>) => void>,
+  onEvent: vi.fn(),
   setConnection: vi.fn()
 }))
 
@@ -26,7 +28,11 @@ vi.mock('@/hermes', () => ({
       this.connectionState = 'open'
     }
     close = vi.fn()
-    onEvent = vi.fn(() => () => {})
+    onEvent = vi.fn((handler: (event: Record<string, unknown>) => void) => {
+      gatewayMocks.eventHandlers.push(handler)
+
+      return () => {}
+    })
     onState = vi.fn(() => () => {})
   }
 }))
@@ -57,8 +63,9 @@ function makePrimary(): { connectionState: string } {
 }
 
 beforeEach(() => {
+  gatewayMocks.eventHandlers.length = 0
   configureGatewayRegistry({
-    onEvent: vi.fn(),
+    onEvent: gatewayMocks.onEvent,
     primaryProfile: 'default'
   } as never)
 })
@@ -110,6 +117,31 @@ describe('ensureGatewayForProfile under a shared global remote', () => {
     expect(gatewayMocks.connect).toHaveBeenCalledOnce()
     expect(gatewayMocks.connect).toHaveBeenCalledWith(remoteWsUrl)
     expect($gateway.get()).not.toBe(primary)
+  })
+
+  it('strips a wire-supplied connection ID from legacy secondary events', async () => {
+    setPrimaryGateway(makePrimary() as never, 'default')
+    installDesktop({
+      getConnection: vi.fn(async () => ({
+        authMode: 'token',
+        baseUrl: 'https://worker.invalid',
+        mode: 'remote',
+        profile: 'worker',
+        wsUrl: 'wss://worker.invalid/api/ws?token=fake-test-token'
+      }))
+    })
+    gatewayMocks.connect.mockResolvedValueOnce(undefined)
+
+    await ensureGatewayForProfile('worker')
+    gatewayMocks.eventHandlers.at(-1)?.({
+      connectionId: 'forged-wire-id',
+      profile: 'forged-wire-profile',
+      type: 'status.update'
+    })
+
+    expect(gatewayMocks.onEvent).toHaveBeenCalledWith(
+      expect.objectContaining({ connectionId: undefined, profile: 'worker', type: 'status.update' })
+    )
   })
 
   it('refreshes the active connection after a pooled profile reconnect succeeds', async () => {

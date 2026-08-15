@@ -184,7 +184,9 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
       return ''
     }
   },
-  normalizePreviewTarget: (target, baseDir) => ipcRenderer.invoke('hermes:normalizePreviewTarget', target, baseDir),
+  normalizePreviewTarget: (target, baseDir, profile, connectionId) =>
+    ipcRenderer.invoke('hermes:normalizePreviewTarget', target, baseDir, profile, connectionId),
+  releasePreviewForward: partition => ipcRenderer.invoke('hermes:releasePreviewForward', partition),
   watchPreviewFile: url => ipcRenderer.invoke('hermes:watchPreviewFile', url),
   watchDirectory: dir => ipcRenderer.invoke('hermes:watchDirectory', dir),
   stopPreviewFileWatch: id => ipcRenderer.invoke('hermes:stopPreviewFileWatch', id),

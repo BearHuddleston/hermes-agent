@@ -3,6 +3,7 @@ import { createContext, useContext } from 'react'
 
 import type { ClientSessionState } from '@/app/types'
 import type { ChatMessage } from '@/lib/chat-messages'
+import { $activeGatewayProfile } from '@/store/profile'
 import {
   $activeSessionId,
   $awaitingResponse,
@@ -13,7 +14,8 @@ import {
   $currentProvider,
   $currentReasoningEffort,
   $messages,
-  $selectedStoredSessionId
+  $selectedStoredSessionId,
+  $sessions
 } from '@/store/session'
 import { $sessionStates } from '@/store/session-states'
 
@@ -51,6 +53,7 @@ export interface SessionView {
   $cwd: ReadableAtom<string>
   $model: ReadableAtom<string>
   $provider: ReadableAtom<string>
+  $profile: ReadableAtom<string>
   $fast: ReadableAtom<boolean>
   $reasoningEffort: ReadableAtom<string>
 }
@@ -76,6 +79,19 @@ function primaryField<T>(select: (state: ClientSessionState) => T, $draft: Reada
 
 const $primaryMessages = primaryField<ChatMessage[]>(state => state.messages, $messages)
 
+const $primaryProfile = computed(
+  [$selectedStoredSessionId, $sessions, $activeGatewayProfile],
+  (storedId, sessions, activeProfile) => {
+    if (!storedId) {
+      return activeProfile
+    }
+
+    const session = sessions.find(item => item.id === storedId)
+
+    return session ? session.profile || 'default' : activeProfile
+  }
+)
+
 export const PRIMARY_SESSION_VIEW: SessionView = {
   kind: 'primary',
   $awaitingResponse: primaryField<boolean>(state => state.awaitingResponse, $awaitingResponse),
@@ -87,6 +103,7 @@ export const PRIMARY_SESSION_VIEW: SessionView = {
   $messagesEmpty: computed($primaryMessages, messages => messages.length === 0),
   $model: primaryField<string>(state => state.model, $currentModel),
   $provider: primaryField<string>(state => state.provider, $currentProvider),
+  $profile: $primaryProfile,
   $reasoningEffort: primaryField<string>(state => state.reasoningEffort, $currentReasoningEffort),
   $runtimeId: $activeSessionId,
   $storedId: $selectedStoredSessionId

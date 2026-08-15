@@ -96,6 +96,7 @@ describe('ModelPill per-surface model label', () => {
       $messagesEmpty: atom(true),
       $model: atom('tile/claude-sonnet'),
       $provider: atom('anthropic'),
+      $profile: atom('default'),
       $reasoningEffort: atom('high'),
       $runtimeId: atom('tile-runtime'),
       $storedId: atom('stored-tile')

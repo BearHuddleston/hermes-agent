@@ -2,7 +2,9 @@ import { act, cleanup, render } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { $desktopBoot } from '@/store/boot'
+import { $activeGatewayProfile } from '@/store/profile'
 import { $currentCwd, $gatewayState } from '@/store/session'
+import type { RpcEvent } from '@/types/hermes'
 
 import { takeGatewaySurvivor } from './gateway-hmr-survivor'
 import { useGatewayBoot } from './use-gateway-boot'
@@ -69,6 +71,12 @@ class FakeWebSocket {
     this.emit('close', {})
   }
 
+  message(params: Record<string, unknown>) {
+    this.emit('message', {
+      data: JSON.stringify({ jsonrpc: '2.0', method: 'event', params })
+    })
+  }
+
   private emit(type: string, ev: unknown) {
     for (const fn of this.listeners[type] ?? []) {
       fn(ev)
@@ -76,13 +84,24 @@ class FakeWebSocket {
   }
 }
 
-function fakeDesktop() {
-  const conn = {
-    authMode: 'token' as const,
+function fakeDesktop(profile = 'default', connectionId?: string, includeDescriptorProfile = true) {
+  const conn: {
+    authMode: 'token'
+    baseUrl: string
+    connectionId?: string
+    profile?: string
+    token: string
+    wsUrl: string
+  } = {
+    authMode: 'token',
     baseUrl: 'https://vps.example.com',
-    profile: 'default',
+    connectionId,
     token: 't',
     wsUrl: 'wss://vps.example.com/api/ws?token=t'
+  }
+
+  if (includeDescriptorProfile) {
+    conn.profile = profile
   }
 
   return {
@@ -109,17 +128,22 @@ function fakeDesktop() {
     onPowerResume: vi.fn(() => () => undefined),
     onWindowStateChanged: vi.fn(() => () => undefined),
     touchBackend: vi.fn(async () => undefined),
-    profile: { get: vi.fn(async () => ({ profile: 'default' })) }
+    profile: { get: vi.fn(async () => ({ profile })) }
   }
 }
 
 function Harness({
   beforeConnectionSwitch = () => undefined,
+  handleGatewayEvent = () => undefined,
   refreshSessions
-}: { beforeConnectionSwitch?: () => void; refreshSessions?: () => Promise<void> } = {}) {
+}: {
+  beforeConnectionSwitch?: () => void
+  handleGatewayEvent?: (event: RpcEvent) => void
+  refreshSessions?: () => Promise<void>
+} = {}) {
   useGatewayBoot({
     beforeConnectionSwitch,
-    handleGatewayEvent: () => undefined,
+    handleGatewayEvent,
     onConnectionReady: () => undefined,
     onGatewayReady: () => undefined,
     refreshHermesConfig: async () => undefined,
@@ -149,6 +173,7 @@ beforeEach(() => {
   connectionApplied = null
   ;(globalThis as { WebSocket: unknown }).WebSocket = FakeWebSocket
   ;(window as { hermesDesktop?: unknown }).hermesDesktop = fakeDesktop()
+  $activeGatewayProfile.set('default')
   $gatewayState.set('idle')
   $desktopBoot.set({
     error: null,
@@ -248,6 +273,71 @@ describe('useGatewayBoot remote reconnect loop (real hook, fake socket)', () => 
     expect(beforeConnectionSwitch).toHaveBeenCalledTimes(1)
     await flushAsync()
     expect($gatewayState.get()).toBe('open')
+  })
+
+  it('stamps primary gateway events with the profile used to establish the socket', async () => {
+    const handleGatewayEvent = vi.fn()
+
+    ;(window as { hermesDesktop?: unknown }).hermesDesktop = fakeDesktop('named-remote', 'grace-ssh')
+
+    render(<Harness handleGatewayEvent={handleGatewayEvent} />)
+    await flushAsync()
+
+    act(() => {
+      FakeWebSocket.instances[0].message({ type: 'status.update' })
+    })
+
+    expect(handleGatewayEvent).toHaveBeenCalledWith(
+      expect.objectContaining({ connectionId: 'grace-ssh', profile: 'named-remote', type: 'status.update' })
+    )
+  })
+
+  it('stamps a named primary from main authority when its production descriptor omits profile', async () => {
+    const handleGatewayEvent = vi.fn()
+
+    ;(window as { hermesDesktop?: unknown }).hermesDesktop = fakeDesktop('named-ssh', undefined, false)
+
+    render(<Harness handleGatewayEvent={handleGatewayEvent} />)
+    await flushAsync()
+
+    act(() => {
+      FakeWebSocket.instances[0].message({ type: 'status.update' })
+    })
+
+    expect(handleGatewayEvent).toHaveBeenCalledWith(
+      expect.objectContaining({ profile: 'named-ssh', type: 'status.update' })
+    )
+  })
+
+  it('pins profile provenance before a profile-less primary descriptor resolves', async () => {
+    const handleGatewayEvent = vi.fn()
+    const desktop = fakeDesktop('named-ssh', undefined, false)
+    let mainProfile = 'named-ssh'
+    const getConnection = desktop.getConnection
+
+    desktop.profile.get = vi.fn(async () => ({ profile: mainProfile }))
+    desktop.getConnection = vi.fn(async () => {
+      const connection = await getConnection()
+
+      // A concurrent profile switch writes the new preference before old-primary
+      // teardown/reload finishes. Provenance must stay bound to the connection
+      // request, not a later profile snapshot.
+      mainProfile = 'default'
+
+      return connection
+    })
+    ;(window as { hermesDesktop?: unknown }).hermesDesktop = desktop
+
+    render(<Harness handleGatewayEvent={handleGatewayEvent} />)
+    await flushAsync()
+
+    act(() => {
+      FakeWebSocket.instances[0].message({ type: 'status.update' })
+    })
+
+    expect(handleGatewayEvent).toHaveBeenCalledWith(
+      expect.objectContaining({ profile: 'named-ssh', type: 'status.update' })
+    )
   })
 
   it('a remote that drops post-boot keeps looping with NO boot.error (the dead-end CONNECTING combo)', async () => {

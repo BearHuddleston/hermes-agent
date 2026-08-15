@@ -207,7 +207,13 @@ declare global {
       saveImageBuffer: (data: ArrayBuffer | Uint8Array, ext: string) => Promise<string>
       saveClipboardImage: () => Promise<string>
       getPathForFile: (file: File) => string
-      normalizePreviewTarget: (target: string, baseDir?: string) => Promise<HermesPreviewTarget | null>
+      normalizePreviewTarget: (
+        target: string,
+        baseDir?: string,
+        profile?: string,
+        connectionId?: string
+      ) => Promise<HermesPreviewTarget | null>
+      releasePreviewForward: (partition: string) => Promise<boolean>
       watchPreviewFile: (url: string) => Promise<HermesPreviewWatch>
       /** Watch a directory for entry churn (disk-plugin door); same watcher
        *  registry + onPreviewFileChanged channel as watchPreviewFile. Optional:
@@ -994,9 +1000,12 @@ export interface HermesPreviewTarget {
   language?: string
   mimeType?: string
   path?: string
+  profileValidated?: true
+  previewPartition?: string
   previewKind?: 'binary' | 'html' | 'image' | 'pdf' | 'text'
   renderMode?: 'preview' | 'source'
   source: string
+  transient?: boolean
   url: string
 }
 

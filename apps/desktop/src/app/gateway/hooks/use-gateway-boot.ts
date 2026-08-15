@@ -117,6 +117,8 @@ export function useGatewayBoot({
     // signals that fire around wake (power resume, network online, the window
     // becoming visible).
     let bootCompleted = false
+    let sourceProfile = ''
+    let sourceConnectionId = ''
     let reconnecting = false
     let reconnectTimer: ReturnType<typeof setTimeout> | null = null
     let reconnectAttempt = 0
@@ -133,6 +135,38 @@ export function useGatewayBoot({
     // dead-end CONNECTING screen. Reset on a clean open or a manual/
     // wake-driven reconnect.
     let escalated = false
+
+    const primaryProfileAuthority = async (): Promise<string> => {
+      try {
+        const profileApi = desktop.profile
+
+        if (!profileApi?.get) {
+          return ''
+        }
+
+        const snapshot = await profileApi.get()
+
+        if (!snapshot || !Object.prototype.hasOwnProperty.call(snapshot, 'profile')) {
+          return ''
+        }
+
+        return normalizeProfileKey(snapshot.profile)
+      } catch {
+        return ''
+      }
+    }
+
+    const sourceProfileForConnection = (connection: HermesConnection, requestedProfile: string): string => {
+      const descriptorProfile = String(connection.profile || '').trim()
+
+      if (descriptorProfile) {
+        return normalizeProfileKey(descriptorProfile)
+      }
+
+      const requested = String(requestedProfile || '').trim()
+
+      return requested ? normalizeProfileKey(requested) : ''
+    }
 
     // Wrap the live getter in a call so TS control-flow analysis doesn't narrow
     // `connectionState` to a constant across the early-return guards (the state
@@ -161,7 +195,10 @@ export function useGatewayBoot({
         // "Starting Hermes…". The probe is a no-op for a healthy or local backend.
         await desktop.revalidateConnection?.().catch(() => undefined)
 
-        const conn = await desktop.getConnection($activeGatewayProfile.get())
+        const requestedProfile = String($activeGatewayProfile.get() || '').trim()
+        const conn = await desktop.getConnection(requestedProfile || undefined)
+        sourceProfile = sourceProfileForConnection(conn, requestedProfile)
+        sourceConnectionId = String(conn.connectionId || '').trim()
 
         if (cancelled) {
           return
@@ -309,8 +346,13 @@ export function useGatewayBoot({
         closeSecondaryGateways()
 
         // Same override rule as boot(): a profile-pinned helper window stays
-        // on its pinned profile's backend across a soft switch.
-        const conn = await desktop.getConnection(windowProfileOverride() ?? undefined)
+        // on its pinned profile's backend across a soft switch. Capture main's
+        // authority before requesting the connection so a concurrent profile
+        // write cannot relabel the resulting socket.
+        const requestedProfile = windowProfileOverride() ?? (await primaryProfileAuthority())
+        const conn = await desktop.getConnection(requestedProfile || undefined)
+        sourceProfile = sourceProfileForConnection(conn, requestedProfile)
+        sourceConnectionId = String(conn.connectionId || '').trim()
 
         if (cancelled) {
           return
@@ -423,10 +465,17 @@ export function useGatewayBoot({
       }
     })
 
-    const sourceProfile = normalizeProfileKey($activeGatewayProfile.get())
+    if (survivor?.profile) {
+      sourceProfile = normalizeProfileKey(survivor.profile)
+      sourceConnectionId = String(survivor.connection?.connectionId || '').trim()
+    }
 
     const offEvent = gateway.onEvent(event =>
-      callbacksRef.current.handleGatewayEvent({ ...event, profile: sourceProfile })
+      callbacksRef.current.handleGatewayEvent({
+        ...event,
+        connectionId: sourceConnectionId || undefined,
+        profile: sourceProfile
+      })
     )
 
     // Wake signals: power resume (macOS/Windows), network coming back, and the
@@ -502,8 +551,13 @@ export function useGatewayBoot({
       try {
         // A profile-pinned helper window (the HUD) dials its target profile's
         // backend directly — ensureBackend spawns/reuses it from the pool.
-        // Everything else keeps dialing the primary.
-        const conn = await desktop.getConnection(windowProfileOverride() ?? undefined)
+        // Everything else keeps dialing the primary. Capture main's profile
+        // authority before requesting the connection: profile.set writes the
+        // new preference before old-primary teardown/reload completes.
+        const requestedProfile = windowProfileOverride() ?? (await primaryProfileAuthority())
+        const conn = await desktop.getConnection(requestedProfile || undefined)
+        sourceProfile = sourceProfileForConnection(conn, requestedProfile)
+        sourceConnectionId = String(conn.connectionId || '').trim()
 
         if (cancelled) {
           return

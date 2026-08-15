@@ -8,12 +8,16 @@ import { normalizeOrLocalPreviewTarget } from '@/lib/local-preview'
 import { previewName } from '@/lib/preview-targets'
 import { notifyError } from '@/store/notifications'
 import { $previewTabSources, closePreviewForSource, openPreview, type PreviewRecordSource } from '@/store/preview'
+import { previewSessionSource } from '@/store/preview-status'
 
 export function PreviewAttachment({ source = 'manual', target }: { source?: PreviewRecordSource; target: string }) {
   const { t } = useI18n()
   // This link lives in one session's transcript; resolve it against THAT
   // session's cwd, not the primary chat's.
-  const cwd = useStore(useSessionView().$cwd)
+  const sessionView = useSessionView()
+  const cwd = useStore(sessionView.$cwd)
+  const profile = useStore(sessionView.$profile)
+  const runtimeId = useStore(sessionView.$runtimeId)
   const openSources = useStore($previewTabSources)
   const [opening, setOpening] = useState(false)
   const cwdRef = useRef(cwd)
@@ -60,7 +64,14 @@ export function PreviewAttachment({ source = 'manual', target }: { source?: Prev
     setOpening(true)
 
     try {
-      const preview = await normalizeOrLocalPreviewTarget(requestTarget, requestCwd || undefined)
+      const provenance = previewSessionSource(runtimeId || '')
+
+      const preview = await normalizeOrLocalPreviewTarget(
+        requestTarget,
+        requestCwd || undefined,
+        provenance?.profile || profile,
+        provenance?.connectionId
+      )
 
       if (
         !mountedRef.current ||

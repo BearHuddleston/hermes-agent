@@ -12,17 +12,44 @@ import { previewName } from '@/lib/preview-targets'
  * target the inline card used, so detection parity is exact.
  */
 export interface PreviewArtifact {
+  /** Immutable locally stamped registry connection that produced this artifact. */
+  connectionId?: string
   /** cwd captured at detection so a relative path still resolves on click. */
   cwd: string
   /** Dedupe key + display id (the raw target). */
   id: string
   label: string
+  /** Immutable locally stamped gateway profile that produced this artifact. */
+  profile?: string
   target: string
 }
 
 const MAX_PER_SESSION = 4
+export interface PreviewSessionSource {
+  connectionId?: string
+  profile: string
+}
+
+const previewSourceBySession = new Map<string, PreviewSessionSource>()
 
 export const $previewStatusBySession = atom<Record<string, PreviewArtifact[]>>({})
+
+export function previewSessionSource(sid: string): PreviewSessionSource | undefined {
+  return previewSourceBySession.get(sid.trim())
+}
+
+export function recordPreviewSessionProfile(sid: string, profile: string, connectionId = '') {
+  const sessionId = sid.trim()
+  const sourceProfile = profile.trim()
+  const sourceConnectionId = connectionId.trim()
+
+  if (sessionId && sourceProfile && !previewSourceBySession.has(sessionId)) {
+    previewSourceBySession.set(sessionId, {
+      connectionId: sourceConnectionId || undefined,
+      profile: sourceProfile
+    })
+  }
+}
 
 const writePreviews = (sid: string, items: PreviewArtifact[]) => {
   const current = $previewStatusBySession.get()
@@ -55,12 +82,20 @@ export function recordPreviewArtifact(sid: string, target: string, cwd: string) 
   }
 
   const list = $previewStatusBySession.get()[sid] ?? []
+  const source = previewSourceBySession.get(sid)
+  const existingIndex = list.findIndex(item => item.id === raw)
 
-  if (list.some(item => item.id === raw)) {
+  if (existingIndex >= 0) {
+    if (source && !list[existingIndex].profile) {
+      const next = [...list]
+      next[existingIndex] = { ...next[existingIndex], ...source }
+      writePreviews(sid, next)
+    }
+
     return
   }
 
-  writePreviews(sid, [...list, { cwd, id: raw, label: previewName(raw), target: raw }].slice(-MAX_PER_SESSION))
+  writePreviews(sid, [...list, { ...source, cwd, id: raw, label: previewName(raw), target: raw }].slice(-MAX_PER_SESSION))
 }
 
 export function dismissPreviewArtifact(sid: string, id: string) {
@@ -75,5 +110,6 @@ export function dismissPreviewArtifact(sid: string, id: string) {
 }
 
 export function clearPreviewArtifacts(sid: string) {
+  previewSourceBySession.delete(sid)
   writePreviews(sid, [])
 }

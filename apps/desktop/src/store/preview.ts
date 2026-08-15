@@ -35,6 +35,8 @@ export interface PreviewTarget {
   language?: string
   mimeType?: string
   path?: string
+  /** Main-process-minted, non-persistent partition for an SSH-forwarded preview. */
+  previewPartition?: string
   previewKind?: 'binary' | 'html' | 'image' | 'pdf' | 'text'
   renderMode?: 'preview' | 'source'
   source: string
@@ -212,6 +214,12 @@ function previewTargetForSource(target: PreviewTarget, source: PreviewRecordSour
   return { ...target, renderMode: isFilePreviewSource(source) ? 'source' : 'preview' }
 }
 
+function releasePreviewTarget(target: PreviewTarget | undefined) {
+  if (target?.previewPartition) {
+    void window.hermesDesktop?.releasePreviewForward?.(target.previewPartition)
+  }
+}
+
 /** Open (or re-front) the tab for `target`. Re-opening an existing tab refreshes
  *  its target so a stale label/path can't outlive the thing it points at. The
  *  only way anything reaches a preview. */
@@ -221,6 +229,11 @@ export function openPreview(target: PreviewTarget, source: PreviewRecordSource =
   const current = $previewTabs.get()
   const index = current.findIndex(tab => tab.id === id)
   const tab: PreviewTab = { id, target: resolved }
+  const replaced = index === -1 ? undefined : current[index]?.target
+
+  if (replaced?.previewPartition !== resolved.previewPartition) {
+    releasePreviewTarget(replaced)
+  }
 
   $previewTabs.set(index === -1 ? [...current, tab] : current.map((item, i) => (i === index ? tab : item)))
   selectRightRailTab(id)
@@ -236,6 +249,7 @@ export function closeRightRailTab(tabId: string) {
 
   const next = current.filter(tab => tab.id !== tabId)
 
+  releasePreviewTarget(current[index]?.target)
   $previewTabs.set(next)
 
   if ($rightRailActiveTabId.get() === tabId) {
@@ -272,6 +286,10 @@ export function closeArtifactPreviewTabs() {
 
 /** Close every tab so the rail's panes leave the tree. */
 export function closeRightRail() {
+  for (const tab of $previewTabs.get()) {
+    releasePreviewTarget(tab.target)
+  }
+
   $previewTabs.set([])
   selectRightRailTab(null)
 }

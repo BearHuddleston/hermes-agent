@@ -417,7 +417,7 @@ function runSsh(args, { timeoutMs, spawnFn = spawn, stdin = 'ignore', stdinData 
   })
 }
 
-function stopTunnelChild(child, timeoutMs = 5_000) {
+function stopTunnelChild(child, timeoutMs = 5_000, signal?: NodeJS.Signals | number) {
   if (!child || child.exitCode != null || child.signalCode != null) {
     return Promise.resolve()
   }
@@ -444,7 +444,7 @@ function stopTunnelChild(child, timeoutMs = 5_000) {
     child.once('error', onError)
 
     try {
-      if (!child.kill()) {
+      if (!child.kill(signal)) {
         finish(new Error('SSH tunnel termination was refused.'))
       }
     } catch (error) {
@@ -800,8 +800,9 @@ class SshConnection {
     }
   }
 
-  // Cancel a previously-established forward. Best-effort: a failure here is
-  // logged but not thrown (close tears everything down anyway).
+  // Cancel a previously-established forward. Failure is authoritative: callers
+  // that own a capability must fall back to closing the shared transport rather
+  // than forgetting a listener OpenSSH failed to remove.
   async cancelForward(localPort, remotePort, remoteHost = '127.0.0.1') {
     const spec = forwardSpec(localPort, remotePort, remoteHost)
 
@@ -819,12 +820,19 @@ class SshConnection {
 
     const args = buildControlArgs(this, 'cancel', ['-L', spec], this._connectTimeoutMs)
 
+    let result
+
     try {
-      await runSsh(args, { timeoutMs: this._forwardTimeoutMs, spawnFn: this._spawnFn })
-      this._logLine(`cancelled forward 127.0.0.1:${localPort}`)
-    } catch (error: any) {
-      this._logLine(`cancelForward failed (ignored): ${error.message}`)
+      result = await runSsh(args, { timeoutMs: this._forwardTimeoutMs, spawnFn: this._spawnFn })
+    } catch (error) {
+      throw this._fail(error)
     }
+
+    if (result.code !== 0) {
+      throw this._fail(result.stderr)
+    }
+
+    this._logLine(`cancelled forward 127.0.0.1:${localPort}`)
   }
 
   // Tear down. Mux: exit the master (drops every forward with it). No-mux:
@@ -870,6 +878,34 @@ class SshConnection {
     }
 
     this._opened = false
+  }
+
+  // Bounded shutdown escalation for no-mux Windows tunnel children retained
+  // after a graceful cancellation/close failure.
+  async forceClose() {
+    if (this._mux) {
+      await this.close()
+
+      return
+    }
+
+    const failures: unknown[] = []
+
+    for (const [spec, tunnel] of this._tunnels) {
+      try {
+        await stopTunnelChild(tunnel.child, 1_000, 'SIGKILL')
+        this._tunnels.delete(spec)
+      } catch (error) {
+        failures.push(error)
+      }
+    }
+
+    if (failures.length > 0) {
+      throw new AggregateError(failures, 'One or more SSH tunnel processes resisted force-close.')
+    }
+
+    this._opened = false
+    this._logLine('connection force-closed (no-mux tunnels killed)')
   }
 }
 

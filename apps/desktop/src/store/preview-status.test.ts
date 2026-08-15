@@ -4,10 +4,14 @@ import {
   $previewStatusBySession,
   clearPreviewArtifacts,
   dismissPreviewArtifact,
-  recordPreviewArtifact
+  recordPreviewArtifact,
+  recordPreviewSessionProfile
 } from './preview-status'
 
-beforeEach(() => $previewStatusBySession.set({}))
+beforeEach(() => {
+  $previewStatusBySession.set({})
+  clearPreviewArtifacts('s1')
+})
 
 describe('recordPreviewArtifact', () => {
   it('appends new targets newest-last and is idempotent', () => {
@@ -16,6 +20,14 @@ describe('recordPreviewArtifact', () => {
     recordPreviewArtifact('s1', '/a/index.html', '/work')
 
     expect($previewStatusBySession.get().s1.map(i => i.id)).toEqual(['/a/index.html', '/a/about.html'])
+  })
+
+  it('stamps artifacts with the first locally observed session profile', () => {
+    recordPreviewSessionProfile('s1', 'grace-profile', 'grace-ssh')
+    recordPreviewSessionProfile('s1', 'different-profile', 'different-connection')
+    recordPreviewArtifact('s1', 'http://127.0.0.1:8765/report.html', '/work')
+
+    expect($previewStatusBySession.get().s1[0]).toMatchObject({ connectionId: 'grace-ssh', profile: 'grace-profile' })
   })
 
   it('caps the list and derives a label', () => {

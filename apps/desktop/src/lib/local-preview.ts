@@ -56,6 +56,30 @@ function extension(value: string) {
   return idx >= 0 ? clean.slice(idx).toLowerCase() : ''
 }
 
+function isLoopbackHttpTarget(value: string) {
+  try {
+    const url = new URL(value.trim())
+
+    const hostname = url.hostname
+      .replace(/^\[|\]$/g, '')
+      .toLowerCase()
+      .replace(/\.+$/, '')
+
+    return (
+      (url.protocol === 'http:' || url.protocol === 'https:') &&
+      (hostname === 'localhost' ||
+        hostname.endsWith('.localhost') ||
+        hostname === '0.0.0.0' ||
+        hostname === '::' ||
+        hostname === '::1' ||
+        /^127(?:\.|$)/.test(hostname) ||
+        hostname.startsWith('::ffff:'))
+    )
+  } catch {
+    return false
+  }
+}
+
 function joinPath(base: string, rel: string) {
   if (!base) {
     return rel
@@ -145,6 +169,10 @@ export function remoteHtmlPreviewDocument(dataUrl: string): string | null {
 }
 
 export async function openPreviewTargetInBrowser(target: PreviewTarget): Promise<void> {
+  if (target.previewPartition) {
+    throw new Error('Forwarded content must remain in its restricted preview partition')
+  }
+
   const bridge = window.hermesDesktop
 
   if (!bridge?.openPreviewInBrowser) {
@@ -259,10 +287,25 @@ async function enrichPreviewTarget(target: PreviewTarget | null): Promise<Previe
 
 export async function normalizeOrLocalPreviewTarget(
   rawTarget: string,
-  cwd?: string | null
+  cwd?: string | null,
+  profile?: string | null,
+  connectionId?: string | null
 ): Promise<PreviewTarget | null> {
+  if (isLoopbackHttpTarget(rawTarget) && !String(profile || '').trim()) {
+    return null
+  }
+
   try {
-    const normalized = await window.hermesDesktop?.normalizePreviewTarget?.(rawTarget, cwd || undefined)
+    const normalized = await window.hermesDesktop?.normalizePreviewTarget?.(
+      rawTarget,
+      cwd || undefined,
+      profile || undefined,
+      connectionId || undefined
+    )
+
+    if (normalized && profile && isLoopbackHttpTarget(rawTarget) && normalized.profileValidated !== true) {
+      return null
+    }
 
     if (normalized) {
       return enrichPreviewTarget(normalized)
@@ -270,6 +313,10 @@ export async function normalizeOrLocalPreviewTarget(
   } catch {
     // Running Electron may still have the old HTML-only preview IPC. Fall
     // through to renderer-side local classification so text/images still open.
+  }
+
+  if (profile && /^https?:\/\//i.test(rawTarget.trim())) {
+    return null
   }
 
   return enrichPreviewTarget(localPreviewTarget(rawTarget, cwd))

@@ -27,7 +27,7 @@ export const PreviewStatusRow = memo(function PreviewStatusRow({ item, onDismiss
   const isOpen = openSources.includes(item.target)
 
   const resolveTarget = async () => {
-    const target = await normalizeOrLocalPreviewTarget(item.target, item.cwd || undefined)
+    const target = await normalizeOrLocalPreviewTarget(item.target, item.cwd || undefined, item.profile, item.connectionId)
 
     if (!target) {
       throw new Error(`Could not open preview target: ${item.target}`)
@@ -68,7 +68,10 @@ export const PreviewStatusRow = memo(function PreviewStatusRow({ item, onDismiss
       // in-app preview pane so its filesystem adapter reads via the gateway.
       // (Remote HTML stays on openPreviewTargetInBrowser, which stages a
       // sanitized local copy before opening it.)
-      if (target.kind === 'file' && target.previewKind !== 'html' && isDesktopFsRemoteMode()) {
+      if (
+        target.previewPartition ||
+        (target.kind === 'file' && target.previewKind !== 'html' && isDesktopFsRemoteMode())
+      ) {
         openPreview(target, 'tool-result')
 
         return

@@ -25,6 +25,7 @@ function stubPdfObjectUrls() {
 
 describe('PreviewPane console state', () => {
   beforeEach(() => {
+    Object.defineProperty(HTMLElement.prototype, 'scrollTo', { configurable: true, value: vi.fn() })
     vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) =>
       window.setTimeout(() => callback(Date.now()), 0)
     )
@@ -108,6 +109,55 @@ describe('PreviewPane console state', () => {
     expect(previewConsoleState(tabId).$logs.get().at(-1)?.message).toBe('streamed log line')
 
     forgetPreviewStripTools(tabId)
+  })
+
+  it('keeps an SSH-forwarded preview in its isolated partition', async () => {
+    const onRestartServer = vi.fn(async () => 'restart-task')
+    const openExternal = vi.fn(async () => undefined)
+    Object.defineProperty(window, 'hermesDesktop', {
+      configurable: true,
+      value: { openExternal }
+    })
+    const remoteUrl = 'http://127.0.0.1:8765/report.html'
+    const forwardedUrl = 'http://127.0.0.1:49152/report.html'
+    const partition = 'hermes-preview-forwarded-00000000-0000-4000-8000-000000000001'
+
+    const rendered = render(
+      <PreviewPane
+        onRestartServer={onRestartServer}
+        target={{
+          kind: 'url',
+          label: 'report.html',
+          previewPartition: partition,
+          source: remoteUrl,
+          transient: true,
+          url: forwardedUrl
+        }}
+      />
+    )
+
+    const webview = rendered.container.querySelector('webview')
+
+    expect(webview?.getAttribute('partition')).toBe(partition)
+    expect(rendered.container.querySelector(`a[href="${forwardedUrl}"]`)).toBeNull()
+
+    act(() => {
+      webview?.dispatchEvent(
+        Object.assign(new Event('did-fail-load'), {
+          errorCode: -102,
+          errorDescription: 'ERR_CONNECTION_REFUSED',
+          validatedURL: forwardedUrl
+        })
+      )
+    })
+
+    const errorText = rendered.getByText(/\(-102\)/)
+    expect(errorText.closest('a')).toBeNull()
+    fireEvent.click(errorText)
+    expect(openExternal).not.toHaveBeenCalled()
+
+    fireEvent.click(await rendered.findByText('Ask Hermes to restart the server'))
+    await waitFor(() => expect(onRestartServer).toHaveBeenCalledWith(remoteUrl, expect.anything()))
   })
 
   it('renders authenticated remote HTML safely and honors source mode', async () => {
