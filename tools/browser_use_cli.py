@@ -7,6 +7,7 @@ instead of default browser tools
 import json
 import logging
 import os
+import platform
 import re
 import shutil
 import subprocess
@@ -124,6 +125,18 @@ def _base_subprocess_env() -> dict:
     # the PATH so coreutils are always reachable (see below).
     env["PATH"] = _floor_subprocess_path(env.get("PATH", ""))
     env.setdefault("ANONYMIZED_TELEMETRY", "false")
+    # browser-harness opens chrome://inspect through Python's stdlib
+    # webbrowser module when Chrome needs its remote-debugging toggle. On
+    # Windows the default backend sends that custom scheme through the OS URL
+    # registry, but Chrome normally does not register chrome:, so Windows shows
+    # an app-chooser dialog. BROWSER makes stdlib invoke the detected Chromium
+    # executable directly instead. Keep an explicit operator override intact.
+    if platform.system() == "Windows" and not env.get("BROWSER"):
+        from hermes_cli.browser_connect import get_chrome_debug_candidates
+
+        candidates = get_chrome_debug_candidates("Windows")
+        if candidates:
+            env["BROWSER"] = candidates[0]
     return env
 
 
