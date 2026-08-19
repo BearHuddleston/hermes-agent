@@ -308,7 +308,6 @@ import {
   spliceRegistrySessionRows,
   tagRegistrySessionResponse
 } from './profile-session-routing'
-import { createQuickEntryShortcut, quickEntryWindowBounds, sanitizeQuickEntrySettings } from './quick-entry'
 import {
   isolatedInstanceSpecFromSsh,
   parseInstanceDeepLink,
@@ -316,6 +315,7 @@ import {
   shouldRegisterGlobalShortcuts,
   shouldRegisterProtocolClient
 } from './isolated-desktop-instance'
+import { createQuickEntryShortcut, quickEntryWindowBounds, sanitizeQuickEntrySettings } from './quick-entry'
 import { type ActiveWork, mergeActiveWork, normalizeActiveWork, quitPromptFor } from './quit-guard'
 import * as remoteLifecycle from './remote-lifecycle'
 import {
