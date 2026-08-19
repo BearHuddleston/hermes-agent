@@ -280,7 +280,7 @@ To launch via the CLI, simply run `hermes desktop`. By default it installs works
 | `--ignore-existing`  | Force the app to ignore any `hermes` CLI already on `PATH` during backend resolution      |
 | `--fake-boot`        | Enable deterministic boot delays for validating the startup UI                            |
 
-`hermes desktop instance` manages **isolated Desktop shells** on Windows (separate `userData` + `HERMES_HOME`, shared runtime). See [Isolated Desktop instances](./isolated-desktop-instances.md). Bare `hermes desktop` still launches the ordinary local app.
+`hermes desktop instance` manages **isolated Desktop shells** (separate `userData` + `HERMES_HOME`, shared runtime) on Windows, macOS, and Linux. See [Isolated Desktop instances](./isolated-desktop-instances.md). Bare `hermes desktop` still launches the ordinary local app.
 
 ## How it works
 
@@ -314,7 +314,7 @@ Further down the same **Settings → Gateways** page, **Registered gateways** ma
 
 Side-by-side routing is live: each registered gateway dials its own backends and sockets on demand (keyed per connection + profile), the plugin SDK exposes the union agent roster (`host.agents()` / `host.ensureAgent()`), and **Update all instances** on the Gateways page dispatches `hermes update` to every eligible gateway at once — Hermes Cloud entries are skipped (the platform updates them), and each instance reports its own result.
 
-Need a **separate Desktop window** with its own settings, Chromium profile, and dock/taskbar identity instead of another source in this shell? That is [Isolated Desktop instances](./isolated-desktop-instances.md) (`hermes desktop instance` on Windows) — not another Connections entry.
+Need a **separate Desktop window** with its own settings, Chromium profile, and dock/taskbar identity instead of another source in this shell? That is [Isolated Desktop instances](./isolated-desktop-instances.md) (`hermes desktop instance`, or **Open as isolated Desktop** on an SSH Connections row) — not another Connections entry.
 
 :::info The remote backend is a running `hermes serve` process
 "Remote backend" means a **`hermes serve`** server running on the remote machine — that is the process the desktop app connects to. Nothing in this section works unless that backend is actually up and reachable. The desktop app does not start it for you; you (or a `systemd` service) keep `hermes serve` running on the remote host, and the app attaches to it. If you also use messaging channels (Telegram, Discord, etc.), the **gateway** is a *separate* long-running process you start independently — see the note after the setup steps.

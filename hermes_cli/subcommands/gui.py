@@ -129,6 +129,10 @@ def build_gui_parser(subparsers, *, cmd_gui: Callable) -> None:
         help="Launch or focus an isolated Desktop instance",
     )
     launch.add_argument("instance_name")
+    launch.add_argument(
+        "--deep-link",
+        help="Forward a hermes:// URL into the isolated shell after launch",
+    )
     launch.set_defaults(func=cmd_gui)
 
     shortcut = instance_sub.add_parser(

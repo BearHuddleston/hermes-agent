@@ -164,6 +164,13 @@ def test_launch_plan_uses_named_hardlink_early_user_data_and_no_shellexecute(tmp
     assert plan.env["HERMES_DESKTOP_HERMES_ROOT"] == str(instance.runtime_root)
     assert plan.env["HERMES_DESKTOP_APP_NAME"] == instance.app_name
     assert plan.env["HERMES_DESKTOP_CWD"] == str(store.cwd)
+    assert plan.env["HERMES_DESKTOP_INSTANCE"] == instance.name
+    assert (
+        plan.env["HERMES_DESKTOP_AUMID"]
+        == f"com.nousresearch.hermes.instance.{instance.name}"
+    )
+    assert plan.env["HERMES_DESKTOP_DISABLE_GLOBAL_SHORTCUTS"] == "1"
+    assert plan.env["HERMES_DESKTOP_SKIP_PROTOCOL_REGISTER"] == "1"
 
 
 # ── atomic non-secret manifest ───────────────────────────────────────────
@@ -175,6 +182,13 @@ def test_display_name_cannot_collide_with_canonical_exe(tmp_path):
     store = _store(tmp_path)
     with pytest.raises(InstanceNameError, match="collide"):
         _create(store, display_name="Hermes")
+
+
+def test_launch_plan_can_forward_a_deep_link(tmp_path):
+    store = _store(tmp_path)
+    instance = _create(store)
+    plan = store.build_launch_plan(instance, deep_link="hermes://blueprint/morning")
+    assert plan.env["HERMES_DESKTOP_PENDING_DEEP_LINK"] == "hermes://blueprint/morning"
 
 
 def test_create_writes_atomic_manifest_without_secrets(tmp_path):
@@ -270,16 +284,82 @@ def test_create_rejects_missing_canonical_runtime(tmp_path):
         _create(store)
 
 
-def test_windows_only_mutations_fail_on_other_platforms(tmp_path):
+def test_unknown_platform_mutations_fail(tmp_path):
     from hermes_cli.desktop_instances import IncompatiblePlatformError
 
-    store = _store(tmp_path, platform="linux")
+    store = _store(tmp_path, platform="aix")
     with pytest.raises(IncompatiblePlatformError):
         _create(store)
-    with pytest.raises(IncompatiblePlatformError):
-        store.launch("grace")
-    with pytest.raises(IncompatiblePlatformError):
-        store.install_shortcut("grace")
+
+
+def test_linux_create_writes_desktop_entry_and_wrapper(tmp_path):
+    store = _store(tmp_path, platform="linux")
+    instance = _create(store)
+    assert instance.shortcut_path.suffix == ".desktop"
+    assert instance.shortcut_path.exists()
+    desktop = instance.shortcut_path.read_text(encoding="utf-8")
+    assert f"Name={instance.app_name}" in desktop
+    assert str(instance.launcher_exe) in desktop
+    wrapper = instance.launcher_exe.read_text(encoding="utf-8")
+    assert "HERMES_HOME=" in wrapper
+    assert "--user-data-dir=" in wrapper
+    assert "UseShellExecute" not in wrapper
+    assert instance.named_exe == store.canonical_exe
+
+
+def test_macos_create_writes_command_wrapper(tmp_path):
+    store = _store(tmp_path, platform="darwin")
+    instance = _create(store)
+    assert instance.shortcut_path.suffix == ".command"
+    assert instance.shortcut_path.exists()
+    script = instance.shortcut_path.read_text(encoding="utf-8")
+    assert "HERMES_DESKTOP_USER_DATA_DIR=" in script
+    assert "--user-data-dir=" in script
+
+
+def test_instance_spec_from_ssh_connection_maps_nonsecret_fields():
+    from hermes_cli.desktop_instances import isolated_instance_spec_from_ssh
+
+    spec = isolated_instance_spec_from_ssh({
+        "id": "c1",
+        "kind": "ssh",
+        "label": "Hermes Athena",
+        "host": "bear-agent",
+        "remoteHermesPath": "/opt/hermes/bin/hermes",
+        "remoteProfile": "default",
+    })
+    assert spec.name == "athena"
+    assert spec.ssh_host == "bear-agent"
+    assert spec.remote_hermes_path == "/opt/hermes/bin/hermes"
+    assert spec.remote_profile == "default"
+    assert spec.display_name == "Hermes Athena"
+    assert "token" not in spec.to_manifest()
+
+
+def test_instance_spec_rejects_non_ssh_and_missing_remote_path():
+    from hermes_cli.desktop_instances import (
+        IsolatedInstanceSpecError,
+        isolated_instance_spec_from_ssh,
+    )
+
+    with pytest.raises(IsolatedInstanceSpecError, match="SSH"):
+        isolated_instance_spec_from_ssh({"kind": "remote", "label": "box", "host": "x"})
+    with pytest.raises(IsolatedInstanceSpecError, match="absolute"):
+        isolated_instance_spec_from_ssh({
+            "kind": "ssh",
+            "label": "box",
+            "host": "lab",
+            "remoteHermesPath": "rel",
+        })
+
+
+def test_parse_instance_deep_link_extracts_slug_and_remainder():
+    from hermes_cli.desktop_instances import parse_instance_deep_link
+
+    parsed = parse_instance_deep_link("hermes://instance/grace/blueprint/morning")
+    assert parsed.instance_name == "grace"
+    assert parsed.remainder == "hermes://blueprint/morning"
+    assert parse_instance_deep_link("hermes://blueprint/morning") is None
 
 
 def test_list_and_show_work_on_non_windows(tmp_path):
@@ -305,6 +385,9 @@ def test_generated_launcher_source_has_validated_windows_invariants(tmp_path):
     assert 'EnvironmentVariables["HERMES_DESKTOP_USER_DATA_DIR"]' in source
     assert 'EnvironmentVariables["HERMES_DESKTOP_HERMES_ROOT"]' in source
     assert 'EnvironmentVariables["HERMES_DESKTOP_APP_NAME"]' in source
+    assert 'EnvironmentVariables["HERMES_DESKTOP_INSTANCE"]' in source
+    assert 'EnvironmentVariables["HERMES_DESKTOP_AUMID"]' in source
+    assert 'EnvironmentVariables["HERMES_DESKTOP_DISABLE_GLOBAL_SHORTCUTS"]' in source
     assert "CreateHardLink" in source
     assert "File.Delete" in source
     assert instance.app_name in source

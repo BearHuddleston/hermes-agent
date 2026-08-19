@@ -16,6 +16,8 @@ internal static class {{CLASS_NAME}}
     private const string UserData = @"{{USER_DATA}}";
     private const string WorkingDirectory = @"{{WORKING_DIRECTORY}}";
     private const string AppName = @"{{APP_NAME}}";
+    private const string InstanceName = @"{{INSTANCE_NAME}}";
+    private const string Aumid = @"{{AUMID}}";
 
     [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
     private static extern bool CreateHardLink(
@@ -51,6 +53,10 @@ internal static class {{CLASS_NAME}}
             startInfo.EnvironmentVariables["HERMES_DESKTOP_HERMES_ROOT"] = HermesRoot;
             startInfo.EnvironmentVariables["HERMES_DESKTOP_APP_NAME"] = AppName;
             startInfo.EnvironmentVariables["HERMES_DESKTOP_CWD"] = WorkingDirectory;
+            startInfo.EnvironmentVariables["HERMES_DESKTOP_INSTANCE"] = InstanceName;
+            startInfo.EnvironmentVariables["HERMES_DESKTOP_AUMID"] = Aumid;
+            startInfo.EnvironmentVariables["HERMES_DESKTOP_DISABLE_GLOBAL_SHORTCUTS"] = "1";
+            startInfo.EnvironmentVariables["HERMES_DESKTOP_SKIP_PROTOCOL_REGISTER"] = "1";
 
             var process = Process.Start(startInfo);
             if (process == null)
