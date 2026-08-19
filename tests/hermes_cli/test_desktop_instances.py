@@ -334,15 +334,155 @@ def test_instance_spec_from_ssh_connection_maps_nonsecret_fields():
         "kind": "ssh",
         "label": "Hermes Athena",
         "host": "bear-agent",
+        "user": "bear",
+        "port": 2222,
+        "keyPath": "/home/bear/.ssh/id_ed25519",
         "remoteHermesPath": "/opt/hermes/bin/hermes",
         "remoteProfile": "default",
     })
     assert spec.name == "athena"
+    assert spec.connection_id == "c1"
     assert spec.ssh_host == "bear-agent"
+    assert spec.ssh_user == "bear"
+    assert spec.ssh_port == 2222
+    assert spec.ssh_key_path == "/home/bear/.ssh/id_ed25519"
     assert spec.remote_hermes_path == "/opt/hermes/bin/hermes"
     assert spec.remote_profile == "default"
     assert spec.display_name == "Hermes Athena"
     assert "token" not in spec.to_manifest()
+
+
+def test_same_host_ssh_rows_are_distinct_when_user_port_or_key_differ():
+    from hermes_cli.desktop_instances import isolated_instance_spec_from_ssh
+
+    alice = isolated_instance_spec_from_ssh({
+        "id": "alice-box",
+        "kind": "ssh",
+        "label": "Lab",
+        "host": "lab.example",
+        "user": "alice",
+        "port": 22,
+        "keyPath": "/keys/alice",
+        "remoteHermesPath": "/opt/hermes/bin/hermes",
+        "remoteProfile": "default",
+    })
+    bob = isolated_instance_spec_from_ssh({
+        "id": "bob-box",
+        "kind": "ssh",
+        "label": "Lab",
+        "host": "lab.example",
+        "user": "bob",
+        "port": 2200,
+        "keyPath": "/keys/bob",
+        "remoteHermesPath": "/opt/hermes/bin/hermes",
+        "remoteProfile": "research",
+    })
+    assert alice.dial_identity() != bob.dial_identity()
+    assert alice.connection_id != bob.connection_id
+
+
+def test_open_isolated_fails_closed_when_existing_manifest_does_not_match_selected_row(
+    tmp_path,
+):
+    from hermes_cli.desktop_instances import IsolatedInstanceSpecError
+
+    store = _store(tmp_path)
+    store.create(
+        "lab",
+        connection_id="alice-box",
+        ssh_host="lab.example",
+        ssh_user="alice",
+        ssh_port=22,
+        ssh_key_path="/keys/alice",
+        remote_hermes_path="/opt/hermes/bin/hermes",
+        remote_profile="default",
+        skip_ssh_check=True,
+        install_shortcut=False,
+    )
+    with pytest.raises(IsolatedInstanceSpecError, match="no longer matches"):
+        store.open_from_connection({
+            "id": "alice-box",
+            "kind": "ssh",
+            "label": "Lab",
+            "host": "lab.example",
+            "user": "alice",
+            "port": 2200,
+            "keyPath": "/keys/alice",
+            "remoteHermesPath": "/opt/hermes/bin/hermes",
+            "remoteProfile": "default",
+        })
+
+
+def test_open_isolated_updates_matching_connection_when_only_display_name_changes(
+    tmp_path,
+):
+    store = _store(tmp_path)
+    store.create(
+        "lab",
+        connection_id="alice-box",
+        ssh_host="lab.example",
+        ssh_user="alice",
+        ssh_port=22,
+        ssh_key_path="/keys/alice",
+        remote_hermes_path="/opt/hermes/bin/hermes",
+        remote_profile="default",
+        display_name="Hermes Lab",
+        skip_ssh_check=True,
+        install_shortcut=False,
+    )
+    instance = store.open_from_connection({
+        "id": "alice-box",
+        "kind": "ssh",
+        "label": "Hermes Lab",
+        "host": "lab.example",
+        "user": "alice",
+        "port": 22,
+        "keyPath": "/keys/alice",
+        "remoteHermesPath": "/opt/hermes/bin/hermes",
+        "remoteProfile": "default",
+    })
+    assert instance.connection_id == "alice-box"
+    assert instance.ssh_user == "alice"
+    assert instance.ssh_port == 22
+
+
+def test_default_process_starter_scrubs_parent_provider_secrets(tmp_path, monkeypatch):
+    from hermes_cli.desktop_instances import (
+        LaunchPlan,
+        default_process_starter,
+    )
+
+    captured: dict[str, object] = {}
+
+    class FakePopen:
+        def __init__(self, args, cwd=None, env=None):
+            captured["args"] = args
+            captured["cwd"] = cwd
+            captured["env"] = env
+            self.pid = 4242
+
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-parent-secret")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-parent")
+    monkeypatch.setattr(
+        "hermes_cli.desktop_instances.subprocess.Popen",
+        FakePopen,
+    )
+    plan = LaunchPlan(
+        executable=tmp_path / "Hermes Grace.exe",
+        arguments=["--user-data-dir=/u"],
+        env={
+            "HERMES_HOME": str(tmp_path / "home"),
+            "HERMES_DESKTOP_INSTANCE": "grace",
+        },
+        cwd=str(tmp_path),
+    )
+    assert default_process_starter(plan) == 4242
+    env = captured["env"]
+    assert env["HERMES_HOME"] == str(tmp_path / "home")
+    assert env["HERMES_DESKTOP_INSTANCE"] == "grace"
+    assert "OPENAI_API_KEY" not in env
+    assert "ANTHROPIC_API_KEY" not in env
+    assert "sk-parent-secret" not in " ".join(str(value) for value in env.values())
 
 
 def test_instance_spec_rejects_non_ssh_and_missing_remote_path():

@@ -30,10 +30,12 @@ into the shared-shell registry unless you ask to.
 ## Open from Settings
 
 On an SSH row in **Settings → Connections**, click **Open as isolated
-Desktop**. Hermes maps the connection's non-secret fields (host, absolute
-remote Hermes path, remote profile, label) into an instance, creates it
-if needed, and launches the isolated shell. Remote-gateway and Cloud rows
-stay in the shared window.
+Desktop**. Hermes keeps the selected registry `connectionId` plus the
+full non-secret SSH dial contract (host, user, port, key path, absolute
+remote Hermes path, remote profile). If that instance already exists and
+the selected row was retargeted, the action **fails closed** instead of
+launching a stale route. Remote-gateway and Cloud rows stay in the
+shared window.
 
 The SSH connection must already have an **absolute** Remote Hermes path.
 

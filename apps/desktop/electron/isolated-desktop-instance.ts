@@ -17,17 +17,25 @@ export interface IsolatedSshConnection {
   host?: string
   user?: string
   port?: number
+  keyPath?: string
   remoteHermesPath?: string
   remoteProfile?: string
+  connectionId?: string
+  id?: string
 }
 
 export interface IsolatedInstanceSpec {
   name: string
   displayName: string
+  connectionId: string
   sshHost: string
+  sshUser: string
+  sshPort: number
+  sshKeyPath: string
   remoteHermesPath: string
   remoteProfile: string
   aumid: string
+  dialIdentity: string
 }
 
 export interface InstanceDeepLink {
@@ -98,18 +106,58 @@ export function isolatedInstanceSpecFromSsh(connection: IsolatedSshConnection): 
     )
   }
 
+  const connectionId = String(connection.connectionId || connection.id || '').trim()
+
+  if (!connectionId) {
+    throw new Error('A Connections registry id is required so the isolated shell keeps the exact SSH row.')
+  }
+
   const label = String(connection.label || '').trim()
   const name = slugFromLabel(label || host)
   const displayName = label.toLowerCase().startsWith('hermes ') ? label : `Hermes ${name.replace(/-/g, ' ').replace(/\b\w/g, c => c.toUpperCase())}`
   const remoteProfile = String(connection.remoteProfile || 'default').trim() || 'default'
+  const sshUser = String(connection.user || '').trim()
+  const rawPort = Number(connection.port)
+  const sshPort = Number.isInteger(rawPort) && rawPort > 0 && rawPort <= 65535 ? rawPort : 22
+  const sshKeyPath = String(connection.keyPath || '').trim()
+  const dialIdentity = JSON.stringify({
+    host,
+    keyPath: sshKeyPath,
+    port: sshPort,
+    remoteHermesPath,
+    remoteProfile,
+    user: sshUser
+  })
 
   return {
     name,
     displayName,
+    connectionId,
     sshHost: host,
+    sshUser,
+    sshPort,
+    sshKeyPath,
     remoteHermesPath,
     remoteProfile,
-    aumid: instanceAumid(name)
+    aumid: instanceAumid(name),
+    dialIdentity
+  }
+}
+
+export function assertIsolatedManifestMatches(
+  existing: { connectionId?: string; dialIdentity?: string },
+  spec: IsolatedInstanceSpec
+): void {
+  if (existing.connectionId && existing.connectionId !== spec.connectionId) {
+    throw new Error(
+      `Isolated Desktop instance belongs to connection ${JSON.stringify(existing.connectionId)}, not ${JSON.stringify(spec.connectionId)}.`
+    )
+  }
+
+  if (existing.dialIdentity && existing.dialIdentity !== spec.dialIdentity) {
+    throw new Error(
+      `Isolated Desktop instance no longer matches the selected Connection ${JSON.stringify(spec.connectionId)}.`
+    )
   }
 }
 
