@@ -192,6 +192,7 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
     // Fan out `hermes update` to every eligible registered connection.
     // Optional excludeIds skips rows the caller updates through another path.
     updateAll: options => ipcRenderer.invoke('hermes:connections:update-all', options),
+    openIsolated: id => ipcRenderer.invoke('hermes:connections:open-isolated', id),
     // Registry lifecycle push (main → renderer): a connection was removed or
     // materially edited, so secondaries scoped to it must be disposed (and,
     // for edits, re-dialed at the new target).

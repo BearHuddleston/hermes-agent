@@ -19,6 +19,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -54,6 +55,38 @@ _SECRET_KEYS = frozenset({"token", "password", "secret", "passphrase", "private_
 
 class DesktopInstanceError(Exception):
     """User-facing instance management error."""
+
+
+class IsolatedInstanceSpecError(DesktopInstanceError):
+    """A Connections entry cannot become an isolated Desktop instance."""
+
+
+@dataclass(frozen=True)
+class IsolatedInstanceSpec:
+    name: str
+    display_name: str
+    ssh_host: str
+    remote_hermes_path: str
+    remote_profile: str
+
+    def to_manifest(self) -> dict[str, object]:
+        return {
+            "name": self.name,
+            "display_name": self.display_name,
+            "ssh_host": self.ssh_host,
+            "remote_hermes_path": self.remote_hermes_path,
+            "remote_profile": self.remote_profile,
+        }
+
+
+@dataclass(frozen=True)
+class InstanceDeepLink:
+    instance_name: str
+    remainder: str
+
+
+SUPPORTED_DESKTOP_PLATFORMS = frozenset({"win32", "linux", "darwin"})
+INSTANCE_AUMID_PREFIX = "com.nousresearch.hermes.instance."
 
 
 class InstanceNameError(DesktopInstanceError):
@@ -210,6 +243,62 @@ def validate_remote_profile(name: str) -> str:
 def default_display_name(name: str) -> str:
     words = validate_instance_name(name).replace("_", "-").replace("-", " ")
     return "Hermes " + " ".join(part.capitalize() for part in words.split())
+
+
+def instance_aumid(name: str) -> str:
+    return INSTANCE_AUMID_PREFIX + validate_instance_name(name)
+
+
+def slug_from_label(label: str) -> str:
+    text = (label or "").strip()
+    if text.lower().startswith("hermes "):
+        text = text[6:].strip()
+    slug = re.sub(r"[^a-z0-9]+", "-", text.lower()).strip("-")
+    return validate_instance_name(slug)
+
+
+def isolated_instance_spec_from_ssh(
+    connection: dict[str, object],
+) -> IsolatedInstanceSpec:
+    kind = str(connection.get("kind") or "").strip().lower()
+    if kind != "ssh":
+        raise IsolatedInstanceSpecError(
+            "Only SSH Connections can open as an isolated Desktop. "
+            "Remote-gateway and Cloud entries stay in the shared shell."
+        )
+    host = validate_ssh_host(str(connection.get("host") or ""))
+    try:
+        remote_path = validate_remote_hermes_path(
+            str(connection.get("remoteHermesPath") or "")
+        )
+    except StalePathError as exc:
+        raise IsolatedInstanceSpecError(str(exc)) from exc
+    profile_raw = str(connection.get("remoteProfile") or "default")
+    profile = validate_remote_profile(profile_raw)
+    label = str(connection.get("label") or "").strip()
+    name = slug_from_label(label or host)
+    display = (
+        label if label.lower().startswith("hermes ") else default_display_name(name)
+    )
+    return IsolatedInstanceSpec(
+        name=name,
+        display_name=display,
+        ssh_host=host,
+        remote_hermes_path=remote_path,
+        remote_profile=profile,
+    )
+
+
+def parse_instance_deep_link(url: str) -> InstanceDeepLink | None:
+    raw = (url or "").strip()
+    prefix = "hermes://instance/"
+    if not raw.startswith(prefix):
+        return None
+    rest = raw[len(prefix) :]
+    slug, sep, tail = rest.partition("/")
+    name = validate_instance_name(slug)
+    remainder = f"hermes://{tail}" if sep else "hermes://"
+    return InstanceDeepLink(instance_name=name, remainder=remainder)
 
 
 def seed_connection_config(instance: DesktopInstance) -> dict[str, object]:
@@ -424,6 +513,12 @@ def refresh_named_hardlink(
         raise StalePathError(
             f"The canonical Hermes Desktop executable is missing: {canonical_exe}"
         )
+    try:
+        if canonical_exe.resolve() == named_exe.resolve():
+            return HardlinkRefreshResult(named_exe, False, False)
+    except OSError:
+        if canonical_exe == named_exe:
+            return HardlinkRefreshResult(named_exe, False, False)
     named_exe.parent.mkdir(parents=True, exist_ok=True)
     if named_exe.exists():
         if is_locked(named_exe):
@@ -507,11 +602,11 @@ class DesktopInstanceStore:
     def instance_root(self, name: str) -> Path:
         return self.registry_root / validate_instance_name(name)
 
-    def _require_windows(self, action: str) -> None:
-        if self.platform != "win32":
+    def _require_desktop_platform(self, action: str) -> None:
+        if self.platform not in SUPPORTED_DESKTOP_PLATFORMS:
             raise IncompatiblePlatformError(
-                f"{action} is only supported on Windows. "
-                "macOS/Linux isolated Desktop shells are a follow-up."
+                f"{action} is not supported on {self.platform!r}. "
+                "Isolated Desktop instances run on Windows, macOS, and Linux."
             )
 
     def _require_runtime(self) -> None:
@@ -544,8 +639,10 @@ class DesktopInstanceStore:
         root = self.instance_root(slug)
         launcher_dir = root / "launcher"
         stem = _safe_exe_stem(app_name)
-        named_exe = self.canonical_exe.with_name(f"{stem}.exe")
-        if (
+        named_exe, launcher_exe, shortcut_path = self._platform_launch_paths(
+            slug, app_name, stem, launcher_dir
+        )
+        if self.platform == "win32" and (
             named_exe.resolve() == self.canonical_exe.resolve()
             or stem.lower() == "hermes"
         ):
@@ -566,22 +663,31 @@ class DesktopInstanceStore:
             canonical_exe=self.canonical_exe,
             named_exe=named_exe,
             launcher_dir=launcher_dir,
-            launcher_exe=launcher_dir / f"{csharp_identifier(app_name)}.exe",
-            shortcut_path=self.shortcut_dir / f"{stem}.lnk",
+            launcher_exe=launcher_exe,
+            shortcut_path=shortcut_path,
             manifest_path=root / "instance.json",
         )
 
-    def build_launch_plan(self, instance: DesktopInstance) -> LaunchPlan:
+    def build_launch_plan(
+        self, instance: DesktopInstance, *, deep_link: str | None = None
+    ) -> LaunchPlan:
+        env = {
+            "HERMES_HOME": str(instance.hermes_home),
+            "HERMES_DESKTOP_USER_DATA_DIR": str(instance.user_data),
+            "HERMES_DESKTOP_HERMES_ROOT": str(instance.runtime_root),
+            "HERMES_DESKTOP_APP_NAME": instance.app_name,
+            "HERMES_DESKTOP_CWD": str(self.cwd),
+            "HERMES_DESKTOP_INSTANCE": instance.name,
+            "HERMES_DESKTOP_AUMID": instance_aumid(instance.name),
+            "HERMES_DESKTOP_DISABLE_GLOBAL_SHORTCUTS": "1",
+            "HERMES_DESKTOP_SKIP_PROTOCOL_REGISTER": "1",
+        }
+        if deep_link:
+            env["HERMES_DESKTOP_PENDING_DEEP_LINK"] = deep_link
         return LaunchPlan(
             executable=instance.named_exe,
             arguments=[f"--user-data-dir={instance.user_data}"],
-            env={
-                "HERMES_HOME": str(instance.hermes_home),
-                "HERMES_DESKTOP_USER_DATA_DIR": str(instance.user_data),
-                "HERMES_DESKTOP_HERMES_ROOT": str(instance.runtime_root),
-                "HERMES_DESKTOP_APP_NAME": instance.app_name,
-                "HERMES_DESKTOP_CWD": str(self.cwd),
-            },
+            env=env,
             cwd=str(self.cwd),
             use_shell_execute=False,
         )
@@ -598,6 +704,8 @@ class DesktopInstanceStore:
             "{{USER_DATA}}": _csharp_verbatim(instance.user_data),
             "{{WORKING_DIRECTORY}}": _csharp_verbatim(self.cwd),
             "{{APP_NAME}}": _csharp_verbatim(instance.app_name),
+            "{{INSTANCE_NAME}}": _csharp_verbatim(instance.name),
+            "{{AUMID}}": _csharp_verbatim(instance_aumid(instance.name)),
         }
         source = template
         for token, value in replacements.items():
@@ -619,7 +727,7 @@ class DesktopInstanceStore:
         skip_ssh_check: bool = False,
         install_shortcut: bool = True,
     ) -> DesktopInstance:
-        self._require_windows("Creating an isolated Desktop instance")
+        self._require_desktop_platform("Creating an isolated Desktop instance")
         self._require_runtime()
         instance = self.build_instance(
             name,
@@ -670,7 +778,7 @@ class DesktopInstanceStore:
         return self._load_manifest(manifest)
 
     def repair(self, name: str) -> HardlinkRefreshResult:
-        self._require_windows("Repairing an isolated Desktop instance")
+        self._require_desktop_platform("Repairing an isolated Desktop instance")
         self._require_runtime()
         instance = self.get(name)
         result = refresh_named_hardlink(
@@ -678,11 +786,14 @@ class DesktopInstanceStore:
             instance.named_exe,
             is_locked=self.is_locked,
         )
-        self._compile_launcher(instance)
+        if self.platform == "win32":
+            self._compile_launcher(instance)
+        else:
+            self._write_posix_wrapper(instance)
         return result
 
     def repair_all(self) -> list[tuple[DesktopInstance, HardlinkRefreshResult]]:
-        self._require_windows("Repairing isolated Desktop instances")
+        self._require_desktop_platform("Repairing isolated Desktop instances")
         self._require_runtime()
         repaired: list[tuple[DesktopInstance, HardlinkRefreshResult]] = []
         compile_errors: list[str] = []
@@ -695,7 +806,10 @@ class DesktopInstanceStore:
             repaired.append((instance, result))
         for instance, _result in repaired:
             try:
-                self._compile_launcher(instance)
+                if self.platform == "win32":
+                    self._compile_launcher(instance)
+                else:
+                    self._write_posix_wrapper(instance)
             except DesktopInstanceError as exc:
                 compile_errors.append(f"{instance.name}: {exc}")
         if compile_errors:
@@ -705,14 +819,14 @@ class DesktopInstanceStore:
             )
         return repaired
 
-    def launch(self, name: str) -> int:
-        self._require_windows("Launching an isolated Desktop instance")
+    def launch(self, name: str, *, deep_link: str | None = None) -> int:
+        self._require_desktop_platform("Launching an isolated Desktop instance")
         self._require_runtime()
         instance = self.get(name)
         instance.hermes_home.mkdir(parents=True, exist_ok=True)
         instance.user_data.mkdir(parents=True, exist_ok=True)
         self.repair(name)
-        plan = self.build_launch_plan(instance)
+        plan = self.build_launch_plan(instance, deep_link=deep_link)
         if not plan.executable.is_file():
             raise StalePathError(
                 f"Named Desktop executable is missing after repair: {plan.executable}"
@@ -720,7 +834,7 @@ class DesktopInstanceStore:
         return self.process_starter(plan)
 
     def install_shortcut(self, name: str) -> ShortcutSpec:
-        self._require_windows("Installing an isolated Desktop shortcut")
+        self._require_desktop_platform("Installing an isolated Desktop shortcut")
         self._require_runtime()
         instance = self.get(name)
         self._materialize_windows_bits(instance, install_shortcut=True)
@@ -754,7 +868,11 @@ class DesktopInstanceStore:
         self._unlink_if_present(instance.shortcut_path)
         self._unlink_if_present(instance.launcher_exe)
         self._unlink_if_present(instance.launcher_exe.with_suffix(".cs"))
-        if instance.named_exe.exists() and not self.is_locked(instance.named_exe):
+        if (
+            instance.named_exe.exists()
+            and instance.named_exe.resolve() != instance.canonical_exe.resolve()
+            and not self.is_locked(instance.named_exe)
+        ):
             self._unlink_if_present(instance.named_exe)
         self._unlink_if_present(instance.manifest_path)
         if purge_local:
@@ -770,9 +888,34 @@ class DesktopInstanceStore:
             purged_local=purge_local,
         )
 
+    def _platform_launch_paths(
+        self, slug: str, app_name: str, stem: str, launcher_dir: Path
+    ) -> tuple[Path, Path, Path]:
+        if self.platform == "darwin":
+            script = launcher_dir / f"{slug}.command"
+            return self.canonical_exe, script, self.shortcut_dir / f"{stem}.command"
+        if self.platform == "linux":
+            script = launcher_dir / f"{slug}.sh"
+            return self.canonical_exe, script, self.shortcut_dir / f"{stem}.desktop"
+        return (
+            self.canonical_exe.with_name(f"{stem}.exe"),
+            launcher_dir / f"{csharp_identifier(app_name)}.exe",
+            self.shortcut_dir / f"{stem}.lnk",
+        )
+
     def _materialize_windows_bits(
         self, instance: DesktopInstance, *, install_shortcut: bool
     ) -> None:
+        if self.platform == "linux":
+            self._write_posix_wrapper(instance)
+            if install_shortcut:
+                self._write_linux_desktop_entry(instance)
+            return
+        if self.platform == "darwin":
+            self._write_posix_wrapper(instance)
+            if install_shortcut:
+                self._write_macos_command_shortcut(instance)
+            return
         refresh_named_hardlink(
             self.canonical_exe,
             instance.named_exe,
@@ -788,6 +931,52 @@ class DesktopInstanceStore:
                 description=f"{instance.app_name} isolated Desktop",
             )
             self.shortcut_writer(spec)
+
+    def _posix_wrapper_body(self, instance: DesktopInstance) -> str:
+        plan = self.build_launch_plan(instance)
+        exports = "\n".join(
+            f"export {key}={shlex.quote(value)}" for key, value in plan.env.items()
+        )
+        args = " ".join(shlex.quote(arg) for arg in plan.arguments)
+        return (
+            "#!/usr/bin/env bash\n"
+            "set -euo pipefail\n"
+            f"{exports}\n"
+            f'exec {shlex.quote(str(instance.named_exe))} {args} "$@"\n'
+        )
+
+    def _write_posix_wrapper(self, instance: DesktopInstance) -> None:
+        instance.launcher_dir.mkdir(parents=True, exist_ok=True)
+        atomic_write_text(instance.launcher_exe, self._posix_wrapper_body(instance))
+        try:
+            instance.launcher_exe.chmod(instance.launcher_exe.stat().st_mode | 0o111)
+        except OSError:
+            pass
+
+    def _write_linux_desktop_entry(self, instance: DesktopInstance) -> None:
+        self._write_posix_wrapper(instance)
+        body = (
+            "[Desktop Entry]\n"
+            "Type=Application\n"
+            f"Name={instance.app_name}\n"
+            f"Exec={shlex.quote(str(instance.launcher_exe))}\n"
+            f"Icon={instance.canonical_exe}\n"
+            "Terminal=false\n"
+            "Categories=Development;\n"
+        )
+        atomic_write_text(instance.shortcut_path, body)
+        try:
+            instance.shortcut_path.chmod(instance.shortcut_path.stat().st_mode | 0o111)
+        except OSError:
+            pass
+
+    def _write_macos_command_shortcut(self, instance: DesktopInstance) -> None:
+        self._write_posix_wrapper(instance)
+        atomic_write_text(instance.shortcut_path, self._posix_wrapper_body(instance))
+        try:
+            instance.shortcut_path.chmod(instance.shortcut_path.stat().st_mode | 0o111)
+        except OSError:
+            pass
 
     def _compile_launcher(self, instance: DesktopInstance) -> None:
         instance.launcher_dir.mkdir(parents=True, exist_ok=True)
@@ -975,7 +1164,10 @@ def _dispatch_instance_action(
         return
 
     if action == "launch":
-        pid = store.launch(args.instance_name)
+        pid = store.launch(
+            args.instance_name,
+            deep_link=getattr(args, "deep_link", None),
+        )
         instance = store.get(args.instance_name)
         print(f"→ Launched {instance.app_name} (pid {pid})")
         return
