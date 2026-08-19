@@ -4,6 +4,7 @@ import { test } from 'vitest'
 
 import {
   DEFAULT_AUMID,
+  isolatedDesktopLaunchArguments,
   isolatedDesktopLaunchEnv,
   isolatedInstanceSpecFromSsh,
   parseInstanceDeepLink,
@@ -47,6 +48,19 @@ test('parseInstanceDeepLink extracts the slug and remainder', () => {
 
   assert.deepEqual(parsed, { instanceName: 'grace', remainder: 'hermes://blueprint/morning' })
   assert.equal(parseInstanceDeepLink('hermes://blueprint/morning'), null)
+  assert.equal(parseInstanceDeepLink('hermes://instance/desktop/blueprint/x'), null)
+})
+
+test('slugFromLabel rejects reserved names before the CLI round-trip', () => {
+  assert.throws(() => slugFromLabel('Hermes Desktop'), /reserved/)
+  assert.throws(() => slugFromLabel('local'), /reserved/)
+})
+
+test('isolated launch arguments put a deep link on argv for a warm second-instance', () => {
+  const args = isolatedDesktopLaunchArguments('/u', 'hermes://blueprint/morning')
+
+  assert.deepEqual(args, ['--user-data-dir=/u', 'hermes://blueprint/morning'])
+  assert.deepEqual(isolatedDesktopLaunchArguments('/u'), ['--user-data-dir=/u'])
 })
 
 test('isolated launch env disables global hotkey and protocol capture', () => {

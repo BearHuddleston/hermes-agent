@@ -130,9 +130,11 @@ URLs look like:
 hermes://instance/<name>/blueprint/morning
 ```
 
-The ordinary shell forwards that to the named instance (creating nothing
-new). Isolated shells do not re-register the protocol. Inside the matching
-instance the remainder is delivered as `hermes://blueprint/morning`.
+The ordinary shell forwards that to the named instance by launching it with
+the remainder both in `HERMES_DESKTOP_PENDING_DEEP_LINK` and as a `hermes://`
+argv token. If that isolated window is already open, Electron's
+`second-instance` handler delivers the remainder the same way ordinary
+deep links work. Isolated shells do not re-register the protocol.
 
 ## Layout
 
