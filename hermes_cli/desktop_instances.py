@@ -443,7 +443,14 @@ def default_compiler(source: str, output: Path) -> None:
         "/r:System.Windows.Forms.dll",
         os.path.normpath(source_path),
     ]
-    result = subprocess.run(command, capture_output=True, text=True, check=False)
+    result = subprocess.run(
+        command,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        check=False,
+    )
     if result.returncode != 0 or not output.exists():
         detail = (
             result.stderr or result.stdout or ""
@@ -468,6 +475,8 @@ def default_shortcut_writer(spec: ShortcutSpec) -> None:
         ["powershell", "-NoProfile", "-NonInteractive", "-Command", script],
         capture_output=True,
         text=True,
+        encoding="utf-8",
+        errors="replace",
         check=False,
     )
     if result.returncode != 0 or not spec.path.exists():
@@ -478,8 +487,13 @@ def default_shortcut_writer(spec: ShortcutSpec) -> None:
 
 
 def default_process_starter(plan: LaunchPlan) -> int:
-    env = os.environ.copy()
-    env.update(plan.env)
+    from tools.environments.local import build_subprocess_env
+
+    env = build_subprocess_env(
+        inherit_profile_home=False,
+        scrub_secrets=False,
+        extra=plan.env,
+    )
     proc = subprocess.Popen(
         [str(plan.executable), *plan.arguments],
         cwd=plan.cwd or None,

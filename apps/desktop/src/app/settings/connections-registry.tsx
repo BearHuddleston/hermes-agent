@@ -597,6 +597,7 @@ export function ConnectionsRegistrySection() {
     async (conn: DesktopRegistryConnection) => {
       if (!bridge?.openIsolated) {
         notifyError(new Error('Isolated Desktop is not available in this app build.'), s.openIsolatedFailed)
+
         return
       }
 
