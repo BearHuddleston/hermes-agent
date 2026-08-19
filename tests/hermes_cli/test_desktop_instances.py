@@ -189,6 +189,15 @@ def test_launch_plan_can_forward_a_deep_link(tmp_path):
     instance = _create(store)
     plan = store.build_launch_plan(instance, deep_link="hermes://blueprint/morning")
     assert plan.env["HERMES_DESKTOP_PENDING_DEEP_LINK"] == "hermes://blueprint/morning"
+    assert "hermes://blueprint/morning" in plan.arguments
+
+
+def test_parse_instance_deep_link_returns_none_for_reserved_or_invalid():
+    from hermes_cli.desktop_instances import parse_instance_deep_link
+
+    assert parse_instance_deep_link("hermes://instance/desktop/blueprint/x") is None
+    assert parse_instance_deep_link("hermes://instance/Not Valid/blueprint/x") is None
+    assert parse_instance_deep_link("hermes://instance/") is None
 
 
 def test_create_writes_atomic_manifest_without_secrets(tmp_path):

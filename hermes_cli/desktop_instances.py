@@ -296,7 +296,10 @@ def parse_instance_deep_link(url: str) -> InstanceDeepLink | None:
         return None
     rest = raw[len(prefix) :]
     slug, sep, tail = rest.partition("/")
-    name = validate_instance_name(slug)
+    try:
+        name = validate_instance_name(slug)
+    except InstanceNameError:
+        return None
     remainder = f"hermes://{tail}" if sep else "hermes://"
     return InstanceDeepLink(instance_name=name, remainder=remainder)
 
@@ -684,9 +687,12 @@ class DesktopInstanceStore:
         }
         if deep_link:
             env["HERMES_DESKTOP_PENDING_DEEP_LINK"] = deep_link
+        arguments = [f"--user-data-dir={instance.user_data}"]
+        if deep_link:
+            arguments.append(deep_link)
         return LaunchPlan(
             executable=instance.named_exe,
-            arguments=[f"--user-data-dir={instance.user_data}"],
+            arguments=arguments,
             env=env,
             cwd=str(self.cwd),
             use_shell_execute=False,
@@ -958,7 +964,7 @@ class DesktopInstanceStore:
         body = (
             "[Desktop Entry]\n"
             "Type=Application\n"
-            f"Name={instance.app_name}\n"
+            f"Name={instance.app_name.replace(chr(10), ' ').replace(chr(13), ' ')}\n"
             f"Exec={shlex.quote(str(instance.launcher_exe))}\n"
             f"Icon={instance.canonical_exe}\n"
             "Terminal=false\n"

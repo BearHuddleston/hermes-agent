@@ -36,6 +36,19 @@ export interface InstanceDeepLink {
 }
 
 const NAME_RE = /^[a-z0-9][a-z0-9_-]{0,63}$/
+const RESERVED_NAMES = new Set([
+  'connections',
+  'default',
+  'desktop',
+  'gui',
+  'hermes',
+  'instance',
+  'local',
+  'root',
+  'sudo',
+  'test',
+  'tmp'
+])
 
 export function instanceAumid(name: string): string {
   return `${INSTANCE_AUMID_PREFIX}${name}`
@@ -55,6 +68,10 @@ export function slugFromLabel(label: string): string {
 
   if (!NAME_RE.test(slug)) {
     throw new Error(`Cannot derive an instance name from ${JSON.stringify(label)}.`)
+  }
+
+  if (RESERVED_NAMES.has(slug)) {
+    throw new Error(`Instance name ${JSON.stringify(slug)} is reserved.`)
   }
 
   return slug
@@ -109,7 +126,7 @@ export function parseInstanceDeepLink(url: string): InstanceDeepLink | null {
   const slug = slash === -1 ? rest : rest.slice(0, slash)
   const tail = slash === -1 ? '' : rest.slice(slash + 1)
 
-  if (!NAME_RE.test(slug)) {
+  if (!NAME_RE.test(slug) || RESERVED_NAMES.has(slug)) {
     return null
   }
 
@@ -117,6 +134,16 @@ export function parseInstanceDeepLink(url: string): InstanceDeepLink | null {
     instanceName: slug,
     remainder: tail ? `hermes://${tail}` : 'hermes://'
   }
+}
+
+export function isolatedDesktopLaunchArguments(userData: string, deepLink?: string): string[] {
+  const args = [`--user-data-dir=${userData}`]
+
+  if (deepLink) {
+    args.push(deepLink)
+  }
+
+  return args
 }
 
 export function isolatedDesktopLaunchEnv(
