@@ -15,6 +15,11 @@ This is the desktop-side complement to
 about hosting several gateways on one machine; this one is about one desktop
 app talking to several machines.
 
+If you want a **second Desktop application** (separate window, settings,
+and Chromium profile) instead of more sources in this shell, see
+[Isolated Desktop instances](./isolated-desktop-instances.md). Isolated
+instances share the same local install; they do not replace this registry.
+
 ## Where to find it
 
 Everything lives on the unified **Settings → Gateways** page (older builds had
