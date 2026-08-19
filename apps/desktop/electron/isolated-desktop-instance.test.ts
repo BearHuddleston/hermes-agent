@@ -4,6 +4,7 @@ import { test } from 'vitest'
 
 import {
   DEFAULT_AUMID,
+  assertIsolatedManifestMatches,
   isolatedDesktopLaunchArguments,
   isolatedDesktopLaunchEnv,
   isolatedInstanceSpecFromSsh,
@@ -19,20 +20,86 @@ test('slugFromLabel strips a Hermes prefix', () => {
   assert.equal(slugFromLabel('Work laptop'), 'work-laptop')
 })
 
-test('isolatedInstanceSpecFromSsh maps non-secret SSH fields', () => {
+test('isolatedInstanceSpecFromSsh maps the full SSH dial contract', () => {
   const spec = isolatedInstanceSpecFromSsh({
+    connectionId: 'c1',
     host: 'bear-agent',
     kind: 'ssh',
+    keyPath: '/home/bear/.ssh/id_ed25519',
     label: 'Hermes Athena',
+    port: 2222,
     remoteHermesPath: '/opt/hermes/bin/hermes',
-    remoteProfile: 'default'
+    remoteProfile: 'default',
+    user: 'bear'
   })
 
   assert.equal(spec.name, 'athena')
+  assert.equal(spec.connectionId, 'c1')
   assert.equal(spec.sshHost, 'bear-agent')
+  assert.equal(spec.sshUser, 'bear')
+  assert.equal(spec.sshPort, 2222)
+  assert.equal(spec.sshKeyPath, '/home/bear/.ssh/id_ed25519')
   assert.equal(spec.remoteHermesPath, '/opt/hermes/bin/hermes')
   assert.equal(spec.displayName, 'Hermes Athena')
   assert.equal(spec.aumid, 'com.nousresearch.hermes.instance.athena')
+})
+
+test('same-host SSH rows stay distinct when user/port/key/path/profile differ', () => {
+  const alice = isolatedInstanceSpecFromSsh({
+    connectionId: 'alice-box',
+    host: 'lab.example',
+    kind: 'ssh',
+    keyPath: '/keys/alice',
+    label: 'Lab',
+    port: 22,
+    remoteHermesPath: '/opt/hermes/bin/hermes',
+    remoteProfile: 'default',
+    user: 'alice'
+  })
+  const bob = isolatedInstanceSpecFromSsh({
+    connectionId: 'bob-box',
+    host: 'lab.example',
+    kind: 'ssh',
+    keyPath: '/keys/bob',
+    label: 'Lab',
+    port: 2200,
+    remoteHermesPath: '/opt/hermes/bin/hermes',
+    remoteProfile: 'research',
+    user: 'bob'
+  })
+
+  assert.notEqual(alice.dialIdentity, bob.dialIdentity)
+  assert.notEqual(alice.connectionId, bob.connectionId)
+})
+
+test('a stale isolated manifest must fail closed against a retargeted Connection', () => {
+  const current = isolatedInstanceSpecFromSsh({
+    connectionId: 'alice-box',
+    host: 'lab.example',
+    kind: 'ssh',
+    keyPath: '/keys/alice',
+    label: 'Lab',
+    port: 2200,
+    remoteHermesPath: '/opt/hermes/bin/hermes',
+    remoteProfile: 'default',
+    user: 'alice'
+  })
+  const stale = {
+    connectionId: 'alice-box',
+    dialIdentity: isolatedInstanceSpecFromSsh({
+      connectionId: 'alice-box',
+      host: 'lab.example',
+      kind: 'ssh',
+      keyPath: '/keys/alice',
+      label: 'Lab',
+      port: 22,
+      remoteHermesPath: '/opt/hermes/bin/hermes',
+      remoteProfile: 'default',
+      user: 'alice'
+    }).dialIdentity
+  }
+
+  assert.throws(() => assertIsolatedManifestMatches(stale, current), /no longer matches/)
 })
 
 test('isolatedInstanceSpecFromSsh rejects shared-shell kinds and relative paths', () => {
@@ -66,6 +133,7 @@ test('isolated launch arguments put a deep link on argv for a warm second-instan
 test('isolated launch env disables global hotkey and protocol capture', () => {
   const env = isolatedDesktopLaunchEnv(
     isolatedInstanceSpecFromSsh({
+      connectionId: 'grace-id',
       host: 'grace',
       kind: 'ssh',
       label: 'Hermes Grace',

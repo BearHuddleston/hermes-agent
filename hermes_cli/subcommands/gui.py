@@ -104,6 +104,27 @@ def build_gui_parser(subparsers, *, cmd_gui: Callable) -> None:
         help="Window/app name (default: 'Hermes <Name>')",
     )
     create.add_argument(
+        "--connection-id",
+        default="",
+        help="Exact Connections registry id this isolated shell belongs to",
+    )
+    create.add_argument(
+        "--ssh-user",
+        default="",
+        help="SSH username for the selected Connection (omit to use ssh config)",
+    )
+    create.add_argument(
+        "--ssh-port",
+        type=int,
+        default=22,
+        help="SSH port for the selected Connection (default: 22)",
+    )
+    create.add_argument(
+        "--ssh-key-path",
+        default="",
+        help="Absolute local path to the SSH private key used by this Connection",
+    )
+    create.add_argument(
         "--skip-ssh-check",
         action="store_true",
         help="Do not probe ssh before writing the instance",

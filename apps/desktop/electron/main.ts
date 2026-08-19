@@ -244,6 +244,7 @@ import {
   spliceRegistrySessionRows
 } from './profile-session-routing'
 import {
+  assertIsolatedManifestMatches,
   isolatedInstanceSpecFromSsh,
   parseInstanceDeepLink,
   resolveAppUserModelId,
@@ -12452,10 +12453,23 @@ ipcMain.handle('hermes:connections:open-isolated', async (_event, id) => {
 
   const spec = isolatedInstanceSpecFromSsh(connection)
   const root = resolveCanonicalHermesRoot()
-  const manifest = path.join(root, 'desktop-instances', spec.name, 'instance.json')
+  const manifestPath = path.join(root, 'desktop-instances', spec.name, 'instance.json')
 
-  if (!fs.existsSync(manifest)) {
-    await runHermesDesktopInstance([
+  if (fs.existsSync(manifestPath)) {
+    const raw = JSON.parse(fs.readFileSync(manifestPath, 'utf8'))
+    assertIsolatedManifestMatches({
+      connectionId: String(raw.connection_id || ''),
+      dialIdentity: JSON.stringify({
+        host: String(raw.ssh_host || ''),
+        keyPath: String(raw.ssh_key_path || ''),
+        port: Number(raw.ssh_port || 22),
+        remoteHermesPath: String(raw.remote_hermes_path || ''),
+        remoteProfile: String(raw.remote_profile || ''),
+        user: String(raw.ssh_user || '')
+      })
+    }, spec)
+  } else {
+    const args = [
       'create',
       spec.name,
       '--ssh-host',
@@ -12465,8 +12479,19 @@ ipcMain.handle('hermes:connections:open-isolated', async (_event, id) => {
       '--remote-profile',
       spec.remoteProfile,
       '--display-name',
-      spec.displayName
-    ])
+      spec.displayName,
+      '--connection-id',
+      spec.connectionId,
+      '--ssh-port',
+      String(spec.sshPort)
+    ]
+    if (spec.sshUser) {
+      args.push('--ssh-user', spec.sshUser)
+    }
+    if (spec.sshKeyPath) {
+      args.push('--ssh-key-path', spec.sshKeyPath)
+    }
+    await runHermesDesktopInstance(args)
   }
 
   await runHermesDesktopInstance(['launch', spec.name])

@@ -65,15 +65,33 @@ class IsolatedInstanceSpecError(DesktopInstanceError):
 class IsolatedInstanceSpec:
     name: str
     display_name: str
+    connection_id: str
     ssh_host: str
+    ssh_user: str
+    ssh_port: int
+    ssh_key_path: str
     remote_hermes_path: str
     remote_profile: str
+
+    def dial_identity(self) -> dict[str, object]:
+        return {
+            "host": self.ssh_host,
+            "user": self.ssh_user,
+            "port": self.ssh_port,
+            "key_path": self.ssh_key_path,
+            "remote_hermes_path": self.remote_hermes_path,
+            "remote_profile": self.remote_profile,
+        }
 
     def to_manifest(self) -> dict[str, object]:
         return {
             "name": self.name,
             "display_name": self.display_name,
+            "connection_id": self.connection_id,
             "ssh_host": self.ssh_host,
+            "ssh_user": self.ssh_user,
+            "ssh_port": self.ssh_port,
+            "ssh_key_path": self.ssh_key_path,
             "remote_hermes_path": self.remote_hermes_path,
             "remote_profile": self.remote_profile,
         }
@@ -158,7 +176,11 @@ class DesktopInstance:
     name: str
     display_name: str
     app_name: str
+    connection_id: str
     ssh_host: str
+    ssh_user: str
+    ssh_port: int
+    ssh_key_path: str
     remote_hermes_path: str
     remote_profile: str
     hermes_home: Path
@@ -171,13 +193,30 @@ class DesktopInstance:
     shortcut_path: Path
     manifest_path: Path
 
+    def dial_identity(self) -> dict[str, object]:
+        return IsolatedInstanceSpec(
+            name=self.name,
+            display_name=self.display_name,
+            connection_id=self.connection_id,
+            ssh_host=self.ssh_host,
+            ssh_user=self.ssh_user,
+            ssh_port=self.ssh_port,
+            ssh_key_path=self.ssh_key_path,
+            remote_hermes_path=self.remote_hermes_path,
+            remote_profile=self.remote_profile,
+        ).dial_identity()
+
     def to_manifest(self) -> dict[str, object]:
         return {
             "version": MANIFEST_VERSION,
             "name": self.name,
             "display_name": self.display_name,
             "app_name": self.app_name,
+            "connection_id": self.connection_id,
             "ssh_host": self.ssh_host,
+            "ssh_user": self.ssh_user,
+            "ssh_port": self.ssh_port,
+            "ssh_key_path": self.ssh_key_path,
             "remote_hermes_path": self.remote_hermes_path,
             "remote_profile": self.remote_profile,
             "hermes_home": str(self.hermes_home),
@@ -234,6 +273,65 @@ def validate_ssh_host(host: str) -> str:
     return value
 
 
+def validate_connection_id(value: str) -> str:
+    ident = (value or "").strip()
+    if not ident:
+        raise IsolatedInstanceSpecError(
+            "A Connections registry id is required so the isolated shell keeps the exact SSH row."
+        )
+    if any(sep in ident for sep in ("\\", "/", "\x00")):
+        raise IsolatedInstanceSpecError(
+            f"Connection id {value!r} is not a safe registry identifier."
+        )
+    return ident
+
+
+def validate_ssh_user(user: str) -> str:
+    value = (user or "").strip()
+    if any(ch in value for ch in ("\\", "/", "\x00", " ", "@")):
+        raise IsolatedInstanceSpecError(f"SSH user {user!r} is not a safe username.")
+    return value
+
+
+def validate_ssh_port(port: object) -> int:
+    if port in (None, ""):
+        return 22
+    try:
+        value = int(port)
+    except (TypeError, ValueError) as exc:
+        raise IsolatedInstanceSpecError(
+            f"SSH port {port!r} is not an integer."
+        ) from exc
+    if value <= 0 or value > 65535:
+        raise IsolatedInstanceSpecError(f"SSH port {port!r} is out of range.")
+    return value
+
+
+def validate_ssh_key_path(path: str) -> str:
+    value = (path or "").strip()
+    if not value:
+        return ""
+    if "\x00" in value or value.startswith("-"):
+        raise IsolatedInstanceSpecError(f"SSH key path {path!r} is unsafe.")
+    return value
+
+
+def assert_isolated_manifest_matches(
+    instance: DesktopInstance, spec: IsolatedInstanceSpec
+) -> None:
+    if instance.connection_id and instance.connection_id != spec.connection_id:
+        raise IsolatedInstanceSpecError(
+            f"Isolated Desktop instance {instance.name!r} belongs to connection "
+            f"{instance.connection_id!r}, not the selected {spec.connection_id!r}."
+        )
+    if instance.dial_identity() != spec.dial_identity():
+        raise IsolatedInstanceSpecError(
+            f"Isolated Desktop instance {instance.name!r} no longer matches the "
+            f"selected Connection {spec.connection_id!r}. Recreate the instance "
+            "instead of launching a stale SSH route."
+        )
+
+
 def validate_remote_profile(name: str) -> str:
     canon = normalize_profile_name(name)
     validate_profile_name(canon)
@@ -283,7 +381,11 @@ def isolated_instance_spec_from_ssh(
     return IsolatedInstanceSpec(
         name=name,
         display_name=display,
+        connection_id=validate_connection_id(str(connection.get("id") or "")),
         ssh_host=host,
+        ssh_user=validate_ssh_user(str(connection.get("user") or "")),
+        ssh_port=validate_ssh_port(connection.get("port")),
+        ssh_key_path=validate_ssh_key_path(str(connection.get("keyPath") or "")),
         remote_hermes_path=remote_path,
         remote_profile=profile,
     )
@@ -306,14 +408,22 @@ def parse_instance_deep_link(url: str) -> InstanceDeepLink | None:
 
 def seed_connection_config(instance: DesktopInstance) -> dict[str, object]:
     """Non-secret SSH seed for the isolated shell's ``connection.json``."""
+    remote: dict[str, object] = {
+        "mode": "ssh",
+        "host": instance.ssh_host,
+        "remoteHermesPath": instance.remote_hermes_path,
+        "remoteProfile": instance.remote_profile,
+    }
+    if instance.ssh_user:
+        remote["user"] = instance.ssh_user
+    if instance.ssh_port and instance.ssh_port != 22:
+        remote["port"] = instance.ssh_port
+    if instance.ssh_key_path:
+        remote["keyPath"] = instance.ssh_key_path
     return {
         "mode": "ssh",
-        "remote": {
-            "mode": "ssh",
-            "host": instance.ssh_host,
-            "remoteHermesPath": instance.remote_hermes_path,
-            "remoteProfile": instance.remote_profile,
-        },
+        "connectionId": instance.connection_id,
+        "remote": remote,
         "profiles": {},
     }
 
@@ -393,6 +503,8 @@ def default_ssh_probe(host: str) -> None:
             [ssh, "-G", host],
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=15,
             check=False,
         )
@@ -491,7 +603,6 @@ def default_process_starter(plan: LaunchPlan) -> int:
 
     env = build_subprocess_env(
         inherit_profile_home=False,
-        scrub_secrets=False,
         extra=plan.env,
     )
     proc = subprocess.Popen(
@@ -646,6 +757,10 @@ class DesktopInstanceStore:
         remote_hermes_path: str,
         remote_profile: str,
         display_name: str | None = None,
+        connection_id: str = "",
+        ssh_user: str = "",
+        ssh_port: int | object = 22,
+        ssh_key_path: str = "",
     ) -> DesktopInstance:
         slug = validate_instance_name(name)
         host = validate_ssh_host(ssh_host)
@@ -671,7 +786,13 @@ class DesktopInstanceStore:
             name=slug,
             display_name=label,
             app_name=app_name,
+            connection_id=validate_connection_id(connection_id)
+            if connection_id
+            else "",
             ssh_host=host,
+            ssh_user=validate_ssh_user(ssh_user),
+            ssh_port=validate_ssh_port(ssh_port),
+            ssh_key_path=validate_ssh_key_path(ssh_key_path),
             remote_hermes_path=remote_path,
             remote_profile=profile,
             hermes_home=root / "home",
@@ -746,6 +867,10 @@ class DesktopInstanceStore:
         display_name: str | None = None,
         skip_ssh_check: bool = False,
         install_shortcut: bool = True,
+        connection_id: str = "",
+        ssh_user: str = "",
+        ssh_port: int | object = 22,
+        ssh_key_path: str = "",
     ) -> DesktopInstance:
         self._require_desktop_platform("Creating an isolated Desktop instance")
         self._require_runtime()
@@ -755,6 +880,10 @@ class DesktopInstanceStore:
             remote_hermes_path=remote_hermes_path,
             remote_profile=remote_profile,
             display_name=display_name,
+            connection_id=connection_id,
+            ssh_user=ssh_user,
+            ssh_port=ssh_port,
+            ssh_key_path=ssh_key_path,
         )
         if instance.manifest_path.exists():
             raise InstanceExistsError(
@@ -771,6 +900,26 @@ class DesktopInstanceStore:
         self._materialize_windows_bits(instance, install_shortcut=install_shortcut)
         self._write_manifest(instance)
         return instance
+
+    def open_from_connection(self, connection: dict[str, object]) -> DesktopInstance:
+        """Create or reuse the isolated instance for one exact Connections row."""
+        spec = isolated_instance_spec_from_ssh(connection)
+        try:
+            existing = self.get(spec.name)
+        except InstanceNotFoundError:
+            return self.create(
+                spec.name,
+                connection_id=spec.connection_id,
+                ssh_host=spec.ssh_host,
+                ssh_user=spec.ssh_user,
+                ssh_port=spec.ssh_port,
+                ssh_key_path=spec.ssh_key_path,
+                remote_hermes_path=spec.remote_hermes_path,
+                remote_profile=spec.remote_profile,
+                display_name=spec.display_name,
+            )
+        assert_isolated_manifest_matches(existing, spec)
+        return existing
 
     def list(self) -> list[DesktopInstance]:
         root = self.registry_root
@@ -954,15 +1103,21 @@ class DesktopInstanceStore:
 
     def _posix_wrapper_body(self, instance: DesktopInstance) -> str:
         plan = self.build_launch_plan(instance)
-        exports = "\n".join(
-            f"export {key}={shlex.quote(value)}" for key, value in plan.env.items()
-        )
+        keep = [
+            f"HOME={shlex.quote(str(Path.home()))}",
+            f"PATH={shlex.quote(os.environ.get('PATH', '/usr/bin:/bin'))}",
+        ]
+        for key in ("DISPLAY", "WAYLAND_DISPLAY", "XDG_RUNTIME_DIR", "XAUTHORITY"):
+            value = os.environ.get(key)
+            if value:
+                keep.append(f"{key}={shlex.quote(value)}")
+        keep.extend(f"{key}={shlex.quote(value)}" for key, value in plan.env.items())
         args = " ".join(shlex.quote(arg) for arg in plan.arguments)
         return (
             "#!/usr/bin/env bash\n"
             "set -euo pipefail\n"
-            f"{exports}\n"
-            f'exec {shlex.quote(str(instance.named_exe))} {args} "$@"\n'
+            f"exec /usr/bin/env -i {' '.join(keep)} "
+            f'{shlex.quote(str(instance.named_exe))} {args} "$@"\n'
         )
 
     def _write_posix_wrapper(self, instance: DesktopInstance) -> None:
@@ -1059,6 +1214,10 @@ class DesktopInstanceStore:
             remote_hermes_path=str(data["remote_hermes_path"]),
             remote_profile=str(data["remote_profile"]),
             display_name=str(data.get("display_name") or ""),
+            connection_id=str(data.get("connection_id") or ""),
+            ssh_user=str(data.get("ssh_user") or ""),
+            ssh_port=data.get("ssh_port") or 22,
+            ssh_key_path=str(data.get("ssh_key_path") or ""),
         )
 
     @staticmethod
@@ -1164,10 +1323,22 @@ def _dispatch_instance_action(
             display_name=getattr(args, "display_name", None),
             skip_ssh_check=bool(getattr(args, "skip_ssh_check", False)),
             install_shortcut=not bool(getattr(args, "no_shortcut", False)),
+            connection_id=getattr(args, "connection_id", "") or "",
+            ssh_user=getattr(args, "ssh_user", "") or "",
+            ssh_port=getattr(args, "ssh_port", 22),
+            ssh_key_path=getattr(args, "ssh_key_path", "") or "",
         )
         print(f"✓ Isolated Desktop instance {instance.name!r} ready")
         print(f"  App name:        {instance.app_name}")
+        if instance.connection_id:
+            print(f"  Connection id:   {instance.connection_id}")
         print(f"  SSH host:        {instance.ssh_host}")
+        if instance.ssh_user:
+            print(f"  SSH user:        {instance.ssh_user}")
+        if instance.ssh_port and instance.ssh_port != 22:
+            print(f"  SSH port:        {instance.ssh_port}")
+        if instance.ssh_key_path:
+            print(f"  SSH key:         {instance.ssh_key_path}")
         print(f"  Remote Hermes:   {instance.remote_hermes_path}")
         print(f"  Remote profile:  {instance.remote_profile}")
         print(f"  Local home:      {instance.hermes_home}")

@@ -48,6 +48,15 @@ internal static class {{CLASS_NAME}}
                 CreateNoWindow = true
             };
 
+            startInfo.EnvironmentVariables.Clear();
+            startInfo.EnvironmentVariables["SystemRoot"] = Environment.GetFolderPath(Environment.SpecialFolder.Windows);
+            startInfo.EnvironmentVariables["WINDIR"] = Environment.GetFolderPath(Environment.SpecialFolder.Windows);
+            startInfo.EnvironmentVariables["USERPROFILE"] = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+            startInfo.EnvironmentVariables["APPDATA"] = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
+            startInfo.EnvironmentVariables["LOCALAPPDATA"] = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
+            startInfo.EnvironmentVariables["TEMP"] = Path.GetTempPath();
+            startInfo.EnvironmentVariables["TMP"] = Path.GetTempPath();
+            startInfo.EnvironmentVariables["PATH"] = Environment.GetEnvironmentVariable("PATH") ?? "";
             startInfo.EnvironmentVariables["HERMES_HOME"] = HermesHome;
             startInfo.EnvironmentVariables["HERMES_DESKTOP_USER_DATA_DIR"] = UserData;
             startInfo.EnvironmentVariables["HERMES_DESKTOP_HERMES_ROOT"] = HermesRoot;
