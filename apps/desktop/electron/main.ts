@@ -182,6 +182,14 @@ import { registerHudIpc } from './hud-ipc'
 import { snapHudBounds } from './hud-snap'
 import { createHudSnapShortcut } from './hud-snap-shortcut'
 import { buildHudWindowUrl } from './hud-url'
+import {
+  assertIsolatedManifestMatches,
+  isolatedInstanceSpecFromSsh,
+  parseInstanceDeepLink,
+  resolveAppUserModelId,
+  shouldRegisterGlobalShortcuts,
+  shouldRegisterProtocolClient
+} from './isolated-desktop-instance'
 import { createLinkTitleWindow, guardLinkTitleSession, readLinkTitleWindowTitle } from './link-title-window'
 import { ensureMainWindow } from './main-window-lifecycle'
 import { createMediaProtocolHandler, MEDIA_PROTOCOL } from './media-protocol'
@@ -243,14 +251,6 @@ import {
   type RegistrySessionSource,
   spliceRegistrySessionRows
 } from './profile-session-routing'
-import {
-  assertIsolatedManifestMatches,
-  isolatedInstanceSpecFromSsh,
-  parseInstanceDeepLink,
-  resolveAppUserModelId,
-  shouldRegisterGlobalShortcuts,
-  shouldRegisterProtocolClient
-} from './isolated-desktop-instance'
 import { createQuickEntryShortcut, quickEntryWindowBounds, sanitizeQuickEntrySettings } from './quick-entry'
 import { type ActiveWork, mergeActiveWork, normalizeActiveWork, quitPromptFor } from './quit-guard'
 import * as remoteLifecycle from './remote-lifecycle'
@@ -12375,12 +12375,14 @@ function resolveCanonicalHermesRoot() {
 
 function resolveLocalHermesCli() {
   const explicit = process.env.HERMES_DESKTOP_HERMES
+
   if (explicit && fs.existsSync(explicit)) {
     return explicit
   }
 
   const root = process.env.HERMES_DESKTOP_HERMES_ROOT || resolveCanonicalHermesRoot()
   const names = process.platform === 'win32' ? ['hermes.exe', 'hermes.cmd', 'hermes'] : ['hermes']
+
   const dirs = [
     path.join(root, 'bin'),
     path.join(root, 'hermes-agent', 'bin'),
@@ -12395,6 +12397,7 @@ function resolveLocalHermesCli() {
     if (!dir) {
       continue
     }
+
     for (const name of names) {
       const candidate = path.join(dir, name)
 
@@ -12418,6 +12421,7 @@ function runHermesDesktopInstance(args) {
     execFile(cli, ['desktop', 'instance', ...args], { windowsHide: true }, (error, stdout, stderr) => {
       if (error) {
         reject(new Error((stderr || stdout || error.message || '').trim()))
+
         return
       }
 
@@ -12429,9 +12433,11 @@ function runHermesDesktopInstance(args) {
 async function launchIsolatedInstanceByName(name, remainder) {
   try {
     const args = ['launch', name]
+
     if (remainder) {
       args.push('--deep-link', remainder)
     }
+
     await runHermesDesktopInstance(args)
   } catch (error) {
     rememberLog(`[isolated-instance] launch ${name} failed: ${error.message}`)
@@ -12485,12 +12491,15 @@ ipcMain.handle('hermes:connections:open-isolated', async (_event, id) => {
       '--ssh-port',
       String(spec.sshPort)
     ]
+
     if (spec.sshUser) {
       args.push('--ssh-user', spec.sshUser)
     }
+
     if (spec.sshKeyPath) {
       args.push('--ssh-key-path', spec.sshKeyPath)
     }
+
     await runHermesDesktopInstance(args)
   }
 
