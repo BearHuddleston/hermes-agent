@@ -3,8 +3,8 @@ import assert from 'node:assert/strict'
 import { test } from 'vitest'
 
 import {
-  DEFAULT_AUMID,
   assertIsolatedManifestMatches,
+  DEFAULT_AUMID,
   isolatedDesktopLaunchArguments,
   isolatedDesktopLaunchEnv,
   isolatedInstanceSpecFromSsh,
@@ -56,6 +56,7 @@ test('same-host SSH rows stay distinct when user/port/key/path/profile differ', 
     remoteProfile: 'default',
     user: 'alice'
   })
+
   const bob = isolatedInstanceSpecFromSsh({
     connectionId: 'bob-box',
     host: 'lab.example',
@@ -84,6 +85,7 @@ test('a stale isolated manifest must fail closed against a retargeted Connection
     remoteProfile: 'default',
     user: 'alice'
   })
+
   const stale = {
     connectionId: 'alice-box',
     dialIdentity: isolatedInstanceSpecFromSsh({

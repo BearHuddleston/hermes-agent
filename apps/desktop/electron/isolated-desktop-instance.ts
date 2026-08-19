@@ -44,6 +44,7 @@ export interface InstanceDeepLink {
 }
 
 const NAME_RE = /^[a-z0-9][a-z0-9_-]{0,63}$/
+
 const RESERVED_NAMES = new Set([
   'connections',
   'default',
@@ -120,6 +121,7 @@ export function isolatedInstanceSpecFromSsh(connection: IsolatedSshConnection): 
   const rawPort = Number(connection.port)
   const sshPort = Number.isInteger(rawPort) && rawPort > 0 && rawPort <= 65535 ? rawPort : 22
   const sshKeyPath = String(connection.keyPath || '').trim()
+
   const dialIdentity = JSON.stringify({
     host,
     keyPath: sshKeyPath,
