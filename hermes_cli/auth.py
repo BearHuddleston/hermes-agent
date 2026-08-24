@@ -1252,6 +1252,35 @@ def _auth_lock_holder_for(target_path: Path) -> threading.local:
         return _auth_target_lock_holders.setdefault(key, threading.local())
 
 
+def _ensure_auth_write_parent(path: Path) -> None:
+    """Prepare an auth/config parent without recreating a named profile home."""
+    from hermes_constants import (
+        named_profile_home_is_unavailable,
+        profile_deletion_marker_path,
+    )
+
+    home = Path(get_hermes_home())
+    parent = path.parent
+    marker = profile_deletion_marker_path(home)
+    if marker is None:
+        parent.mkdir(parents=True, exist_ok=True)
+        return
+    try:
+        parent.relative_to(home)
+    except ValueError:
+        # Explicit global/shared stores are outside the active named home.
+        parent.mkdir(parents=True, exist_ok=True)
+        return
+    if named_profile_home_is_unavailable(home):
+        raise FileNotFoundError(f"Named profile home is missing or being deleted: {home}")
+    if parent != home and not parent.is_dir():
+        # Never create the managed profile root itself. Nested auth directories
+        # may be created only while their already-published parent exists.
+        parent.mkdir(parents=False, exist_ok=True)
+    if not home.is_dir() or named_profile_home_is_unavailable(home):
+        raise FileNotFoundError(f"Named profile home is missing or being deleted: {home}")
+
+
 @contextmanager
 def _file_lock(
     lock_path: Path,
@@ -1276,7 +1305,7 @@ def _file_lock(
             holder.depth -= 1
         return
 
-    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    _ensure_auth_write_parent(lock_path)
 
     if fcntl is None and msvcrt is None:
         holder.depth = 1
@@ -1441,7 +1470,7 @@ def _save_auth_store(auth_store: Dict[str, Any], target_path: Optional[Path] = N
     # OAuth grants (#43589) — reusing this function's atomic O_EXCL + 0o600
     # write so the root auth.json gets the same TOCTOU-safe treatment.
     auth_file = target_path if target_path is not None else _auth_file_path()
-    auth_file.parent.mkdir(parents=True, exist_ok=True)
+    _ensure_auth_write_parent(auth_file)
     # Tighten parent dir to 0o700 so siblings can't traverse to creds.
     # No-op on Windows (POSIX mode bits not enforced); ignore failures.
     # secure_parent_dir refuses to chmod /, top-level dirs, or the
@@ -8202,7 +8231,7 @@ def _update_config_for_provider(
 
     # Update config.yaml model section
     config_path = get_config_path()
-    config_path.parent.mkdir(parents=True, exist_ok=True)
+    _ensure_auth_write_parent(config_path)
     require_readable_config_before_write(config_path)
 
     config = read_raw_config()
@@ -8239,7 +8268,7 @@ def _update_config_for_provider(
 
     config["model"] = model_cfg
 
-    atomic_yaml_write(config_path, config, sort_keys=False)
+    atomic_yaml_write(config_path, config, sort_keys=False, create_parent=False)
     return config_path
 
 
@@ -8307,7 +8336,7 @@ def _reset_config_provider() -> Path:
         model["provider"] = "auto"
         if "base_url" in model:
             model["base_url"] = OPENROUTER_BASE_URL
-    atomic_yaml_write(config_path, config, sort_keys=False)
+    atomic_yaml_write(config_path, config, sort_keys=False, create_parent=False)
     return config_path
 
 

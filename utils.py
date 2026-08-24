@@ -480,6 +480,7 @@ def atomic_yaml_write(
     sort_keys: bool = False,
     extra_content: str | None = None,
     create_mode: "int | None" = None,
+    create_parent: bool = True,
 ) -> None:
     """Write YAML data to a file atomically.
 
@@ -497,9 +498,12 @@ def atomic_yaml_write(
         create_mode: Permission bits to apply when the target does not yet
             exist (a created file otherwise keeps mkstemp's 0600).  Never
             applied to an existing file, whose mode is always preserved.
+        create_parent: Create a missing parent directory. Set false for files
+            inside lifecycle-owned roots that must never be resurrected.
     """
     path = Path(path)
-    path.parent.mkdir(parents=True, exist_ok=True)
+    if create_parent:
+        path.parent.mkdir(parents=True, exist_ok=True)
 
     original_mode = _preserve_file_mode(path)
     original_owner = _preserve_file_owner(path)

@@ -60,7 +60,9 @@ async function openHtmlInBrowser(content: string): Promise<void> {
     throw new Error('Could not write artifact file')
   }
 
-  const fileUrl = `file://${path.startsWith('/') ? '' : '/'}${path.replace(/\\/g, '/')}`
+  const fileUrl = /^(?:blob|data|https?):/i.test(path)
+    ? path
+    : `file://${path.startsWith('/') ? '' : '/'}${path.replace(/\\/g, '/')}`
 
   if (bridge.openPreviewInBrowser) {
     await bridge.openPreviewInBrowser(fileUrl)

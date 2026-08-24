@@ -577,7 +577,16 @@ class ComputeHost:
     def _ensure_server_session(self, server: Any, frame: dict[str, Any]) -> dict:
         sid = str(frame.get("sid") or "")
         key = str(frame.get("session_key") or sid)
-        session = server._sessions.get(sid)
+        profile_home = str(frame.get("profile_home") or "")
+        with server._sessions_lock:
+            session = server._sessions.get(sid)
+            if session is not None and server._profile_home_rejected(
+                profile_home or session.get("profile_home")
+            ):
+                raise FileNotFoundError(
+                    f"Profile home is missing or being deleted: "
+                    f"{profile_home or session.get('profile_home')}"
+                )
         if session is not None:
             session["transport"] = self._transport
             if frame.get("cols") is not None:
@@ -591,7 +600,6 @@ class ComputeHost:
             return session
 
         history = frame.get("history") if isinstance(frame.get("history"), list) else []
-        profile_home = str(frame.get("profile_home") or "")
         session_db = None
         owns_db = False
         home_token = None
@@ -655,6 +663,7 @@ class ComputeHost:
                     cwd=str(frame.get("cwd") or "") or None,
                     session_db=session_db,
                     source=frame.get("source"),
+                    profile_home=profile_home or None,
                 )
             finally:
                 reset_transport(token)
@@ -662,29 +671,35 @@ class ComputeHost:
             # If _init_session's side machinery (slash worker, approval notify) is
             # unavailable, keep a minimal host-owned session rather than failing
             # the turn after the expensive agent build succeeded.
-            server._sessions[sid] = {
-                "agent": agent,
-                "session_key": key,
-                "history": list(history),
-                "history_lock": threading.Lock(),
-                "history_version": int(frame.get("history_version") or 0),
-                "inflight_turn": None,
-                "created_at": time.time(),
-                "last_active": time.time(),
-                "running": False,
-                "attached_images": [],
-                "image_counter": 0,
-                "cwd": str(frame.get("cwd") or os.getcwd()),
-                "cols": int(frame.get("cols") or 80),
-                "slash_worker": None,
-                "show_reasoning": server._load_show_reasoning(),
-                "tool_progress_mode": server._load_tool_progress_mode(),
-                "edit_snapshots": {},
-                "tool_started_at": {},
-                "model_override": frame.get("model_override"),
-                "source": server._sanitize_client_source(frame.get("source")),
-                "transport": self._transport,
-            }
+            with server._sessions_lock:
+                if server._profile_home_rejected(profile_home or None):
+                    with contextlib.suppress(Exception):
+                        agent.close()
+                    raise
+                server._sessions[sid] = {
+                    "agent": agent,
+                    "session_key": key,
+                    "history": list(history),
+                    "history_lock": threading.Lock(),
+                    "history_version": int(frame.get("history_version") or 0),
+                    "inflight_turn": None,
+                    "created_at": time.time(),
+                    "last_active": time.time(),
+                    "running": False,
+                    "attached_images": [],
+                    "image_counter": 0,
+                    "cwd": str(frame.get("cwd") or os.getcwd()),
+                    "cols": int(frame.get("cols") or 80),
+                    "slash_worker": None,
+                    "show_reasoning": server._load_show_reasoning(),
+                    "tool_progress_mode": server._load_tool_progress_mode(),
+                    "edit_snapshots": {},
+                    "tool_started_at": {},
+                    "model_override": frame.get("model_override"),
+                    "source": server._sanitize_client_source(frame.get("source")),
+                    "transport": self._transport,
+                    "profile_home": profile_home or None,
+                }
         session = server._sessions[sid]
         session["transport"] = self._transport
         session["profile_home"] = profile_home or session.get("profile_home")

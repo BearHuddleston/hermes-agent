@@ -53,7 +53,11 @@ from agent.skill_commands import (
     SKILL_SCAFFOLD_SQL_LIKE,
     describe_skill_invocation,
 )
-from hermes_constants import get_hermes_home
+from hermes_constants import (
+    get_hermes_home,
+    named_profile_home_is_unavailable,
+    profile_deletion_marker_path,
+)
 from hermes_startup_watchdog import report_startup_progress
 from hermes_cli.sqlite_runtime import (
     is_sqlite_wal_reset_vulnerable as _is_sqlite_wal_reset_vulnerable,
@@ -2379,10 +2383,20 @@ def _cross_process_repair_lock(db_path: Path):
     with no traceback (the failure shape of #36644).
     """
     lock_path = db_path.with_name(db_path.name + ".repair.lock")
+    named_marker = profile_deletion_marker_path(db_path.parent)
+    if named_marker is not None and named_profile_home_is_unavailable(db_path.parent):
+        raise FileNotFoundError(
+            f"Named profile home is missing or being deleted: {db_path.parent}"
+        )
     try:
-        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        if named_marker is None:
+            lock_path.parent.mkdir(parents=True, exist_ok=True)
         handle = lock_path.open("a+b")
     except OSError as exc:
+        if named_marker is not None:
+            raise FileNotFoundError(
+                f"Named profile home is missing or being deleted: {db_path.parent}"
+            ) from exc
         # Fail closed, exactly as a timed-out acquire does.  A lock file we
         # cannot even open means the filesystem is out of space, inodes or
         # descriptors — and a sibling that opened ITS handle before the disk
@@ -2444,6 +2458,10 @@ def _cross_process_repair_lock(db_path: Path):
                 "avoid racing the repairer. Recorded holder: %s.",
                 lock_path, _REPAIR_LOCK_TIMEOUT_SECONDS,
                 _describe_lock_holder(record),
+            )
+        if named_marker is not None and named_profile_home_is_unavailable(db_path.parent):
+            raise FileNotFoundError(
+                f"Named profile home is missing or being deleted: {db_path.parent}"
             )
         yield acquired
     finally:
@@ -4765,7 +4783,16 @@ def quarantine_cross_process_lock(path: Path, timeout: float = 5.0):
     import platform
 
     lock_path = path.with_name(path.name + ".quarantine.lock")
-    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    named_marker = profile_deletion_marker_path(path.parent)
+    if named_marker is not None:
+        if named_profile_home_is_unavailable(path.parent):
+            raise FileNotFoundError(
+                f"Named profile home is missing or being deleted: {path.parent}"
+            )
+        # Never recreate a lifecycle-owned named parent. If DELETE wins after
+        # this check, opening the lock fails closed.
+    else:
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
     handle = lock_path.open("a+b")
     acquired = False
     try:
@@ -4795,6 +4822,14 @@ def quarantine_cross_process_lock(path: Path, timeout: float = 5.0):
                     if time.monotonic() >= deadline:
                         break
                     time.sleep(0.020)
+        if (
+            acquired
+            and named_marker is not None
+            and named_profile_home_is_unavailable(path.parent)
+        ):
+            raise FileNotFoundError(
+                f"Named profile home is missing or being deleted: {path.parent}"
+            )
         yield acquired
     finally:
         try:
@@ -5532,7 +5567,28 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                 initialization_complete = True
                 return
 
-            self.db_path.parent.mkdir(parents=True, exist_ok=True)
+            # Named profiles are explicit lifecycle objects. A stale Webapp /
+            # gateway session must not recreate a profile after DELETE by
+            # opening its old state.db path. The durable marker also closes the
+            # window before rmtree while in-process sessions are being retired.
+            named_profile_marker = profile_deletion_marker_path(self.db_path.parent)
+
+            def _assert_named_profile_available() -> None:
+                if (
+                    named_profile_marker is not None
+                    and named_profile_home_is_unavailable(self.db_path.parent)
+                ):
+                    raise FileNotFoundError(
+                        f"Named profile home is missing or being deleted: {self.db_path.parent}"
+                    )
+
+            if named_profile_marker is not None:
+                _assert_named_profile_available()
+                # Named profile homes are created explicitly by `profile create`.
+                # Never mkdir here: if DELETE removes the directory immediately
+                # after the check, SQLite will fail to open instead of reviving it.
+            else:
+                self.db_path.parent.mkdir(parents=True, exist_ok=True)
 
             # Read-only file/sidecar preflight (port of kilocode#12508):
             # repair-or-refuse BEFORE the first connection so users get an
@@ -5580,6 +5636,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                         raise sqlite3.DatabaseError(msg)
 
             def _connect_and_init():
+                _assert_named_profile_available()
                 # Refuse before sqlite3.connect (under the startup lock) so we
                 # cannot mint a replacement WAL while a live writer still
                 # holds a deleted sidecar inode.

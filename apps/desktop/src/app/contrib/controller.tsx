@@ -222,6 +222,7 @@ registry.registerMany([
       placement: 'right',
       collapsible: true,
       dock: { pane: 'workspace', pos: 'right' },
+      revealOnPreset: true,
       revealAliases: ['file-browser'],
       width: FILE_BROWSER_DEFAULT_WIDTH,
       minWidth: FILE_BROWSER_MIN_WIDTH,
@@ -238,6 +239,7 @@ registry.registerMany([
     data: {
       placement: 'right',
       collapsible: true,
+      revealOnPreset: true,
       revealAliases: [REVIEW_PANE_ID],
       width: FILE_BROWSER_DEFAULT_WIDTH,
       minWidth: FILE_BROWSER_MIN_WIDTH,

@@ -5637,7 +5637,13 @@ def _hermes_holder_subcommand(cmdline: str) -> str | None:
     entry_idx: int | None = None
     for i, token in enumerate(tokens):
         low = token.lower().strip('"')
-        if low.endswith("hermes_cli.main") and i > 0 and tokens[i - 1] == "-m":
+        if low == "hermes_cli.main" and i > 0 and tokens[i - 1] == "-m":
+            entry_idx = i
+            break
+        normalized = low.replace("\\", "/")
+        if normalized == "hermes_cli/main.py" or normalized.endswith(
+            "/hermes_cli/main.py"
+        ):
             entry_idx = i
             break
         base = low.rsplit("\\", 1)[-1].rsplit("/", 1)[-1]

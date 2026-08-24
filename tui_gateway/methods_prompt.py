@@ -1089,14 +1089,18 @@ def _(rid, params: dict) -> dict:
 
     session["image_counter"] = session.get("image_counter", 0) + 1
     img_dir = _session_images_dir(session)
-    img_dir.mkdir(parents=True, exist_ok=True)
+    profile_home = session.get("profile_home")
+    if _profile_home_rejected(profile_home) or not img_dir.parent.is_dir():
+        session["image_counter"] = max(0, session["image_counter"] - 1)
+        return _err(rid, 4041, "profile home is missing or being deleted")
+    img_dir.mkdir(parents=False, exist_ok=True)
     img_path = (
         img_dir
         / f"clip_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{session['image_counter']}.png"
     )
 
     # Save-first: mirrors CLI keybinding path; more robust than has_image() precheck
-    if not save_clipboard_image(img_path):
+    if not save_clipboard_image(img_path, create_parent=False):
         session["image_counter"] = max(0, session["image_counter"] - 1)
         msg = (
             "Clipboard has image but extraction failed"

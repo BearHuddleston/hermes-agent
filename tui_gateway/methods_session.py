@@ -75,6 +75,10 @@ def _(rid, params: dict) -> dict:
     lease = None  # claimed lazily on the first turn (_ensure_active_session_slot)
 
     with _sessions_lock:
+        if _profile_home_rejected(profile_home):
+            raise FileNotFoundError(
+                f"Profile home is missing or being deleted: {profile_home or _hermes_home}"
+            )
         _sessions[sid] = {
             "agent": None,
             "agent_error": None,
@@ -1111,6 +1115,7 @@ def _(rid, params: dict) -> dict:
                         session_db=db,
                         source=source,
                         explicit_cwd=bool(profile_resume_cwd),
+                        profile_home=str(profile_home) if profile_home is not None else None,
                     )
                     # Ownership TRANSFER — the registered session's agent now
                     # holds this handle for its whole life, and _init_session
