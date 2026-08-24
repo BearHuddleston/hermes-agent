@@ -24,7 +24,7 @@ from contextlib import contextmanager
 from pathlib import Path
 
 from agent.message_sanitization import _sanitize_surrogates
-from hermes_constants import get_hermes_home
+from hermes_constants import get_hermes_home, named_profile_home_is_unavailable, profile_deletion_marker_path
 from typing import Any, Callable, Dict, Iterator, List, Optional, Tuple, TypeVar, cast
 
 from hermes_state_common import escape_like as _escape_like, stat_db_file_identity as _stat_db_file_identity
@@ -488,7 +488,10 @@ class SessionDB(
     def _open_writer(self) -> None:
         """Writable open: preflight, zero-byte quarantine, connect + schema (one in-place repair of a
         malformed sqlite_master), generation stamp."""
-        self.db_path.parent.mkdir(parents=True, exist_ok=True)
+        if profile_deletion_marker_path(self.db_path.parent) is not None:
+            self._assert_named_profile_available()
+        else:
+            self.db_path.parent.mkdir(parents=True, exist_ok=True)
         # Read-only file/sidecar preflight BEFORE the first connection: an actionable message
         # instead of an opaque "attempt to write a readonly database" from inside _init_schema.
         preflight_db_writability(self.db_path, db_label="state.db")
@@ -605,7 +608,14 @@ class SessionDB(
             raise
         return conn
 
+    def _assert_named_profile_available(self) -> None:
+        if named_profile_home_is_unavailable(self.db_path.parent):
+            raise FileNotFoundError(
+                f"Named profile home is missing or being deleted: {self.db_path.parent}")
+
+
     def _connect_and_init(self) -> None:
+        self._assert_named_profile_available()
         # Refuse before sqlite3.connect (under the startup lock) so we cannot mint
         # a replacement WAL while a live writer still holds a deleted sidecar inode.
         refuse_deleted_wal_generation(self.db_path)

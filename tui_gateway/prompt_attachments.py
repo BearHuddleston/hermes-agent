@@ -96,7 +96,10 @@ def _queue_attached_image(session: dict, img_bytes: bytes, ext: str, *, prefix: 
     """Write image bytes into the session images dir and queue them for the next submit."""
     session["image_counter"] = session.get("image_counter", 0) + 1
     img_dir = _session_images_dir(session)
-    img_dir.mkdir(parents=True, exist_ok=True)
+    profile_home = session.get("profile_home")
+    if _profile_home_rejected(profile_home) or not img_dir.parent.is_dir():
+        raise FileNotFoundError(f"Profile home is missing or being deleted: {img_dir.parent}")
+    img_dir.mkdir(parents=False, exist_ok=True)
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
     img_path = img_dir / f"{prefix}_{ts}_{session['image_counter']}{ext}"
     try:
@@ -174,7 +177,11 @@ def _stage_session_file_attachment(
             raise ValueError("invalid data_url payload") from exc
         filename = _sanitize_attachment_name(name or Path(str(raw_path or "")).name)
     root = _session_home_dir(session, "attachments")
-    root.mkdir(parents=True, exist_ok=True)
+    from hermes_constants import profile_deletion_marker_path
+    named_profile = profile_deletion_marker_path(root.parent) is not None
+    if _profile_home_rejected(session.get("profile_home")) or (named_profile and not root.parent.is_dir()):
+        raise FileNotFoundError(f"Profile home is missing or being deleted: {root.parent}")
+    root.mkdir(parents=not named_profile, exist_ok=True)
     filename = _sanitize_attachment_name(filename)
     target = root / filename
     if target.exists():

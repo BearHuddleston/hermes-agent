@@ -321,22 +321,125 @@ def _pop_session_by_id(sid: str) -> dict | None:
     return session
 
 
-def _teardown_popped_session(session: dict | None, *, end_reason: str = "tui_close") -> bool:
+def _teardown_popped_session(
+    session: dict | None, *, end_reason: str = "tui_close"
+) -> bool:
     """Finish a close after the caller has atomically detached the session."""
     if session is None:
         return False
-    run_thread = session.get("_run_thread")
-    if end_reason != "tui_shutdown" and run_thread is not None and run_thread is not threading.current_thread():
+    settled = True
+    seen_threads: set[int] = set()
+    for label, thread in (
+        ("turn", session.get("_run_thread")),
+        ("agent build", session.get("_agent_build_thread")),
+    ):
+        if (
+            end_reason == "tui_shutdown"
+            or thread is None
+            or thread is threading.current_thread()
+            or id(thread) in seen_threads
+        ):
+            continue
+        seen_threads.add(id(thread))
         try:
-            if run_thread.is_alive():
-                run_thread.join(timeout=_TURN_SETTLE_BEFORE_CLOSE_SECONDS)
-            if run_thread.is_alive():
+            if thread.is_alive():
+                thread.join(timeout=_TURN_SETTLE_BEFORE_CLOSE_SECONDS)
+            if thread.is_alive():
                 logger.warning(
-                    "session turn thread still alive after %.1fs teardown grace", _TURN_SETTLE_BEFORE_CLOSE_SECONDS)
+                    "session %s thread still alive after %.1fs teardown grace",
+                    label,
+                    _TURN_SETTLE_BEFORE_CLOSE_SECONDS,
+                )
+                settled = False
         except Exception:
-            logger.debug("failed waiting for session turn thread", exc_info=True)
+            logger.debug("failed waiting for session %s thread", label, exc_info=True)
+            settled = False
     _teardown_session(session, end_reason=end_reason)
-    return True
+    return settled
+
+
+def _profile_home_key(profile_home: Path | str) -> str:
+    try:
+        return str(Path(profile_home).resolve())
+    except OSError:
+        return str(Path(profile_home))
+
+
+def _profile_home_rejected(profile_home: Path | str | None) -> bool:
+    effective_home = profile_home or _hermes_home
+    key = _profile_home_key(effective_home)
+    if key in _retired_profile_homes:
+        return True
+    try:
+        from hermes_constants import named_profile_home_is_unavailable
+
+        return named_profile_home_is_unavailable(effective_home)
+    except Exception:
+        return True
+
+
+def allow_profile_home(profile_home: Path | str) -> None:
+    """Admit sessions for a profile that was explicitly created/recreated."""
+    with _sessions_lock:
+        _retired_profile_homes.discard(_profile_home_key(profile_home))
+
+
+def retire_profile_home(profile_home: Path | str) -> int:
+    """Tear down every in-process session retaining ``profile_home``.
+
+    Profile DELETE marks the home unavailable before calling this function, so
+    finalization attempts fail closed instead of reopening state.db. The
+    registry pop prevents later title/history/cwd activity from using stale
+    session dictionaries after the directory is removed.
+    """
+    global _db
+
+    try:
+        target = Path(profile_home).resolve()
+    except OSError:
+        target = Path(profile_home)
+    try:
+        launch_home = Path(_hermes_home).resolve()
+    except OSError:
+        launch_home = Path(_hermes_home)
+    retiring_launch_home = target == launch_home
+
+    def _belongs(session: dict) -> bool:
+        if retiring_launch_home and not session.get("profile_home"):
+            return True
+        raw = session.get("profile_home")
+        if not raw:
+            return False
+        try:
+            return Path(raw).resolve() == target
+        except OSError:
+            return Path(raw) == target
+
+    with _sessions_lock:
+        _retired_profile_homes.add(_profile_home_key(target))
+        session_ids = [sid for sid, session in _sessions.items() if _belongs(session)]
+
+    retired = 0
+    unsettled: list[str] = []
+    for sid in session_ids:
+        if _close_session_by_id(sid, end_reason="profile_deleted"):
+            retired += 1
+        else:
+            unsettled.append(sid)
+
+    if retiring_launch_home:
+        db, _db = _db, None
+        if db is not None:
+            try:
+                db.close()
+                retired += 1
+            except Exception:
+                logger.debug("failed closing launch profile SessionDB", exc_info=True)
+    if unsettled:
+        raise RuntimeError(
+            "Profile still has active session turn(s): " + ", ".join(unsettled)
+        )
+    return retired
 
 
 def _close_session_by_id(

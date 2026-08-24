@@ -241,7 +241,9 @@ def _hermes_holder_subcommand(cmdline: str) -> str | None:
 
     def _is_entry(i: int, token: str) -> bool:
         low = token.lower().strip('"')
-        return (low.endswith("hermes_cli.main") and i > 0 and tokens[i - 1] == "-m") or (
+        normalized = low.replace("\\", "/")
+        return (low == "hermes_cli.main" and i > 0 and tokens[i - 1] == "-m") or (
+            normalized == "hermes_cli/main.py" or normalized.endswith("/hermes_cli/main.py")) or (
             low.rsplit("\\", 1)[-1].rsplit("/", 1)[-1] in ("hermes", "hermes.exe"))
 
     entry_idx = next((i for i, token in enumerate(tokens) if _is_entry(i, token)), None)

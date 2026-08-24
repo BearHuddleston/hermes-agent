@@ -68,7 +68,7 @@ declare global {
       ) => Promise<{ ok: boolean; error?: string }>
       // Resume this session in the user's own terminal emulator (`hermes --tui
       // --resume <id>`) — the external terminal, not the in-app pane.
-      openSessionInTerminal: (
+      openSessionInTerminal?: (
         sessionId: string,
         opts?: { cwd?: string; profile?: string }
       ) => Promise<{ ok: boolean; error?: string }>
@@ -93,7 +93,7 @@ declare global {
       // The pop-out pet overlay: a transparent always-on-top window hosting only
       // the mascot. The main renderer drives it (open/close/drag + state push);
       // the overlay sends control messages back (pop-in, composer submit).
-      petOverlay: {
+      petOverlay?: {
         open: (request: PetOverlayOpenRequest) => Promise<{ ok: boolean; bounds?: PetOverlayBounds }>
         close: () => Promise<{ ok: boolean }>
         setBounds: (bounds: PetOverlayBounds) => void
@@ -137,7 +137,7 @@ declare global {
       // shortcut registration + the persisted preference (it must restore the
       // shortcut on a cold launch without the renderer visiting Settings), so
       // the renderer reads/writes it here and adopts the authoritative reply.
-      quickEntry: {
+      quickEntry?: {
         getSettings: () => Promise<QuickEntryStatus>
         // Returns the resulting state — including `registered: false` +
         // `error: 'taken'` when another app already owns the chord, so a failed
@@ -173,7 +173,7 @@ declare global {
       setSecretStorageEncryption: (on: boolean) => Promise<{ on: boolean }>
       // v2 multi-connection registry: named agent sources, all persisted
       // together (local + any number of remote/cloud/ssh instances).
-      connections: {
+      connections?: {
         list: () => Promise<DesktopConnectionsRegistry>
         save: (
           payload: DesktopRegistryConnectionInput
@@ -300,6 +300,9 @@ declare global {
       }) => Promise<string>
       saveClipboardImage: () => Promise<string>
       getPathForFile: (file: File) => string
+      /** Browser-hosted drag/drop stages File bytes in authenticated,
+       *  profile-scoped host storage. Native shells already expose real paths. */
+      stageFileForAttach?: (file: File) => Promise<string>
       normalizePreviewTarget: (target: string, baseDir?: string) => Promise<HermesPreviewTarget | null>
       watchPreviewFile: (url: string) => Promise<HermesPreviewWatch>
       /** Watch a directory for entry churn (disk-plugin door); same watcher
@@ -548,7 +551,7 @@ declare global {
       // Main-process `before-input-event` forwards Ctrl/Cmd+F here so the
       // renderer can still open the FindBar when the OS compositor has
       // already grabbed the chord (#81727, e.g. Pop!_OS / GNOME).
-      onOpenFindBarRequested: (callback: () => void) => () => void
+      onOpenFindBarRequested?: (callback: () => void) => () => void
     }
   }
 }
@@ -973,6 +976,9 @@ export interface DesktopRosterAgent {
 
 export interface DesktopAgentRoster {
   agents: DesktopRosterAgent[]
+  /** Registry source whose agents are already represented by the active
+   * gateway's rich profiles.list rows; mergers annotate instead of duplicate. */
+  primaryConnectionId?: string
   sources: {
     connectionId: string
     label: string
