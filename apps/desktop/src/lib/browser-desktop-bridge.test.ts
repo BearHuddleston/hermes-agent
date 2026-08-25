@@ -156,7 +156,7 @@ describe('browser-hosted Desktop bridge', () => {
     vi.stubGlobal('fetch', fetchMock)
 
     expect(installBrowserDesktopBridge()).toBe(true)
-    await expect(win.hermesDesktop!.oauthLogoutConnectionConfig()).resolves.toEqual({
+    await expect(win.hermesDesktop!.oauthLogoutConnectionConfig(window.location.origin)).resolves.toEqual({
       connected: false,
       ok: true
     })
@@ -173,11 +173,35 @@ describe('browser-hosted Desktop bridge', () => {
     win.__HERMES_SESSION_TOKEN__ = 'served-token'
 
     expect(installBrowserDesktopBridge()).toBe(true)
+    expect(win.hermesDesktop?.openBrowserWindow).toBeUndefined()
+    expect(win.hermesDesktop?.onBrowserPopoutClosed).toBeUndefined()
+    expect(win.hermesDesktop?.getSecretStorageEncryption).toBeUndefined()
+    expect(win.hermesDesktop?.setSecretStorageEncryption).toBeUndefined()
     expect(win.hermesDesktop?.openSessionInTerminal).toBeUndefined()
     expect(win.hermesDesktop?.connections).toBeUndefined()
     expect(win.hermesDesktop?.onOpenFindBarRequested).toBeUndefined()
     expect(win.hermesDesktop?.petOverlay).toBeUndefined()
     expect(win.hermesDesktop?.quickEntry).toBeUndefined()
+  })
+
+  it('remembers the selected browser profile in the launch URL without losing its route', async () => {
+    const win = mutableWindow()
+    win.__HERMES_SESSION_TOKEN__ = 'served-token'
+    window.history.replaceState(null, '', '/hermes?view=chat#/session-1')
+
+    expect(installBrowserDesktopBridge()).toBe(true)
+    await expect(win.hermesDesktop!.profile.remember(' research ')).resolves.toEqual({ profile: 'research' })
+
+    let url = new URL(window.location.href)
+    expect(url.pathname).toBe('/hermes')
+    expect(url.searchParams.get('view')).toBe('chat')
+    expect(url.searchParams.get('profile')).toBe('research')
+    expect(url.hash).toBe('#/session-1')
+
+    await expect(win.hermesDesktop!.profile.remember('default')).resolves.toEqual({ profile: 'default' })
+    url = new URL(window.location.href)
+    expect(url.searchParams.has('profile')).toBe(false)
+    expect(url.hash).toBe('#/session-1')
   })
 
   it('opens session windows on the HashRouter session route with spectator flags before the hash', async () => {

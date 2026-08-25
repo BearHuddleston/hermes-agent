@@ -530,6 +530,21 @@ export function installBrowserDesktopBridge(): boolean {
   const browserProfile = () =>
     $connection.get()?.profile?.trim() || new URLSearchParams(window.location.search).get('profile')
 
+  const rememberBrowserProfile = async (profile: null | string) => {
+    const selected = profile?.trim() || null
+    const url = new URL(window.location.href)
+
+    if (selected && selected !== 'default') {
+      url.searchParams.set('profile', selected)
+    } else {
+      url.searchParams.delete('profile')
+    }
+
+    window.history.replaceState(null, '', `${url.pathname}${url.search}${url.hash}`)
+
+    return { profile: selected }
+  }
+
   const saveBuffer = async (data: ArrayBuffer | Uint8Array, ext: string) => {
     const source = data instanceof Uint8Array ? data : new Uint8Array(data)
     const bytes = new Uint8Array(source.byteLength)
@@ -1006,20 +1021,14 @@ export function installBrowserDesktopBridge(): boolean {
     },
     profile: {
       get: async () => ({ profile: browserProfile() }),
+      // The browser URL is the persisted launch location. Mirror Desktop's
+      // persistence-only profile IPC without interrupting the live switch.
+      remember: rememberBrowserProfile,
       set: async (profile: string | null) => {
-        const selected = profile?.trim() || null
-        const url = new URL(window.location.href)
-
-        if (selected && selected !== 'default') {
-          url.searchParams.set('profile', selected)
-        } else {
-          url.searchParams.delete('profile')
-        }
-
-        window.history.replaceState(null, '', `${url.pathname}${url.search}${url.hash}`)
+        const result = await rememberBrowserProfile(profile)
         window.location.reload()
 
-        return { profile: selected }
+        return result
       }
     },
     oauthLoginConnectionConfig: async (remoteUrl: string) => {
