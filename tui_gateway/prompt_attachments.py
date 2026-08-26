@@ -93,22 +93,38 @@ def _session_images_dir(session: dict) -> Path:
 
 
 def _queue_attached_image(session: dict, img_bytes: bytes, ext: str, *, prefix: str) -> Path:
-    """Write image bytes into the session images dir and queue them for the next submit."""
-    session["image_counter"] = session.get("image_counter", 0) + 1
-    img_dir = _session_images_dir(session)
+    """Write image bytes into the gateway's images dir and queue them.
+
+    Mirrors what ``image.attach`` does for a local path: appends to
+    ``session["attached_images"]`` so the next ``prompt.submit`` picks it up via
+    the existing native-image-attach pipeline. Returns the written path.
+    """
     profile_home = session.get("profile_home")
-    if _profile_home_rejected(profile_home) or not img_dir.parent.is_dir():
-        raise FileNotFoundError(f"Profile home is missing or being deleted: {img_dir.parent}")
-    img_dir.mkdir(parents=False, exist_ok=True)
-    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-    img_path = img_dir / f"{prefix}_{ts}_{session['image_counter']}{ext}"
-    try:
-        img_path.write_bytes(img_bytes)
-    except Exception:
-        session["image_counter"] = max(0, session["image_counter"] - 1)
-        raise
-    session.setdefault("attached_images", []).append(str(img_path))
-    return img_path
+    profile_incarnation = session.get("profile_incarnation")
+    # Profile mutation takes the lifecycle lease before retiring sessions, so
+    # attachment writes use the same order: lifecycle → sessions → pathname.
+    with _profile_home_lease(profile_home, profile_incarnation):
+        with _sessions_lock:
+            session["image_counter"] = session.get("image_counter", 0) + 1
+            img_dir = _session_images_dir(session)
+            img_path = None
+            try:
+                if not img_dir.parent.is_dir():
+                    raise FileNotFoundError(
+                        "Profile home is missing or being deleted: "
+                        f"{img_dir.parent}"
+                    )
+                img_dir.mkdir(parents=False, exist_ok=True)
+                ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+                img_path = img_dir / f"{prefix}_{ts}_{session['image_counter']}{ext}"
+                img_path.write_bytes(img_bytes)
+            except Exception:
+                if img_path is not None:
+                    img_path.unlink(missing_ok=True)
+                session["image_counter"] = max(0, session["image_counter"] - 1)
+                raise
+            session.setdefault("attached_images", []).append(str(img_path))
+            return img_path
 
 
 def _format_ref_value(value: str) -> str:
@@ -176,22 +192,28 @@ def _stage_session_file_attachment(
         except (ValueError, _binascii.Error) as exc:
             raise ValueError("invalid data_url payload") from exc
         filename = _sanitize_attachment_name(name or Path(str(raw_path or "")).name)
-    root = _session_home_dir(session, "attachments")
-    from hermes_constants import profile_deletion_marker_path
-    named_profile = profile_deletion_marker_path(root.parent) is not None
-    if _profile_home_rejected(session.get("profile_home")) or (named_profile and not root.parent.is_dir()):
-        raise FileNotFoundError(f"Profile home is missing or being deleted: {root.parent}")
-    root.mkdir(parents=not named_profile, exist_ok=True)
-    filename = _sanitize_attachment_name(filename)
-    target = root / filename
-    if target.exists():
-        stem = Path(filename).stem or "attachment"
-        suffix = Path(filename).suffix
-        counter = 2
-        while (target := root / f"{stem}-{counter}{suffix}").exists():
-            counter += 1
-    target.write_bytes(payload)
-    return target.resolve(), True
+    with _profile_home_lease(session.get("profile_home"), session.get("profile_incarnation")):
+        with _sessions_lock:
+            root = _session_home_dir(session, "attachments")
+            from hermes_constants import profile_deletion_marker_path
+            named_profile = profile_deletion_marker_path(root.parent) is not None
+            if _profile_home_rejected(session.get("profile_home"), session.get("profile_incarnation")) or (named_profile and not root.parent.is_dir()):
+                raise FileNotFoundError(f"Profile home is missing or being deleted: {root.parent}")
+            root.mkdir(parents=not named_profile, exist_ok=True)
+            filename = _sanitize_attachment_name(filename)
+            target = root / filename
+            if target.exists():
+                stem = Path(filename).stem or "attachment"
+                suffix = Path(filename).suffix
+                counter = 2
+                while (target := root / f"{stem}-{counter}{suffix}").exists():
+                    counter += 1
+            try:
+                target.write_bytes(payload)
+            except Exception:
+                target.unlink(missing_ok=True)
+                raise
+            return target.resolve(), True
 
 
 def register(server) -> None:

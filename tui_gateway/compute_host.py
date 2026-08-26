@@ -258,14 +258,31 @@ class ComputeHost:
     def _ensure_server_session(self, server: Any, frame: dict[str, Any]) -> dict:
         sid = str(frame.get("sid") or "")
         profile_home = str(frame.get("profile_home") or "")
+        profile_incarnation = str(frame.get("profile_incarnation") or "") or None
         with server._sessions_lock:
             session = server._sessions.get(sid)
-            if session is not None and server._profile_home_rejected(
-                profile_home or session.get("profile_home")
+            expected_incarnation = (
+                session.get("profile_incarnation")
+                if session is not None
+                else profile_incarnation
+            )
+            effective_home = profile_home or (
+                session.get("profile_home") if session is not None else None
+            )
+            if server._profile_home_rejected(
+                effective_home,
+                expected_incarnation,
             ):
                 raise FileNotFoundError(
-                    f"Profile home is missing or being deleted: "
-                    f"{profile_home or session.get('profile_home')}")
+                    f"Profile incarnation is stale or home is missing or being deleted: "
+                    f"{effective_home}"
+                )
+            if (
+                session is not None
+                and profile_incarnation is not None
+                and expected_incarnation != profile_incarnation
+            ):
+                raise FileNotFoundError("Compute-host frame belongs to a stale profile incarnation")
         if session is not None:
             session["transport"] = self._transport
             if frame.get("cols") is not None:
@@ -284,6 +301,7 @@ class ComputeHost:
         key = str(frame.get("session_key") or sid)
         history = frame.get("history") if isinstance(frame.get("history"), list) else []
         profile_home = str(frame.get("profile_home") or "")
+        profile_incarnation = str(frame.get("profile_incarnation") or "") or None
         session_db = home_token = secret_token = None
         owns_db = False
         try:
@@ -295,7 +313,8 @@ class ComputeHost:
                 secret_token = set_secret_scope(build_profile_secret_scope(Path(profile_home)))
                 # DEDICATED handle — ours only until _make_agent succeeds, then the agent owns
                 # it. A RAISING _make_agent is the one path where nothing takes it (``owns_db``).
-                session_db = acquire(Path(profile_home) / "state.db")
+                session_db = acquire(Path(profile_home) / "state.db",
+                                     expected_profile_incarnation=profile_incarnation)
                 owns_db = True
             agent = server._make_agent(
                 sid, key, session_id=key, model_override=frame.get("model_override"),
@@ -325,14 +344,15 @@ class ComputeHost:
                 server._init_session(
                     sid, key, agent, list(history), cols=int(frame.get("cols") or 80),
                     cwd=str(frame.get("cwd") or "") or None, session_db=session_db,
-                    source=frame.get("source"), profile_home=profile_home or None)
+                    source=frame.get("source"), profile_home=profile_home or None,
+                    profile_incarnation=profile_incarnation)
             finally:
                 reset_transport(token)
         except Exception:
             # _init_session's side machinery (slash worker, approval notify) unavailable: keep a
             # minimal host-owned session rather than failing after the expensive agent build.
             with server._sessions_lock:
-                if server._profile_home_rejected(profile_home or None):
+                if server._profile_home_rejected(profile_home or None, profile_incarnation):
                     with contextlib.suppress(Exception):
                         agent.close()
                     raise
@@ -347,7 +367,7 @@ class ComputeHost:
                     "tool_progress_mode": server._load_tool_progress_mode(), "edit_snapshots": {},
                     "tool_started_at": {}, "model_override": frame.get("model_override"),
                     "source": server._sanitize_client_source(frame.get("source")),
-                    "transport": self._transport, "profile_home": profile_home or None}
+                    "transport": self._transport, "profile_home": profile_home or None, "profile_incarnation": profile_incarnation}
         session = server._sessions[sid]
         session["transport"] = self._transport
         session["profile_home"] = profile_home or session.get("profile_home")

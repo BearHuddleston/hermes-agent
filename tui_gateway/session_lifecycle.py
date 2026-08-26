@@ -358,33 +358,42 @@ def _teardown_popped_session(
     return settled
 
 
+_PROFILE_INCARNATION_UNSET = object()
+
+
 def _profile_home_key(profile_home: Path | str) -> str:
-    try:
-        return str(Path(profile_home).resolve())
-    except OSError:
-        return str(Path(profile_home))
+    return _profile_lifecycle.key(profile_home)
 
 
-def _profile_home_rejected(profile_home: Path | str | None) -> bool:
+def _profile_home_rejected(
+    profile_home: Path | str | None,
+    profile_incarnation: str | None | object = _PROFILE_INCARNATION_UNSET,
+) -> bool:
     effective_home = profile_home or _hermes_home
-    key = _profile_home_key(effective_home)
-    if key in _retired_profile_homes:
-        return True
-    try:
-        from hermes_constants import named_profile_home_is_unavailable
+    incarnation_required = profile_incarnation is not _PROFILE_INCARNATION_UNSET
+    expected_incarnation = (
+        profile_incarnation if isinstance(profile_incarnation, str) else None
+    )
+    return _profile_lifecycle.rejected(
+        effective_home,
+        expected_incarnation,
+        require_incarnation=incarnation_required,
+    )
 
-        return named_profile_home_is_unavailable(effective_home)
-    except Exception:
-        return True
 
-
-def allow_profile_home(profile_home: Path | str) -> None:
+def allow_profile_home(
+    profile_home: Path | str,
+    profile_incarnation: str | None = None,
+) -> None:
     """Admit sessions for a profile that was explicitly created/recreated."""
     with _sessions_lock:
-        _retired_profile_homes.discard(_profile_home_key(profile_home))
+        _profile_lifecycle.allow(profile_home, profile_incarnation)
 
 
-def retire_profile_home(profile_home: Path | str) -> int:
+def retire_profile_home(
+    profile_home: Path | str,
+    profile_incarnation: str | None = None,
+) -> int:
     """Tear down every in-process session retaining ``profile_home``.
 
     Profile DELETE marks the home unavailable before calling this function, so
@@ -392,54 +401,58 @@ def retire_profile_home(profile_home: Path | str) -> int:
     registry pop prevents later title/history/cwd activity from using stale
     session dictionaries after the directory is removed.
     """
-    global _db
+    def _close_launch_db() -> int:
+        global _db
 
-    try:
-        target = Path(profile_home).resolve()
-    except OSError:
-        target = Path(profile_home)
-    try:
-        launch_home = Path(_hermes_home).resolve()
-    except OSError:
-        launch_home = Path(_hermes_home)
-    retiring_launch_home = target == launch_home
-
-    def _belongs(session: dict) -> bool:
-        if retiring_launch_home and not session.get("profile_home"):
-            return True
-        raw = session.get("profile_home")
-        if not raw:
-            return False
-        try:
-            return Path(raw).resolve() == target
-        except OSError:
-            return Path(raw) == target
-
-    with _sessions_lock:
-        _retired_profile_homes.add(_profile_home_key(target))
-        session_ids = [sid for sid, session in _sessions.items() if _belongs(session)]
-
-    retired = 0
-    unsettled: list[str] = []
-    for sid in session_ids:
-        if _close_session_by_id(sid, end_reason="profile_deleted"):
-            retired += 1
-        else:
-            unsettled.append(sid)
-
-    if retiring_launch_home:
         db, _db = _db, None
-        if db is not None:
-            try:
-                db.close()
-                retired += 1
-            except Exception:
-                logger.debug("failed closing launch profile SessionDB", exc_info=True)
-    if unsettled:
-        raise RuntimeError(
-            "Profile still has active session turn(s): " + ", ".join(unsettled)
-        )
-    return retired
+        if db is None:
+            return 0
+        try:
+            db.close()
+            return 1
+        except Exception:
+            logger.debug("failed closing launch profile SessionDB", exc_info=True)
+            return 0
+
+    return _profile_lifecycle.retire_sessions(
+        profile_home,
+        profile_incarnation,
+        launch_home=_hermes_home,
+        sessions=_sessions,
+        sessions_lock=_sessions_lock,
+        close_session=lambda sid: _close_session_by_id(
+            sid,
+            end_reason="profile_deleted",
+        ),
+        close_launch_db=_close_launch_db,
+    )
+
+
+def _capture_profile_incarnation(profile_home: Path | str | None) -> str | None:
+    return _profile_lifecycle.capture(profile_home or _hermes_home)
+
+
+def _session_profile_identity_matches(
+    session: dict,
+    profile_home: Path | str | None,
+    profile_incarnation: str | None,
+) -> bool:
+    expected_home = str(profile_home) if profile_home is not None else None
+    return (
+        (session.get("profile_home") or None) == expected_home
+        and (session.get("profile_incarnation") or None) == profile_incarnation
+    )
+
+
+@contextlib.contextmanager
+def _profile_home_lease(
+    profile_home: Path | str | None,
+    profile_incarnation: str | None,
+):
+    """Hold generation identity stable while binding a profile pathname."""
+    effective_home = profile_home or _hermes_home
+    with _profile_lifecycle.lease(effective_home, profile_incarnation) as home:
+        yield home
 
 
 def _close_session_by_id(
