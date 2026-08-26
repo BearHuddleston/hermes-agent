@@ -60,6 +60,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from hermes_cli import __version__, __release_date__
+import hermes_cli.web_host_terminal as _web_host_terminal
 from hermes_constants import WEBAPP_ATTACHMENT_MAX_BYTES
 from hermes_cli.config import (
     build_cron_model_impact,
@@ -16455,142 +16456,42 @@ _HOST_TERMINAL_META_PREFIX = "\0HERMES_TERMINAL_META:"
 
 
 def _host_terminal_request_allowed() -> bool:
-    """Host shells are available only to Webapp on loopback or behind auth.
-
-    ``--insecure`` non-loopback binds inject the loopback token into every page
-    that can reach them. That trade-off must never turn into unauthenticated
-    host-shell access. A gated public Webapp has a verified session plus a
-    one-time WebSocket ticket and may use the remote Desktop terminal boundary.
-    """
-    if getattr(app.state, "ui_surface", "dashboard") != "webapp":
-        return False
-    if getattr(app.state, "auth_required", False):
-        return True
-    bound_host = (getattr(app.state, "bound_host", "") or "").strip().lower()
-    return bound_host in _LOOPBACK_HOSTS
+    return _web_host_terminal.request_allowed(
+        ui_surface=getattr(app.state, "ui_surface", "dashboard"),
+        auth_required=bool(getattr(app.state, "auth_required", False)),
+        bound_host=getattr(app.state, "bound_host", "") or "",
+        loopback_hosts=_LOOPBACK_HOSTS,
+    )
 
 
 def _host_shell_command(candidate: str) -> Optional[str]:
-    """Return an executable shell path for ``candidate``, or None."""
-    raw = (candidate or "").strip()
-    if not raw:
-        return None
-    path = Path(raw).expanduser()
-    try:
-        if path.is_absolute() and path.is_file() and (
-            os.name == "nt" or os.access(path, os.X_OK)
-        ):
-            return str(path)
-    except OSError:
-        pass
-    return shutil.which(raw)
+    return _web_host_terminal.shell_command(candidate)
 
 
 def _host_shell_spec() -> tuple[list[str], str]:
-    """Resolve the same interactive-shell ladder the native Desktop uses."""
-    override = (os.environ.get("HERMES_DESKTOP_SHELL") or "").strip()
-    if os.name != "nt":
-        override = override or (os.environ.get("SHELL") or "").strip()
-    command = _host_shell_command(override)
-
-    if os.name == "nt":
-        if not command:
-            command = _host_shell_command("pwsh.exe") or _host_shell_command("pwsh")
-        if not command:
-            system_root = os.environ.get("SystemRoot") or os.environ.get("windir") or r"C:\Windows"
-            command = _host_shell_command(
-                str(Path(system_root) / "System32" / "WindowsPowerShell" / "v1.0" / "powershell.exe")
-            )
-        command = command or _host_shell_command("powershell.exe")
-        command = command or _host_shell_command(os.environ.get("COMSPEC", "")) or "cmd.exe"
-    elif not command:
-        command = next(
-            (
-                resolved
-                for candidate in ("/bin/zsh", "/bin/bash", "/bin/sh")
-                if (resolved := _host_shell_command(candidate))
-            ),
-            "/bin/sh",
-        )
-
-    name = Path(command).name.lower()
-    if name.startswith(("pwsh", "powershell")):
-        args = ["-NoLogo"]
-    elif name.startswith("cmd"):
-        args = []
-    elif "zsh" in name or "bash" in name:
-        args = ["-il"]
-    else:
-        args = ["-i"]
-    return [command, *args], name
+    return _web_host_terminal.shell_spec(_host_shell_command)
 
 
 def _safe_host_terminal_cwd(requested: Optional[str]) -> str:
-    fallback = Path.home()
-    try:
-        candidate = Path((requested or "").strip() or fallback).expanduser().resolve()
-        if candidate.is_dir():
-            return str(candidate)
-        if candidate.is_file():
-            return str(candidate.parent)
-    except (OSError, RuntimeError, ValueError):
-        pass
-    return str(fallback)
+    return _web_host_terminal.safe_cwd(requested)
 
 
 def _resolve_host_terminal_argv(
     profile: Optional[str] = None,
     requested_cwd: Optional[str] = None,
 ) -> tuple[list[str], str, dict, str]:
-    """Return argv/cwd/env/name for Webapp's authenticated host terminal."""
-    from hermes_cli.config import TERMINAL_CONFIG_ENV_MAP, apply_terminal_config_to_env
-    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
-    from tools.environments.local import build_subprocess_env
-
-    requested_profile = (profile or "").strip()
-    profile_dir = None
-    if requested_profile and requested_profile.lower() != "current":
-        profile_dir = _resolve_profile_dir(requested_profile)
-
-    override_token = (
-        set_hermes_home_override(str(profile_dir)) if profile_dir is not None else None
+    return _web_host_terminal.resolve_argv(
+        profile=profile,
+        requested_cwd=requested_cwd,
+        resolve_profile_dir=_resolve_profile_dir,
+        resolve_shell_spec=_host_shell_spec,
+        resolve_cwd=_safe_host_terminal_cwd,
+        version=__version__,
     )
-    try:
-        base_env = os.environ.copy()
-        if profile_dir is not None:
-            base_env["HERMES_HOME"] = str(profile_dir)
-            # These vars may have been bridged from the server's own profile.
-            # Remove them before loading the selected profile's terminal config.
-            for env_var in TERMINAL_CONFIG_ENV_MAP.values():
-                base_env.pop(env_var, None)
-        apply_terminal_config_to_env(env=base_env)
-        env = build_subprocess_env(base=base_env, scrub_secrets=True)
-    finally:
-        if override_token is not None:
-            reset_hermes_home_override(override_token)
-
-    for key in list(env):
-        if key == "npm_config_prefix" or key.startswith(("npm_config_", "npm_package_")):
-            env.pop(key, None)
-    for key in ("NO_COLOR", "FORCE_COLOR", "COLORFGBG"):
-        env.pop(key, None)
-    env["COLORTERM"] = "truecolor"
-    env["TERM"] = "xterm-256color"
-    env["TERM_PROGRAM"] = "Hermes"
-    env["TERM_PROGRAM_VERSION"] = __version__
-    env["HERMES_DESKTOP_TERMINAL"] = "1"
-    env.setdefault("LC_CTYPE", "UTF-8")
-
-    argv, shell_name = _host_shell_spec()
-    return argv, _safe_host_terminal_cwd(requested_cwd), env, shell_name
 
 
 def _pty_query_dimension(raw: Optional[str], default: int, maximum: int) -> int:
-    try:
-        value = int(raw or default)
-    except (TypeError, ValueError, OverflowError):
-        return default
-    return max(2, min(maximum, value))
+    return _web_host_terminal.query_dimension(raw, default, maximum)
 
 
 def _ws_client_reason(ws: "WebSocket") -> Optional[str]:
