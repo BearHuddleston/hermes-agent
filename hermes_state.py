@@ -5376,13 +5376,19 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         except Exception:
             logger.debug("Could not close a SessionDB connection", exc_info=True)
 
-    def __init__(self, db_path: Path = None, read_only: bool = False):
+    def __init__(
+        self,
+        db_path: Path | None = None,
+        read_only: bool = False,
+        expected_profile_incarnation: str | None = None,
+    ):
         self.db_path = db_path or _default_db_path()
         # Fail hard (before any connection/pragma/mkdir) if a pytest-context
         # process resolved the developer's production state.db — see the
         # live-DB test-isolation guard block near _default_db_path().
         _ensure_test_isolation(self.db_path)
         self.read_only = read_only
+        self.expected_profile_incarnation = expected_profile_incarnation
 
         self._lock = threading.Lock()
         # Read-path split (WAL only): recall/browse queries borrow a
@@ -5492,7 +5498,47 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         # controls the connection lifecycle (#90837).
         self._shared_registry_owned = False
         initialization_complete = False
+
+        # Named profiles are explicit lifecycle objects. Path reuse after
+        # DELETE must not let a delayed opener attach to the replacement.
+        named_profile_marker = profile_deletion_marker_path(self.db_path.parent)
+        profile_lifecycle_stack = contextlib.ExitStack()
+
+        def _assert_named_profile_available() -> None:
+            if named_profile_marker is None:
+                return
+            if named_profile_home_is_unavailable(self.db_path.parent):
+                raise FileNotFoundError(
+                    f"Named profile home is missing or being deleted: {self.db_path.parent}"
+                )
+            if expected_profile_incarnation is not None:
+                from hermes_cli.profile_incarnation import profile_incarnation_matches
+
+                if not profile_incarnation_matches(
+                    self.db_path.parent,
+                    expected_profile_incarnation,
+                ):
+                    raise FileNotFoundError(
+                        "Named profile incarnation is stale: "
+                        f"{self.db_path.parent}"
+                    )
+
         try:
+            if named_profile_marker is not None:
+                from hermes_cli.profile_incarnation import profile_incarnation_lease
+
+                # Keep profile create/delete/rename out until every path-based
+                # preflight, connect, PRAGMA, and schema-init operation has
+                # bound this handle to the checked generation. After that the
+                # tracked SQLite connection itself prevents removal/recreate
+                # until close(), without holding a lifecycle lock for the
+                # SessionDB object's full lifetime.
+                profile_lifecycle_stack.enter_context(
+                    profile_incarnation_lease(
+                        self.db_path.parent,
+                        expected_profile_incarnation,
+                    )
+                )
             if read_only:
                 # Read-only attach for cross-profile aggregation: SELECT-only,
                 # so we skip schema init entirely (no DDL, no FTS probe, no
@@ -5504,6 +5550,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                 # the caller degrades per-profile.
                 open_attempt = 0
                 while True:
+                    _assert_named_profile_available()
                     try:
                         self._conn = _connect_tracked_db(
                             f"file:{self.db_path}?mode=ro",
@@ -5513,6 +5560,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                             timeout=1.0,
                             isolation_level=None,
                         )
+                        _assert_named_profile_available()
                         self._conn.row_factory = sqlite3.Row
                         # FTS capability flags normally come from writable schema
                         # initialisation. Probe existing virtual tables with
@@ -5566,21 +5614,6 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                 self._record_db_file_identity()
                 initialization_complete = True
                 return
-
-            # Named profiles are explicit lifecycle objects. A stale Webapp /
-            # gateway session must not recreate a profile after DELETE by
-            # opening its old state.db path. The durable marker also closes the
-            # window before rmtree while in-process sessions are being retired.
-            named_profile_marker = profile_deletion_marker_path(self.db_path.parent)
-
-            def _assert_named_profile_available() -> None:
-                if (
-                    named_profile_marker is not None
-                    and named_profile_home_is_unavailable(self.db_path.parent)
-                ):
-                    raise FileNotFoundError(
-                        f"Named profile home is missing or being deleted: {self.db_path.parent}"
-                    )
 
             if named_profile_marker is not None:
                 _assert_named_profile_available()
@@ -5653,6 +5686,9 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                     # transactions ourselves.
                     isolation_level=None,
                 )
+                # If DELETE/recreate won between preflight and open, refuse
+                # before any PRAGMA/schema write reaches the replacement.
+                _assert_named_profile_available()
                 self._conn.row_factory = sqlite3.Row
                 self._wal_active = (
                     apply_wal_with_fallback(self._conn, db_label="state.db") == "wal"
@@ -5769,6 +5805,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             if not initialization_complete:
                 conn, self._conn = self._conn, None
                 self._close_connection_quietly(conn)
+            profile_lifecycle_stack.close()
 
     # ── Read-path split ──
 

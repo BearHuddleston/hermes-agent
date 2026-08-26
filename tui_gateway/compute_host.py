@@ -578,15 +578,31 @@ class ComputeHost:
         sid = str(frame.get("sid") or "")
         key = str(frame.get("session_key") or sid)
         profile_home = str(frame.get("profile_home") or "")
+        profile_incarnation = str(frame.get("profile_incarnation") or "") or None
         with server._sessions_lock:
             session = server._sessions.get(sid)
-            if session is not None and server._profile_home_rejected(
-                profile_home or session.get("profile_home")
+            expected_incarnation = (
+                session.get("profile_incarnation")
+                if session is not None
+                else profile_incarnation
+            )
+            effective_home = profile_home or (
+                session.get("profile_home") if session is not None else None
+            )
+            if server._profile_home_rejected(
+                effective_home,
+                expected_incarnation,
             ):
                 raise FileNotFoundError(
-                    f"Profile home is missing or being deleted: "
-                    f"{profile_home or session.get('profile_home')}"
+                    f"Profile incarnation is stale or home is missing or being deleted: "
+                    f"{effective_home}"
                 )
+            if (
+                session is not None
+                and profile_incarnation is not None
+                and expected_incarnation != profile_incarnation
+            ):
+                raise FileNotFoundError("Compute-host frame belongs to a stale profile incarnation")
         if session is not None:
             session["transport"] = self._transport
             if frame.get("cols") is not None:
@@ -608,7 +624,7 @@ class ComputeHost:
             if profile_home:
                 from hermes_constants import set_hermes_home_override
                 from agent.secret_scope import build_profile_secret_scope, set_secret_scope
-                from hermes_state import SessionDB
+                from hermes_state import get_shared_session_db
 
                 home_token = set_hermes_home_override(profile_home)
                 secret_token = set_secret_scope(build_profile_secret_scope(Path(profile_home)))
@@ -617,8 +633,10 @@ class ComputeHost:
                 # server._sessions[sid] (via _init_session, or the fallback dict
                 # in the except below), so the agent is the right owner; a
                 # _make_agent that RAISES is the one path where nothing takes it.
-                from hermes_state import get_shared_session_db
-                session_db = get_shared_session_db(Path(profile_home) / "state.db")
+                session_db = get_shared_session_db(
+                    Path(profile_home) / "state.db",
+                    expected_profile_incarnation=profile_incarnation,
+                )
                 owns_db = True
             agent = server._make_agent(
                 sid,
@@ -664,6 +682,7 @@ class ComputeHost:
                     session_db=session_db,
                     source=frame.get("source"),
                     profile_home=profile_home or None,
+                    profile_incarnation=profile_incarnation,
                 )
             finally:
                 reset_transport(token)
@@ -672,7 +691,10 @@ class ComputeHost:
             # unavailable, keep a minimal host-owned session rather than failing
             # the turn after the expensive agent build succeeded.
             with server._sessions_lock:
-                if server._profile_home_rejected(profile_home or None):
+                if server._profile_home_rejected(
+                    profile_home or None,
+                    profile_incarnation,
+                ):
                     with contextlib.suppress(Exception):
                         agent.close()
                     raise
@@ -699,6 +721,7 @@ class ComputeHost:
                     "source": server._sanitize_client_source(frame.get("source")),
                     "transport": self._transport,
                     "profile_home": profile_home or None,
+                    "profile_incarnation": profile_incarnation,
                 }
         session = server._sessions[sid]
         session["transport"] = self._transport

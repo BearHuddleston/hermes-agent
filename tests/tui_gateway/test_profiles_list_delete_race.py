@@ -31,6 +31,7 @@ def home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     monkeypatch.setattr(profiles, "_get_wrapper_dir", lambda: fake_home / ".local" / "bin")
     with srv._sessions_lock:
         srv._retired_profile_homes.clear()
+        srv._retired_profile_incarnations.clear()
     return hermes_home
 
 
@@ -282,6 +283,396 @@ def test_explicit_recreate_clears_profile_deletion_tombstone(home: Path) -> None
     assert profiles.profile_home_is_tombstoned(profile_dir) is False
     assert srv._profile_home_rejected(profile_dir) is False
     assert profiles.read_profile_meta(profile_dir)["description"] == "restored profile"
+
+
+def test_stale_session_incarnation_cannot_write_into_recreated_profile(
+    home: Path,
+) -> None:
+    profile_dir = home / "profiles" / "worker"
+    profile_dir.mkdir(parents=True)
+    old_incarnation = "0" * 32
+    (profile_dir / ".profile-incarnation").write_text(
+        old_incarnation + "\n",
+        encoding="utf-8",
+    )
+    SessionDB(db_path=profile_dir / "state.db").close()
+    stale_session = {
+        "attached_images": [],
+        "image_counter": 0,
+        "profile_home": str(profile_dir),
+        "profile_incarnation": old_incarnation,
+    }
+
+    profiles.delete_profile("worker", yes=True)
+    profiles.create_profile("worker", no_alias=True, no_skills=True)
+
+    new_incarnation = (
+        profile_dir.joinpath(".profile-incarnation").read_text(encoding="utf-8").strip()
+    )
+    assert new_incarnation != old_incarnation
+
+    replacement_db = profile_dir / "state.db"
+    assert not replacement_db.exists()
+    with pytest.raises(FileNotFoundError, match="incarnation"):
+        SessionDB(
+            db_path=replacement_db,
+            expected_profile_incarnation=old_incarnation,
+        )
+    assert not replacement_db.exists()
+    with pytest.raises(FileNotFoundError, match="incarnation"):
+        srv._queue_attached_image(stale_session, b"stale", ".png", prefix="stale")
+    assert stale_session["attached_images"] == []
+    images_dir = profile_dir / "images"
+    assert not images_dir.exists() or list(images_dir.iterdir()) == []
+
+    current_db = SessionDB(
+        db_path=replacement_db,
+        expected_profile_incarnation=new_incarnation,
+    )
+    current_db.close()
+    assert replacement_db.exists()
+    current_session = {
+        "attached_images": [],
+        "image_counter": 0,
+        "profile_home": str(profile_dir),
+        "profile_incarnation": new_incarnation,
+    }
+    current_image = srv._queue_attached_image(
+        current_session,
+        b"current",
+        ".png",
+        prefix="current",
+    )
+    assert current_image.read_bytes() == b"current"
+    assert current_session["attached_images"] == [str(current_image)]
+
+
+def _attempt_cross_process_profile_recreate(home: Path) -> subprocess.CompletedProcess[str]:
+    script = (
+        "from hermes_cli import profiles; "
+        "profiles._PROFILE_LIFECYCLE_LOCK_TIMEOUT_SECONDS=0.2; "
+        "\ntry:\n profiles.delete_profile('worker', yes=True)\n"
+        "except TimeoutError:\n raise SystemExit(0)\n"
+        "profile=profiles.create_profile('worker', no_alias=True, no_skills=True); "
+        "(profile / 'attachments').mkdir(exist_ok=True); raise SystemExit(1)"
+    )
+    return subprocess.run(
+        [sys.executable, "-c", script],
+        env={**os.environ, "HERMES_HOME": str(home)},
+        capture_output=True,
+        text=True,
+        timeout=10,
+        check=False,
+    )
+
+
+def _assert_attachment_write_holds_profile_lifecycle_lease(
+    home: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    profile_dir = profiles.create_profile("worker", no_alias=True, no_skills=True)
+    incarnation = srv._capture_profile_incarnation(profile_dir)
+    workspace = home / "workspace"
+    workspace.mkdir()
+    session = {
+        "cwd": str(workspace),
+        "profile_home": str(profile_dir),
+        "profile_incarnation": incarnation,
+        "session_key": "attachment-race",
+    }
+    entered_write = threading.Event()
+    release_write = threading.Event()
+    real_write_bytes = Path.write_bytes
+    stored: list[Path] = []
+    errors: list[BaseException] = []
+
+    def blocking_write_bytes(path: Path, payload: bytes) -> int:
+        if path.parent.name == "attachments" and path.parent.parent == profile_dir:
+            entered_write.set()
+            if not release_write.wait(timeout=5):
+                raise TimeoutError("attachment write barrier was not released")
+        return real_write_bytes(path, payload)
+
+    monkeypatch.setattr(Path, "write_bytes", blocking_write_bytes)
+    monkeypatch.setattr(srv, "_resolve_gateway_attachment_path", lambda _raw: None)
+
+    def attach() -> None:
+        try:
+            path, uploaded = srv._stage_session_file_attachment(
+                session,
+                raw_path="/client/report.txt",
+                data_url="data:text/plain;base64,c2FmZQ==",
+                name="report.txt",
+            )
+            assert uploaded is True
+            stored.append(path)
+        except BaseException as exc:
+            errors.append(exc)
+
+    thread = threading.Thread(target=attach)
+    thread.start()
+    assert entered_write.wait(timeout=5)
+    try:
+        recreate = _attempt_cross_process_profile_recreate(home)
+    finally:
+        release_write.set()
+        thread.join(timeout=5)
+
+    assert not thread.is_alive()
+    assert recreate.returncode == 0, recreate.stdout + recreate.stderr
+    assert errors == []
+    assert len(stored) == 1
+    assert stored[0].read_bytes() == b"safe"
+
+
+def test_attachment_write_holds_profile_lifecycle_lease(
+    home: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _assert_attachment_write_holds_profile_lifecycle_lease(home, monkeypatch)
+
+
+@pytest.mark.macos_only
+def test_macos_attachment_write_holds_profile_lifecycle_lease(
+    home: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _assert_attachment_write_holds_profile_lifecycle_lease(home, monkeypatch)
+
+
+@pytest.mark.windows_only
+def test_windows_attachment_write_holds_profile_lifecycle_lease(
+    home: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _assert_attachment_write_holds_profile_lifecycle_lease(home, monkeypatch)
+
+
+def _assert_sessiondb_bind_holds_profile_lifecycle_lease(
+    home: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    profile_dir = profiles.create_profile("worker", no_alias=True, no_skills=True)
+    incarnation = srv._capture_profile_incarnation(profile_dir)
+    db_path = profile_dir / "state.db"
+    entered_connect = threading.Event()
+    release_connect = threading.Event()
+    real_connect = hermes_state._connect_tracked_db
+    opened: list[SessionDB] = []
+    errors: list[BaseException] = []
+
+    def blocking_connect(path, *args, **kwargs):
+        if Path(path) == db_path and not entered_connect.is_set():
+            entered_connect.set()
+            if not release_connect.wait(timeout=5):
+                raise TimeoutError("SessionDB connect barrier was not released")
+        return real_connect(path, *args, **kwargs)
+
+    monkeypatch.setattr(hermes_state, "_connect_tracked_db", blocking_connect)
+
+    def open_db() -> None:
+        try:
+            opened.append(
+                SessionDB(
+                    db_path=db_path,
+                    expected_profile_incarnation=incarnation,
+                )
+            )
+        except BaseException as exc:
+            errors.append(exc)
+
+    thread = threading.Thread(target=open_db)
+    thread.start()
+    assert entered_connect.wait(timeout=5)
+    try:
+        recreate = _attempt_cross_process_profile_recreate(home)
+    finally:
+        release_connect.set()
+        thread.join(timeout=5)
+
+    try:
+        assert not thread.is_alive()
+        assert recreate.returncode == 0, recreate.stdout + recreate.stderr
+        assert errors == []
+        assert len(opened) == 1
+        assert opened[0].expected_profile_incarnation == incarnation
+    finally:
+        for db in opened:
+            db.close()
+
+
+def test_sessiondb_bind_holds_profile_lifecycle_lease(
+    home: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _assert_sessiondb_bind_holds_profile_lifecycle_lease(home, monkeypatch)
+
+
+@pytest.mark.macos_only
+def test_macos_sessiondb_bind_holds_profile_lifecycle_lease(
+    home: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _assert_sessiondb_bind_holds_profile_lifecycle_lease(home, monkeypatch)
+
+
+@pytest.mark.windows_only
+def test_windows_sessiondb_bind_holds_profile_lifecycle_lease(
+    home: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _assert_sessiondb_bind_holds_profile_lifecycle_lease(home, monkeypatch)
+
+
+def test_compute_host_rejects_old_incarnation_before_agent_build(
+    home: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import io
+
+    from tui_gateway.compute_host import ComputeHost
+
+    profile_dir = home / "profiles" / "worker"
+    profile_dir.mkdir(parents=True)
+    old_incarnation = "1" * 32
+    profile_dir.joinpath(".profile-incarnation").write_text(
+        old_incarnation + "\n",
+        encoding="utf-8",
+    )
+    SessionDB(db_path=profile_dir / "state.db").close()
+    profiles.delete_profile("worker", yes=True)
+    profiles.create_profile("worker", no_alias=True, no_skills=True)
+
+    builds: list[str] = []
+    monkeypatch.setattr(
+        srv,
+        "_make_agent",
+        lambda *_args, **_kwargs: builds.append("built"),
+    )
+    host = ComputeHost(stdout=io.StringIO(), heartbeat_secs=0)
+    try:
+        with pytest.raises(FileNotFoundError, match="incarnation"):
+            host._ensure_server_session(
+                srv,
+                {
+                    "sid": "stale-host",
+                    "session_key": "stale-host",
+                    "profile_home": str(profile_dir),
+                    "profile_incarnation": old_incarnation,
+                },
+            )
+        with pytest.raises(FileNotFoundError, match="incarnation"):
+            host._ensure_server_session(
+                srv,
+                {
+                    "sid": "unstamped-host",
+                    "session_key": "unstamped-host",
+                    "profile_home": str(profile_dir),
+                },
+            )
+    finally:
+        host.close()
+
+    assert builds == []
+    assert "stale-host" not in srv._sessions
+    assert "unstamped-host" not in srv._sessions
+
+
+def test_named_launch_home_sessions_capture_the_launch_incarnation(
+    home: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    profile_dir = profiles.create_profile("worker", no_alias=True, no_skills=True)
+    incarnation = profile_dir.joinpath(".profile-incarnation").read_text(
+        encoding="utf-8"
+    ).strip()
+    monkeypatch.setattr(srv, "_hermes_home", profile_dir)
+
+    record = srv._deferred_session_record(
+        "named-launch",
+        cols=80,
+        cwd=str(home),
+        history=[],
+        lease=None,
+        profile_home=None,
+    )
+
+    assert record["profile_home"] is None
+    assert record["profile_incarnation"] == incarnation
+    assert srv._profile_home_rejected(None, incarnation) is False
+    assert srv._profile_home_rejected(None, None) is True
+
+
+def test_delete_retry_recovers_incarnation_after_partial_rmtree(
+    home: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    profile_dir = profiles.create_profile("worker", no_alias=True, no_skills=True)
+    incarnation = profile_dir.joinpath(".profile-incarnation").read_text(
+        encoding="utf-8"
+    ).strip()
+    real_rmtree = profiles._rmtree_with_retry
+    attempts = 0
+
+    def partial_then_remove(path: Path, onerror) -> None:
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            path.joinpath(".profile-incarnation").unlink()
+            raise OSError("injected partial removal")
+        real_rmtree(path, onerror)
+
+    monkeypatch.setattr(profiles, "_rmtree_with_retry", partial_then_remove)
+
+    with pytest.raises(RuntimeError, match="Could not remove profile directory"):
+        profiles.delete_profile("worker", yes=True)
+
+    tombstone = profiles._profile_deletion_marker(profile_dir)
+    assert tombstone.read_text(encoding="utf-8").strip() == incarnation
+    assert not profile_dir.joinpath(".profile-incarnation").exists()
+
+    profiles.delete_profile("worker", yes=True)
+
+    assert attempts == 2
+    assert not profile_dir.exists()
+
+
+def test_live_session_reuse_is_scoped_to_profile_incarnation(
+    home: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    profile_dir = profiles.create_profile("worker", no_alias=True, no_skills=True)
+    current_incarnation = profile_dir.joinpath(".profile-incarnation").read_text(
+        encoding="utf-8"
+    ).strip()
+    old_record = {
+        "session_key": "shared-key",
+        "profile_home": str(profile_dir),
+        "profile_incarnation": "0" * 32,
+    }
+    current_record = {
+        "session_key": "shared-key",
+        "profile_home": str(profile_dir),
+        "profile_incarnation": current_incarnation,
+        "cwd": str(home),
+    }
+    monkeypatch.setattr(srv, "_register_session_cwd", lambda _record: None)
+    with srv._sessions_lock:
+        srv._sessions["old-runtime"] = old_record
+    try:
+        reused = srv._claim_or_reuse_live(
+            "new-runtime",
+            "shared-key",
+            current_record,
+            None,
+        )
+        assert reused is None
+        assert srv._sessions["new-runtime"] is current_record
+        assert srv._sessions["old-runtime"] is old_record
+    finally:
+        with srv._sessions_lock:
+            srv._sessions.pop("old-runtime", None)
+            srv._sessions.pop("new-runtime", None)
 
 
 def test_new_profile_stays_unpublished_until_initialization_completes(
@@ -942,6 +1333,7 @@ def test_delete_fences_and_closes_deferred_agent_build(
         "agent_ready": threading.Event(),
         "history": [],
         "profile_home": str(profile_dir),
+        "profile_incarnation": srv._capture_profile_incarnation(profile_dir),
         "session_key": "deferred-build",
     }
     with srv._sessions_lock:
