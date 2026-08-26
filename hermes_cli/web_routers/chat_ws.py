@@ -405,7 +405,8 @@ async def pty_ws(ws: WebSocket) -> None:
     from hermes_cli.web_server_chat import PTY_REGISTRY, PtyBridge, PtyUnavailableError, _PTY_BRIDGE_AVAILABLE, _RESIZE_RE
     from hermes_cli.web_server_chat import (
         _HOST_TERMINAL_META_PREFIX, _host_terminal_request_allowed,
-        _resolve_host_terminal_argv, _pty_query_dimension)
+        _resolve_host_terminal_argv)
+    from hermes_cli.web_host_terminal import query_dimension as _pty_query_dimension
     host_terminal = (ws.query_params.get("mode") or "").strip().lower() == "shell"
     label = "Terminal" if host_terminal else "Chat"
     gate = await _ws_gate(ws, "pty")
