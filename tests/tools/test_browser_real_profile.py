@@ -71,6 +71,97 @@ class TestRealProfileResolvers:
         with patch.object(bc, "_detect_default_linux", return_value=None):
             assert bc.detect_default_chromium("Linux") is None
 
+    def test_configured_chrome_pin_wins_over_non_chromium_default(
+        self, tmp_path, monkeypatch
+    ):
+        import hermes_cli.browser_connect as bc
+
+        home = tmp_path / "hermes-home"
+        home.mkdir()
+        (home / "config.yaml").write_text(
+            "browser:\n  real_profile_browser: '  ChRoMe  '\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HERMES_HOME", str(home))
+
+        with patch.object(bc, "detect_default_chromium", return_value=None) as detect:
+            browser, err = bc.resolve_real_profile_browser()
+        assert browser == "chrome"
+        assert err is None
+        detect.assert_not_called()
+
+    def test_invalid_configured_browser_pin_fails_closed(self):
+        import hermes_cli.browser_connect as bc
+        with patch.object(bc, "_read_real_profile_config_uncached", return_value={
+            "browser": {"real_profile_browser": "firefox"}
+        }), patch.object(bc, "detect_default_chromium", return_value="chrome") as detect:
+            browser, err = bc.resolve_real_profile_browser()
+        assert browser is None
+        assert err and "browser.real_profile_browser" in err
+        for allowed in ("chrome", "edge", "brave", "chromium"):
+            assert allowed in err
+        detect.assert_not_called()
+
+    @pytest.mark.parametrize(
+        "browser_config",
+        [
+            None,
+            [],
+            "chrome",
+            {"real_profile_browser": None},
+            {"real_profile_browser": True},
+            {"real_profile_browser": ["chrome"]},
+        ],
+    )
+    def test_malformed_browser_config_fails_closed(self, browser_config):
+        import hermes_cli.browser_connect as bc
+
+        with patch.object(bc, "_read_real_profile_config_uncached", return_value={
+            "browser": browser_config
+        }), patch.object(bc, "detect_default_chromium", return_value="chrome") as detect:
+            browser, err = bc.resolve_real_profile_browser()
+        assert browser is None
+        assert err and "browser.real_profile_browser" in err
+        detect.assert_not_called()
+
+    @pytest.mark.parametrize("config_text", ["browser: [", "- browser\n"])
+    def test_malformed_config_file_fails_closed(
+        self, config_text, tmp_path, monkeypatch
+    ):
+        import hermes_cli.browser_connect as bc
+
+        home = tmp_path / "hermes-home"
+        home.mkdir()
+        (home / "config.yaml").write_text(config_text, encoding="utf-8")
+        monkeypatch.setenv("HERMES_HOME", str(home))
+
+        with patch.object(bc, "detect_default_chromium", return_value="chrome") as detect:
+            browser, err = bc.resolve_real_profile_browser()
+        assert browser is None
+        assert err and "browser.real_profile_browser" in err
+        detect.assert_not_called()
+
+    @pytest.mark.parametrize("browser_config", [{}, {"real_profile_browser": ""}])
+    def test_empty_or_unset_browser_pin_uses_os_default(self, browser_config):
+        import hermes_cli.browser_connect as bc
+        with patch.object(bc, "_read_real_profile_config_uncached", return_value={
+            "browser": browser_config
+        }), patch.object(bc, "detect_default_chromium", return_value="brave") as detect:
+            browser, err = bc.resolve_real_profile_browser()
+        assert browser == "brave"
+        assert err is None
+        detect.assert_called_once_with()
+
+    def test_browser_pin_is_read_uncached_on_each_resolve(self):
+        import hermes_cli.browser_connect as bc
+        configs = [
+            {"browser": {"real_profile_browser": "chrome"}},
+            {"browser": {"real_profile_browser": "edge"}},
+        ]
+        with patch.object(bc, "_read_real_profile_config_uncached", side_effect=configs):
+            assert bc.resolve_real_profile_browser() == ("chrome", None)
+            assert bc.resolve_real_profile_browser() == ("edge", None)
+
 
 class TestSnapshotRealProfile:
     """Real file I/O: the snapshot copier against a synthetic profile tree."""
@@ -209,6 +300,64 @@ class TestRealProfileCdpLaunch:
             cdp, err = bt._real_profile_cdp()
         assert cdp is None
         assert err and "not a supported Chromium" in err
+        assert "browser.real_profile_browser" in err
+
+    def test_configured_pin_reaches_snapshot_when_os_default_is_firefox(self):
+        import tools.browser_tool as bt
+        self._reset()
+        with patch.object(bt, "_use_real_profile", return_value=True), \
+             patch("hermes_cli.browser_connect._read_real_profile_config_uncached", return_value={
+                 "browser": {"real_profile_browser": "chrome"}
+             }), \
+             patch("hermes_cli.browser_connect.detect_default_chromium", return_value=None), \
+             patch("hermes_cli.browser_connect.real_profile_copy_dir", return_value="/copy/chrome"), \
+             patch.object(bt, "_agent_browser_get_cdp", return_value=None), \
+             patch("hermes_cli.browser_connect.snapshot_real_profile",
+                   return_value=(None, "snapshot reached")) as snapshot:
+            cdp, err = bt._real_profile_cdp()
+        assert cdp is None
+        assert err and "snapshot reached" in err
+        snapshot.assert_called_once_with("chrome")
+
+    def test_invalid_configured_pin_blocks_snapshot(self):
+        import tools.browser_tool as bt
+        self._reset()
+        with patch.object(bt, "_use_real_profile", return_value=True), \
+             patch("hermes_cli.browser_connect._read_real_profile_config_uncached", return_value={
+                 "browser": {"real_profile_browser": "firefox"}
+             }), \
+             patch("hermes_cli.browser_connect.detect_default_chromium", return_value="chrome"), \
+             patch("hermes_cli.browser_connect.snapshot_real_profile") as snapshot:
+            cdp, err = bt._real_profile_cdp()
+        assert cdp is None
+        assert err and "browser.real_profile_browser" in err
+        snapshot.assert_not_called()
+        self._reset()
+
+    def test_cached_cdp_is_scoped_to_the_profile_copy_dir(self):
+        """A multiplexed profile must not inherit another profile's cookies."""
+        import tools.browser_tool as bt
+
+        self._reset()
+        bt._real_profile_cdp_cache.update({
+            "cdp": "http://127.0.0.1:41000",
+            "browser": "chrome",
+            "copy_dir": "/profile-a/browser-profile/chrome",
+        })
+        with patch.object(bt, "_use_real_profile", return_value=True), \
+             patch("hermes_cli.browser_connect.resolve_real_profile_browser",
+                   return_value=("chrome", None)), \
+             patch("hermes_cli.browser_connect.real_profile_copy_dir",
+                   return_value="/profile-b/browser-profile/chrome"), \
+             patch.object(bt, "_cdp_http_ready", return_value=True), \
+             patch.object(bt, "_agent_browser_get_cdp", return_value=None), \
+             patch("hermes_cli.browser_connect.snapshot_real_profile",
+                   return_value=(None, "snapshot reached")) as snapshot:
+            cdp, err = bt._real_profile_cdp()
+        assert cdp is None
+        assert err and "snapshot reached" in err
+        snapshot.assert_called_once_with("chrome")
+        self._reset()
 
     def test_snapshot_failure_fails_closed(self):
         import tools.browser_tool as bt
@@ -368,6 +517,38 @@ class TestConsentConfigRead:
         with patch("hermes_cli.config.read_raw_config",
                    return_value={"browser": {"use_real_profile": False}}):
             assert bt._use_real_profile() is False
+
+
+class TestCloseProfileCommand:
+    def test_without_browser_flag_uses_configured_pin(self, monkeypatch):
+        import sys
+        import hermes_cli.browser_connect as bc
+        import hermes_cli.main as cli
+
+        monkeypatch.setattr(sys, "argv", ["hermes", "browser", "close-profile"])
+        monkeypatch.setattr(cli, "_set_process_title", lambda: None)
+        monkeypatch.setattr(cli, "_cleanup_quarantined_exes", lambda: None)
+        monkeypatch.setattr(cli, "_sweep_stale_bytecode_if_checkout_changed", lambda: None)
+        monkeypatch.setattr(cli, "_recover_from_interrupted_install", lambda: None)
+        monkeypatch.setattr(cli, "_warn_pending_fleet_restart_on_startup", lambda: None)
+        monkeypatch.setattr(cli, "_try_termux_fast_tui_launch", lambda: False)
+        monkeypatch.setattr(cli, "_try_termux_fast_cli_launch", lambda: False)
+        monkeypatch.setattr(cli, "_try_fast_chat_launch", lambda: False)
+        monkeypatch.setattr(cli, "_prepare_agent_startup", lambda args: None)
+
+        with patch("hermes_cli.config.get_container_exec_info", return_value=None), \
+             patch.object(bc, "_read_real_profile_config_uncached", return_value={
+                 "browser": {"real_profile_browser": "chrome"}
+             }), \
+             patch.object(bc, "detect_default_chromium", return_value=None) as detect, \
+             patch.object(bc, "real_profile_data_dir", return_value="/profiles/chrome") as data_dir, \
+             patch.object(bc, "close_browser_holding_profile",
+                          return_value=(True, "closed")) as close:
+            cli.main()
+
+        detect.assert_not_called()
+        data_dir.assert_called_once_with("chrome")
+        close.assert_called_once_with("/profiles/chrome")
 
 
 class TestLocalSessionRealProfile:

@@ -1632,7 +1632,7 @@ def _agent_browser_close_session(session_name: str) -> None:
 def _real_profile_cdp() -> tuple:
     """Resolve ``(cdp_url, error)`` for consented real-profile browsing.
 
-    Snapshots the user's default-Chromium profile into a hermes-owned copy
+    Snapshots the user's selected Chromium profile into a hermes-owned copy
     (auth/login state only), then has agent-browser launch its packaged
     Chromium on that copy and returns the HTTP CDP endpoint for the browser-use
     harness to attach to. The copy is a non-default dir, so it sidesteps the
@@ -1642,7 +1642,7 @@ def _real_profile_cdp() -> tuple:
 
     A single shared agent-browser session is reused across calls (its CDP URL
     is cached and re-validated). Returns ``(None, message)`` fail-closed when
-    the default browser is non-Chromium or the snapshot/launch fails;
+    browser resolution fails or the snapshot/launch fails;
     ``(None, None)`` when consent is off.
     """
     if not _use_real_profile():
@@ -1657,6 +1657,8 @@ def _real_profile_cdp() -> tuple:
         except Exception as e:
             logger.debug("real-profile cleanup-on-consent-off failed: %s", e)
         _real_profile_cdp_cache.pop("cdp", None)
+        _real_profile_cdp_cache.pop("browser", None)
+        _real_profile_cdp_cache.pop("copy_dir", None)
         return None, None
 
     # Lightpanda cannot load a Chromium profile — agent-browser rejects
@@ -1674,26 +1676,24 @@ def _real_profile_cdp() -> tuple:
 
     from hermes_cli.browser_connect import (
         UNSUPPORTED_CHANNEL,
-        detect_default_chromium,
         real_profile_copy_dir,
+        resolve_real_profile_browser,
         snapshot_real_profile,
     )
 
-    with _real_profile_cdp_lock:
-        # Reuse a live copy-browser from an earlier call this process made.
-        cached = _real_profile_cdp_cache.get("cdp")
-        if cached and _cdp_http_ready(cached):
-            return cached, None
-        _real_profile_cdp_cache.pop("cdp", None)
+    browser, resolve_error = resolve_real_profile_browser()
+    if resolve_error:
+        return None, resolve_error
 
-        browser = detect_default_chromium()
+    with _real_profile_cdp_lock:
         if browser is None:
             return None, (
                 "browser.use_real_profile is on, but your default browser is not a "
                 "supported Chromium browser (Chrome, Edge, Brave, Brave Origin, "
                 "Chromium). "
-                "Real-profile browsing requires a Chromium default; set one or turn "
-                "the toggle off."
+                "Set browser.real_profile_browser to chrome, edge, brave, "
+                "brave-origin, or chromium to pin one without changing your OS default, or turn the "
+                "toggle off."
             )
         if browser == UNSUPPORTED_CHANNEL:
             # A recognized pre-release channel (Beta/Dev/Canary) is the OS
@@ -1704,10 +1704,32 @@ def _real_profile_cdp() -> tuple:
             return None, (
                 "browser.use_real_profile is on, but your default browser is a "
                 "pre-release Chromium channel (Beta / Dev / Canary), which "
-                "real-profile browsing does not support. Set your default to a "
-                "stable Chrome / Edge / Brave / Brave Origin / Chromium, or turn "
+                "real-profile browsing does not support. Set "
+                "browser.real_profile_browser to chrome, edge, brave, brave-origin, "
+                "or chromium to pin a stable browser, change your OS default, or turn "
                 "the toggle off."
             )
+
+        # The same browser family can be selected by multiple multiplexed Hermes
+        # profiles, whose snapshots live under different HERMES_HOME roots. Bind
+        # reuse to the selected copy path as well as the browser key so one
+        # profile can never inherit another profile's snapshotted credentials.
+        copy_dir = real_profile_copy_dir(browser)
+
+        # Reuse a live copy-browser from an earlier call this process made only
+        # when it belongs to the browser selected by the current uncached config
+        # read. A changed pin must never keep driving the previous principal.
+        cached = _real_profile_cdp_cache.get("cdp")
+        if (
+            cached
+            and _real_profile_cdp_cache.get("browser") == browser
+            and _real_profile_cdp_cache.get("copy_dir") == copy_dir
+            and _cdp_http_ready(cached)
+        ):
+            return cached, None
+        _real_profile_cdp_cache.pop("cdp", None)
+        _real_profile_cdp_cache.pop("browser", None)
+        _real_profile_cdp_cache.pop("copy_dir", None)
 
         # Reuse BEFORE writing anything. A shared copy-browser may already be up
         # from a previous hermes process; if it is driving OUR copy dir, hand it
@@ -1718,10 +1740,11 @@ def _real_profile_cdp() -> tuple:
         # as a PATH only (no copy), probe reuse, and return early on a hit. The
         # snapshot/overlay happens solely on the relaunch path below, when no
         # live browser owns the dir.
-        copy_dir = real_profile_copy_dir(browser)
         existing = _agent_browser_get_cdp(_REAL_PROFILE_SESSION)
         if existing and _cdp_http_ready(existing) and _cdp_on_data_dir(existing, copy_dir):
             _real_profile_cdp_cache["cdp"] = existing
+            _real_profile_cdp_cache["browser"] = browser
+            _real_profile_cdp_cache["copy_dir"] = copy_dir
             return existing, None
         if existing:
             # Stale/wrong-dir session (throwaway-temp fallback, or an old copy):
@@ -1906,6 +1929,8 @@ def _real_profile_cdp() -> tuple:
                 "the toggle off."
             )
         _real_profile_cdp_cache["cdp"] = cdp
+        _real_profile_cdp_cache["browser"] = browser
+        _real_profile_cdp_cache["copy_dir"] = copy_dir
         logger.info("real-profile browser ready for %s at %s (%s)", browser, cdp, copy_dir)
         return cdp, None
 
