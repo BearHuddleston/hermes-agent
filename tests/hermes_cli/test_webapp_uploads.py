@@ -2,12 +2,14 @@ from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
+from io import BytesIO
 import os
 from pathlib import Path
 import shutil
 import threading
 
 import pytest
+from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
 from hermes_cli import profile_incarnation, profiles, web_server
@@ -86,6 +88,34 @@ def test_browser_upload_rejects_oversize_without_leaving_partial_file(
     assert response.json()["detail"] == "File is too large; cap is 16 MiB"
     upload_root = tmp_path / "hermes-home" / "uploads"
     assert not upload_root.exists() or list(upload_root.iterdir()) == []
+
+
+def test_browser_file_cleanup_failure_preserves_primary_staging_error(
+    tmp_path: Path, monkeypatch
+):
+    home = tmp_path / "hermes-home"
+    home.mkdir()
+    real_open = uploads.os.open
+    real_unlink = Path.unlink
+
+    def fail_target_open(path, *args, **kwargs):
+        if Path(path).parent == home / "uploads":
+            raise PermissionError("target open denied")
+        return real_open(path, *args, **kwargs)
+
+    def fail_target_cleanup(path: Path, *args, **kwargs):
+        if path.parent == home / "uploads":
+            raise OSError("target cleanup denied")
+        return real_unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(uploads.os, "open", fail_target_open)
+    monkeypatch.setattr(Path, "unlink", fail_target_cleanup)
+
+    with pytest.raises(HTTPException) as exc_info:
+        uploads._publish_staged_upload(BytesIO(b"bytes"), home, None, "notes.txt")
+
+    assert exc_info.value.status_code == 500
+    assert exc_info.value.detail == "Could not stage file: target open denied"
 
 
 def test_largest_browser_upload_is_readable_by_attachment_flow(
