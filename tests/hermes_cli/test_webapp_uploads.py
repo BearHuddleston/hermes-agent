@@ -196,7 +196,7 @@ def _assert_browser_file_upload_cannot_publish_into_recreated_profile(
             resume_publish.set()
 
         stale_response = stale_request.result(timeout=5)
-        assert stale_response.status_code == 404
+        assert stale_response.status_code == 404, stale_response.text
         assert not (recreated_home / "uploads").exists()
 
         current_response = client.post(
