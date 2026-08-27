@@ -126,7 +126,10 @@ def _publish_staged_upload(
                 completed = True
             finally:
                 if not completed and target is not None:
-                    target.unlink(missing_ok=True)
+                    try:
+                        target.unlink(missing_ok=True)
+                    except OSError:
+                        pass
             return target
     except FileNotFoundError as exc:
         raise HTTPException(
