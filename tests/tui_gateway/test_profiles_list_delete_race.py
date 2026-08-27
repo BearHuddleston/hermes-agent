@@ -14,7 +14,7 @@ import pytest
 
 import hermes_state
 import tui_gateway.server as srv
-from hermes_cli import config, profiles
+from hermes_cli import config, profile_lifecycle, profiles
 from hermes_constants import reset_hermes_home_override, set_hermes_home_override
 from hermes_state import SessionDB
 
@@ -349,8 +349,8 @@ def test_stale_session_incarnation_cannot_write_into_recreated_profile(
 
 def _attempt_cross_process_profile_recreate(home: Path) -> subprocess.CompletedProcess[str]:
     script = (
-        "from hermes_cli import profiles; "
-        "profiles._PROFILE_LIFECYCLE_LOCK_TIMEOUT_SECONDS=0.2; "
+        "from hermes_cli import profile_lifecycle, profiles; "
+        "profile_lifecycle._PROFILE_LIFECYCLE_LOCK_TIMEOUT_SECONDS=0.2; "
         "\ntry:\n profiles.delete_profile('worker', yes=True)\n"
         "except TimeoutError:\n raise SystemExit(0)\n"
         "profile=profiles.create_profile('worker', no_alias=True, no_skills=True); "
@@ -954,13 +954,13 @@ def test_failed_partial_delete_stays_tombstoned(
 def _assert_profile_mutation_lock_is_cross_process(home: Path) -> None:
     profile_dir = home / "profiles" / "locked"
     script = (
-        "from hermes_cli import profiles; "
-        "profiles._PROFILE_LIFECYCLE_LOCK_TIMEOUT_SECONDS=0.1; "
+        "from hermes_cli import profile_lifecycle, profiles; "
+        "profile_lifecycle._PROFILE_LIFECYCLE_LOCK_TIMEOUT_SECONDS=0.1; "
         "\ntry:\n profiles.create_profile('locked', no_alias=True, no_skills=True)\n"
         "except TimeoutError:\n raise SystemExit(0)\nraise SystemExit(1)"
     )
 
-    with profiles._cross_process_profile_mutation_lock():
+    with profile_lifecycle._cross_process_profile_mutation_lock():
         result = subprocess.run(
             [sys.executable, "-c", script],
             env={**os.environ, "HERMES_HOME": str(home)},
@@ -998,7 +998,11 @@ def test_interactive_delete_confirmation_does_not_hold_lifecycle_lock(
         def __exit__(self, *_args) -> None:
             return None
 
-    monkeypatch.setattr(profiles, "_cross_process_profile_mutation_lock", MustNotEnter)
+    monkeypatch.setattr(
+        profile_lifecycle,
+        "_cross_process_profile_mutation_lock",
+        MustNotEnter,
+    )
     monkeypatch.setattr("builtins.input", lambda _prompt: "cancel")
 
     assert profiles.delete_profile("worker", yes=False) == profile_dir
@@ -1034,7 +1038,11 @@ def test_untracked_live_sessiondb_makes_delete_fail_closed_until_retry(
     profile_dir = home / "profiles" / "worker"
     profile_dir.mkdir(parents=True)
     db = SessionDB(db_path=profile_dir / "state.db")
-    monkeypatch.setattr(profiles, "_PROFILE_DB_RELEASE_TIMEOUT_SECONDS", 0.1)
+    monkeypatch.setattr(
+        profile_lifecycle,
+        "_PROFILE_DB_RELEASE_TIMEOUT_SECONDS",
+        0.1,
+    )
 
     with pytest.raises(RuntimeError, match="still in use"):
         profiles.delete_profile("worker", yes=True)
@@ -1057,7 +1065,11 @@ def test_external_profile_handle_blocks_rename_until_released(
     old_dir.mkdir(parents=True)
     db_path = old_dir / "state.db"
     SessionDB(db_path=db_path).close()
-    monkeypatch.setattr(profiles, "_PROFILE_DB_RELEASE_TIMEOUT_SECONDS", 0.1)
+    monkeypatch.setattr(
+        profile_lifecycle,
+        "_PROFILE_DB_RELEASE_TIMEOUT_SECONDS",
+        0.1,
+    )
     script = (
         "import os,sys; from pathlib import Path; from hermes_state import SessionDB; "
         "db=SessionDB(db_path=Path(os.environ['TARGET_DB'])); "

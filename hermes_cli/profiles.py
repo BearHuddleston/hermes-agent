@@ -11,11 +11,8 @@ import shutil
 import stat
 import subprocess
 import sys
-import threading
 import time
-from contextlib import contextmanager
 from dataclasses import dataclass
-from functools import wraps
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
@@ -24,6 +21,17 @@ from hermes_cli.archive_safe import archive_root_dirs, make_targz, normalize_arc
 from hermes_cli.profile_incarnation import (
     PROFILE_INCARNATION_FILENAME, ensure_profile_incarnation, read_incarnation_marker,
     read_profile_incarnation, write_fresh_profile_incarnation)
+from hermes_cli.profile_lifecycle import (
+    begin_profile_retirement,
+    create_profile_generation,
+    import_profile_generation,
+    move_profile_generation,
+    profile_deletion_marker,
+    profile_home_is_tombstoned,
+    profile_lifecycle_lease,
+    serialized_profile_mutation,
+    verify_profile_resources_released,
+)
 from hermes_constants import clear_named_profile_deleted, named_profile_is_deleted
 
 logger = logging.getLogger(__name__)
@@ -74,299 +82,6 @@ _PLACEHOLDER_ENV = (
     "# API keys and tokens set here override the shell environment.\n"
     "# Behavioral settings belong in config.yaml, not here.\n"
 )
-
-
-# Serialize profile mutations in this process. Readers do not take this lock:
-# observation paths use SQLite read-only mode, while writable SessionDB opens
-# reject the durable deletion marker below.
-_PROFILE_LIFECYCLE_LOCK = threading.RLock()
-_PROFILE_MUTATION_LOCAL = threading.local()
-_PROFILE_LIFECYCLE_LOCK_TIMEOUT_SECONDS = 120.0
-_PROFILE_DB_RELEASE_TIMEOUT_SECONDS = 5.0
-
-
-def _profile_lifecycle_modes() -> tuple[int, int]:
-    """Return directory/file modes compatible with managed shared roots."""
-    try:
-        group_shared = bool(_get_profiles_root().stat().st_mode & stat.S_IWGRP)
-    except OSError:
-        group_shared = False
-    return (0o770, 0o660) if group_shared else (0o700, 0o600)
-
-
-@contextmanager
-def _cross_process_profile_mutation_lock():
-    """Serialize create/delete/rename across Hermes processes on this host."""
-    lock_path = _get_profiles_root() / ".profile-lifecycle.lock"
-    _, file_mode = _profile_lifecycle_modes()
-    lock_path.parent.mkdir(parents=True, exist_ok=True)
-    handle = open(lock_path, "a+b")
-    try:
-        os.chmod(lock_path, file_mode)
-    except OSError:
-        pass
-    acquired = False
-    try:
-        deadline = time.monotonic() + _PROFILE_LIFECYCLE_LOCK_TIMEOUT_SECONDS
-        while True:
-            try:
-                if sys.platform == "win32":
-                    import msvcrt
-
-                    handle.seek(0, os.SEEK_END)
-                    if handle.tell() == 0:
-                        handle.write(b"\0")
-                        handle.flush()
-                    handle.seek(0)
-                    msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
-                else:
-                    import fcntl
-
-                    fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-                acquired = True
-                break
-            except (BlockingIOError, OSError):
-                if time.monotonic() >= deadline:
-                    raise TimeoutError(
-                        f"Timed out waiting for profile lifecycle lock: {lock_path}"
-                    )
-                time.sleep(0.05)
-        yield
-    finally:
-        if acquired:
-            try:
-                if sys.platform == "win32":
-                    import msvcrt
-
-                    handle.seek(0)
-                    msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
-                else:
-                    import fcntl
-
-                    fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
-            except OSError:
-                pass
-        handle.close()
-
-
-@contextmanager
-def profile_lifecycle_lease():
-    """Exclude profile create/delete/rename while binding a named resource.
-
-    Lock order is lifecycle first, then any gateway session/resource lock.
-    Nested profile operations on the same thread reuse the outer cross-process
-    lease so create/import/delete helpers remain re-entrant.
-    """
-    with _PROFILE_LIFECYCLE_LOCK:
-        depth = int(getattr(_PROFILE_MUTATION_LOCAL, "depth", 0))
-        if depth:
-            _PROFILE_MUTATION_LOCAL.depth = depth + 1
-            try:
-                yield
-            finally:
-                _PROFILE_MUTATION_LOCAL.depth = depth
-            return
-        with _cross_process_profile_mutation_lock():
-            _PROFILE_MUTATION_LOCAL.depth = 1
-            try:
-                yield
-            finally:
-                _PROFILE_MUTATION_LOCAL.depth = 0
-
-
-def _serialized_profile_mutation(func):
-    @wraps(func)
-    def wrapped(*args, **kwargs):
-        with profile_lifecycle_lease():
-            return func(*args, **kwargs)
-
-    return wrapped
-
-
-def _profile_deletion_marker(profile_dir: Path) -> Path:
-    from hermes_constants import profile_deletion_marker_path
-
-    marker = profile_deletion_marker_path(profile_dir)
-    if marker is None:
-        raise ValueError(f"Not a named profile home: {profile_dir}")
-    return marker
-
-
-def _mark_profile_deleting(
-    profile_dir: Path,
-    profile_incarnation: str | None = None,
-) -> Path:
-    """Publish a durable cross-process guard before tearing a profile down."""
-    marker = _profile_deletion_marker(profile_dir)
-    directory_mode, file_mode = _profile_lifecycle_modes()
-    marker.parent.mkdir(mode=directory_mode, parents=True, exist_ok=True)
-    try:
-        marker.parent.chmod(directory_mode)
-    except OSError:
-        pass
-    if profile_incarnation is None:
-        marker.touch(exist_ok=True)
-    else:
-        temp = marker.with_name(
-            f".{marker.name}.{os.getpid()}.{secrets.token_hex(6)}.tmp"
-        )
-        try:
-            fd = os.open(temp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, file_mode)
-            with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as handle:
-                handle.write(profile_incarnation + "\n")
-                handle.flush()
-                os.fsync(handle.fileno())
-            os.replace(temp, marker)
-        finally:
-            temp.unlink(missing_ok=True)
-    try:
-        marker.chmod(file_mode)
-    except OSError:
-        pass
-    return marker
-
-
-def _clear_profile_deletion_marker(profile_dir: Path) -> None:
-    marker = _profile_deletion_marker(profile_dir)
-    marker.unlink(missing_ok=True)
-    try:
-        marker.parent.rmdir()
-    except OSError:
-        pass
-
-
-def profile_home_is_tombstoned(profile_dir: Path | str) -> bool:
-    """Return whether profile deletion has been committed for this home."""
-    from hermes_constants import profile_deletion_marker_path
-
-    path = Path(profile_dir)
-    marker = profile_deletion_marker_path(path)
-    return marker is not None and marker.is_file()
-
-
-def _retire_in_process_profile_resources(
-    profile_dir: Path,
-    profile_incarnation: str | None = None,
-) -> int:
-    """Close current-process sessions/caches retaining a profile home."""
-    retired = 0
-    retire_error: Exception | None = None
-    gateway_server = sys.modules.get("tui_gateway.server")
-    retire_sessions = getattr(gateway_server, "retire_profile_home", None)
-    if callable(retire_sessions):
-        try:
-            result = retire_sessions(
-                profile_dir,
-                profile_incarnation=profile_incarnation,
-            )
-            if isinstance(result, int) and not isinstance(result, bool):
-                retired += max(0, result)
-        except Exception as exc:
-            logger.debug("Failed to retire in-process profile sessions", exc_info=True)
-            retire_error = exc
-
-    goals_module = sys.modules.get("hermes_cli.goals")
-    release_goals_db = getattr(goals_module, "release_session_db_for_home", None)
-    if callable(release_goals_db):
-        try:
-            retired += int(bool(release_goals_db(profile_dir)))
-        except Exception:
-            logger.debug("Failed to release cached profile SessionDB", exc_info=True)
-
-    try:
-        from plugins.memory.holographic.store import MemoryStore
-
-        retired += max(0, int(MemoryStore.release_all_under(profile_dir) or 0))
-    except Exception:
-        logger.debug("Failed to release profile memory-store connections", exc_info=True)
-    if retire_error is not None:
-        raise retire_error
-    return retired
-
-
-def _allow_in_process_profile_resources(
-    profile_dir: Path,
-    profile_incarnation: str | None = None,
-) -> None:
-    gateway_server = sys.modules.get("tui_gateway.server")
-    allow_profile = getattr(gateway_server, "allow_profile_home", None)
-    if callable(allow_profile):
-        try:
-            allow_profile(
-                profile_dir,
-                profile_incarnation=profile_incarnation,
-            )
-        except Exception:
-            logger.debug("Failed to admit recreated profile home", exc_info=True)
-
-
-def _wait_for_profile_state_db_release(profile_dir: Path) -> bool:
-    """Wait briefly for tracked in-process state.db handles to close."""
-    from hermes_cli.sqlite_safe_read import has_live_connection
-
-    db_path = profile_dir / "state.db"
-    deadline = time.monotonic() + _PROFILE_DB_RELEASE_TIMEOUT_SECONDS
-    while has_live_connection(db_path):
-        if time.monotonic() >= deadline:
-            return False
-        time.sleep(0.05)
-    return True
-
-
-def _external_profile_file_holders(profile_dir: Path) -> list[int]:
-    """Same-user external PIDs with an open file anywhere under ``profile_dir``."""
-    try:
-        import psutil  # type: ignore
-    except Exception:
-        return []
-    try:
-        root = profile_dir.resolve()
-    except OSError:
-        root = profile_dir
-    try:
-        current_user = psutil.Process(os.getpid()).username()
-    except Exception:
-        current_user = None
-
-    holders: list[int] = []
-    for proc in psutil.process_iter(["pid", "username", "open_files"]):
-        try:
-            info = proc.info
-            pid = info.get("pid")
-            if not isinstance(pid, int) or pid == os.getpid():
-                continue
-            process_user = info.get("username")
-            if current_user is not None and process_user is not None and process_user != current_user:
-                continue
-            files = info.get("open_files")
-            if files is None:
-                files = proc.open_files()
-            for opened in files or []:
-                raw = getattr(opened, "path", "")
-                if not raw:
-                    continue
-                try:
-                    path = Path(raw).resolve()
-                except OSError:
-                    path = Path(raw)
-                if path == root or root in path.parents:
-                    holders.append(pid)
-                    break
-        except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
-            continue
-        except Exception:
-            continue
-    return holders
-
-
-def _wait_for_external_profile_file_release(profile_dir: Path) -> list[int]:
-    """Return remaining external holders after a bounded release grace."""
-    deadline = time.monotonic() + _PROFILE_DB_RELEASE_TIMEOUT_SECONDS
-    while True:
-        holders = _external_profile_file_holders(profile_dir)
-        if not holders or time.monotonic() >= deadline:
-            return holders
-        time.sleep(0.05)
 
 
 def _clone_all_copytree_ignore(source_dir: Path):
@@ -918,7 +633,7 @@ def read_profile_meta(profile_dir: Path) -> dict:
     }
 
 
-@_serialized_profile_mutation
+@serialized_profile_mutation
 def write_profile_meta(
     profile_dir: Path, *, description: Optional[str] = None, description_auto: Optional[bool] = None,
     display_name: Optional[str] = None,
@@ -1185,7 +900,7 @@ def _initialize_profile(
     return profile_dir
 
 
-@_serialized_profile_mutation
+@serialized_profile_mutation
 def create_profile(
     name: str,
     clone_from: Optional[str] = None,
@@ -1199,19 +914,9 @@ def create_profile(
     canon = normalize_profile_name(name)
     validate_profile_name(canon)
     profile_dir = get_profile_dir(canon)
-    if profile_dir.exists():
-        raise FileExistsError(f"Profile '{canon}' already exists at {profile_dir}")
 
-    prior_tombstone = profile_home_is_tombstoned(profile_dir)
-    _mark_profile_deleting(profile_dir)
-    staging_root = _get_profiles_root() / ".profile-creating"
-    staging_parent = staging_root / f"{canon}-{os.getpid()}-{secrets.token_hex(6)}"
-    staging_dir = staging_parent / canon
-    moved_to_final = False
-    incarnation: str | None = None
-    try:
-        staging_parent.mkdir(parents=True, exist_ok=False)
-        created = _initialize_profile(
+    def initialize(staging_dir: Path) -> Path:
+        return _initialize_profile(
             name,
             clone_from=clone_from,
             clone_all=clone_all,
@@ -1221,37 +926,13 @@ def create_profile(
             description=description,
             _target_dir=staging_dir,
         )
-        if created != staging_dir:
-            raise RuntimeError(f"Profile initialization targeted unexpected path: {created}")
-        if profile_dir.exists():
-            raise FileExistsError(f"Profile '{canon}' appeared during initialization")
-        os.replace(staging_dir, profile_dir)
-        moved_to_final = True
-        incarnation = read_profile_incarnation(profile_dir)
-        if incarnation is None:
-            raise RuntimeError(f"Published profile has no incarnation: {profile_dir}")
-        _clear_profile_deletion_marker(profile_dir)
-    except Exception:
-        cleanup_complete = not moved_to_final and not profile_dir.exists()
-        if moved_to_final and profile_dir.exists():
-            try:
-                shutil.rmtree(profile_dir)
-                cleanup_complete = True
-            except Exception:
-                logger.exception("Could not remove unpublished profile %s", profile_dir)
-        if not prior_tombstone and cleanup_complete:
-            _clear_profile_deletion_marker(profile_dir)
-        raise
-    finally:
-        shutil.rmtree(staging_parent, ignore_errors=True)
-        try:
-            staging_root.rmdir()
-        except OSError:
-            pass
 
-    # Publication boundary: every file/config/meta step above completed while
-    # readers saw only a hidden staging home plus the final-path tombstone.
-    _allow_in_process_profile_resources(profile_dir, incarnation)
+    create_profile_generation(
+        canon,
+        profile_dir,
+        _get_profiles_root(),
+        initialize,
+    )
     _maybe_register_gateway_service(canon)
     return profile_dir
 
@@ -1567,7 +1248,7 @@ def delete_profile(name: str, yes: bool = False) -> Path:
     return _delete_profile_confirmed(canon, profile_dir, confirmed_identity)
 
 
-@_serialized_profile_mutation
+@serialized_profile_mutation
 def _delete_profile_confirmed(
     canon: str,
     profile_dir: Path,
@@ -1587,7 +1268,7 @@ def _delete_profile_confirmed(
     profile_incarnation = read_profile_incarnation(profile_dir)
     if profile_incarnation is None and profile_home_is_tombstoned(profile_dir):
         profile_incarnation = read_incarnation_marker(
-            _profile_deletion_marker(profile_dir)
+            profile_deletion_marker(profile_dir)
         )
     if profile_incarnation is None:
         profile_incarnation = ensure_profile_incarnation(profile_dir)
@@ -1598,10 +1279,10 @@ def _delete_profile_confirmed(
     # Publish the tombstone BEFORE closing in-process sessions: finalization
     # may attempt one last DB write, and stale workers in this or another
     # process must fail closed rather than recreate the profile during rmtree.
-    _mark_profile_deleting(profile_dir, profile_incarnation)
-    retired = _retire_in_process_profile_resources(
+    retired = begin_profile_retirement(
         profile_dir,
         profile_incarnation,
+        rollback_on_failure=False,
     )
     if retired:
         print(f"✓ Retired {retired} in-process profile resource(s)")
@@ -1624,23 +1305,12 @@ def _delete_profile_confirmed(
     # guard — resurrected the deleted tree.
     _stop_profile_backends(canon, profile_dir)
 
-    # Any other in-process SessionDB opener that raced the tombstone must drain
-    # before rmtree. If a handle remains, roll back the marker (the directory is
-    # still intact) and surface a retryable error rather than reporting success.
-    if not _wait_for_profile_state_db_release(profile_dir):
-        _clear_profile_deletion_marker(profile_dir)
-        _allow_in_process_profile_resources(profile_dir, profile_incarnation)
-        raise RuntimeError(
-            f"Profile '{canon}' is still in use by this Hermes process; retry deletion."
-        )
-    external_holders = _wait_for_external_profile_file_release(profile_dir)
-    if external_holders:
-        _clear_profile_deletion_marker(profile_dir)
-        _allow_in_process_profile_resources(profile_dir, profile_incarnation)
-        raise RuntimeError(
-            f"Profile '{canon}' is still in use by external process(es) "
-            f"{', '.join(str(pid) for pid in external_holders)}; retry deletion."
-        )
+    verify_profile_resources_released(
+        profile_dir,
+        profile_incarnation,
+        subject=f"Profile '{canon}'",
+        retry_action="deletion",
+    )
 
     # 3. Remove wrapper script
     if has_wrapper:
@@ -1822,7 +1492,7 @@ def get_active_profile() -> str:
         return "default"
 
 
-@_serialized_profile_mutation
+@serialized_profile_mutation
 def set_active_profile(name: str) -> None:
     """Set the sticky active profile (``default`` = remove the file)."""
     canon = _canon_valid(name)
@@ -2026,7 +1696,7 @@ def export_profile(name: str, output_path: str, extra_files: Optional[Dict[str, 
         return Path(make_targz(base, tmpdir, canon))
 
 
-@_serialized_profile_mutation
+@serialized_profile_mutation
 def _import_profile_into_home(
     archive: Path,
     archive_root: str,
@@ -2035,13 +1705,9 @@ def _import_profile_into_home(
 ) -> Path:
     import tempfile
 
-    if profile_dir.exists():
-        raise FileExistsError(f"Profile '{canon}' already exists at {profile_dir}")
     _get_profiles_root().mkdir(parents=True, exist_ok=True)
-    had_tombstone = profile_home_is_tombstoned(profile_dir)
-    _mark_profile_deleting(profile_dir)
-    incarnation: str | None = None
-    try:
+
+    def build_and_move() -> str:
         with tempfile.TemporaryDirectory(prefix="hermes_profile_import_") as tmpdir:
             staging_root = Path(tmpdir)
             safe_extract_targz(archive, staging_root)
@@ -2054,18 +1720,13 @@ def _import_profile_into_home(
                 extracted.rename(final_source)
             incarnation = write_fresh_profile_incarnation(final_source)
             shutil.move(str(final_source), str(profile_dir))
-    except Exception:
-        if not had_tombstone and not profile_dir.exists():
-            _clear_profile_deletion_marker(profile_dir)
-        raise
-    _clear_profile_deletion_marker(profile_dir)
-    _allow_in_process_profile_resources(profile_dir, incarnation)
-    return profile_dir
+            return incarnation
+
+    return import_profile_generation(canon, profile_dir, build_and_move)
 
 
 def import_profile(archive_path: str, name: Optional[str] = None) -> Path:
     """Import a profile from a tar.gz archive."""
-    import tempfile
     archive = Path(archive_path)
     if not archive.exists():
         raise FileNotFoundError(f"Archive not found: {archive}")
@@ -2088,22 +1749,7 @@ def import_profile(archive_path: str, name: Optional[str] = None) -> Path:
             "Cannot import as 'default' — that is the built-in root profile (~/.hermes). "
             "Specify a different name: hermes profile import <archive> --name <name>"
         )
-    profile_dir = get_profile_dir(canon)
-    if profile_dir.exists():
-        raise FileExistsError(f"Profile '{canon}' already exists at {profile_dir}")
-    _get_profiles_root().mkdir(parents=True, exist_ok=True)
-    with tempfile.TemporaryDirectory(prefix="hermes_profile_import_") as tmpdir:
-        staging_root = Path(tmpdir)
-        safe_extract_targz(archive, staging_root)
-        extracted = staging_root / archive_root
-        if not extracted.is_dir():
-            raise ValueError(f"Profile archive root is missing or invalid: {archive_root}")
-        final_source = extracted
-        if archive_root != canon:
-            final_source = staging_root / canon
-            extracted.rename(final_source)
-        shutil.move(str(final_source), str(profile_dir))
-    return profile_dir
+    return _import_profile_into_home(archive, archive_root, canon, get_profile_dir(canon))
 
 
 # Rename
@@ -2170,7 +1816,7 @@ def _finish_profile_rename(old_canon: str, new_canon: str, old_dir: Path, new_di
     else:
         print(f"⚠ Cannot create alias '{new_canon}' — {collision}")
 
-@_serialized_profile_mutation
+@serialized_profile_mutation
 def rename_profile(old_name: str, new_name: str) -> Path:
     """Rename a profile: directory, wrapper script, service, active_profile. The default
     profile's home IS the installation root, so "renaming" it sets a presentation-only
@@ -2202,55 +1848,36 @@ def rename_profile(old_name: str, new_name: str) -> Path:
     _stop_profile_backends(old_canon, old_dir)
 
     # 2. Rename directory
-    _mark_profile_deleting(old_dir, profile_incarnation)
-    try:
-        retired = _retire_in_process_profile_resources(
-            old_dir,
-            profile_incarnation,
-        )
-    except Exception:
-        _clear_profile_deletion_marker(old_dir)
-        _allow_in_process_profile_resources(old_dir, profile_incarnation)
-        raise
+    retired = begin_profile_retirement(old_dir, profile_incarnation)
     if retired:
         print(f"✓ Retired {retired} in-process profile resource(s)")
-    if not _wait_for_profile_state_db_release(old_dir):
-        _clear_profile_deletion_marker(old_dir)
-        _allow_in_process_profile_resources(old_dir, profile_incarnation)
-        raise RuntimeError(
-            f"Profile '{old_canon}' is still in use by this Hermes process; retry rename."
-        )
-    external_holders = _wait_for_external_profile_file_release(old_dir)
-    if external_holders:
-        _clear_profile_deletion_marker(old_dir)
-        _allow_in_process_profile_resources(old_dir, profile_incarnation)
-        raise RuntimeError(
-            f"Profile '{old_canon}' is still in use by external process(es) "
-            f"{', '.join(str(pid) for pid in external_holders)}; retry rename."
-        )
-    new_had_tombstone = profile_home_is_tombstoned(new_dir)
-    _mark_profile_deleting(new_dir)
+    verify_profile_resources_released(
+        old_dir,
+        profile_incarnation,
+        subject=f"Profile '{old_canon}'",
+        retry_action="rename",
+    )
+
     try:
-        old_dir.rename(new_dir)
-    except Exception:
-        _clear_profile_deletion_marker(old_dir)
-        _allow_in_process_profile_resources(old_dir, profile_incarnation)
-        if not new_had_tombstone:
-            _clear_profile_deletion_marker(new_dir)
-        raise
-    try:
-        _finish_profile_rename(old_canon, new_canon, old_dir, new_dir)
+        move_profile_generation(
+            old_dir,
+            new_dir,
+            profile_incarnation,
+            lambda: _finish_profile_rename(old_canon, new_canon, old_dir, new_dir),
+        )
     finally:
-        # Once the directory move succeeds, publish the new identity even if a
-        # best-effort alias/Honcho update raises unexpectedly.
-        _clear_profile_deletion_marker(new_dir)
-        _allow_in_process_profile_resources(new_dir, profile_incarnation)
-        try:
-            if get_active_profile() == old_canon:
-                set_active_profile(new_canon)
-                print(f"✓ Active profile updated: {new_canon}")
-        except Exception:
-            logger.warning("Could not update sticky active profile after rename", exc_info=True)
+        # Publication happens inside move_profile_generation before this sticky
+        # selection update, so set_active_profile can resolve the new name.
+        if new_dir.is_dir() and not profile_home_is_tombstoned(new_dir):
+            try:
+                if get_active_profile() == old_canon:
+                    set_active_profile(new_canon)
+                    print(f"✓ Active profile updated: {new_canon}")
+            except Exception:
+                logger.warning(
+                    "Could not update sticky active profile after rename",
+                    exc_info=True,
+                )
     return new_dir
 
 

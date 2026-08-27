@@ -11,7 +11,7 @@ from pathlib import Path
 
 import pytest
 
-from hermes_cli import profile_incarnation, profiles
+from hermes_cli import profile_incarnation, profile_lifecycle, profiles
 from hermes_cli.profile_incarnation import (
     PROFILE_INCARNATION_FILENAME,
     ensure_profile_incarnation,
@@ -119,8 +119,8 @@ def _assert_legacy_backfill_excludes_profile_recreation(
     thread.start()
     assert entered_read.wait(timeout=5)
     script = (
-        "from hermes_cli import profiles; "
-        "profiles._PROFILE_LIFECYCLE_LOCK_TIMEOUT_SECONDS=0.2; "
+        "from hermes_cli import profile_lifecycle, profiles; "
+        "profile_lifecycle._PROFILE_LIFECYCLE_LOCK_TIMEOUT_SECONDS=0.2; "
         "\ntry:\n profiles.delete_profile('worker', yes=True)\n"
         "except TimeoutError:\n raise SystemExit(0)\n"
         "profiles.create_profile('worker', no_alias=True, no_skills=True); "
@@ -158,9 +158,9 @@ def _assert_resource_lease_timeout_fails_closed(
     assert incarnation is not None
     script = (
         "import os; from pathlib import Path; "
-        "from hermes_cli import profiles; "
+        "from hermes_cli import profile_lifecycle; "
         "from hermes_cli.profile_incarnation import profile_incarnation_lease; "
-        "profiles._PROFILE_LIFECYCLE_LOCK_TIMEOUT_SECONDS=0.2; "
+        "profile_lifecycle._PROFILE_LIFECYCLE_LOCK_TIMEOUT_SECONDS=0.2; "
         "home=Path(os.environ['PROFILE_HOME']); token=os.environ['INCARNATION']; "
         "\ntry:\n"
         " with profile_incarnation_lease(home, token):\n  pass\n"
@@ -168,7 +168,7 @@ def _assert_resource_lease_timeout_fails_closed(
         "except TimeoutError:\n raise SystemExit(2)\n"
         "raise SystemExit(1)"
     )
-    with profiles._cross_process_profile_mutation_lock():
+    with profile_lifecycle._cross_process_profile_mutation_lock():
         result = subprocess.run(
             [sys.executable, "-c", script],
             env={

@@ -21,6 +21,9 @@ from hermes_constants import (
     named_profile_home_is_unavailable,
     profile_deletion_marker_path,
 )
+from hermes_cli.profile_lifecycle import (
+    profile_lifecycle_lease as _profile_mutation_lease,
+)
 
 PROFILE_INCARNATION_FILENAME = ".profile-incarnation"
 _INCARNATION_RE = re.compile(r"^[0-9a-f]{32}$")
@@ -86,21 +89,17 @@ def profile_incarnation_lease(
     """Hold the profile-mutation lease while binding a checked named path.
 
     Custom/default homes are not reusable named lifecycle objects and keep
-    their legacy lock-free behavior. The import is deliberately lazy because
-    ``profiles`` owns the shared cross-process primitive and imports this
-    module for marker operations.
+    their legacy lock-free behavior. The shared lease lives in the focused
+    lifecycle owner so marker code never imports the profile command godfile.
     """
     home = Path(profile_home)
     if profile_deletion_marker_path(home) is None:
         yield home
         return
 
-    from hermes_cli import profiles as profile_manager
-
-    lifecycle_lease = getattr(profile_manager, "profile_lifecycle_lease")
     lease_stack = ExitStack()
     try:
-        lease_stack.enter_context(lifecycle_lease())
+        lease_stack.enter_context(_profile_mutation_lease())
     except TimeoutError as exc:
         raise FileNotFoundError(
             f"Named profile lifecycle lease is unavailable: {home}"
