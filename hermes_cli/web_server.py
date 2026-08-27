@@ -91,6 +91,10 @@ from hermes_cli.config import (
     write_platform_config_field,
     _deep_merge,
 )
+from hermes_cli.profile_incarnation import (
+    ensure_profile_incarnation,
+    profile_incarnation_lease,
+)
 from plugins.memory.config_schema import (
     ProviderConfigSchema,
     ProviderField,
@@ -2846,34 +2850,74 @@ async def upload_chat_image(payload: ChatImageUpload, profile: Optional[str] = N
             home = Path(scoped_home or get_hermes_home())
             if named_profile_home_is_unavailable(home):
                 raise HTTPException(status_code=404, detail="Profile home is unavailable")
-            img_dir = home / "images"
             try:
-                # Never recreate a named profile parent if DELETE wins after
-                # resolution; the lifecycle owner publishes the parent.
-                img_dir.mkdir(parents=False, exist_ok=True)
-            except FileNotFoundError:
-                raise HTTPException(status_code=404, detail="Profile home is unavailable")
-            except PermissionError:
-                raise HTTPException(status_code=403, detail="Image directory is not writable")
-            except OSError as exc:
-                raise HTTPException(status_code=500, detail=f"Could not create image directory: {exc}")
-            if named_profile_home_is_unavailable(home):
-                raise HTTPException(status_code=404, detail="Profile home is unavailable")
+                expected_incarnation = ensure_profile_incarnation(home)
+            except FileNotFoundError as exc:
+                raise HTTPException(
+                    status_code=404,
+                    detail="Profile home is unavailable",
+                ) from exc
 
-            stem = Path(_sanitize_chat_image_filename(payload.filename)).stem or "pasted-image"
-            stem = re.sub(r"[^A-Za-z0-9_.-]+", "_", stem).strip("._-") or "pasted-image"
-            ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-            target = img_dir / f"dashboard_{ts}_{secrets.token_hex(4)}_{stem}{ext}"
+        try:
+            incarnation_lease = profile_incarnation_lease(
+                home,
+                expected_incarnation,
+                require_incarnation=expected_incarnation is not None,
+            )
+            with incarnation_lease:
+                img_dir = home / "images"
+                try:
+                    # Never recreate a named profile parent if DELETE wins after
+                    # resolution; the lifecycle owner publishes the parent.
+                    img_dir.mkdir(parents=False, exist_ok=True)
+                except FileNotFoundError:
+                    raise HTTPException(status_code=404, detail="Profile home is unavailable")
+                except PermissionError:
+                    raise HTTPException(status_code=403, detail="Image directory is not writable")
+                except OSError as exc:
+                    raise HTTPException(
+                        status_code=500,
+                        detail=f"Could not create image directory: {exc}",
+                    ) from exc
+                if named_profile_home_is_unavailable(home):
+                    raise HTTPException(status_code=404, detail="Profile home is unavailable")
 
-            try:
-                target.write_bytes(data)
-            except PermissionError:
-                raise HTTPException(status_code=403, detail="Image directory is not writable")
-            except OSError as exc:
-                raise HTTPException(status_code=500, detail=f"Could not write image: {exc}")
-            if named_profile_home_is_unavailable(home) or not target.is_file():
-                target.unlink(missing_ok=True)
-                raise HTTPException(status_code=404, detail="Profile was deleted during upload")
+                stem = Path(_sanitize_chat_image_filename(payload.filename)).stem or "pasted-image"
+                stem = re.sub(r"[^A-Za-z0-9_.-]+", "_", stem).strip("._-") or "pasted-image"
+                ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+                target = img_dir / f"dashboard_{ts}_{secrets.token_hex(4)}_{stem}{ext}"
+
+                completed = False
+                try:
+                    try:
+                        target.write_bytes(data)
+                    except PermissionError:
+                        raise HTTPException(
+                            status_code=403,
+                            detail="Image directory is not writable",
+                        )
+                    except OSError as exc:
+                        raise HTTPException(
+                            status_code=500,
+                            detail=f"Could not write image: {exc}",
+                        ) from exc
+                    if named_profile_home_is_unavailable(home) or not target.is_file():
+                        raise HTTPException(
+                            status_code=404,
+                            detail="Profile was deleted during upload",
+                        )
+                    completed = True
+                finally:
+                    if not completed:
+                        try:
+                            target.unlink(missing_ok=True)
+                        except OSError:
+                            pass
+        except FileNotFoundError as exc:
+            raise HTTPException(
+                status_code=404,
+                detail="Profile was deleted or replaced during upload",
+            ) from exc
 
         return {
             "ok": True,

@@ -240,6 +240,143 @@ def test_windows_browser_file_upload_cannot_publish_into_recreated_profile(
     )
 
 
+def test_browser_image_upload_cleanup_failure_does_not_mask_write_status(
+    tmp_path: Path, monkeypatch
+):
+    image_dir = tmp_path / "hermes-home" / "images"
+    real_write_bytes = Path.write_bytes
+    real_unlink = Path.unlink
+
+    def fail_image_write(path: Path, data: bytes):
+        if path.parent == image_dir:
+            raise PermissionError("image write denied")
+        return real_write_bytes(path, data)
+
+    def fail_image_cleanup(path: Path, *args, **kwargs):
+        if path.parent == image_dir:
+            raise OSError("image cleanup denied")
+        return real_unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "write_bytes", fail_image_write)
+    monkeypatch.setattr(Path, "unlink", fail_image_cleanup)
+
+    with _client(tmp_path, monkeypatch) as client:
+        response = client.post(
+            "/api/chat/image-upload",
+            json={
+                "data_url": "data:image/png;base64,iVBORw0KGgo=",
+                "filename": "image.png",
+            },
+            headers={_SESSION_HEADER: "webapp-test-token"},
+        )
+
+    assert response.status_code == 403
+    assert response.json()["detail"] == "Image directory is not writable"
+
+
+def _assert_browser_image_upload_cannot_publish_into_recreated_profile(
+    tmp_path: Path, monkeypatch
+):
+    hermes_home = tmp_path / "hermes-home"
+    hermes_home.mkdir(parents=True)
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    profile_home = profiles.create_profile("worker", no_alias=True, no_skills=True)
+    generation_a = profile_incarnation.read_profile_incarnation(profile_home)
+    assert generation_a is not None
+
+    publish_ready = threading.Event()
+    resume_publish = threading.Event()
+    real_lease = profile_incarnation.profile_incarnation_lease
+    lease_call = []
+
+    @contextmanager
+    def pause_before_publish(home, expected_incarnation=None, **kwargs):
+        lease_call.append((Path(home), expected_incarnation))
+        publish_ready.set()
+        if not resume_publish.wait(timeout=5):
+            raise TimeoutError("image publish barrier was not released")
+        with real_lease(home, expected_incarnation, **kwargs) as leased_home:
+            yield leased_home
+
+    monkeypatch.setattr(
+        web_server,
+        "profile_incarnation_lease",
+        pause_before_publish,
+        raising=False,
+    )
+
+    payload = {
+        "data_url": "data:image/png;base64,iVBORw0KGgo=",
+        "filename": "image.png",
+    }
+    headers = {_SESSION_HEADER: "webapp-test-token"}
+    with _client(tmp_path, monkeypatch) as client, ThreadPoolExecutor(max_workers=1) as pool:
+        stale_request = pool.submit(
+            client.post,
+            "/api/chat/image-upload?profile=worker",
+            json=payload,
+            headers=headers,
+        )
+        try:
+            assert publish_ready.wait(timeout=5)
+            assert lease_call == [(profile_home, generation_a)]
+            profiles.delete_profile("worker", yes=True)
+            recreated_home = profiles.create_profile(
+                "worker",
+                no_alias=True,
+                no_skills=True,
+            )
+            generation_b = profile_incarnation.read_profile_incarnation(recreated_home)
+            assert generation_b is not None
+            assert generation_b != generation_a
+        finally:
+            resume_publish.set()
+
+        stale_response = stale_request.result(timeout=5)
+        assert stale_response.status_code == 404
+        assert not (recreated_home / "images").exists()
+
+        current_response = client.post(
+            "/api/chat/image-upload?profile=worker",
+            json=payload,
+            headers=headers,
+        )
+
+    assert current_response.status_code == 200
+    current_path = Path(current_response.json()["path"])
+    assert current_path.parent == recreated_home / "images"
+    assert current_path.read_bytes() == b"\x89PNG\r\n\x1a\n"
+
+
+def test_browser_image_upload_cannot_publish_into_recreated_profile(
+    tmp_path: Path, monkeypatch
+):
+    _assert_browser_image_upload_cannot_publish_into_recreated_profile(
+        tmp_path,
+        monkeypatch,
+    )
+
+
+@pytest.mark.macos_only
+def test_macos_browser_image_upload_cannot_publish_into_recreated_profile(
+    tmp_path: Path, monkeypatch
+):
+    _assert_browser_image_upload_cannot_publish_into_recreated_profile(
+        tmp_path,
+        monkeypatch,
+    )
+
+
+@pytest.mark.windows_only
+def test_windows_browser_image_upload_cannot_publish_into_recreated_profile(
+    tmp_path: Path, monkeypatch
+):
+    _assert_browser_image_upload_cannot_publish_into_recreated_profile(
+        tmp_path,
+        monkeypatch,
+    )
+
+
 def test_browser_image_upload_never_creates_a_missing_profile_home(
     tmp_path: Path, monkeypatch
 ):
