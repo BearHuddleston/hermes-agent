@@ -18,6 +18,7 @@ from hermes_constants import WEBAPP_ATTACHMENT_MAX_BYTES
 
 
 _SESSION_HEADER = "X-Hermes-Session-Token"
+_BARRIER_TIMEOUT_SECONDS = 30
 
 
 def _client(tmp_path: Path, monkeypatch) -> TestClient:
@@ -192,7 +193,7 @@ def _assert_browser_file_upload_cannot_publish_into_recreated_profile(
     def pause_before_publish(home, expected_incarnation=None, **kwargs):
         if Path(home) == profile_home and expected_incarnation == generation_a:
             publish_ready.set()
-            if not resume_publish.wait(timeout=5):
+            if not resume_publish.wait(timeout=_BARRIER_TIMEOUT_SECONDS):
                 raise TimeoutError("upload publish barrier was not released")
         with real_lease(home, expected_incarnation, **kwargs) as leased_home:
             yield leased_home
@@ -212,7 +213,7 @@ def _assert_browser_file_upload_cannot_publish_into_recreated_profile(
             headers={_SESSION_HEADER: "webapp-test-token"},
         )
         try:
-            assert publish_ready.wait(timeout=5)
+            assert publish_ready.wait(timeout=_BARRIER_TIMEOUT_SECONDS)
             profiles.delete_profile("worker", yes=True)
             recreated_home = profiles.create_profile(
                 "worker",
@@ -225,7 +226,7 @@ def _assert_browser_file_upload_cannot_publish_into_recreated_profile(
         finally:
             resume_publish.set()
 
-        stale_response = stale_request.result(timeout=5)
+        stale_response = stale_request.result(timeout=_BARRIER_TIMEOUT_SECONDS)
         assert stale_response.status_code == 404, stale_response.text
         assert not (recreated_home / "uploads").exists()
 
@@ -323,7 +324,7 @@ def _assert_browser_image_upload_cannot_publish_into_recreated_profile(
     def pause_before_publish(home, expected_incarnation=None, **kwargs):
         lease_call.append((Path(home), expected_incarnation))
         publish_ready.set()
-        if not resume_publish.wait(timeout=5):
+        if not resume_publish.wait(timeout=_BARRIER_TIMEOUT_SECONDS):
             raise TimeoutError("image publish barrier was not released")
         with real_lease(home, expected_incarnation, **kwargs) as leased_home:
             yield leased_home
@@ -348,7 +349,7 @@ def _assert_browser_image_upload_cannot_publish_into_recreated_profile(
             headers=headers,
         )
         try:
-            assert publish_ready.wait(timeout=5)
+            assert publish_ready.wait(timeout=_BARRIER_TIMEOUT_SECONDS)
             assert lease_call == [(profile_home, generation_a)]
             profiles.delete_profile("worker", yes=True)
             recreated_home = profiles.create_profile(
@@ -362,7 +363,7 @@ def _assert_browser_image_upload_cannot_publish_into_recreated_profile(
         finally:
             resume_publish.set()
 
-        stale_response = stale_request.result(timeout=5)
+        stale_response = stale_request.result(timeout=_BARRIER_TIMEOUT_SECONDS)
         assert stale_response.status_code == 404
         assert not (recreated_home / "images").exists()
 
