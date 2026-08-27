@@ -346,10 +346,10 @@ def collect_runtime_inventory() -> UpdatePlan:
     except Exception as exc:
         logger.debug("PID-file gateway inventory failed: %s", exc)
 
-    # Serve/dashboard backends from the spawn ledger (#63206). These are the
-    # runtimes the gateway collectors above can never see: a manually
-    # launched `hermes serve --host <ip>` for a remote Desktop, or a
-    # long-lived `hermes dashboard`. Every serve/dashboard registers itself
+    # Serve/dashboard/Webapp backends from the spawn ledger (#63206). These
+    # are runtimes the gateway collectors above can never see: a manually
+    # launched `hermes serve --host <ip>` for a remote Desktop, or a long-lived
+    # `hermes dashboard` / `hermes webapp`. Every web server registers itself
     # (with structured host/port/profile since #63206) at startup, and
     # ledger_entries() live-verifies (pid, create_time) so PID reuse never
     # fabricates a row. Desktop-supervised backends are classified by their
@@ -360,7 +360,7 @@ def collect_runtime_inventory() -> UpdatePlan:
 
         for entry in ledger_entries():
             purpose = entry.get("purpose")
-            if purpose not in ("serve", "dashboard"):
+            if purpose not in ("serve", "dashboard", "webapp"):
                 continue
             pid = entry.get("pid")
             if not isinstance(pid, int) or pid in seen_pids:

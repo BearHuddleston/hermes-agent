@@ -8,11 +8,16 @@ from pathlib import Path
 import re
 import secrets
 import stat
+import tempfile
 import time
 
 from fastapi import APIRouter, File, HTTPException, UploadFile
 
 from hermes_constants import WEBAPP_ATTACHMENT_MAX_BYTES
+from hermes_cli.profile_incarnation import (
+    ensure_profile_incarnation,
+    profile_incarnation_lease,
+)
 from hermes_cli.web_deps import late
 
 
@@ -48,6 +53,92 @@ def _prune_stale_uploads(root: Path, *, now: float | None = None) -> None:
             continue
 
 
+def _resolve_upload_generation(profile: str | None) -> tuple[Path, str | None]:
+    """Resolve one profile home and capture the named generation it denotes."""
+    from hermes_constants import get_hermes_home, named_profile_home_is_unavailable
+
+    with _profile_scope(profile) as scoped_home:
+        home = Path(scoped_home or get_hermes_home())
+        if named_profile_home_is_unavailable(home):
+            raise HTTPException(status_code=404, detail="Profile home is unavailable")
+        try:
+            incarnation = ensure_profile_incarnation(home)
+        except FileNotFoundError as exc:
+            raise HTTPException(
+                status_code=404,
+                detail="Profile home is unavailable",
+            ) from exc
+        return home, incarnation
+
+
+def _publish_staged_upload(
+    staged,
+    profile_home: Path,
+    expected_incarnation: str | None,
+    filename: str,
+) -> Path:
+    """Publish staged bytes while the captured profile generation is leased."""
+    from hermes_constants import named_profile_home_is_unavailable
+
+    target: Path | None = None
+    try:
+        with profile_incarnation_lease(
+            profile_home,
+            expected_incarnation,
+            require_incarnation=expected_incarnation is not None,
+        ):
+            if named_profile_home_is_unavailable(profile_home):
+                raise FileNotFoundError(profile_home)
+            upload_root = profile_home / "uploads"
+            try:
+                upload_root.mkdir(parents=False, exist_ok=True, mode=0o700)
+                upload_root.chmod(0o700)
+            except FileNotFoundError:
+                raise
+            except PermissionError as exc:
+                raise HTTPException(
+                    status_code=403,
+                    detail="Upload directory is not writable",
+                ) from exc
+            except OSError as exc:
+                raise HTTPException(
+                    status_code=500,
+                    detail=f"Could not create upload directory: {exc}",
+                ) from exc
+
+            _prune_stale_uploads(upload_root)
+            target = upload_root / (
+                f"web-{secrets.token_hex(8)}-{_safe_filename(filename)}"
+            )
+            completed = False
+            try:
+                fd = os.open(
+                    target,
+                    os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+                    0o600,
+                )
+                with os.fdopen(fd, "wb") as handle:
+                    staged.seek(0)
+                    while chunk := staged.read(_CHUNK_BYTES):
+                        handle.write(chunk)
+                    handle.flush()
+                    os.fsync(handle.fileno())
+                completed = True
+            finally:
+                if not completed and target is not None:
+                    target.unlink(missing_ok=True)
+            return target
+    except FileNotFoundError as exc:
+        raise HTTPException(
+            status_code=404,
+            detail="Profile was deleted or replaced during upload",
+        ) from exc
+    except HTTPException:
+        raise
+    except OSError as exc:
+        raise HTTPException(status_code=500, detail=f"Could not stage file: {exc}") from exc
+
+
 @router.post("/api/chat/file-upload")
 async def upload_chat_file(
     file: UploadFile = File(...),
@@ -58,73 +149,36 @@ async def upload_chat_file(
     The client never chooses a server path. A unique 0600 file under
     ``$HERMES_HOME/uploads`` is returned for the existing ``file.attach`` flow.
     """
-    from hermes_constants import get_hermes_home, named_profile_home_is_unavailable
-
-    def _upload_root() -> Path:
-        # Resolve and create the child while holding the shared profile scope.
-        # ``parents=False`` is load-bearing: if profile DELETE wins after
-        # resolution, this operation fails instead of recreating the named home.
-        # The lock is released before any await/file streaming.
-        with _profile_scope(profile) as scoped_home:
-            home = Path(scoped_home or get_hermes_home())
-            if named_profile_home_is_unavailable(home):
-                raise HTTPException(status_code=404, detail="Profile home is unavailable")
-            root = home / "uploads"
-            try:
-                root.mkdir(parents=False, exist_ok=True, mode=0o700)
-                root.chmod(0o700)
-            except FileNotFoundError as exc:
-                raise HTTPException(status_code=404, detail="Profile home is unavailable") from exc
-            except PermissionError as exc:
-                raise HTTPException(status_code=403, detail="Upload directory is not writable") from exc
-            except OSError as exc:
-                raise HTTPException(status_code=500, detail=f"Could not create upload directory: {exc}") from exc
-            if named_profile_home_is_unavailable(home):
-                raise HTTPException(status_code=404, detail="Profile home is unavailable")
-            _prune_stale_uploads(root)
-            return root
-
-    upload_root = await asyncio.to_thread(_upload_root)
-    target = upload_root / f"web-{secrets.token_hex(8)}-{_safe_filename(file.filename)}"
-    fd = -1
+    profile_home, expected_incarnation = await asyncio.to_thread(
+        _resolve_upload_generation,
+        profile,
+    )
     total = 0
-    completed = False
+    staged = tempfile.TemporaryFile(mode="w+b")
     try:
-        fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-        with os.fdopen(fd, "wb") as handle:
-            fd = -1
-            while True:
-                chunk = await file.read(_CHUNK_BYTES)
-                if not chunk:
-                    break
-                total += len(chunk)
-                if total > _MAX_UPLOAD_BYTES:
-                    cap_mib = _MAX_UPLOAD_BYTES // (1024 * 1024)
-                    raise HTTPException(
-                        status_code=413,
-                        detail=f"File is too large; cap is {cap_mib} MiB",
-                    )
-                await asyncio.to_thread(handle.write, chunk)
-            await asyncio.to_thread(handle.flush)
-            await asyncio.to_thread(os.fsync, handle.fileno())
-        profile_home = upload_root.parent
-        if (
-            named_profile_home_is_unavailable(profile_home)
-            or not target.is_file()
-        ):
-            raise HTTPException(status_code=404, detail="Profile was deleted during upload")
-        completed = True
-    except HTTPException:
-        raise
-    except FileNotFoundError as exc:
-        raise HTTPException(status_code=404, detail="Profile upload directory disappeared") from exc
-    except OSError as exc:
-        raise HTTPException(status_code=500, detail=f"Could not stage file: {exc}") from exc
+        while True:
+            chunk = await file.read(_CHUNK_BYTES)
+            if not chunk:
+                break
+            total += len(chunk)
+            if total > _MAX_UPLOAD_BYTES:
+                cap_mib = _MAX_UPLOAD_BYTES // (1024 * 1024)
+                raise HTTPException(
+                    status_code=413,
+                    detail=f"File is too large; cap is {cap_mib} MiB",
+                )
+            await asyncio.to_thread(staged.write, chunk)
+        await asyncio.to_thread(staged.flush)
+        await asyncio.to_thread(os.fsync, staged.fileno())
+        target = await asyncio.to_thread(
+            _publish_staged_upload,
+            staged,
+            profile_home,
+            expected_incarnation,
+            file.filename or "attachment",
+        )
     finally:
-        if fd >= 0:
-            os.close(fd)
-        if not completed:
-            target.unlink(missing_ok=True)
+        staged.close()
         await file.close()
 
     return {"ok": True, "path": str(target), "size": total}

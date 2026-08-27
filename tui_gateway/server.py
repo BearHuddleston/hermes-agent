@@ -3573,9 +3573,17 @@ def _start_agent_build(sid: str, session: dict) -> None:
         session_db = None
         owns_db = False
         profile_home = current.get("profile_home")
-        profile_incarnation = current.get("profile_incarnation")
+        profile_incarnation_value = current.get(
+            "profile_incarnation",
+            _PROFILE_INCARNATION_UNSET,
+        )
+        profile_incarnation = (
+            profile_incarnation_value
+            if isinstance(profile_incarnation_value, str)
+            else None
+        )
         try:
-            if _profile_home_rejected(profile_home, profile_incarnation):
+            if _profile_home_rejected(profile_home, profile_incarnation_value):
                 raise FileNotFoundError(
                     "Profile incarnation is stale or home is missing or being deleted: "
                     f"{profile_home or _hermes_home}"

@@ -5189,6 +5189,7 @@ _LAZY_COMMAND_EXPORTS = {
         "_is_fork",
         "_leftover_pausable_gateway_pids",
         "_ledger_manual_serve_holders",
+        "_pause_manual_web_servers",
         "_relaunch_stopped_serves",
         "_serve_relaunch_commands",
         "_log_only_write",

@@ -1,14 +1,16 @@
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 import os
 from pathlib import Path
 import shutil
+import threading
 
 import pytest
 from fastapi.testclient import TestClient
 
-from hermes_cli import profiles, web_server
+from hermes_cli import profile_incarnation, profiles, web_server
 from hermes_cli.web_routers import uploads
 from hermes_constants import WEBAPP_ATTACHMENT_MAX_BYTES
 
@@ -83,7 +85,7 @@ def test_browser_upload_rejects_oversize_without_leaving_partial_file(
     assert response.status_code == 413
     assert response.json()["detail"] == "File is too large; cap is 16 MiB"
     upload_root = tmp_path / "hermes-home" / "uploads"
-    assert list(upload_root.iterdir()) == []
+    assert not upload_root.exists() or list(upload_root.iterdir()) == []
 
 
 def test_largest_browser_upload_is_readable_by_attachment_flow(
@@ -140,6 +142,102 @@ def test_browser_file_upload_never_recreates_profile_deleted_after_resolution(
 
     assert response.status_code == 404
     assert not profile_home.exists()
+
+
+def _assert_browser_file_upload_cannot_publish_into_recreated_profile(
+    tmp_path: Path, monkeypatch
+):
+    hermes_home = tmp_path / "hermes-home"
+    hermes_home.mkdir(parents=True)
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    profile_home = profiles.create_profile("worker", no_alias=True, no_skills=True)
+    generation_a = profile_incarnation.read_profile_incarnation(profile_home)
+    assert generation_a is not None
+
+    publish_ready = threading.Event()
+    resume_publish = threading.Event()
+    real_lease = profile_incarnation.profile_incarnation_lease
+
+    @contextmanager
+    def pause_before_publish(home, expected_incarnation=None, **kwargs):
+        if Path(home) == profile_home and expected_incarnation == generation_a:
+            publish_ready.set()
+            if not resume_publish.wait(timeout=5):
+                raise TimeoutError("upload publish barrier was not released")
+        with real_lease(home, expected_incarnation, **kwargs) as leased_home:
+            yield leased_home
+
+    monkeypatch.setattr(
+        uploads,
+        "profile_incarnation_lease",
+        pause_before_publish,
+        raising=False,
+    )
+
+    with _client(tmp_path, monkeypatch) as client, ThreadPoolExecutor(max_workers=1) as pool:
+        stale_request = pool.submit(
+            client.post,
+            "/api/chat/file-upload?profile=worker",
+            files={"file": ("stale.txt", b"generation-a", "text/plain")},
+            headers={_SESSION_HEADER: "webapp-test-token"},
+        )
+        try:
+            assert publish_ready.wait(timeout=5)
+            profiles.delete_profile("worker", yes=True)
+            recreated_home = profiles.create_profile(
+                "worker",
+                no_alias=True,
+                no_skills=True,
+            )
+            generation_b = profile_incarnation.read_profile_incarnation(recreated_home)
+            assert generation_b is not None
+            assert generation_b != generation_a
+        finally:
+            resume_publish.set()
+
+        stale_response = stale_request.result(timeout=5)
+        assert stale_response.status_code == 404
+        assert not (recreated_home / "uploads").exists()
+
+        current_response = client.post(
+            "/api/chat/file-upload?profile=worker",
+            files={"file": ("current.txt", b"generation-b", "text/plain")},
+            headers={_SESSION_HEADER: "webapp-test-token"},
+        )
+
+    assert current_response.status_code == 200
+    current_path = Path(current_response.json()["path"])
+    assert current_path.parent == recreated_home / "uploads"
+    assert current_path.read_bytes() == b"generation-b"
+
+
+def test_browser_file_upload_cannot_publish_into_recreated_profile(
+    tmp_path: Path, monkeypatch
+):
+    _assert_browser_file_upload_cannot_publish_into_recreated_profile(
+        tmp_path,
+        monkeypatch,
+    )
+
+
+@pytest.mark.macos_only
+def test_macos_browser_file_upload_cannot_publish_into_recreated_profile(
+    tmp_path: Path, monkeypatch
+):
+    _assert_browser_file_upload_cannot_publish_into_recreated_profile(
+        tmp_path,
+        monkeypatch,
+    )
+
+
+@pytest.mark.windows_only
+def test_windows_browser_file_upload_cannot_publish_into_recreated_profile(
+    tmp_path: Path, monkeypatch
+):
+    _assert_browser_file_upload_cannot_publish_into_recreated_profile(
+        tmp_path,
+        monkeypatch,
+    )
 
 
 def test_browser_image_upload_never_creates_a_missing_profile_home(
@@ -228,7 +326,8 @@ def test_browser_file_upload_does_not_report_a_path_after_tombstone_wins(
         )
 
     assert response.status_code == 404
-    assert list((profile_home / "uploads").iterdir()) == []
+    upload_root = profile_home / "uploads"
+    assert not upload_root.exists() or list(upload_root.iterdir()) == []
 
 
 def test_browser_image_upload_does_not_report_a_path_after_tombstone_wins(
