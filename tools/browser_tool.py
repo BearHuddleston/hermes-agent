@@ -1598,19 +1598,40 @@ def _agent_browser_get_cdp(session_name: str) -> Optional[str]:
 def _cdp_on_data_dir(http_cdp: str, data_dir: str) -> bool:
     """True when the CDP endpoint's browser is running on ``data_dir``.
 
-    agent-browser's launched Chrome writes ``DevToolsActivePort`` into its
-    user-data-dir with the live debug port on the first line. Matching that
-    port against the CDP endpoint's port confirms the running browser is our
-    profile copy — not a throwaway temp dir a raced/stale launch fell back to.
+    Chrome writes ``DevToolsActivePort`` with the live debug port and browser
+    websocket path. Both must match the endpoint's current ``/json/version``
+    identity so a recycled port cannot bind a different browser/profile.
     """
-    m = re.search(r":(\d+)", http_cdp or "")
-    if not m:
+    from urllib.parse import urlparse
+
+    try:
+        endpoint = urlparse(http_cdp or "")
+        endpoint_port = endpoint.port
+    except ValueError:
         return False
+    if endpoint.scheme not in {"http", "https"} or endpoint_port is None:
+        return False
+
     try:
         with open(os.path.join(data_dir, "DevToolsActivePort"), encoding="utf-8") as fh:
             port_line = fh.readline().strip()
-        return port_line == m.group(1)
-    except OSError:
+            browser_path = fh.readline().strip()
+        if port_line != str(endpoint_port) or not browser_path:
+            return False
+
+        import requests
+
+        version_url = f"{endpoint.scheme}://{endpoint.netloc}/json/version"
+        response = requests.get(version_url, timeout=1.0)
+        response.raise_for_status()
+        payload = response.json()
+        websocket = urlparse(str(payload.get("webSocketDebuggerUrl") or ""))
+        return (
+            websocket.scheme in {"ws", "wss"}
+            and websocket.port == endpoint_port
+            and websocket.path == browser_path
+        )
+    except Exception:
         return False
 
 
@@ -1725,6 +1746,7 @@ def _real_profile_cdp() -> tuple:
             and _real_profile_cdp_cache.get("browser") == browser
             and _real_profile_cdp_cache.get("copy_dir") == copy_dir
             and _cdp_http_ready(cached)
+            and _cdp_on_data_dir(cached, copy_dir)
         ):
             return cached, None
         _real_profile_cdp_cache.pop("cdp", None)

@@ -498,14 +498,15 @@ def _read_real_profile_config_uncached() -> dict | None:
         from hermes_cli.config import fast_safe_load, get_config_path
 
         with open(get_config_path(), encoding="utf-8") as fh:
-            cfg = fast_safe_load(fh)
+            raw = fh.read()
+        if not raw.strip():
+            return {}
+        cfg = fast_safe_load(raw)
     except FileNotFoundError:
         return {}
     except Exception as e:
         logger.debug("could not read browser.real_profile_browser: %s", e)
         return None
-    if cfg is None:
-        return {}
     return cfg if isinstance(cfg, dict) else None
 
 

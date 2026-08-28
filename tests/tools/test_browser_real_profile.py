@@ -124,7 +124,7 @@ class TestRealProfileResolvers:
         assert err and "browser.real_profile_browser" in err
         detect.assert_not_called()
 
-    @pytest.mark.parametrize("config_text", ["browser: [", "- browser\n"])
+    @pytest.mark.parametrize("config_text", ["browser: [", "- browser\n", "null\n"])
     def test_malformed_config_file_fails_closed(
         self, config_text, tmp_path, monkeypatch
     ):
@@ -359,6 +359,35 @@ class TestRealProfileCdpLaunch:
         snapshot.assert_called_once_with("chrome")
         self._reset()
 
+    def test_cached_cdp_requires_profile_copy_identity(self):
+        """A ready cached endpoint is not trusted without live CDP identity."""
+        import tools.browser_tool as bt
+
+        self._reset()
+        cached = "http://127.0.0.1:41000"
+        copy_dir = "/profile-a/browser-profile/chrome"
+        bt._real_profile_cdp_cache.update({
+            "cdp": cached,
+            "browser": "chrome",
+            "copy_dir": copy_dir,
+        })
+        with patch.object(bt, "_use_real_profile", return_value=True), \
+             patch("hermes_cli.browser_connect.resolve_real_profile_browser",
+                   return_value=("chrome", None)), \
+             patch("hermes_cli.browser_connect.real_profile_copy_dir",
+                   return_value=copy_dir), \
+             patch.object(bt, "_cdp_http_ready", return_value=True), \
+             patch.object(bt, "_cdp_on_data_dir", return_value=False) as identity, \
+             patch.object(bt, "_agent_browser_get_cdp", return_value=None), \
+             patch("hermes_cli.browser_connect.snapshot_real_profile",
+                   return_value=(None, "snapshot reached")):
+            cdp, err = bt._real_profile_cdp()
+
+        assert cdp is None
+        assert err and "snapshot reached" in err
+        identity.assert_called_once_with(cached, copy_dir)
+        assert bt._real_profile_cdp_cache == {}
+
     def test_snapshot_failure_fails_closed(self):
         import tools.browser_tool as bt
         self._reset()
@@ -511,11 +540,46 @@ class TestRealProfileCdpLaunch:
         assert cdp == "http://127.0.0.1:41000"
         self._reset()
 
-    def test_cdp_on_data_dir_matches_devtoolsactiveport(self, tmp_path):
+    def test_cdp_on_data_dir_matches_devtools_identity(self, tmp_path):
         import tools.browser_tool as bt
-        (tmp_path / "DevToolsActivePort").write_text("41000\n/devtools/browser/x\n")
-        assert bt._cdp_on_data_dir("http://127.0.0.1:41000", str(tmp_path))
-        assert not bt._cdp_on_data_dir("http://127.0.0.1:9999", str(tmp_path))
+
+        (tmp_path / "DevToolsActivePort").write_text(
+            "41000\n/devtools/browser/expected\n"
+        )
+        version = Mock()
+        version.json.return_value = {
+            "webSocketDebuggerUrl": (
+                "ws://127.0.0.1:41000/devtools/browser/expected"
+            )
+        }
+        with patch("requests.get", return_value=version) as get_version:
+            assert bt._cdp_on_data_dir("http://127.0.0.1:41000", str(tmp_path))
+            assert not bt._cdp_on_data_dir(
+                "http://127.0.0.1:9999", str(tmp_path)
+            )
+
+        get_version.assert_called_once_with(
+            "http://127.0.0.1:41000/json/version", timeout=1.0
+        )
+
+    def test_cdp_on_data_dir_rejects_same_port_wrong_browser_id(self, tmp_path):
+        import tools.browser_tool as bt
+
+        (tmp_path / "DevToolsActivePort").write_text(
+            "41000\n/devtools/browser/expected\n"
+        )
+        version = Mock()
+        version.json.return_value = {
+            "webSocketDebuggerUrl": "ws://127.0.0.1:41000/devtools/browser/other"
+        }
+        with patch("requests.get", return_value=version) as get_version:
+            assert not bt._cdp_on_data_dir(
+                "http://127.0.0.1:41000", str(tmp_path)
+            )
+
+        get_version.assert_called_once_with(
+            "http://127.0.0.1:41000/json/version", timeout=1.0
+        )
 
 
 class TestConsentConfigRead:
