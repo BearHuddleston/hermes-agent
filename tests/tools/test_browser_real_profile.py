@@ -389,6 +389,7 @@ class TestRealProfileCdpLaunch:
              patch.object(bt.subprocess, "Popen", side_effect=fake_popen), \
              patch.object(bt, "_agent_browser_get_cdp",
                           side_effect=[None, "http://127.0.0.1:41000"]), \
+             patch.object(bt, "_cdp_on_data_dir", return_value=True), \
              patch.object(bt, "_find_agent_browser", return_value="/usr/bin/agent-browser"), \
              patch.object(bt.subprocess, "run", return_value=proc), \
              patch.object(bt, "_is_headed_mode", return_value=False):
@@ -396,6 +397,30 @@ class TestRealProfileCdpLaunch:
         assert err is None
         assert cdp == "http://127.0.0.1:41000"
         self._reset()
+
+    def test_post_launch_cdp_must_match_profile_copy(self, tmp_path):
+        """A stale shared session must never be relabeled as this profile."""
+        import tools.browser_tool as bt
+
+        self._reset()
+        proc = Mock(returncode=0, stdout="", stderr="")
+        with patch.object(bt, "_use_real_profile", return_value=True), \
+             patch("hermes_cli.browser_connect.detect_default_chromium", return_value="chrome"), \
+             patch("hermes_cli.browser_connect.snapshot_real_profile",
+                   return_value=(str(tmp_path), None)), \
+             patch.object(bt, "_agent_browser_get_cdp",
+                          side_effect=[None, "http://127.0.0.1:41000"]), \
+             patch.object(bt, "_cdp_on_data_dir", return_value=False), \
+             patch.object(bt, "_agent_browser_close_session") as close, \
+             patch.object(bt, "_find_agent_browser", return_value="/usr/bin/agent-browser"), \
+             patch.object(bt.subprocess, "run", return_value=proc), \
+             patch.object(bt, "_is_headed_mode", return_value=False):
+            cdp, err = bt._real_profile_cdp()
+
+        assert cdp is None
+        assert err and "profile copy" in err
+        close.assert_called_once_with(bt._REAL_PROFILE_SESSION)
+        assert bt._real_profile_cdp_cache == {}
 
     def test_launch_is_headless_and_agent_browser_attaches(self, tmp_path):
         """Real-profile browsing runs headless (no focus-stealing window).
@@ -439,6 +464,7 @@ class TestRealProfileCdpLaunch:
              patch.object(bt.subprocess, "Popen", side_effect=fake_popen), \
              patch.object(bt, "_agent_browser_get_cdp",
                           side_effect=[None, "http://127.0.0.1:41000"]), \
+             patch.object(bt, "_cdp_on_data_dir", return_value=True), \
              patch.object(bt, "_find_agent_browser", return_value="/usr/bin/agent-browser"), \
              patch.object(bt.subprocess, "run", side_effect=fake_run), \
              patch.object(bt, "_is_headed_mode", return_value=False):
@@ -474,7 +500,7 @@ class TestRealProfileCdpLaunch:
              patch.object(bt, "_agent_browser_get_cdp",
                           side_effect=["http://127.0.0.1:5000", "http://127.0.0.1:41000"]), \
              patch.object(bt, "_cdp_http_ready", return_value=True), \
-             patch.object(bt, "_cdp_on_data_dir", return_value=False), \
+             patch.object(bt, "_cdp_on_data_dir", side_effect=[False, True]), \
              patch.object(bt, "_agent_browser_close_session",
                           side_effect=lambda s: closed.__setitem__("n", closed["n"] + 1)), \
              patch.object(bt, "_find_agent_browser", return_value="/usr/bin/agent-browser"), \
@@ -1153,6 +1179,7 @@ class TestReviewRound3:
                    return_value=(str(tmp_path), None)) as snap, \
              patch.object(bt, "_agent_browser_get_cdp",
                           side_effect=[None, "http://127.0.0.1:9251"]), \
+             patch.object(bt, "_cdp_on_data_dir", return_value=True), \
              patch.object(bt, "_find_agent_browser", return_value="/usr/bin/agent-browser"), \
              patch.object(bt.subprocess, "run", return_value=proc), \
              patch.object(bt, "_is_headed_mode", return_value=False):

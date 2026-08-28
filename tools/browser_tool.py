@@ -1928,6 +1928,17 @@ def _real_profile_cdp() -> tuple:
                 "started without exposing a devtools endpoint. Retry, or turn "
                 "the toggle off."
             )
+        if not _cdp_on_data_dir(cdp, copy_dir):
+            # agent-browser multiplexes sessions by name. If closing a stale
+            # session raced or failed, ``open --profile`` can return that old
+            # session's endpoint instead of the requested profile copy. Never
+            # relabel another profile's credential-bearing browser as ours.
+            _agent_browser_close_session(_REAL_PROFILE_SESSION)
+            return None, (
+                "browser.use_real_profile is on, but the local browser opened a "
+                "different profile copy than requested. Hermes refused to attach; "
+                "retry, or turn the toggle off."
+            )
         _real_profile_cdp_cache["cdp"] = cdp
         _real_profile_cdp_cache["browser"] = browser
         _real_profile_cdp_cache["copy_dir"] = copy_dir
