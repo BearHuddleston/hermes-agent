@@ -1,3 +1,5 @@
+import { buildHermesWebSocketUrl, LOCAL_CONNECTION_ID } from '@hermes/shared'
+
 import type {
   DesktopBootProgress,
   DesktopBootstrapState,
@@ -7,6 +9,7 @@ import type {
   HermesTerminalExit,
   HermesTerminalSession
 } from '@/global'
+import { bytesToBase64 } from '@/lib/base64'
 import { $connection } from '@/store/session'
 
 interface BrowserBootstrapWindow {
@@ -26,7 +29,6 @@ const SESSION_HEADER = 'X-Hermes-Session-Token'
 const DEFAULT_TIMEOUT_MS = 30_000
 const REAUTH_EVENT = 'hermes:browser-reauth-required'
 const TERMINAL_META_PREFIX = '\u0000HERMES_TERMINAL_META:'
-const BROWSER_CONNECTION_ID = 'local'
 
 class BrowserReauthRequiredError extends Error {
   readonly loginUrl: string
@@ -63,15 +65,7 @@ function normalizedExtension(value: string): string {
 }
 
 function bytesToDataUrl(bytes: Uint8Array, mimeType: string): string {
-  const chunkSize = 0x8000
-  let binary = ''
-
-  for (let offset = 0; offset < bytes.length; offset += chunkSize) {
-    const chunk = bytes.subarray(offset, Math.min(bytes.length, offset + chunkSize))
-    binary += String.fromCharCode(...chunk)
-  }
-
-  return `data:${mimeType};base64,${btoa(binary)}`
+  return `data:${mimeType};base64,${bytesToBase64(bytes)}`
 }
 
 function noopUnsubscribe(): () => void {
@@ -129,16 +123,18 @@ function websocketUrl(
   credential: { ticket?: string; token?: string },
   profile?: null | string
 ): string {
-  const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
-  const url = new URL(`${protocol}//${window.location.host}${basePath}${path}`)
+  const authParam = credential.ticket
+    ? (['ticket', credential.ticket] as const)
+    : credential.token
+      ? (['token', credential.token] as const)
+      : undefined
 
-  if (credential.ticket) {url.searchParams.set('ticket', credential.ticket)}
-
-  if (credential.token) {url.searchParams.set('token', credential.token)}
-
-  if (profile) {url.searchParams.set('profile', profile)}
-
-  return url.toString()
+  return buildHermesWebSocketUrl({
+    authParam,
+    basePath,
+    params: profile ? { profile } : undefined,
+    path
+  })
 }
 
 function sandboxedHtmlBlob(bytes: Uint8Array): Blob {
@@ -203,36 +199,32 @@ function navigateToBrowserLogin(error: BrowserReauthRequiredError): void {
   if (window.dispatchEvent(event)) {window.location.assign(error.loginUrl)}
 }
 
-async function browserApi<T>(bootstrap: BrowserBootstrap, request: HermesApiRequest): Promise<T> {
-  const controller = new AbortController()
-  const timeout = window.setTimeout(() => controller.abort(), request.timeoutMs ?? DEFAULT_TIMEOUT_MS)
+interface BrowserFetchRequest {
+  body?: BodyInit
+  headers?: HeadersInit
+  method?: string
+  path: string
+  profile?: null | string
+  timeoutMs?: number
+}
+
+async function browserFetch(
+  bootstrap: BrowserBootstrap,
+  request: BrowserFetchRequest
+): Promise<{ response: Response; text: string }> {
+  const controller = request.timeoutMs === undefined ? null : new AbortController()
+  const timeout = controller ? window.setTimeout(() => controller.abort(), request.timeoutMs) : null
+  const headers = new Headers(request.headers)
+
+  if (bootstrap.token) {headers.set(SESSION_HEADER, bootstrap.token)}
 
   try {
-    const headers = new Headers()
-
-    if (bootstrap.token) {headers.set(SESSION_HEADER, bootstrap.token)}
-    let body: BodyInit | undefined
-
-    if (request.upload) {
-      const form = new FormData()
-
-      const blob = new Blob([request.upload.bytes], {
-        type: request.upload.contentType || 'application/octet-stream'
-      })
-
-      form.append('file', blob, request.upload.filename || 'file')
-      body = form
-    } else if (request.body !== undefined) {
-      headers.set('Content-Type', 'application/json')
-      body = JSON.stringify(request.body)
-    }
-
     const response = await fetch(endpointUrl(request.path, bootstrap.basePath, request.profile), {
-      body,
+      body: request.body,
       credentials: 'same-origin',
       headers,
       method: request.method || 'GET',
-      signal: controller.signal
+      signal: controller?.signal
     })
 
     const text = await response.text()
@@ -244,20 +236,52 @@ async function browserApi<T>(bootstrap: BrowserBootstrap, request: HermesApiRequ
         navigateToBrowserLogin(authError)
         throw authError
       }
-
-      throw new Error(`${response.status}: ${text || response.statusText}`)
     }
 
-    if (!text) {return null as T}
-
-    if (/^\s*<(?:!doctype|html)/i.test(text)) {
-      throw new Error(`Hermes API returned HTML for ${request.path}`)
-    }
-
-    return JSON.parse(text) as T
+    return { response, text }
   } finally {
-    window.clearTimeout(timeout)
+    if (timeout !== null) {window.clearTimeout(timeout)}
   }
+}
+
+async function browserApi<T>(bootstrap: BrowserBootstrap, request: HermesApiRequest): Promise<T> {
+  const headers = new Headers()
+  let body: BodyInit | undefined
+
+  if (request.upload) {
+    const form = new FormData()
+
+    const blob = new Blob([request.upload.bytes], {
+      type: request.upload.contentType || 'application/octet-stream'
+    })
+
+    form.append('file', blob, request.upload.filename || 'file')
+    body = form
+  } else if (request.body !== undefined) {
+    headers.set('Content-Type', 'application/json')
+    body = JSON.stringify(request.body)
+  }
+
+  const { response, text } = await browserFetch(bootstrap, {
+    body,
+    headers,
+    method: request.method,
+    path: request.path,
+    profile: request.profile,
+    timeoutMs: request.timeoutMs ?? DEFAULT_TIMEOUT_MS
+  })
+
+  if (!response.ok) {
+    throw new Error(`${response.status}: ${text || response.statusText}`)
+  }
+
+  if (!text) {return null as T}
+
+  if (/^\s*<(?:!doctype|html)/i.test(text)) {
+    throw new Error(`Hermes API returned HTML for ${request.path}`)
+  }
+
+  return JSON.parse(text) as T
 }
 
 async function stageBrowserFile(
@@ -265,33 +289,15 @@ async function stageBrowserFile(
   file: File,
   profile?: null | string
 ): Promise<string> {
-  const headers = new Headers()
-
-  if (bootstrap.token) {headers.set(SESSION_HEADER, bootstrap.token)}
-
   const form = new FormData()
   form.append('file', file, file.name || 'attachment')
 
-  const response = await fetch(
-    endpointUrl('/api/chat/file-upload', bootstrap.basePath, profile),
-    {
-      body: form,
-      credentials: 'same-origin',
-      headers,
-      method: 'POST'
-    }
-  )
-
-  const text = await response.text()
-
-  if (!response.ok) {
-    const authError = reauthError(bootstrap, response, text)
-
-    if (authError) {
-      navigateToBrowserLogin(authError)
-      throw authError
-    }
-  }
+  const { response, text } = await browserFetch(bootstrap, {
+    body: form,
+    method: 'POST',
+    path: '/api/chat/file-upload',
+    profile
+  })
 
   const payload = JSON.parse(text) as { detail?: string; path?: string }
 
@@ -484,9 +490,9 @@ export function installBrowserDesktopBridge(): boolean {
   const getConnection = async (profile?: null | string) => connectionFor(bootstrap, profile)
 
   const requireBrowserConnection = (connectionId?: null | string) => {
-    const requested = connectionId?.trim() || BROWSER_CONNECTION_ID
+    const requested = connectionId?.trim() || LOCAL_CONNECTION_ID
 
-    if (requested !== BROWSER_CONNECTION_ID) {
+    if (requested !== LOCAL_CONNECTION_ID) {
       throw new Error(`No connection with id "${requested}"`)
     }
   }
@@ -496,12 +502,14 @@ export function installBrowserDesktopBridge(): boolean {
 
     return {
       ...connectionFor(bootstrap, payload.profile),
-      connectionId: BROWSER_CONNECTION_ID,
+      connectionId: LOCAL_CONNECTION_ID,
       registryScoped: true,
       sharedPrimary: false,
       sharedRemote: Boolean(payload.profile)
     }
   }
+
+  const transientObjectUrls = new Set<string>()
 
   const openExternal = async (url: string) => {
     window.open(url, '_blank', 'noopener,noreferrer')
@@ -516,7 +524,6 @@ export function installBrowserDesktopBridge(): boolean {
   }
 
   const api = <T>(request: HermesApiRequest) => browserApi<T>(bootstrap, request)
-  const transientObjectUrls = new Set<string>()
 
   window.addEventListener(
     'beforeunload',
@@ -847,6 +854,31 @@ export function installBrowserDesktopBridge(): boolean {
       gitPost('worktree/remove', { force: Boolean(options?.force), path: repoPath, worktreePath })
   } as NonNullable<Window['hermesDesktop']['git']>
 
+  const getGatewayWsUrl = async (profile?: null | string) => {
+    try {
+      return {
+        ok: true as const,
+        wsUrl: await authenticatedWebsocketUrl(bootstrap, '/api/ws', profile)
+      }
+    } catch (error) {
+      if (error instanceof BrowserReauthRequiredError) {
+        return {
+          error: error.message,
+          needsOauthLogin: true,
+          ok: false as const
+        }
+      }
+
+      throw error
+    }
+  }
+
+  const getProfiles = async () => {
+    const result = await api<{ profiles?: { name?: string }[] }>({ path: '/api/profiles' })
+
+    return [...new Set((result.profiles || []).map(profile => String(profile.name || '').trim()).filter(Boolean))]
+  }
+
   const bridge: Window['hermesDesktop'] = {
     api,
     applyConnectionConfig: async () => {
@@ -855,10 +887,9 @@ export function installBrowserDesktopBridge(): boolean {
     cancelBootstrap: async () => ({ cancelled: false, ok: true }),
     fetchLinkTitle: async (url: string) => {
       try {
-        const response = await fetch(url)
-        const html = await response.text()
+        const html = await (await fetch(url)).text()
 
-        return html.match(/<title[^>]*>([^<]*)<\/title>/i)?.[1]?.trim() || new URL(url).hostname
+        return html.match(/<title[^>]*>([\s\S]*?)<\/title>/i)?.[1]?.trim() || new URL(url).hostname
       } catch {
         return new URL(url).hostname
       }
@@ -884,81 +915,44 @@ export function installBrowserDesktopBridge(): boolean {
     getConnectionFor,
     getRecentLogs: async () => ({ lines: [], path: '' }),
     getProfileRoutes: async (profiles: string[]) => {
-      const result = await api<{ profiles?: { name?: string }[] }>({ path: '/api/profiles' })
-
-      const available = new Set(
-        (result.profiles || []).map(profile => String(profile.name || '').trim()).filter(Boolean)
-      )
+      const available = new Set(await getProfiles())
 
       return [...new Set(profiles.map(profile => profile.trim() || 'default'))]
         .filter(profile => available.has(profile))
         .map(profile => ({
-          connectionId: BROWSER_CONNECTION_ID,
+          connectionId: LOCAL_CONNECTION_ID,
           mode: 'local' as const,
           profile,
           targetProfile: profile
         }))
     },
     getAgentRoster: async () => {
-      const result = await api<{ profiles?: { name?: string }[] }>({ path: '/api/profiles' })
-      const profiles = [...new Set((result.profiles || []).map(profile => String(profile.name || '').trim()).filter(Boolean))]
+      const profiles = await getProfiles()
       const connectionLabel = window.location.host
 
       return {
         agents: profiles.map(profile => ({
-          connectionId: BROWSER_CONNECTION_ID,
+          connectionId: LOCAL_CONNECTION_ID,
           connectionKind: 'local' as const,
           connectionLabel,
           handle: profile === 'default' ? 'hermes' : profile,
           profile,
           targetProfile: profile
         })),
-        primaryConnectionId: BROWSER_CONNECTION_ID,
+        primaryConnectionId: LOCAL_CONNECTION_ID,
         sources: [{
-          connectionId: BROWSER_CONNECTION_ID,
+          connectionId: LOCAL_CONNECTION_ID,
           kind: 'local' as const,
           label: connectionLabel,
           reachable: true
         }]
       }
     },
-    getGatewayWsUrl: async (profile?: null | string) => {
-      try {
-        return {
-          ok: true as const,
-          wsUrl: await authenticatedWebsocketUrl(bootstrap, '/api/ws', profile)
-        }
-      } catch (error) {
-        if (error instanceof BrowserReauthRequiredError) {
-          return {
-            error: error.message,
-            needsOauthLogin: true,
-            ok: false as const
-          }
-        }
-
-        throw error
-      }
-    },
+    getGatewayWsUrl,
     getGatewayWsUrlFor: async (payload: { connectionId?: null | string; profile?: null | string }) => {
       requireBrowserConnection(payload.connectionId)
 
-      try {
-        return {
-          ok: true as const,
-          wsUrl: await authenticatedWebsocketUrl(bootstrap, '/api/ws', payload.profile)
-        }
-      } catch (error) {
-        if (error instanceof BrowserReauthRequiredError) {
-          return {
-            error: error.message,
-            needsOauthLogin: true,
-            ok: false as const
-          }
-        }
-
-        throw error
-      }
+      return getGatewayWsUrl(payload.profile)
     },
     getRemoteDisplayReason: async () => 'Browser-hosted Desktop uses this server as its backend',
     getVersion: async () => ({

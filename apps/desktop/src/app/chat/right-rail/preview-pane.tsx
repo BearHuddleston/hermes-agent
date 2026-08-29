@@ -11,7 +11,7 @@ import { openGuestContextMenu } from '@/app/context-menu/store'
 import { PanelEmpty } from '@/app/overlays/panel'
 import { Tip } from '@/components/ui/tooltip'
 import { type Translations, useI18n } from '@/i18n'
-import { isDesktopFsRemoteMode } from '@/lib/desktop-fs'
+import { isBrowserHostedDesktop, isDesktopFsRemoteMode } from '@/lib/desktop-fs'
 import { guardGuestPointers } from '@/lib/guest-pointer-guard'
 import { openPreviewTargetInBrowser, remoteHtmlPreviewDocument } from '@/lib/local-preview'
 import { isRemoteGateway } from '@/lib/media'
@@ -71,24 +71,27 @@ import { registerPreviewPageReader } from './preview-reader'
 import { registerPreviewScriptRunner } from './preview-script-runner'
 import { RealProfileConsentDialog } from './real-profile-consent-dialog'
 
-type PreviewWebview = HTMLElement & {
+interface PreviewNavigationSurface {
+  getTitle?: () => string
+  getURL?: () => string
+  loadURL?: (url: string) => Promise<void>
+  reload?: () => void
+}
+
+type PreviewWebview = HTMLElement & PreviewNavigationSurface & {
   canGoBack?: () => boolean
   canGoForward?: () => boolean
   closeDevTools?: () => void
   copy?: () => void
   cut?: () => void
   executeJavaScript?: (code: string) => Promise<unknown>
-  getTitle?: () => string
-  getURL?: () => string
   getWebContentsId?: () => number
   goBack?: () => void
   goForward?: () => void
   inspectElement?: (x: number, y: number) => void
   isDevToolsOpened?: () => boolean
-  loadURL?: (url: string) => Promise<void>
   openDevTools?: () => void
   paste?: () => void
-  reload?: () => void
   reloadIgnoringCache?: () => void
   replaceMisspelling?: (word: string) => void
   selectAll?: () => void
@@ -98,7 +101,10 @@ type PreviewWebview = HTMLElement & {
 /** Electron throws if getURL/getTitle run before attach + dom-ready, or after
  *  the guest has been removed. Optional chaining does not help — the method
  *  exists, it just refuses. */
-function guestPage(webview: PreviewWebview | null | undefined, fallbackUrl = ''): { title: string; url: string } {
+function guestPage(
+  webview: PreviewNavigationSurface | null | undefined,
+  fallbackUrl = ''
+): { title: string; url: string } {
   try {
     return {
       title: webview?.getTitle?.() ?? '',
@@ -255,6 +261,7 @@ export function PreviewPane({ embedded = false, onRestartServer, reloadRequest =
   const hostRef = useRef<HTMLDivElement | null>(null)
   const lastReloadRequestRef = useRef(reloadRequest)
   const lastRestartEventRef = useRef('')
+  const navigationRef = useRef<PreviewNavigationSurface | null>(null)
   const previewContentRef = useRef<HTMLDivElement | null>(null)
   const webviewRef = useRef<PreviewWebview | null>(null)
   const previewServerRestart = useStore($previewServerRestart)
@@ -308,10 +315,7 @@ export function PreviewPane({ embedded = false, onRestartServer, reloadRequest =
 
   const isRemoteHtml = isRemoteHtmlTarget && target.renderMode !== 'source' && Boolean(target.dataUrl)
 
-  const usesBrowserIframe =
-    isWebPreview &&
-    !isRemoteHtml &&
-    document.documentElement.dataset.hermesDesktopHost === 'browser'
+  const usesBrowserIframe = isWebPreview && !isRemoteHtml && isBrowserHostedDesktop()
 
   const usesWebview = isWebPreview && !isRemoteHtml && !usesBrowserIframe
 
@@ -404,7 +408,7 @@ export function PreviewPane({ embedded = false, onRestartServer, reloadRequest =
     if (webviewRef.current?.reloadIgnoringCache) {
       webviewRef.current.reloadIgnoringCache()
     } else {
-      webviewRef.current?.reload?.()
+      navigationRef.current?.reload?.()
     }
   }, [isWebPreview])
 
@@ -712,7 +716,7 @@ export function PreviewPane({ embedded = false, onRestartServer, reloadRequest =
           // rejected load is a real navigation failure the user has to see —
           // `did-fail-load` doesn't fire for every rejection (a bad scheme
           // rejects outright).
-          webviewRef.current?.loadURL?.(reached)
+          navigationRef.current?.loadURL?.(reached)
         )
         .catch((error: unknown) => {
           setLoadError({
@@ -1013,6 +1017,7 @@ export function PreviewPane({ embedded = false, onRestartServer, reloadRequest =
     }
 
     host.replaceChildren()
+    navigationRef.current = null
     webviewRef.current = null
     setCurrentUrl(target.url)
     setDevtoolsOpen(false)
@@ -1028,7 +1033,7 @@ export function PreviewPane({ embedded = false, onRestartServer, reloadRequest =
     }
 
     if (usesBrowserIframe) {
-      const frame = document.createElement('iframe') as HTMLIFrameElement & PreviewWebview
+      const frame = document.createElement('iframe')
       frame.className = 'flex h-full w-full flex-1 border-0 bg-transparent'
       frame.referrerPolicy = 'no-referrer'
       frame.setAttribute(
@@ -1039,20 +1044,21 @@ export function PreviewPane({ embedded = false, onRestartServer, reloadRequest =
       // clipboard capability. Fullscreen is the only delegated permission.
       frame.setAttribute('allow', 'fullscreen')
       frame.src = target.url
-      frame.getURL = () => frame.src
-      frame.getTitle = () => frame.title
 
-      frame.loadURL = async url => {
-        frame.src = url
-        setCurrentUrl(url)
-        setLoading(true)
-      }
-
-      frame.reload = () => {
-        const url = frame.src
-        frame.src = 'about:blank'
-        frame.src = url
-        setLoading(true)
+      const navigation: PreviewNavigationSurface = {
+        getTitle: () => frame.title,
+        getURL: () => frame.src,
+        loadURL: async url => {
+          frame.src = url
+          setCurrentUrl(url)
+          setLoading(true)
+        },
+        reload: () => {
+          const url = frame.src
+          frame.src = 'about:blank'
+          frame.src = url
+          setLoading(true)
+        }
       }
 
       const onLoad = () => {
@@ -1068,9 +1074,10 @@ export function PreviewPane({ embedded = false, onRestartServer, reloadRequest =
       frame.addEventListener('load', onLoad)
       frame.addEventListener('error', onError)
       host.appendChild(frame)
-      webviewRef.current = frame
+      navigationRef.current = navigation
 
       return () => {
+        if (navigationRef.current === navigation) {navigationRef.current = null}
         frame.removeEventListener('load', onLoad)
         frame.removeEventListener('error', onError)
         frame.remove()
@@ -1275,10 +1282,18 @@ export function PreviewPane({ embedded = false, onRestartServer, reloadRequest =
     // renames the page without navigating at all.
     webview.addEventListener('page-title-updated', notePage)
     host.appendChild(webview)
+    navigationRef.current = webview
     webviewRef.current = webview
 
     return () => {
       annotateLoopRef.current += 1
+      if (navigationRef.current === webview) {
+        navigationRef.current = null
+      }
+
+      if (webviewRef.current === webview) {
+        webviewRef.current = null
+      }
       webview.removeEventListener('console-message', onConsole)
       webview.removeEventListener('context-menu', onGuestContextMenu)
       webview.removeEventListener('devtools-closed', onDevToolsClosed)
