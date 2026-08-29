@@ -1208,7 +1208,7 @@ def test_failed_reimport_preserves_prior_deletion_tombstone(
 
     monkeypatch.setattr(
         profiles,
-        "_safe_extract_profile_archive",
+        "safe_extract_targz",
         fail_extract,
     )
 
@@ -1242,7 +1242,7 @@ def test_failed_fresh_import_hides_partial_destination(
         (partial / "config.yaml").write_text("partial", encoding="utf-8")
         raise OSError("simulated cross-filesystem copy failure")
 
-    monkeypatch.setattr(profiles, "_safe_extract_profile_archive", fake_extract)
+    monkeypatch.setattr(profiles, "safe_extract_targz", fake_extract)
     monkeypatch.setattr(shutil, "move", partial_move)
 
     with pytest.raises(OSError, match="copy failure"):
