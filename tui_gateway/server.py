@@ -1389,10 +1389,12 @@ def _session_has_active_delegations(sid: str, session: dict | None = None) -> bo
 
 # One pending WS-orphan reap Timer per live sid. Registered by
 # _schedule_ws_orphan_reap, popped when its _reap fires, and cancelled by
-# _cancel_ws_orphan_reap from every resume/reuse/transport-rebind path. Without
-# this cancellation the reap could fire against an already-reattached session,
-# broadcast session.reclaimed, and trigger the client's auto-re-resume — a
-# reap->broadcast->resume feedback storm. Guarded by _sessions_lock.
+# _cancel_ws_orphan_reap from every resume/reuse/transport-rebind path. Each
+# detachment also carries an opaque token so a callback already dispatched by
+# Timer.cancel() cannot mutate or reschedule a later detachment generation.
+# Without these guards a stale reap could fire against an already-reattached
+# session, broadcast session.reclaimed, and trigger the client's auto-re-resume
+# — a reap->broadcast->resume feedback storm. Guarded by _sessions_lock.
 _pending_ws_reaps: dict[str, threading.Timer] = {}
 
 
@@ -1411,6 +1413,7 @@ def _cancel_ws_orphan_reap(sid: str) -> None:
         session = _sessions.get(sid)
         if session is not None:
             session.pop("_client_gone_running_deadline", None)
+            session.pop("_client_gone_reap_token", None)
     if timer is not None:
         try:
             timer.cancel()
@@ -1418,7 +1421,12 @@ def _cancel_ws_orphan_reap(sid: str) -> None:
             pass
 
 
-def _schedule_ws_orphan_reap(sid: str, *, delay_s: float | None = None) -> None:
+def _schedule_ws_orphan_reap(
+    sid: str,
+    *,
+    delay_s: float | None = None,
+    _detachment_token: object | None = None,
+) -> None:
     """Reap idle orphan ``sid``; let active work settle within its safety bound.
 
     Called from the WS-disconnect path. The grace window lets a transient
@@ -1435,11 +1443,18 @@ def _schedule_ws_orphan_reap(sid: str, *, delay_s: float | None = None) -> None:
     # load without re-attaching stale deadline state.
     with _sessions_lock:
         current = _sessions.get(sid)
-        needs_running_deadline = bool(
-            current is not None
-            and _ws_session_is_detached(current)
-            and "_client_gone_running_deadline" not in current
-        )
+        if current is None or not _ws_session_is_detached(current):
+            return
+        if _detachment_token is None:
+            detachment_token = current.get("_client_gone_reap_token")
+            if detachment_token is None:
+                detachment_token = object()
+                current["_client_gone_reap_token"] = detachment_token
+        else:
+            if current.get("_client_gone_reap_token") is not _detachment_token:
+                return
+            detachment_token = _detachment_token
+        needs_running_deadline = "_client_gone_running_deadline" not in current
     if needs_running_deadline:
         running_grace = _resolve_ws_orphan_running_grace()
         running_deadline = (
@@ -1447,7 +1462,11 @@ def _schedule_ws_orphan_reap(sid: str, *, delay_s: float | None = None) -> None:
         )
         with _sessions_lock:
             current = _sessions.get(sid)
-            if current is not None and _ws_session_is_detached(current):
+            if (
+                current is not None
+                and _ws_session_is_detached(current)
+                and current.get("_client_gone_reap_token") is detachment_token
+            ):
                 current.setdefault(
                     "_client_gone_running_deadline", running_deadline
                 )
@@ -1467,17 +1486,24 @@ def _schedule_ws_orphan_reap(sid: str, *, delay_s: float | None = None) -> None:
         interrupt_session = None
         session = None
         with _session_resume_lock:
-            # This Timer is running: drop its registration so a concurrent
-            # _cancel_ws_orphan_reap doesn't cancel a dead Timer object while
-            # a rescheduled one (registered below) is the live owner.
+            # Only this timer in this detachment generation may drop the
+            # registration. Timer.cancel() cannot stop a callback that was
+            # already dispatched, so identity is load-bearing here.
             with _sessions_lock:
+                current = _sessions.get(sid)
+                if _pending_ws_reaps.get(sid) is not timer:
+                    return
                 _pending_ws_reaps.pop(sid, None)
-            current = _sessions.get(sid)
-            if current is None:
-                return
-            if not _ws_session_is_detached(current):
-                current.pop("_client_gone_running_deadline", None)
-                return
+                if (
+                    current is None
+                    or current.get("_client_gone_reap_token")
+                    is not detachment_token
+                ):
+                    return
+                if not _ws_session_is_detached(current):
+                    current.pop("_client_gone_running_deadline", None)
+                    current.pop("_client_gone_reap_token", None)
+                    return
             if _session_has_active_delegations(sid, current):
                 reschedule_delay = _WS_ORPHAN_REAP_GRACE_S
             elif current.get("running"):
@@ -1532,7 +1558,11 @@ def _schedule_ws_orphan_reap(sid: str, *, delay_s: float | None = None) -> None:
                             "_client_gone_interrupt_requested", None
                         )
         if reschedule_delay is not None:
-            _schedule_ws_orphan_reap(sid, delay_s=reschedule_delay)
+            _schedule_ws_orphan_reap(
+                sid,
+                delay_s=reschedule_delay,
+                _detachment_token=detachment_token,
+            )
             return
         if session is not None and session.get(
             "_client_gone_interrupt_requested"
@@ -1554,6 +1584,7 @@ def _schedule_ws_orphan_reap(sid: str, *, delay_s: float | None = None) -> None:
             if (
                 current is not None
                 and _ws_session_is_detached(current)
+                and current.get("_client_gone_reap_token") is detachment_token
                 and current.get("running")
             ):
                 deadline = current.get("_client_gone_running_deadline")
@@ -1566,6 +1597,13 @@ def _schedule_ws_orphan_reap(sid: str, *, delay_s: float | None = None) -> None:
     timer = threading.Timer(timer_delay, _reap)
     timer.daemon = True
     with _sessions_lock:
+        current = _sessions.get(sid)
+        if (
+            current is None
+            or not _ws_session_is_detached(current)
+            or current.get("_client_gone_reap_token") is not detachment_token
+        ):
+            return
         prior = _pending_ws_reaps.pop(sid, None)
         _pending_ws_reaps[sid] = timer
     if prior is not None:
@@ -1645,6 +1683,7 @@ def _close_sessions_for_transport(
                         current.pop("_client_gone_interrupt_requested", None)
                         session.pop("_client_gone_interrupt_polls", None)
                         session.pop("_client_gone_running_deadline", None)
+                        session.pop("_client_gone_reap_token", None)
                         should_schedule_reap = True
         if claimed_for_teardown is not None:
             if _teardown_popped_session(claimed_for_teardown, end_reason=end_reason):

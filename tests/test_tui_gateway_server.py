@@ -5097,6 +5097,184 @@ def test_ws_orphan_reap_interrupts_turn_after_running_grace(monkeypatch):
         server._sessions.pop("bounded-sid", None)
 
 
+def test_ws_orphan_reap_stale_cancelled_timer_cannot_replace_new_detachment(
+    monkeypatch,
+):
+    timers = []
+    now = [100.0]
+
+    class _Timer:
+        def __init__(self, delay, callback):
+            self.delay = delay
+            self.callback = callback
+            self.cancelled = False
+            timers.append(self)
+
+        def start(self):
+            return None
+
+        def cancel(self):
+            self.cancelled = True
+
+    sid = "stale-cancelled-timer"
+    session = _session(
+        transport=server._detached_ws_transport,
+        running=True,
+    )
+    server._sessions[sid] = session
+    monkeypatch.setattr(server, "_WS_ORPHAN_REAP_GRACE_S", 20.0)
+    monkeypatch.setattr(server.threading, "Timer", _Timer)
+    monkeypatch.setattr(server.time, "monotonic", lambda: now[0])
+    monkeypatch.setattr(server, "_resolve_ws_orphan_running_grace", lambda: 10.0)
+    monkeypatch.setattr(
+        server, "_session_has_active_delegations", lambda *_args, **_kwargs: False
+    )
+
+    try:
+        server._schedule_ws_orphan_reap(sid)
+        timer_a = timers[-1]
+
+        session["transport"] = object()
+        server._cancel_ws_orphan_reap(sid)
+        assert timer_a.cancelled is True
+
+        session["transport"] = server._detached_ws_transport
+        session.pop("_client_gone_interrupt_requested", None)
+        session.pop("_client_gone_interrupt_polls", None)
+        session.pop("_client_gone_running_deadline", None)
+        server._schedule_ws_orphan_reap(sid)
+        timer_b = timers[-1]
+
+        # Timer.cancel() cannot stop a callback that was already dispatched.
+        # A stale callback from detachment A must not disturb detachment B.
+        timer_a.callback()
+
+        assert server._pending_ws_reaps[sid] is timer_b
+        assert timers == [timer_a, timer_b]
+    finally:
+        server._cancel_ws_orphan_reap(sid)
+        server._sessions.pop(sid, None)
+
+
+def test_ws_orphan_reap_callback_clears_own_registration_after_session_removed(
+    monkeypatch,
+):
+    timers = []
+
+    class _Timer:
+        def __init__(self, _delay, callback):
+            self.callback = callback
+            self.cancelled = False
+            timers.append(self)
+
+        def start(self):
+            return None
+
+        def cancel(self):
+            self.cancelled = True
+
+    sid = "removed-before-reap"
+    server._sessions[sid] = _session(
+        transport=server._detached_ws_transport,
+        running=False,
+    )
+    monkeypatch.setattr(server, "_WS_ORPHAN_REAP_GRACE_S", 20.0)
+    monkeypatch.setattr(server.threading, "Timer", _Timer)
+    monkeypatch.setattr(server, "_resolve_ws_orphan_running_grace", lambda: 10.0)
+
+    try:
+        server._schedule_ws_orphan_reap(sid)
+        timer = timers[-1]
+        assert server._pending_ws_reaps[sid] is timer
+
+        # Another lifecycle owner may claim the session without knowing about
+        # this already-dispatched callback. The callback must still remove its
+        # own dead registration, but never one belonging to a later timer.
+        assert server._pop_session_by_id(sid) is not None
+        timer.callback()
+
+        assert sid not in server._pending_ws_reaps
+    finally:
+        server._cancel_ws_orphan_reap(sid)
+        server._sessions.pop(sid, None)
+
+
+def test_ws_orphan_reap_stale_continuation_cannot_replace_new_deadline(
+    monkeypatch,
+):
+    timers = []
+    now = [100.0]
+    running_grace = [100.0]
+
+    class _Timer:
+        def __init__(self, delay, callback):
+            self.delay = delay
+            self.callback = callback
+            self.cancelled = False
+            timers.append(self)
+
+        def start(self):
+            return None
+
+        def cancel(self):
+            self.cancelled = True
+
+    sid = "stale-reap-continuation"
+    session = _session(
+        transport=server._detached_ws_transport,
+        running=True,
+    )
+    server._sessions[sid] = session
+    monkeypatch.setattr(server, "_WS_ORPHAN_REAP_GRACE_S", 20.0)
+    monkeypatch.setattr(server.threading, "Timer", _Timer)
+    monkeypatch.setattr(server.time, "monotonic", lambda: now[0])
+    monkeypatch.setattr(
+        server, "_resolve_ws_orphan_running_grace", lambda: running_grace[0]
+    )
+    monkeypatch.setattr(
+        server, "_session_has_active_delegations", lambda *_args, **_kwargs: False
+    )
+
+    original_schedule = server._schedule_ws_orphan_reap
+    detachment_b = {}
+
+    try:
+        original_schedule(sid)
+        timer_a = timers[-1]
+        now[0] = 120.0
+
+        def _interleave_reconnect_and_redetach(interleaved_sid, **stale_kwargs):
+            assert interleaved_sid == sid
+
+            session["transport"] = object()
+            server._cancel_ws_orphan_reap(sid)
+            session["transport"] = server._detached_ws_transport
+            session.pop("_client_gone_interrupt_requested", None)
+            session.pop("_client_gone_interrupt_polls", None)
+            session.pop("_client_gone_running_deadline", None)
+
+            running_grace[0] = 10.0
+            original_schedule(sid)
+            detachment_b["timer"] = server._pending_ws_reaps[sid]
+
+            # Resume the stale continuation from detachment A only after B has
+            # registered its own shorter running deadline and timer.
+            original_schedule(sid, **stale_kwargs)
+
+        monkeypatch.setattr(
+            server, "_schedule_ws_orphan_reap", _interleave_reconnect_and_redetach
+        )
+        timer_a.callback()
+
+        timer_b = detachment_b["timer"]
+        assert timer_b.delay == 10.0
+        assert server._pending_ws_reaps[sid] is timer_b
+        assert timers == [timer_a, timer_b]
+    finally:
+        server._cancel_ws_orphan_reap(sid)
+        server._sessions.pop(sid, None)
+
+
 def test_ws_disconnect_running_sidecar_still_closes_without_orphan_timer(monkeypatch):
     closed = []
     scheduled = []
