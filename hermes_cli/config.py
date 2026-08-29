@@ -664,7 +664,7 @@ def ensure_hermes_home():
     named_profile = profile_deletion_marker_path(home) is not None
     if named_profile_home_is_unavailable(home):
         raise FileNotFoundError(
-            f"Named profile home is missing or being deleted: {home}. "
+            f"Named profile home does not exist because it is missing or being deleted: {home}. "
             "Create the profile explicitly before using it.")
     current_identity = _hermes_home_identity(home, include_ctime=named_profile)
     if current_identity is not None and _HERMES_HOME_ENSURED.get(key) == current_identity:
