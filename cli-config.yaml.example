@@ -1905,6 +1905,13 @@ updates:
 # =============================================================================
 # Web Dashboard
 # =============================================================================
+# Detached browser/Desktop WebSocket clients do not cancel active turns. The
+# running grace bounds how long an orphaned turn may continue before Hermes
+# interrupts it; 0 lets the turn finish without a disconnect deadline.
+#
+# dashboard:
+#   ws_orphan_running_grace_s: 43200  # default: 12 hours
+#
 # OAuth gate configuration for `hermes dashboard --host <non-loopback>`.
 # The bundled Nous Portal plugin reads these on startup; settings here are
 # the canonical surface. Each can be overridden by an environment variable:

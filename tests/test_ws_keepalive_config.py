@@ -1,4 +1,4 @@
-"""Config propagation tests for the WS keepalive + orphan-reap grace knobs (#79635)."""
+"""Config propagation for WS keepalive and orphan lifecycle knobs (#79635, #98028)."""
 
 import textwrap
 
@@ -27,6 +27,9 @@ def test_dashboard_ws_defaults_present(_temp_home):
     assert dash.get("ws_ping_interval") == 20.0
     assert dash.get("ws_ping_timeout") == 20.0
     assert dash.get("ws_orphan_reap_grace_s") == 20.0
+    running_grace = dash.get("ws_orphan_running_grace_s")
+    assert isinstance(running_grace, (int, float))
+    assert running_grace > dash["ws_orphan_reap_grace_s"]
 
 
 def test_dashboard_ws_values_propagate_from_yaml(_temp_home):
@@ -39,6 +42,7 @@ def test_dashboard_ws_values_propagate_from_yaml(_temp_home):
           ws_ping_interval: 45.5
           ws_ping_timeout: 10
           ws_orphan_reap_grace_s: 90
+          ws_orphan_running_grace_s: 600
         """,
     )
     cfg = load_config()
@@ -46,6 +50,7 @@ def test_dashboard_ws_values_propagate_from_yaml(_temp_home):
     assert dash["ws_ping_interval"] == 45.5
     assert dash["ws_ping_timeout"] == 10
     assert dash["ws_orphan_reap_grace_s"] == 90
+    assert dash["ws_orphan_running_grace_s"] == 600
     # Deep-merge: sibling defaults survive a partial user section.
     assert dash.get("theme") == "default"
 
@@ -61,6 +66,19 @@ def test_ws_orphan_reap_grace_reads_config(_temp_home):
         """,
     )
     assert server._resolve_ws_orphan_reap_grace() == 33.0
+
+
+def test_ws_orphan_running_grace_reads_config(_temp_home):
+    from tui_gateway import server
+
+    _write_config(
+        _temp_home,
+        """
+        dashboard:
+          ws_orphan_running_grace_s: 4321
+        """,
+    )
+    assert server._resolve_ws_orphan_running_grace() == 4321.0
 
 
 def test_ws_orphan_reap_grace_env_var_overrides_config(_temp_home, monkeypatch):

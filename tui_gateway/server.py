@@ -177,9 +177,9 @@ _SLASH_WORKER_TIMEOUT_S = max(5.0, _slash_timeout)
 # ``session.create`` (new sid + a fresh _SlashWorker via _deferred_build) and
 # never reattaches the OLD sid, so the old session's slash-worker subprocess
 # lingers forever — one leaked python process per refresh (#38591 fallout).
-# After this grace window, an orphaned WS session is interrupted if it is still
-# running, then reaped once the normal turn-finalization path settles.
-# Set to 0 to disable (park forever, pre-fix behaviour).
+# After this grace window, an idle WS session is reaped. Running turns keep
+# going until they settle or reach the separate running-turn safety bound.
+# Set to 0 to disable all WS-orphan reaping (park forever).
 def _resolve_ws_orphan_reap_grace() -> float:
     """Resolve the WS-orphan reap grace window (seconds).
 
@@ -201,6 +201,28 @@ def _resolve_ws_orphan_reap_grace() -> float:
         grace = float(raw) if raw is not None else 20.0
     except (ValueError, TypeError):
         grace = 20.0
+    return max(0.0, grace)
+
+
+def _resolve_ws_orphan_running_grace() -> float:
+    """Resolve how long a detached running turn may continue (seconds).
+
+    A browser losing its WebSocket must not cancel work the user already
+    started. The finite bound still guarantees that a wedged turn cannot keep
+    an orphaned runtime forever. ``0`` disables this running-turn deadline.
+    """
+    try:
+        from hermes_cli.config import load_config
+
+        raw = (load_config().get("dashboard") or {}).get(
+            "ws_orphan_running_grace_s"
+        )
+    except Exception:
+        raw = None
+    try:
+        grace = float(raw) if raw is not None else 12 * 3600.0
+    except (ValueError, TypeError):
+        grace = 12 * 3600.0
     return max(0.0, grace)
 
 
@@ -1237,9 +1259,9 @@ def _interrupt_session_turn(
     """Apply the shared ``session.interrupt`` contract to one claimed session.
 
     Returns whether the interrupt used the compute-host control channel. The WS
-    orphan reaper calls this same helper after its reconnect grace expires, so a
-    dead client gets the same partial-history and queued-prompt semantics as an
-    explicit user interrupt.
+    orphan reaper calls this same helper after a detached turn exhausts its
+    running grace, so a dead client gets the same partial-history and
+    queued-prompt semantics as an explicit user interrupt.
     """
     use_compute_host = _session_uses_compute_host(session)
     should_interrupt = bool(session.get("running"))
@@ -1386,6 +1408,9 @@ def _cancel_ws_orphan_reap(sid: str) -> None:
     """
     with _sessions_lock:
         timer = _pending_ws_reaps.pop(sid, None)
+        session = _sessions.get(sid)
+        if session is not None:
+            session.pop("_client_gone_running_deadline", None)
     if timer is not None:
         try:
             timer.cancel()
@@ -1394,14 +1419,38 @@ def _cancel_ws_orphan_reap(sid: str) -> None:
 
 
 def _schedule_ws_orphan_reap(sid: str, *, delay_s: float | None = None) -> None:
-    """After a grace window, reap session ``sid`` iff it's still orphaned.
+    """Reap idle orphan ``sid``; let active work settle within its safety bound.
 
     Called from the WS-disconnect path. The grace window lets a transient
     reconnect (or a ``session.resume`` that reattaches the transport) cancel
-    the reap by re-binding a live transport. Disabled when the grace is 0.
+    the reap by re-binding a live transport. A running turn is polled until it
+    finishes or exhausts ``dashboard.ws_orphan_running_grace_s``. Disabled
+    when the idle-reap grace is 0.
     """
     if _WS_ORPHAN_REAP_GRACE_S <= 0:
         return
+
+    # Snapshot the running-turn policy once per detachment. Config loads stay
+    # outside lifecycle locks; the second check handles a reconnect racing the
+    # load without re-attaching stale deadline state.
+    with _sessions_lock:
+        current = _sessions.get(sid)
+        needs_running_deadline = bool(
+            current is not None
+            and _ws_session_is_detached(current)
+            and "_client_gone_running_deadline" not in current
+        )
+    if needs_running_deadline:
+        running_grace = _resolve_ws_orphan_running_grace()
+        running_deadline = (
+            None if running_grace <= 0 else time.monotonic() + running_grace
+        )
+        with _sessions_lock:
+            current = _sessions.get(sid)
+            if current is not None and _ws_session_is_detached(current):
+                current.setdefault(
+                    "_client_gone_running_deadline", running_deadline
+                )
 
     def _reap() -> None:
         # Serialize the orphan re-check against session.resume (which re-binds a
@@ -1424,35 +1473,42 @@ def _schedule_ws_orphan_reap(sid: str, *, delay_s: float | None = None) -> None:
             with _sessions_lock:
                 _pending_ws_reaps.pop(sid, None)
             current = _sessions.get(sid)
-            if current is None or not _ws_session_is_detached(current):
+            if current is None:
+                return
+            if not _ws_session_is_detached(current):
+                current.pop("_client_gone_running_deadline", None)
                 return
             if _session_has_active_delegations(sid, current):
                 reschedule_delay = _WS_ORPHAN_REAP_GRACE_S
             elif current.get("running"):
-                # Mid-turn detached sessions must never drop the single
-                # Timer (#85578): after the reconnect grace the turn is
-                # interrupted once, then the reap keeps polling until the
-                # normal turn-finalization path settles.
-                polls = int(current.get("_client_gone_interrupt_polls") or 0) + 1
-                current["_client_gone_interrupt_polls"] = polls
-                if polls > _WS_ORPHAN_INTERRUPT_REAP_MAX_POLLS:
-                    # The interrupted turn never settled inside the budget —
-                    # force-reap rather than parking the session + a timer
-                    # chain forever. Loud by design: this only fires when a
-                    # turn is genuinely stuck past interrupt.
-                    logger.error(
-                        "client_gone sid=%s: turn did not settle after %d "
-                        "interrupt polls (%.0fs) — force-reaping detached "
-                        "session",
-                        sid, polls - 1,
-                        (polls - 1) * _WS_ORPHAN_INTERRUPT_REAP_POLL_S,
+                deadline = current.get("_client_gone_running_deadline")
+                remaining = None if deadline is None else deadline - time.monotonic()
+                if remaining is None or remaining > 0:
+                    reschedule_delay = (
+                        _WS_ORPHAN_REAP_GRACE_S
+                        if remaining is None
+                        else min(_WS_ORPHAN_REAP_GRACE_S, remaining)
                     )
-                    session = _pop_session_by_id(sid)
                 else:
-                    if not current.get("_client_gone_interrupt_requested"):
-                        current["_client_gone_interrupt_requested"] = True
-                        interrupt_session = current
-                    reschedule_delay = _WS_ORPHAN_INTERRUPT_REAP_POLL_S
+                    # Keep the old bounded interrupt-then-reap safety net, but
+                    # only after the detached turn has had its running grace.
+                    polls = int(current.get("_client_gone_interrupt_polls") or 0)
+                    if polls >= _WS_ORPHAN_INTERRUPT_REAP_MAX_POLLS:
+                        logger.error(
+                            "client_gone sid=%s: turn did not settle after %d "
+                            "interrupt polls (%.0fs) — force-reaping detached "
+                            "session",
+                            sid,
+                            polls,
+                            polls * _WS_ORPHAN_INTERRUPT_REAP_POLL_S,
+                        )
+                        session = _pop_session_by_id(sid)
+                    else:
+                        current["_client_gone_interrupt_polls"] = polls + 1
+                        if not current.get("_client_gone_interrupt_requested"):
+                            current["_client_gone_interrupt_requested"] = True
+                            interrupt_session = current
+                        reschedule_delay = _WS_ORPHAN_INTERRUPT_REAP_POLL_S
             else:
                 session = _pop_session_by_id(sid)
 
@@ -1475,7 +1531,6 @@ def _schedule_ws_orphan_reap(sid: str, *, delay_s: float | None = None) -> None:
                         interrupt_session.pop(
                             "_client_gone_interrupt_requested", None
                         )
-
         if reschedule_delay is not None:
             _schedule_ws_orphan_reap(sid, delay_s=reschedule_delay)
             return
@@ -1485,10 +1540,30 @@ def _schedule_ws_orphan_reap(sid: str, *, delay_s: float | None = None) -> None:
             logger.info("client_gone sid=%s action=reap", sid)
         _teardown_popped_session(session, end_reason="ws_orphan_reap")
 
-    timer = threading.Timer(
-        _WS_ORPHAN_REAP_GRACE_S if delay_s is None else max(0.0, delay_s),
-        _reap,
+    timer_delay = (
+        _WS_ORPHAN_REAP_GRACE_S if delay_s is None else max(0.0, delay_s)
     )
+    if delay_s is None:
+        # The ordinary reconnect grace may be longer than a user-configured
+        # running-turn bound. Wake at the earlier deadline so that bound is a
+        # real maximum rather than merely being noticed at the next idle-reap
+        # tick. Explicit delays are interrupt-poll continuations and must stay
+        # unchanged.
+        with _sessions_lock:
+            current = _sessions.get(sid)
+            if (
+                current is not None
+                and _ws_session_is_detached(current)
+                and current.get("running")
+            ):
+                deadline = current.get("_client_gone_running_deadline")
+                if deadline is not None:
+                    timer_delay = min(
+                        timer_delay,
+                        max(0.0, deadline - time.monotonic()),
+                    )
+
+    timer = threading.Timer(timer_delay, _reap)
     timer.daemon = True
     with _sessions_lock:
         prior = _pending_ws_reaps.pop(sid, None)
@@ -1510,10 +1585,11 @@ def _close_sessions_for_transport(
 
     Non-flagged detached sessions are handed to the grace-windowed WS-orphan
     reaper (``_schedule_ws_orphan_reap``): a quick reconnect / session.resume
-    that re-binds a live transport cancels the reap, otherwise the orphan is
-    torn down through the same idempotent ``_teardown_session`` path. This is
-    the single WS-disconnect teardown entry point — there is no second
-    independent reap loop in ``handle_ws``.
+    that re-binds a live transport cancels the reap. Idle orphans are torn down
+    through the same idempotent ``_teardown_session`` path; active turns keep
+    running within their separate safety bound. This is the single
+    WS-disconnect teardown entry point — there is no second independent reap
+    loop in ``handle_ws``.
 
     Returns ``(reaped, detached)`` counts for disconnect-path observability."""
     with _sessions_lock:
@@ -1567,6 +1643,8 @@ def _close_sessions_for_transport(
                     else:
                         current["transport"] = _detached_ws_transport
                         current.pop("_client_gone_interrupt_requested", None)
+                        session.pop("_client_gone_interrupt_polls", None)
+                        session.pop("_client_gone_running_deadline", None)
                         should_schedule_reap = True
         if claimed_for_teardown is not None:
             if _teardown_popped_session(claimed_for_teardown, end_reason=end_reason):

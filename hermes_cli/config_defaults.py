@@ -1727,12 +1727,17 @@ DEFAULT_CONFIG = {
         # must never kill a healthy local connection). Values are seconds.
         "ws_ping_interval": 20.0,
         "ws_ping_timeout": 20.0,
-        # Grace window (seconds) before a WS-orphaned gateway session is
-        # interrupted/reaped after its client disconnects (#79635). The
+        # Grace window (seconds) before an idle WS-orphaned gateway session is
+        # reaped after its client disconnects (#79635). The
         # HERMES_TUI_WS_ORPHAN_REAP_GRACE_S env var remains an internal
         # override for backward compatibility. 0 disables the reap
         # (park forever).
         "ws_orphan_reap_grace_s": 20.0,
+        # A running turn survives browser suspension/disconnect so mobile and
+        # remote clients can reconnect without cancelling user work (#98028).
+        # This safety bound prevents a wedged detached turn from retaining its
+        # runtime forever; 0 lets detached running turns finish indefinitely.
+        "ws_orphan_running_grace_s": 12 * 3600.0,
         # Startup sweep of session rows orphaned by a dead gateway process
         # (#65194).  The ws-orphan grace timer above is in-process, so a
         # gateway restart (update, crash, systemd) leaves disconnected

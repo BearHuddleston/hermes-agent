@@ -1248,21 +1248,28 @@ def _(rid, params: dict) -> dict:
     returns enough state for Ink to redraw around another live session id.
     """
     sid = str(params.get("session_id") or "")
-    session, err = _sess_nowait({"session_id": sid}, rid)
-    if err:
-        return err
-    assert session is not None
+    # Match session.resume's ownership boundary: once the disconnect reaper has
+    # claimed an interrupt, activation must not rebind the transport and report
+    # success while that interrupt is already committed. Holding the resume lock
+    # through the rebind makes the marker check atomic with the reaper claim.
+    with _session_resume_lock:
+        session, err = _sess_nowait({"session_id": sid}, rid)
+        if err:
+            return err
+        assert session is not None
+        if session.get("_client_gone_interrupt_requested"):
+            return _err(rid, 4009, "session disconnect interrupt settling")
 
-    return _ok(
-        rid,
-        _live_session_payload(
-            sid,
-            session,
-            touch=True,
-            transport=current_transport() or _stdio_transport,
-            omit_messages=is_truthy_value(params.get("omit_messages", False)),
-        ),
-    )
+        return _ok(
+            rid,
+            _live_session_payload(
+                sid,
+                session,
+                touch=True,
+                transport=current_transport() or _stdio_transport,
+                omit_messages=is_truthy_value(params.get("omit_messages", False)),
+            ),
+        )
 
 
 @method("session.delete")
