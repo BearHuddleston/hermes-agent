@@ -1228,6 +1228,18 @@ def profiles_to_serve(
     return serve
 
 
+def _prepare_profile_creation_target(canon: str, profile_dir: Path) -> None:
+    """Remove a tombstoned shell or reject an existing profile target."""
+    if profile_dir.exists() and named_profile_is_deleted(profile_dir):
+        # Empty shells left by post-delete mkdir may be replaced. Identity
+        # files mean the leftover is not a shell — fail closed, no rmtree.
+        if (profile_dir / "config.yaml").exists() or (profile_dir / ".env").exists():
+            raise FileExistsError(f"Profile '{canon}' already exists at {profile_dir}")
+        shutil.rmtree(profile_dir)
+    if profile_dir.exists():
+        raise FileExistsError(f"Profile '{canon}' already exists at {profile_dir}")
+
+
 def _initialize_profile(
     name: str,
     clone_from: Optional[str] = None,
@@ -1279,13 +1291,9 @@ def _initialize_profile(
         )
 
     profile_dir = _target_dir or get_profile_dir(canon)
-    if _target_dir is None and profile_dir.exists() and named_profile_is_deleted(profile_dir):
-        # Empty shells left by post-delete mkdir may be replaced. Identity
-        # files mean the leftover is not a shell — fail closed, no rmtree.
-        if (profile_dir / "config.yaml").exists() or (profile_dir / ".env").exists():
-            raise FileExistsError(f"Profile '{canon}' already exists at {profile_dir}")
-        shutil.rmtree(profile_dir)
-    if profile_dir.exists():
+    if _target_dir is None:
+        _prepare_profile_creation_target(canon, profile_dir)
+    elif profile_dir.exists():
         raise FileExistsError(f"Profile '{canon}' already exists at {profile_dir}")
     if _target_dir is None:
         clear_named_profile_deleted(profile_dir)
@@ -1451,6 +1459,7 @@ def create_profile(
     canon = normalize_profile_name(name)
     validate_profile_name(canon)
     profile_dir = get_profile_dir(canon)
+    _prepare_profile_creation_target(canon, profile_dir)
 
     def initialize(staging_dir: Path) -> Path:
         return _initialize_profile(
