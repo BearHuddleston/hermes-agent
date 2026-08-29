@@ -510,15 +510,16 @@ export function installBrowserDesktopBridge(): boolean {
   }
 
   const transientObjectUrls = new Set<string>()
+  const nativeWriteClipboard = navigator.clipboard?.writeText?.bind(navigator.clipboard)
 
   const openExternal = async (url: string) => {
     window.open(url, '_blank', 'noopener,noreferrer')
   }
 
   const writeClipboard = async (text: string) => {
-    if (!navigator.clipboard?.writeText) {return false}
+    if (!nativeWriteClipboard) {return false}
 
-    await navigator.clipboard.writeText(text)
+    await nativeWriteClipboard(text)
 
     return true
   }

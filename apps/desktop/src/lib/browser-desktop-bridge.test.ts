@@ -20,6 +20,7 @@ afterEach(() => {
   delete win.__HERMES_SESSION_TOKEN__
   Reflect.deleteProperty(win, 'hermesDesktop')
   document.documentElement.removeAttribute('data-hermes-desktop-host')
+  Reflect.deleteProperty(navigator, 'clipboard')
   window.history.replaceState(null, '', '/#/')
   $connection.set(null)
   vi.unstubAllGlobals()
@@ -182,6 +183,27 @@ describe('browser-hosted Desktop bridge', () => {
     expect(win.hermesDesktop?.onOpenFindBarRequested).toBeUndefined()
     expect(win.hermesDesktop?.petOverlay).toBeUndefined()
     expect(win.hermesDesktop?.quickEntry).toBeUndefined()
+  })
+
+  it('keeps clipboard writes on the browser-native method captured before renderer shims', async () => {
+    const win = mutableWindow()
+    win.__HERMES_SESSION_TOKEN__ = 'served-token'
+    const nativeWriteText = vi.fn().mockResolvedValue(undefined)
+    const laterShim = vi.fn().mockRejectedValue(new Error('recursive clipboard shim'))
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { writeText: nativeWriteText }
+    })
+
+    expect(installBrowserDesktopBridge()).toBe(true)
+    Object.defineProperty(navigator.clipboard, 'writeText', {
+      configurable: true,
+      value: laterShim
+    })
+
+    await expect(win.hermesDesktop!.writeClipboard('payload')).resolves.toBe(true)
+    expect(nativeWriteText).toHaveBeenCalledWith('payload')
+    expect(laterShim).not.toHaveBeenCalled()
   })
 
   it('remembers the selected browser profile in the launch URL without losing its route', async () => {
