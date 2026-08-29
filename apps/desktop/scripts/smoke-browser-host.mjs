@@ -7,6 +7,8 @@ import { join } from 'node:path'
 import { spawn, spawnSync } from 'node:child_process'
 import process from 'node:process'
 
+import { CDP, sleep } from './perf/lib/cdp.mjs'
+
 const url = process.env.HERMES_BROWSER_HOST_URL || process.argv[2] || 'http://127.0.0.1:9119/'
 const allowGatewayFailure = process.env.HERMES_BROWSER_ALLOW_GATEWAY_FAILURE === '1'
 const requireTerminal = process.env.HERMES_BROWSER_REQUIRE_TERMINAL === '1'
@@ -40,8 +42,6 @@ const ignoredConsoleError = text =>
   text.includes("Blocked call to navigator.vibrate because user hasn't tapped") ||
   (allowGatewayFailure && text.includes('WebSocket connection to'))
 
-const delay = ms => new Promise(resolve => setTimeout(resolve, ms))
-
 async function freePort() {
   const server = createServer()
   await new Promise((resolve, reject) => {
@@ -69,145 +69,9 @@ async function waitForJson(endpoint, browser, stderrTail, timeoutMs = 15_000) {
     } catch (error) {
       lastError = error
     }
-    await delay(100)
+    await sleep(100)
   }
   throw new Error(`Chromium DevTools endpoint did not become ready: ${lastError || 'timeout'}\n${stderrTail()}`)
-}
-
-class CdpClient {
-  constructor(wsUrl) {
-    this.wsUrl = wsUrl
-    this.socket = null
-    this.nextId = 1
-    this.pending = new Map()
-    this.listeners = new Map()
-    this.waiters = new Map()
-  }
-
-  async connect() {
-    this.socket = new WebSocket(this.wsUrl)
-    await new Promise((resolve, reject) => {
-      const timer = setTimeout(() => reject(new Error('CDP websocket open timeout')), 10_000)
-      this.socket.addEventListener(
-        'open',
-        () => {
-          clearTimeout(timer)
-          resolve()
-        },
-        { once: true }
-      )
-      this.socket.addEventListener(
-        'error',
-        () => {
-          clearTimeout(timer)
-          reject(new Error('CDP websocket failed to open'))
-        },
-        { once: true }
-      )
-    })
-    this.socket.addEventListener('message', event => {
-      void this.#handleMessage(event.data)
-    })
-    this.socket.addEventListener('close', () => {
-      for (const { reject } of this.pending.values()) reject(new Error('CDP websocket closed'))
-      this.pending.clear()
-    })
-  }
-
-  async #handleMessage(data) {
-    let text
-    if (typeof data === 'string') text = data
-    else if (data instanceof Blob) text = await data.text()
-    else text = Buffer.from(data).toString('utf8')
-
-    const message = JSON.parse(text)
-    if (message.id) {
-      const pending = this.pending.get(message.id)
-      if (!pending) return
-      this.pending.delete(message.id)
-      if (message.error) pending.reject(new Error(`${message.error.message} (${message.error.code})`))
-      else pending.resolve(message.result || {})
-      return
-    }
-
-    if (!message.method) return
-    for (const listener of this.listeners.get(message.method) || []) {
-      try {
-        listener(message.params || {})
-      } catch {
-        /* observer errors must not break CDP */
-      }
-    }
-    const waiters = this.waiters.get(message.method)
-    if (waiters?.length) {
-      const waiter = waiters.shift()
-      waiter.resolve(message.params || {})
-      if (!waiters.length) this.waiters.delete(message.method)
-    }
-  }
-
-  on(method, listener) {
-    const listeners = this.listeners.get(method) || []
-    listeners.push(listener)
-    this.listeners.set(method, listeners)
-    return () => {
-      const current = this.listeners.get(method) || []
-      this.listeners.set(
-        method,
-        current.filter(item => item !== listener)
-      )
-    }
-  }
-
-  waitFor(method, timeoutMs = 30_000) {
-    return new Promise((resolve, reject) => {
-      const waiters = this.waiters.get(method) || []
-      const waiter = { resolve, reject }
-      waiters.push(waiter)
-      this.waiters.set(method, waiters)
-      setTimeout(() => {
-        const current = this.waiters.get(method) || []
-        const index = current.indexOf(waiter)
-        if (index >= 0) current.splice(index, 1)
-        if (!current.length) this.waiters.delete(method)
-        reject(new Error(`timed out waiting for CDP event ${method}`))
-      }, timeoutMs).unref?.()
-    })
-  }
-
-  send(method, params = {}) {
-    if (!this.socket || this.socket.readyState !== WebSocket.OPEN) {
-      return Promise.reject(new Error(`CDP websocket is not open for ${method}`))
-    }
-    const id = this.nextId++
-    return new Promise((resolve, reject) => {
-      this.pending.set(id, { resolve, reject })
-      this.socket.send(JSON.stringify({ id, method, params }))
-    })
-  }
-
-  async evaluate(expression) {
-    const result = await this.send('Runtime.evaluate', {
-      expression,
-      awaitPromise: true,
-      returnByValue: true,
-      userGesture: true
-    })
-    if (result.exceptionDetails) {
-      const description =
-        result.exceptionDetails.exception?.description || result.exceptionDetails.text || 'evaluation failed'
-      throw new Error(description)
-    }
-    return result.result?.value
-  }
-
-  close() {
-    try {
-      this.socket?.close()
-    } catch {
-      /* best effort */
-    }
-  }
 }
 
 async function createTarget(debugPort) {
@@ -399,8 +263,7 @@ let browserControl = null
 try {
   const browserVersion = await waitForJson(`http://127.0.0.1:${debugPort}/json/version`, browser, stderrTail)
   if (browserVersion?.webSocketDebuggerUrl) {
-    browserControl = new CdpClient(browserVersion.webSocketDebuggerUrl)
-    await browserControl.connect()
+    browserControl = await CDP.open(browserVersion.webSocketDebuggerUrl)
   }
 
   for (const viewport of [
@@ -409,8 +272,8 @@ try {
     { width: 320, height: 568 }
   ]) {
     const target = await createTarget(debugPort)
-    const client = new CdpClient(target.webSocketDebuggerUrl)
-    await client.connect()
+    const client = await CDP.open(target.webSocketDebuggerUrl)
+    const evaluate = expression => client.eval(expression, { userGesture: true })
 
     const consoleErrors = []
     const pageErrors = []
@@ -449,15 +312,15 @@ try {
     const domReady = client.waitFor('Page.domContentEventFired', 30_000)
     await client.send('Page.navigate', { url })
     await domReady
-    await delay(4_000)
+    await sleep(4_000)
 
-    const state = await client.evaluate(stateExpression)
+    const state = await evaluate(stateExpression)
     let htmlSandboxState = { skipped: true }
     let layoutState = { skipped: true }
     let terminalState = { skipped: true }
-    if (viewport.width === 1280) htmlSandboxState = await client.evaluate(htmlSandboxExpression)
-    if (viewport.width === 1280) layoutState = await client.evaluate(layoutExpression)
-    if (requireTerminal && viewport.width === 1280) terminalState = await client.evaluate(terminalExpression)
+    if (viewport.width === 1280) htmlSandboxState = await evaluate(htmlSandboxExpression)
+    if (viewport.width === 1280) layoutState = await evaluate(layoutExpression)
+    if (requireTerminal && viewport.width === 1280) terminalState = await evaluate(terminalExpression)
 
     const failures = []
     if (httpStatus === null || httpStatus >= 400) failures.push(`HTTP ${httpStatus ?? 'no response'}`)
@@ -520,7 +383,7 @@ try {
   const hasExited = () => browser.exitCode !== null || browser.signalCode !== null
   const waitForExit = async timeoutMs => {
     if (hasExited()) return true
-    await Promise.race([new Promise(resolve => browser.once('exit', resolve)), delay(timeoutMs)])
+    await Promise.race([new Promise(resolve => browser.once('exit', resolve)), sleep(timeoutMs)])
     return hasExited()
   }
 

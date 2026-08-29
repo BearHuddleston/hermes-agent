@@ -64,7 +64,7 @@ function joinPath(base: string, rel: string) {
   return `${base.replace(/\/+$/, '')}/${rel.replace(/^\.?\//, '')}`
 }
 
-function pathToFileUrl(path: string) {
+export function pathToFileUrl(path: string) {
   if (/^(?:blob:|data:|https?:)/i.test(path)) {
     return path
   }
