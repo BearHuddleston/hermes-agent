@@ -16,6 +16,7 @@ process environment, ``UseShellExecute=false``, and early
 
 from __future__ import annotations
 
+import builtins
 import json
 import os
 import re
@@ -26,13 +27,14 @@ import sys
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Callable
+from typing import Any, Callable, cast, NoReturn
 
 from hermes_cli.profiles import normalize_profile_name, validate_profile_name
 from hermes_constants import get_default_hermes_root
 from utils import atomic_write_text
 
 MANIFEST_VERSION = 1
+CONNECTION_REGISTRY_VERSION = 2
 INSTANCES_DIRNAME = "desktop-instances"
 _NAME_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
 _RESERVED_NAMES = frozenset({
@@ -137,6 +139,10 @@ class InstanceExistsError(DesktopInstanceError):
 
 class InstanceNotFoundError(DesktopInstanceError):
     """No instance is registered under that name."""
+
+
+class InstanceRouteMismatchError(DesktopInstanceError):
+    """Retained Electron routing state no longer matches the instance manifest."""
 
 
 @dataclass(frozen=True)
@@ -297,7 +303,7 @@ def validate_ssh_port(port: object) -> int:
     if port in (None, ""):
         return 22
     try:
-        value = int(port)
+        value = int(cast(Any, port))
     except (TypeError, ValueError) as exc:
         raise IsolatedInstanceSpecError(
             f"SSH port {port!r} is not an integer."
@@ -406,6 +412,11 @@ def parse_instance_deep_link(url: str) -> InstanceDeepLink | None:
     return InstanceDeepLink(instance_name=name, remainder=remainder)
 
 
+def instance_route_connection_id(instance: DesktopInstance) -> str:
+    """Stable registry id for an isolated shell, including CLI-created shells."""
+    return instance.connection_id or f"isolated-{instance.name}"
+
+
 def seed_connection_config(instance: DesktopInstance) -> dict[str, object]:
     """Non-secret SSH seed for the isolated shell's ``connection.json``."""
     remote: dict[str, object] = {
@@ -422,13 +433,61 @@ def seed_connection_config(instance: DesktopInstance) -> dict[str, object]:
         remote["keyPath"] = instance.ssh_key_path
     return {
         "mode": "ssh",
-        "connectionId": instance.connection_id,
+        "connectionId": instance_route_connection_id(instance),
         "remote": remote,
         "profiles": {},
     }
 
 
-def _csharp_verbatim(value: str) -> str:
+def seed_connections_registry(instance: DesktopInstance) -> dict[str, object]:
+    """Non-secret v2 registry whose active row is the manifest's exact SSH route."""
+    connection_id = instance_route_connection_id(instance)
+    route: dict[str, object] = {
+        "id": connection_id,
+        "kind": "ssh",
+        "label": instance.display_name,
+        "host": instance.ssh_host,
+        "remoteHermesPath": instance.remote_hermes_path,
+        "remoteProfile": instance.remote_profile,
+    }
+    if instance.ssh_user:
+        route["user"] = instance.ssh_user
+    if instance.ssh_port and instance.ssh_port != 22:
+        route["port"] = instance.ssh_port
+    if instance.ssh_key_path:
+        route["keyPath"] = instance.ssh_key_path
+    return {
+        "version": CONNECTION_REGISTRY_VERSION,
+        "primary": connection_id,
+        "launchMode": "primary",
+        "lastUsed": connection_id,
+        "connections": [
+            {"id": "local", "kind": "local", "label": "This device"},
+            route,
+        ],
+    }
+
+
+def _stored_ssh_identity(route: object) -> dict[str, object] | None:
+    if not isinstance(route, dict):
+        return None
+    record = cast(dict[str, object], route)
+    try:
+        port = int(str(record.get("port") or 22))
+    except (TypeError, ValueError):
+        return None
+    return {
+        "host": str(record.get("host") or "").strip(),
+        "user": str(record.get("user") or "").strip(),
+        "port": port,
+        "key_path": str(record.get("keyPath") or "").strip(),
+        "remote_hermes_path": str(record.get("remoteHermesPath") or "").strip(),
+        "remote_profile": str(record.get("remoteProfile") or "default").strip()
+        or "default",
+    }
+
+
+def _csharp_verbatim(value: object) -> str:
     """Escape a value for a C# verbatim string literal.
 
     A trailing backslash would eat the closing quote (``@"C:\\"``).
@@ -919,9 +978,10 @@ class DesktopInstanceStore:
                 display_name=spec.display_name,
             )
         assert_isolated_manifest_matches(existing, spec)
+        self._seed_connection(existing)
         return existing
 
-    def list(self) -> list[DesktopInstance]:
+    def list(self) -> builtins.list[DesktopInstance]:
         root = self.registry_root
         if not root.is_dir():
             return []
@@ -961,7 +1021,9 @@ class DesktopInstanceStore:
             self._write_posix_wrapper(instance)
         return result
 
-    def repair_all(self) -> list[tuple[DesktopInstance, HardlinkRefreshResult]]:
+    def repair_all(
+        self,
+    ) -> builtins.list[tuple[DesktopInstance, HardlinkRefreshResult]]:
         self._require_desktop_platform("Repairing isolated Desktop instances")
         self._require_runtime()
         repaired: list[tuple[DesktopInstance, HardlinkRefreshResult]] = []
@@ -994,6 +1056,7 @@ class DesktopInstanceStore:
         instance = self.get(name)
         instance.hermes_home.mkdir(parents=True, exist_ok=True)
         instance.user_data.mkdir(parents=True, exist_ok=True)
+        self._seed_connection(instance)
         self.repair(name)
         plan = self.build_launch_plan(instance, deep_link=deep_link)
         if not plan.executable.is_file():
@@ -1171,14 +1234,99 @@ class DesktopInstanceStore:
 
     def _seed_connection(self, instance: DesktopInstance) -> None:
         seed_path = instance.user_data / "connection.json"
+        registry_path = instance.user_data / "connections.json"
+
+        # Validate every retained authority before writing either missing file.
+        # remove() intentionally keeps userData, and create() can fail after
+        # seeding it; neither path may silently retarget that state later.
         if seed_path.exists():
-            return
-        payload = seed_connection_config(instance)
-        self._assert_no_secrets(payload)
-        atomic_write_text(
-            seed_path,
-            json.dumps(payload, indent=2) + "\n",
-            create_mode=0o600,
+            self._assert_v1_route_matches(seed_path, instance)
+        if registry_path.exists():
+            self._assert_v2_route_matches(registry_path, instance)
+
+        for path, payload in (
+            (seed_path, seed_connection_config(instance)),
+            (registry_path, seed_connections_registry(instance)),
+        ):
+            if path.exists():
+                continue
+            self._assert_no_secrets(payload)
+            atomic_write_text(
+                path,
+                json.dumps(payload, indent=2) + "\n",
+                create_mode=0o600,
+            )
+
+    def _assert_v1_route_matches(
+        self, path: Path, instance: DesktopInstance
+    ) -> None:
+        payload = self._read_route_file(path)
+        stored_id = str(payload.get("connectionId") or "").strip()
+        allowed_ids = {instance_route_connection_id(instance)}
+        if not instance.connection_id:
+            # Compatibility with CLI-created instances from the pre-v2 branch.
+            allowed_ids.add("")
+        if (
+            payload.get("mode") != "ssh"
+            or stored_id not in allowed_ids
+            or _stored_ssh_identity(payload.get("remote"))
+            != instance.dial_identity()
+        ):
+            self._raise_route_mismatch(path, instance)
+
+    def _assert_v2_route_matches(
+        self, path: Path, instance: DesktopInstance
+    ) -> None:
+        payload = self._read_route_file(path)
+        connection_id = instance_route_connection_id(instance)
+        connections = payload.get("connections")
+        if not isinstance(connections, list):
+            self._raise_route_mismatch(path, instance)
+        matches: list[dict[str, object]] = []
+        for item in connections:
+            if not isinstance(item, dict):
+                continue
+            record = cast(dict[str, object], item)
+            if str(record.get("id") or "").strip() == connection_id:
+                matches.append(record)
+        launch_mode = payload.get("launchMode")
+        active_last_used = (
+            launch_mode != "last-used"
+            or str(payload.get("lastUsed") or "").strip() == connection_id
+        )
+        if (
+            payload.get("version") != CONNECTION_REGISTRY_VERSION
+            or str(payload.get("primary") or "").strip() != connection_id
+            or not active_last_used
+            or len(matches) != 1
+            or matches[0].get("kind") != "ssh"
+            or _stored_ssh_identity(matches[0]) != instance.dial_identity()
+        ):
+            self._raise_route_mismatch(path, instance)
+
+    @staticmethod
+    def _read_route_file(path: Path) -> dict[str, object]:
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            raise InstanceRouteMismatchError(
+                f"Isolated Desktop routing file {path} is unreadable. "
+                "Remove the instance with --purge-local before recreating it."
+            ) from exc
+        if not isinstance(payload, dict):
+            raise InstanceRouteMismatchError(
+                f"Isolated Desktop routing file {path} is not an object. "
+                "Remove the instance with --purge-local before recreating it."
+            )
+        return payload
+
+    @staticmethod
+    def _raise_route_mismatch(path: Path, instance: DesktopInstance) -> NoReturn:
+        raise InstanceRouteMismatchError(
+            f"Retained {path.name} for isolated Desktop instance "
+            f"{instance.name!r} does not match its SSH route. Refusing to "
+            "launch or retarget it; remove the instance with --purge-local "
+            "before recreating it."
         )
 
     def _load_manifest(self, path: Path) -> DesktopInstance:

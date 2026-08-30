@@ -500,7 +500,11 @@ from hermes_cli.subcommands.console import build_console_parser
 from hermes_cli.subcommands.update import build_update_parser
 from hermes_cli.subcommands.uninstall import build_uninstall_parser
 from hermes_cli.subcommands.dashboard import build_dashboard_parser
-from hermes_cli.subcommands.gui import build_gui_parser
+from hermes_cli.subcommands.gui import (
+    build_gui_parser,
+    dispatch_desktop_instance,
+    refresh_isolated_desktop_instances,
+)
 from hermes_cli.subcommands.logs import build_logs_parser
 from hermes_cli.subcommands.prompt_size import build_prompt_size_parser
 from hermes_cli.subcommands.memory import build_memory_parser
@@ -8343,27 +8347,9 @@ def _register_linux_desktop_entry() -> None:
         print(f"⚠ Could not install the desktop launcher entry: {exc}")
 
 
-def _refresh_isolated_desktop_instances(runtime_root: Path, packaged_executable: Path) -> None:
-    """Rebuild named hardlinks after the shared Desktop executable is replaced."""
-    try:
-        from hermes_cli.desktop_instances import repair_instances_for_runtime
-
-        refreshed = repair_instances_for_runtime(runtime_root, packaged_executable)
-    except Exception as exc:  # never block a build on instance plumbing
-        print(f"⚠ Could not refresh isolated Desktop instances: {exc}")
-        return
-    if refreshed:
-        print("✓ Refreshed isolated Desktop instance executables:")
-        for item in refreshed:
-            print(f"    - {item}")
-
-
 def cmd_gui(args: argparse.Namespace):
     """Build and launch the native Electron desktop GUI."""
-    if getattr(args, "desktop_action", None) == "instance":
-        from hermes_cli.desktop_instances import cmd_desktop_instance
-
-        cmd_desktop_instance(args, runtime_root=PROJECT_ROOT)
+    if dispatch_desktop_instance(args, runtime_root=PROJECT_ROOT):
         return
 
     desktop_dir = PROJECT_ROOT / "apps" / "desktop"
@@ -8598,7 +8584,7 @@ def cmd_gui(args: argparse.Namespace):
             # Build succeeded — write the stamp so next run can skip
             _write_desktop_build_stamp(PROJECT_ROOT, source_mode=source_mode)
             if not source_mode and packaged_executable is not None:
-                _refresh_isolated_desktop_instances(PROJECT_ROOT, packaged_executable)
+                refresh_isolated_desktop_instances(PROJECT_ROOT, packaged_executable)
 
     # Linux: register the app in the desktop launcher, so Hermes shows up
     # in the application menu with its icon. Best-effort and idempotent.

@@ -6,7 +6,36 @@ Handler injected to avoid importing ``main``.
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Callable
+
+
+def dispatch_desktop_instance(args, *, runtime_root: Path) -> bool:
+    """Dispatch ``desktop instance`` without growing the legacy GUI handler."""
+    if getattr(args, "desktop_action", None) != "instance":
+        return False
+
+    from hermes_cli.desktop_instances import cmd_desktop_instance
+
+    cmd_desktop_instance(args, runtime_root=runtime_root)
+    return True
+
+
+def refresh_isolated_desktop_instances(
+    runtime_root: Path, packaged_executable: Path
+) -> None:
+    """Best-effort refresh after the shared Desktop executable is replaced."""
+    try:
+        from hermes_cli.desktop_instances import repair_instances_for_runtime
+
+        refreshed = repair_instances_for_runtime(runtime_root, packaged_executable)
+    except Exception as exc:  # never block a build on instance plumbing
+        print(f"⚠ Could not refresh isolated Desktop instances: {exc}")
+        return
+    if refreshed:
+        print("✓ Refreshed isolated Desktop instance executables:")
+        for item in refreshed:
+            print(f"    - {item}")
 
 
 def build_gui_parser(subparsers, *, cmd_gui: Callable) -> None:

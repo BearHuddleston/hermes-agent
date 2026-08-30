@@ -41,7 +41,7 @@ def _store(tmp_path: Path, **overrides: Any):
         runtime_root / "apps" / "desktop" / "release" / "win-unpacked" / "Hermes.exe"
     )
     desktop_dir = tmp_path / "Desktop"
-    kwargs = dict(
+    kwargs: dict[str, Any] = dict(
         hermes_root=hermes_root,
         runtime_root=runtime_root,
         canonical_exe=canonical_exe,
@@ -452,7 +452,7 @@ def test_default_process_starter_scrubs_parent_provider_secrets(tmp_path, monkey
         default_process_starter,
     )
 
-    captured: dict[str, object] = {}
+    captured: dict[str, Any] = {}
 
     class FakePopen:
         def __init__(self, args, cwd=None, env=None):
@@ -506,6 +506,7 @@ def test_parse_instance_deep_link_extracts_slug_and_remainder():
     from hermes_cli.desktop_instances import parse_instance_deep_link
 
     parsed = parse_instance_deep_link("hermes://instance/grace/blueprint/morning")
+    assert parsed is not None
     assert parsed.instance_name == "grace"
     assert parsed.remainder == "hermes://blueprint/morning"
     assert parse_instance_deep_link("hermes://blueprint/morning") is None
@@ -672,6 +673,98 @@ def test_create_can_be_retried_if_launcher_materialize_fails(tmp_path):
     instance = _create(store)
     assert instance.manifest_path.exists()
     assert instance.launcher_exe.exists()
+
+
+def test_recreate_rejects_retained_user_data_for_another_route(tmp_path):
+    from hermes_cli.desktop_instances import InstanceRouteMismatchError
+
+    store = _store(tmp_path)
+    instance = _create(
+        store,
+        connection_id="grace-alice",
+        ssh_user="alice",
+    )
+    store.remove(instance.name)
+
+    with pytest.raises(InstanceRouteMismatchError, match="--purge-local"):
+        _create(
+            store,
+            connection_id="grace-bob",
+            ssh_host="other.example",
+            ssh_user="bob",
+        )
+
+    assert not instance.manifest_path.exists()
+
+
+def test_failed_create_cannot_retarget_its_seeded_user_data(tmp_path):
+    from hermes_cli.desktop_instances import InstanceRouteMismatchError
+
+    calls = {"n": 0}
+
+    def flaky_compiler(source, output):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise RuntimeError("csc unavailable")
+        _touch(output, "compiled-launcher")
+
+    store = _store(tmp_path, compiler=flaky_compiler)
+    with pytest.raises(RuntimeError, match="csc unavailable"):
+        _create(store, connection_id="grace-alice", ssh_user="alice")
+
+    with pytest.raises(InstanceRouteMismatchError, match="--purge-local"):
+        _create(
+            store,
+            connection_id="grace-bob",
+            ssh_host="other.example",
+            ssh_user="bob",
+        )
+
+    assert store.list() == []
+
+
+def test_create_seeds_exact_v2_registry_and_launch_rejects_route_edits(tmp_path):
+    from hermes_cli.desktop_instances import InstanceRouteMismatchError
+
+    launched: list[Any] = []
+    store = _store(
+        tmp_path,
+        process_starter=lambda plan: launched.append(plan) or 4242,
+    )
+    instance = _create(
+        store,
+        connection_id="grace-alice",
+        ssh_user="alice",
+        ssh_port=2222,
+        ssh_key_path="/keys/alice",
+    )
+    registry_path = instance.user_data / "connections.json"
+    registry = json.loads(registry_path.read_text(encoding="utf-8"))
+
+    assert registry["version"] == 2
+    assert registry["primary"] == "grace-alice"
+    assert registry["launchMode"] == "primary"
+    assert registry["lastUsed"] == "grace-alice"
+    route = next(item for item in registry["connections"] if item["id"] == "grace-alice")
+    assert route == {
+        "id": "grace-alice",
+        "kind": "ssh",
+        "label": "Hermes Grace",
+        "host": "grace",
+        "user": "alice",
+        "port": 2222,
+        "keyPath": "/keys/alice",
+        "remoteHermesPath": "/opt/hermes/bin/hermes",
+        "remoteProfile": "default",
+    }
+
+    route["host"] = "edited.example"
+    registry_path.write_text(json.dumps(registry), encoding="utf-8")
+
+    with pytest.raises(InstanceRouteMismatchError, match="connections.json"):
+        store.launch(instance.name)
+
+    assert launched == []
 
 
 def test_unknown_instance_has_a_useful_error(tmp_path):
