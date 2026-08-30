@@ -3879,6 +3879,84 @@ def test_session_resume_passes_stored_runtime_to_agent(monkeypatch):
     assert server._sessions[runtime_sid]["model_override"] == captured["model_override"]
 
 
+def test_eager_resume_reuses_concurrent_winner_without_reentering_resume_lock(
+    monkeypatch,
+):
+    target = "stored-race"
+    live_transport = object()
+    closed = []
+
+    class _StrictResumeLock:
+        def __init__(self):
+            self.held = False
+
+        def __enter__(self):
+            assert not self.held, "session resume lock was re-entered"
+            self.held = True
+            return self
+
+        def __exit__(self, *_args):
+            self.held = False
+
+    class _DB:
+        def get_session(self, session_id):
+            return {"id": session_id, "cwd": "/tmp", "message_count": 1}
+
+        def get_session_by_title(self, _title):
+            return None
+
+        def resolve_resume_session_id(self, session_id):
+            return session_id
+
+        def reopen_session(self, _session_id):
+            return None
+
+        def get_messages_as_conversation(self, _session_id, **_kwargs):
+            return [{"role": "user", "content": "hello"}]
+
+    built_agent = types.SimpleNamespace(close=lambda: closed.append("built"))
+    winner = _session(
+        agent=types.SimpleNamespace(),
+        session_key=target,
+        transport=server._detached_ws_transport,
+        running=False,
+        history=[{"role": "user", "content": "hello"}],
+    )
+    server._sessions["winner-sid"] = winner
+    live_results = iter((None, ("winner-sid", winner)))
+
+    monkeypatch.setattr(server, "_session_resume_lock", _StrictResumeLock())
+    monkeypatch.setattr(
+        server, "_find_live_session_by_key", lambda _key: next(live_results)
+    )
+    monkeypatch.setattr(server, "_get_db", lambda: _DB())
+    monkeypatch.setattr(server, "_enable_gateway_prompts", lambda: None)
+    monkeypatch.setattr(server, "_set_session_context", lambda _target: [])
+    monkeypatch.setattr(server, "_clear_session_context", lambda _tokens: None)
+    monkeypatch.setattr(server, "_make_agent", lambda *_args, **_kwargs: built_agent)
+
+    try:
+        response = _dispatch_sync(
+            {
+                "id": "eager-race",
+                "method": "session.resume",
+                "params": {
+                    "session_id": target,
+                    "eager_build": True,
+                    "omit_messages": True,
+                },
+            },
+            transport=live_transport,
+        )
+
+        assert response is not None
+        assert response["result"]["session_id"] == "winner-sid"
+        assert winner["transport"] is live_transport
+        assert closed == ["built"]
+    finally:
+        server._sessions.pop("winner-sid", None)
+
+
 def test_session_resume_profile_uses_profile_db_cwd(monkeypatch, tmp_path):
     target = "stored-profile-session"
     launch_cwd = tmp_path / "launch"
@@ -4919,6 +4997,59 @@ def test_session_resume_does_not_rebind_after_client_gone_interrupt_claim(monkey
         server._sessions.pop("live-sid", None)
 
 
+def test_lazy_unpersisted_resume_does_not_rebind_after_disconnect_interrupt_claim(
+    monkeypatch,
+):
+    cancelled = []
+
+    class _DB:
+        def get_session(self, _session_id):
+            return None
+
+        def get_session_by_title(self, _title):
+            return None
+
+    class _Timer(threading.Timer):
+        def __init__(self):
+            super().__init__(0, lambda: None)
+
+        def cancel(self):
+            cancelled.append(self)
+
+    live_transport = object()
+    timer = _Timer()
+    session = _session(
+        session_key="stored-lazy",
+        transport=server._detached_ws_transport,
+        running=True,
+        _client_gone_interrupt_requested=True,
+        profile_home=None,
+    )
+    server._sessions["lazy-sid"] = session
+    server._pending_ws_reaps["lazy-sid"] = timer
+    monkeypatch.setattr(server, "_get_db", lambda: _DB())
+
+    try:
+        response = _dispatch_sync(
+            {
+                "id": "resume-unpersisted-after-claim",
+                "method": "session.resume",
+                "params": {"session_id": "stored-lazy", "omit_messages": True},
+            },
+            transport=live_transport,
+        )
+
+        assert response is not None
+        assert response["error"]["code"] == 4009
+        assert response["error"]["message"] == "session disconnect interrupt settling"
+        assert session["transport"] is server._detached_ws_transport
+        assert server._pending_ws_reaps["lazy-sid"] is timer
+        assert cancelled == []
+    finally:
+        server._sessions.pop("lazy-sid", None)
+        server._pending_ws_reaps.pop("lazy-sid", None)
+
+
 def test_session_activate_does_not_rebind_after_client_gone_interrupt_claim(monkeypatch):
     live_transport = object()
     session = _session(
@@ -5738,6 +5869,40 @@ def test_claim_or_reuse_live_winner_cancels_pending_reap(monkeypatch):
         assert live == ("winner-sid", winner)
         assert "winner-sid" not in server._pending_ws_reaps
         assert len(cancelled) == 1
+    finally:
+        server._sessions.pop("winner-sid", None)
+        server._sessions.pop("fresh-sid", None)
+        server._pending_ws_reaps.pop("winner-sid", None)
+
+
+def test_claim_or_reuse_live_interrupt_winner_keeps_pending_reap():
+    cancelled = []
+
+    class _Timer(threading.Timer):
+        def __init__(self):
+            super().__init__(0, lambda: None)
+
+        def cancel(self):
+            cancelled.append(self)
+
+    timer = _Timer()
+    winner = _session(
+        session_key="stored-claim",
+        transport=server._detached_ws_transport,
+        running=True,
+        _client_gone_interrupt_requested=True,
+    )
+    server._sessions["winner-sid"] = winner
+    server._pending_ws_reaps["winner-sid"] = timer
+
+    try:
+        live = server._claim_or_reuse_live(
+            "fresh-sid", "stored-claim", _session(), None
+        )
+
+        assert live == ("winner-sid", winner)
+        assert server._pending_ws_reaps["winner-sid"] is timer
+        assert cancelled == []
     finally:
         server._sessions.pop("winner-sid", None)
         server._sessions.pop("fresh-sid", None)

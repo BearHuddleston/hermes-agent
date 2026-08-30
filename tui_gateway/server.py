@@ -10757,10 +10757,11 @@ def _claim_or_reuse_live(
         if live is not None:
             if lease is not None:
                 lease.release()
-            # The winner is being reattached by this resume: any pending
-            # ws-orphan reap for it must not fire against the reclaimed
-            # client (storm killer — see _cancel_ws_orphan_reap).
-            _cancel_ws_orphan_reap(live[0])
+            # The winner is being reattached by this resume unless grace expiry
+            # already claimed its interrupt. A claimed record must retain its
+            # reap timer; the caller rejects it before any transport rebind.
+            if not live[1].get("_client_gone_interrupt_requested"):
+                _cancel_ws_orphan_reap(live[0])
             return live
         with _sessions_lock:
             _sessions[sid] = record

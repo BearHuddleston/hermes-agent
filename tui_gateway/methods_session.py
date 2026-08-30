@@ -451,25 +451,34 @@ def _(rid, params: dict) -> dict:
                             return live_sid
                     return ""
 
-                live_sid = _find_live_unpersisted(target, profile_home)
-                live = _sessions.get(live_sid) if live_sid else None
+                # The disconnect-grace claimant and every resume path serialize
+                # through the same lock. Once the claimant marks this record,
+                # resume must not rebind its transport or disarm its reap timer.
+                with _session_resume_lock:
+                    live_sid = _find_live_unpersisted(target, profile_home)
+                    live = _sessions.get(live_sid) if live_sid else None
+                    if live is not None:
+                        if live.get("_client_gone_interrupt_requested"):
+                            return _err(
+                                rid, 4009, "session disconnect interrupt settling"
+                            )
+                        live["last_active"] = time.time()
+                        # This resume reattaches the live record. A lazy session
+                        # (no state.db row yet — every fresh Bot Chat) that was
+                        # sentinel-parked by a WS drop MUST be rebound here, or it
+                        # keeps the drop sentinel and the armed orphan-reap Timer
+                        # fires against a client that is attached right now — the
+                        # unpersisted sibling of the storm-killer paths (#91276).
+                        transport = current_transport()
+                        if transport is not None:
+                            with live.setdefault("history_lock", threading.Lock()):
+                                live["transport"] = transport
+                                live.setdefault("viewers", {})[transport] = time.time()
+                        _cancel_ws_orphan_reap(live_sid)
                 if live is not None:
                     if owns_db:
                         with contextlib.suppress(Exception):
                             db.close()
-                    live["last_active"] = time.time()
-                    # This resume reattaches the live record. A lazy session
-                    # (no state.db row yet — every fresh Bot Chat) that was
-                    # sentinel-parked by a WS drop MUST be rebound here, or it
-                    # keeps the drop sentinel and the armed orphan-reap Timer
-                    # fires against a client that is attached right now — the
-                    # unpersisted sibling of the storm-killer paths (#91276).
-                    transport = current_transport()
-                    if transport is not None:
-                        with live.setdefault("history_lock", threading.Lock()):
-                            live["transport"] = transport
-                            live.setdefault("viewers", {})[transport] = time.time()
-                    _cancel_ws_orphan_reap(live_sid)
                     history = live.get("history") or []
                     return _ok(
                         rid,
@@ -627,23 +636,25 @@ def _(rid, params: dict) -> dict:
                 payload["status"] = "streaming"
             return payload
 
+        def _reuse_live_response_locked(sid: str, session: dict) -> dict:
+            if _sessions.get(sid) is not session:
+                return _err(rid, 4007, "session no longer live; retry resume")
+            if session.get("_client_gone_interrupt_requested"):
+                return _err(rid, 4009, "session disconnect interrupt settling")
+            # This resume reattaches the live record: cancel any pending
+            # ws-orphan reap timer armed while the client was detached
+            # (storm killer — _live_session_payload's rebind also cancels,
+            # but only when a transport is passed; cancel unconditionally
+            # here so the fast path can never race the reap Timer).
+            _cancel_ws_orphan_reap(sid)
+            return _ok(rid, _reuse_live_payload(sid, session))
+
         def _reuse_live_response(sid: str, session: dict) -> dict:
-            # The helper owns the resume lock because slow-path claim races can
-            # discover a live winner and return it after releasing their own lock.
-            # Keeping the client-gone check and transport rebind in one critical
-            # section makes grace expiry atomic across every reuse path.
+            # Slow-path claim races return their winner after releasing their own
+            # lock, while the eager double-check already owns it. Keep one locked
+            # implementation so neither path re-enters this non-reentrant lock.
             with _session_resume_lock:
-                if _sessions.get(sid) is not session:
-                    return _err(rid, 4007, "session no longer live; retry resume")
-                if session.get("_client_gone_interrupt_requested"):
-                    return _err(rid, 4009, "session disconnect interrupt settling")
-                # This resume reattaches the live record: cancel any pending
-                # ws-orphan reap timer armed while the client was detached
-                # (storm killer — _live_session_payload's rebind also cancels,
-                # but only when a transport is passed; cancel unconditionally
-                # here so the fast path can never race the reap Timer).
-                _cancel_ws_orphan_reap(sid)
-                return _ok(rid, _reuse_live_payload(sid, session))
+                return _reuse_live_response_locked(sid, session)
 
         # Fast path: if the session is already live, reuse it under the lock.
         with _session_resume_lock:
@@ -979,7 +990,7 @@ def _(rid, params: dict) -> dict:
                     pass
                 if lease is not None:
                     lease.release()
-                return _reuse_live_response(*live)
+                return _reuse_live_response_locked(*live)
             try:
                 init_home_token = (
                     set_hermes_home_override(str(profile_home))
