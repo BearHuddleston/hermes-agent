@@ -193,6 +193,7 @@ describe('settings helpers', () => {
         'chrome',
         'edge',
         'brave',
+        'brave-origin',
         'chromium'
       ])
     })
@@ -203,6 +204,7 @@ describe('settings helpers', () => {
         'chrome',
         'edge',
         'brave',
+        'brave-origin',
         'chromium'
       ])
     })
