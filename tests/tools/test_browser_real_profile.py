@@ -456,6 +456,185 @@ class TestRealProfileCdpLaunch:
         assert bt._real_profile_chrome_procs == []
         self._reset()
 
+    def test_invalidation_evicts_only_real_profile_task_attachments(self):
+        """No task may retain the CDP URL of a reaped profile browser."""
+        import tools.browser_tool as bt
+
+        profile_session = {
+            "session_name": "rp_old",
+            "cdp_url": "ws://127.0.0.1:41000/devtools/browser/old",
+            "features": {"local": True, "real_profile": True},
+        }
+        throwaway_session = {
+            "session_name": "h_keep",
+            "cdp_url": None,
+            "features": {"local": True},
+        }
+        active = {"task-profile": profile_session, "task-throwaway": throwaway_session}
+        activity = {"task-profile": 1.0, "task-throwaway": 2.0}
+        last_active = {
+            "task-profile": "task-profile",
+            "task-throwaway": "task-throwaway",
+        }
+        recordings = {"task-profile", "task-throwaway"}
+        suspect = {"task-profile": "old endpoint", "task-throwaway": "keep"}
+        generation = bt._real_profile_generation
+
+        with patch.object(bt, "_active_sessions", active), \
+             patch.object(bt, "_session_last_activity", activity), \
+             patch.object(bt, "_last_active_session_key", last_active), \
+             patch.object(bt, "_recording_sessions", recordings), \
+             patch.object(bt, "_suspect_browser_sessions", suspect), \
+             patch.object(bt, "_stop_cdp_supervisor") as stop, \
+             patch.object(bt, "_agent_browser_close_session") as close:
+            bt._invalidate_real_profile_browser()
+
+        assert active == {"task-throwaway": throwaway_session}
+        assert activity == {"task-throwaway": 2.0}
+        assert last_active == {"task-throwaway": "task-throwaway"}
+        assert recordings == {"task-throwaway"}
+        assert suspect == {"task-throwaway": "keep"}
+        stop.assert_called_once_with("task-profile")
+        close.assert_called_once_with(bt._REAL_PROFILE_SESSION)
+        assert bt._real_profile_generation == generation + 1
+
+    def test_cached_task_rechecks_replaced_real_profile_lifecycle(self):
+        """A task attachment follows the current shared browser generation."""
+        import tools.browser_tool as bt
+
+        old_session = {
+            "session_name": "rp_old",
+            "cdp_url": "ws://127.0.0.1:41000/devtools/browser/old",
+            "real_profile_cdp": "http://127.0.0.1:41000",
+            "real_profile_scope": "profile-a",
+            "real_profile_generation": 6,
+            "features": {"local": True, "real_profile": True},
+        }
+        replacement = {
+            "session_name": "rp_new",
+            "cdp_url": "ws://127.0.0.1:42000/devtools/browser/new",
+            "real_profile_cdp": "http://127.0.0.1:42000",
+            "real_profile_scope": "profile-a",
+            "real_profile_generation": 7,
+            "features": {"local": True, "real_profile": True},
+        }
+        active = {"task-a": old_session}
+
+        with patch.object(bt, "_active_sessions", active), \
+             patch.object(bt, "_session_last_activity", {"task-a": 1.0}), \
+             patch.object(bt, "_last_active_session_key", {"task-a": "task-a"}), \
+             patch.object(bt, "_recording_sessions", set()), \
+             patch.object(bt, "_suspect_browser_sessions", {}), \
+             patch.object(bt, "_start_browser_cleanup_thread"), \
+             patch.object(bt, "_update_session_activity") as update_activity, \
+             patch.object(bt, "_real_profile_cdp_locked",
+                          return_value=("http://127.0.0.1:42000", None)) as lifecycle, \
+             patch.object(bt, "_real_profile_generation", 7), \
+             patch.object(bt, "hermes_home_key", return_value="profile-a"), \
+             patch.object(bt, "_stop_cdp_supervisor") as stop, \
+             patch.object(bt, "_get_cdp_override", return_value=""), \
+             patch.object(bt, "_get_cloud_provider", return_value=None), \
+             patch.object(bt, "_create_local_session", return_value=replacement) as create, \
+             patch.object(bt, "_ensure_cdp_supervisor"):
+            result = bt._get_session_info("task-a")
+
+        assert result["real_profile_cdp"] == "http://127.0.0.1:42000"
+        assert active["task-a"] is result
+        assert active["task-a"] is not old_session
+        assert lifecycle.call_count == 2
+        stop.assert_called_once_with("task-a")
+        create.assert_called_once_with("task-a")
+        assert update_activity.call_count == 2
+
+    def test_unpublished_real_profile_generation_is_revalidated(self):
+        """A profile switch before publication cannot resurrect a dead CDP."""
+        import tools.browser_tool as bt
+
+        stale = {
+            "session_name": "rp_stale",
+            "cdp_url": "ws://127.0.0.1:41000/devtools/browser/stale",
+            "real_profile_cdp": "http://127.0.0.1:41000",
+            "real_profile_scope": "profile-a",
+            "real_profile_generation": 6,
+            "features": {"local": True, "real_profile": True},
+        }
+        current = {
+            "session_name": "rp_current",
+            "cdp_url": "ws://127.0.0.1:42000/devtools/browser/current",
+            "real_profile_cdp": "http://127.0.0.1:42000",
+            "real_profile_scope": "profile-a",
+            "real_profile_generation": 7,
+            "features": {"local": True, "real_profile": True},
+        }
+        active = {}
+
+        with patch.object(bt, "_active_sessions", active), \
+             patch.object(bt, "_session_last_activity", {}), \
+             patch.object(bt, "_last_active_session_key", {}), \
+             patch.object(bt, "_recording_sessions", set()), \
+             patch.object(bt, "_suspect_browser_sessions", {}), \
+             patch.object(bt, "_start_browser_cleanup_thread"), \
+             patch.object(bt, "_update_session_activity"), \
+             patch.object(bt, "_real_profile_cdp_locked",
+                          return_value=("http://127.0.0.1:42000", None)), \
+             patch.object(bt, "_real_profile_generation", 7), \
+             patch.object(bt, "hermes_home_key", return_value="profile-a"), \
+             patch.object(bt, "_get_cdp_override", return_value=""), \
+             patch.object(bt, "_get_cloud_provider", return_value=None), \
+             patch.object(bt, "_create_local_session",
+                          side_effect=[stale, current]) as create, \
+             patch.object(bt, "_ensure_cdp_supervisor"):
+            result = bt._get_session_info("task-a")
+
+        assert result["real_profile_generation"] == 7
+        assert result["real_profile_cdp"] == "http://127.0.0.1:42000"
+        assert active["task-a"] is result
+        assert create.call_count == 2
+
+    def test_real_profile_supervisor_starts_inside_lifecycle_generation(self):
+        """Invalidation cannot pass supervisor startup before it publishes."""
+        import tools.browser_tool as bt
+
+        class TrackingLock:
+            held = False
+
+            def __enter__(self):
+                assert not self.held
+                self.held = True
+                return self
+
+            def __exit__(self, *_exc):
+                self.held = False
+
+        lifecycle_lock = TrackingLock()
+        session = {
+            "session_name": "rp_current",
+            "cdp_url": "ws://127.0.0.1:42000/devtools/browser/current",
+            "real_profile_cdp": "http://127.0.0.1:42000",
+            "real_profile_scope": "profile-a",
+            "real_profile_generation": 7,
+            "features": {"local": True, "real_profile": True},
+        }
+
+        def start(_task_id, _cdp_url):
+            assert lifecycle_lock.held
+
+        with patch.object(bt, "_real_profile_cdp_lock", lifecycle_lock), \
+             patch.object(bt, "_real_profile_cdp_cache",
+                          {"cdp": "http://127.0.0.1:42000"}), \
+             patch.object(bt, "_real_profile_generation", 7), \
+             patch.object(bt, "_active_sessions", {"task-a": session}), \
+             patch.object(bt, "hermes_home_key", return_value="profile-a"), \
+             patch.object(bt, "_get_cdp_override", return_value=""), \
+             patch.object(bt, "_resolve_cdp_override", side_effect=lambda url: url), \
+             patch.object(bt, "_start_cdp_supervisor", side_effect=start) as start_mock:
+            bt._ensure_cdp_supervisor("task-a")
+
+        start_mock.assert_called_once_with(
+            "task-a", "ws://127.0.0.1:42000/devtools/browser/current"
+        )
+        assert not lifecycle_lock.held
+
     def test_cached_cdp_requires_profile_copy_identity(self):
         """A ready cached endpoint is not trusted without live CDP identity."""
         import tools.browser_tool as bt

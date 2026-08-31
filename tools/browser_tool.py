@@ -653,6 +653,26 @@ def _get_dialog_policy_config() -> Tuple[str, float]:
         return DEFAULT_DIALOG_POLICY, DEFAULT_DIALOG_TIMEOUT_S
 
 
+def _start_cdp_supervisor(task_id: str, cdp_url: str) -> None:
+    """Start one supervisor, swallowing attachment failures."""
+    try:
+        from tools.browser_supervisor import SUPERVISOR_REGISTRY  # type: ignore[import-not-found]
+
+        policy, timeout_s = _get_dialog_policy_config()
+        SUPERVISOR_REGISTRY.get_or_start(
+            task_id=task_id,
+            cdp_url=cdp_url,
+            dialog_policy=policy,
+            dialog_timeout_s=timeout_s,
+        )
+    except Exception as exc:
+        logger.debug(
+            "CDP supervisor attach for task=%s failed (non-fatal): %s",
+            task_id,
+            exc,
+        )
+
+
 def _ensure_cdp_supervisor(task_id: str) -> None:
     """Start a CDP supervisor for ``task_id`` if an endpoint is reachable.
 
@@ -672,6 +692,7 @@ def _ensure_cdp_supervisor(task_id: str) -> None:
     the browser session itself.  The agent simply won't see
     ``pending_dialogs`` / ``frame_tree`` fields in snapshots.
     """
+    session_info: Dict[str, Any] = {}
     cdp_url = _get_cdp_override()
     if not cdp_url:
         # Fallback: active session may carry a per-session CDP URL from a
@@ -683,22 +704,30 @@ def _ensure_cdp_supervisor(task_id: str) -> None:
             cdp_url = _resolve_cdp_override(maybe)
     if not cdp_url:
         return
-    try:
-        from tools.browser_supervisor import SUPERVISOR_REGISTRY  # type: ignore[import-not-found]
 
-        policy, timeout_s = _get_dialog_policy_config()
-        SUPERVISOR_REGISTRY.get_or_start(
-            task_id=task_id,
-            cdp_url=cdp_url,
-            dialog_policy=policy,
-            dialog_timeout_s=timeout_s,
-        )
-    except Exception as exc:
-        logger.debug(
-            "CDP supervisor attach for task=%s failed (non-fatal): %s",
-            task_id,
-            exc,
-        )
+    if _is_real_profile_session(session_info):
+        # Supervisor startup publishes to its own registry after connecting.
+        # Keep that publication in the same lifecycle critical section as task
+        # publication/invalidation: otherwise invalidation can stop an empty
+        # registry while startup is in flight, after which the stale supervisor
+        # becomes visible against a browser generation that was already reaped.
+        with _real_profile_cdp_lock:
+            with _cleanup_lock:
+                current_session = _active_sessions.get(task_id)
+            if current_session is not session_info:
+                return
+            if (
+                session_info.get("real_profile_generation")
+                != _real_profile_generation
+                or session_info.get("real_profile_scope") != hermes_home_key()
+                or session_info.get("real_profile_cdp")
+                != _real_profile_cdp_cache.get("cdp")
+            ):
+                return
+            _start_cdp_supervisor(task_id, cdp_url)
+        return
+
+    _start_cdp_supervisor(task_id, cdp_url)
 
 
 def _stop_cdp_supervisor(task_id: str) -> None:
@@ -1526,6 +1555,7 @@ def _use_real_profile() -> bool:
 _REAL_PROFILE_SESSION = "hermes-real-profile"
 _real_profile_cdp_lock = threading.RLock()
 _real_profile_cdp_cache: dict = {}
+_real_profile_generation = 0
 _real_profile_chrome_procs: list = []  # Popen handles of directly-launched real browsers
 
 
@@ -1656,17 +1686,78 @@ def _real_profile_state_belongs_to_current_scope() -> bool:
     return scope is not None and scope == hermes_home_key()
 
 
+def _is_real_profile_session(session_info: Dict[str, Any]) -> bool:
+    """Return whether a task session attaches to the shared profile browser."""
+    features = session_info.get("features")
+    return isinstance(features, dict) and features.get("real_profile") is True
+
+
+def _evict_real_profile_task_sessions(
+    *, expected: Optional[tuple[str, Dict[str, Any]]] = None,
+) -> None:
+    """Forget task sessions whose CDP endpoint is about to become invalid.
+
+    ``_active_sessions`` caches the per-task attachment separately from the
+    process-global real-profile lifecycle. Reaping or replacing the shared
+    Chrome without evicting those attachments leaves tasks pointing at a dead
+    (and potentially recycled) CDP port. The next command must recreate its
+    attachment against the current profile instead.
+
+    ``expected`` limits eviction to one exact cached generation. It is used by
+    the reuse path so a concurrent replacement is never removed accidentally.
+    """
+    with _cleanup_lock:
+        if expected is None:
+            stale = [
+                (session_key, session_info)
+                for session_key, session_info in _active_sessions.items()
+                if _is_real_profile_session(session_info)
+            ]
+        else:
+            session_key, session_info = expected
+            stale = (
+                [(session_key, session_info)]
+                if _active_sessions.get(session_key) is session_info
+                and _is_real_profile_session(session_info)
+                else []
+            )
+
+        for session_key, _session_info in stale:
+            _active_sessions.pop(session_key, None)
+            _session_last_activity.pop(session_key, None)
+            _recording_sessions.discard(session_key)
+            _suspect_browser_sessions.pop(session_key, None)
+            owner_task_id = _bare_task_id_for_session_key(session_key)
+            if _last_active_session_key.get(owner_task_id) == session_key:
+                _last_active_session_key.pop(owner_task_id, None)
+
+    # Supervisors own background threads and sockets, so stop them after the
+    # cache mutation and before Chrome is terminated. Never call the normal
+    # task cleanup here: it routes through _get_session_info(), which would
+    # recursively recreate the endpoint that this invalidation is removing.
+    for session_key, _session_info in stale:
+        _stop_cdp_supervisor(session_key)
+
+
 def _invalidate_real_profile_browser(*, close_session: bool = True) -> None:
     """Drop real-profile state and stop only Chrome processes launched here."""
-    _real_profile_cdp_cache.clear()
-    try:
-        if close_session:
-            _agent_browser_close_session(_REAL_PROFILE_SESSION)
-    finally:
-        # agent-browser only attaches to the directly-launched process, so
-        # closing its session cannot reap Chrome. The Popen handles are the
-        # ownership boundary: never scan for or terminate an unrelated browser.
-        _terminate_real_profile_chrome()
+    global _real_profile_generation
+
+    # Serialize generation changes with both lifecycle resolution and task
+    # publication. An attachment created before this point must never become
+    # visible after the browser it names has been reaped.
+    with _real_profile_cdp_lock:
+        _real_profile_generation += 1
+        _evict_real_profile_task_sessions()
+        _real_profile_cdp_cache.clear()
+        try:
+            if close_session:
+                _agent_browser_close_session(_REAL_PROFILE_SESSION)
+        finally:
+            # agent-browser only attaches to the directly-launched process, so
+            # closing its session cannot reap Chrome. The Popen handles are the
+            # ownership boundary: never scan for or terminate an unrelated browser.
+            _terminate_real_profile_chrome()
 
 
 def _real_profile_launch_error(message: str) -> tuple:
@@ -3026,7 +3117,7 @@ BROWSER_TOOL_SCHEMAS = [
 # Utility Functions
 # ============================================================================
 
-def _create_local_session(task_id: str, allow_real_profile: bool = True) -> Dict[str, str]:
+def _create_local_session(task_id: str, allow_real_profile: bool = True) -> Dict[str, Any]:
     import uuid
 
     # Real-profile consent: instead of an agent-browser-managed throwaway
@@ -3044,7 +3135,12 @@ def _create_local_session(task_id: str, allow_real_profile: bool = True) -> Dict
     # profile. (Also keeps a real-profile resolve failure from breaking
     # private-URL routing, which has nothing to do with the real profile.)
     if allow_real_profile:
-        cdp_url, err = _real_profile_cdp()
+        # Capture the browser generation under the same lock that owns its
+        # lifecycle. Publication rechecks this token so a profile switch in the
+        # resolve-to-publish gap cannot resurrect an attachment to reaped Chrome.
+        with _real_profile_cdp_lock:
+            cdp_url, err = _real_profile_cdp()
+            real_profile_generation = _real_profile_generation
         if err:
             raise RuntimeError(err)
         if cdp_url:
@@ -3056,6 +3152,9 @@ def _create_local_session(task_id: str, allow_real_profile: bool = True) -> Dict
                 "session_name": session_name,
                 "bb_session_id": None,
                 "cdp_url": _resolve_cdp_override(cdp_url),
+                "real_profile_cdp": cdp_url,
+                "real_profile_scope": hermes_home_key(),
+                "real_profile_generation": real_profile_generation,
                 "features": {"local": True, "real_profile": True},
             }
 
@@ -3125,6 +3224,29 @@ def _create_cdp_session(task_id: str, cdp_url: str) -> Dict[str, str]:
     }
 
 
+def _publish_session_info(
+    task_id: str,
+    session_info: Dict[str, Any],
+) -> tuple[Dict[str, Any], bool]:
+    """Atomically publish one task session, preserving a concurrent winner."""
+    with _cleanup_lock:
+        # Another thread may have created a session while this one performed a
+        # network or browser lifecycle call. Preserve that winner rather than
+        # replacing it.
+        existing = _active_sessions.get(task_id)
+        if existing is not None:
+            return existing, False
+
+        published = dict(session_info)
+        published.setdefault("session_key", task_id)
+        published.setdefault("owner_task_id", _bare_task_id_for_session_key(task_id))
+        _active_sessions[task_id] = published
+        # A brand-new session is healthy by definition — drop any stale
+        # suspect flag left by a wedged-path eviction of its predecessor.
+        _suspect_browser_sessions.pop(task_id, None)
+        return published, True
+
+
 def _get_session_info(task_id: Optional[str] = None) -> Dict[str, Any]:
     """
     Get or create session info for the given session key.
@@ -3155,6 +3277,33 @@ def _get_session_info(task_id: Optional[str] = None) -> Dict[str, Any]:
     with _cleanup_lock:
         # Check if we already have a session for this task
         existing_session = _active_sessions.get(task_id)
+
+    # A real-profile task entry is only an attachment to the process-global
+    # copy-browser. Re-resolve that lifecycle before reuse so consent/profile
+    # changes take effect immediately and replacement of the shared Chrome
+    # cannot leave this task driving a dead or recycled CDP endpoint.
+    if existing_session is not None and _is_real_profile_session(existing_session):
+        with _real_profile_cdp_lock:
+            real_profile_cdp, real_profile_error = _real_profile_cdp_locked()
+            real_profile_generation = _real_profile_generation
+            if real_profile_error:
+                raise RuntimeError(real_profile_error)
+            with _cleanup_lock:
+                still_current = _active_sessions.get(task_id) is existing_session
+            if (
+                still_current
+                and real_profile_cdp
+                and existing_session.get("real_profile_cdp") == real_profile_cdp
+                and existing_session.get("real_profile_scope") == hermes_home_key()
+                and existing_session.get("real_profile_generation")
+                == real_profile_generation
+            ):
+                return existing_session
+            _evict_real_profile_task_sessions(expected=(task_id, existing_session))
+            # Eviction removes this task's activity metadata. Track the replacement
+            # just like an initial session so the inactivity reaper still owns it.
+            _update_session_activity(task_id)
+            existing_session = None
 
     # Suspect-session recycle (#72205 / #85125 3b): a previous command
     # timeout marked this cached session suspect via the SuspectableBackend
@@ -3249,19 +3398,41 @@ def _get_session_info(task_id: Optional[str] = None) -> Dict[str, Any]:
                     session_info["fallback_reason"] = str(e)
                     session_info["fallback_provider"] = provider_name
 
-    with _cleanup_lock:
-        # Double-check: another thread may have created a session while we
-        # were doing the network call. Use the existing one to avoid leaking
-        # orphan cloud sessions.
-        if task_id in _active_sessions:
-            return _active_sessions[task_id]
-        session_info = dict(session_info)
-        session_info.setdefault("session_key", task_id)
-        session_info.setdefault("owner_task_id", _bare_task_id_for_session_key(task_id))
-        _active_sessions[task_id] = session_info
-        # A brand-new session is healthy by definition — drop any stale
-        # suspect flag left by a wedged-path eviction of its predecessor.
-        _suspect_browser_sessions.pop(task_id, None)
+    if _is_real_profile_session(session_info):
+        # Creation deliberately happens outside the lifecycle lock so CDP URL
+        # normalization cannot block all profiles. Re-enter here and re-resolve
+        # the uncached config before publication. Holding the lock through the
+        # atomic store closes the gap where another profile could reap Chrome
+        # and this thread could then publish its dead generation afterward.
+        with _real_profile_cdp_lock:
+            real_profile_cdp, real_profile_error = _real_profile_cdp_locked()
+            real_profile_generation = _real_profile_generation
+            if real_profile_error:
+                raise RuntimeError(real_profile_error)
+            if (
+                not real_profile_cdp
+                or session_info.get("real_profile_cdp") != real_profile_cdp
+                or session_info.get("real_profile_scope") != hermes_home_key()
+                or session_info.get("real_profile_generation")
+                != real_profile_generation
+            ):
+                fallback_metadata = {
+                    key: session_info[key]
+                    for key in (
+                        "fallback_from_cloud",
+                        "fallback_reason",
+                        "fallback_provider",
+                    )
+                    if key in session_info
+                }
+                session_info = _create_local_session(task_id)
+                session_info.update(fallback_metadata)
+            session_info, published = _publish_session_info(task_id, session_info)
+    else:
+        session_info, published = _publish_session_info(task_id, session_info)
+
+    if not published:
+        return session_info
 
     # Lazy-start the CDP supervisor now that the session exists (if the
     # backend surfaces a CDP URL via override or session_info["cdp_url"]).
