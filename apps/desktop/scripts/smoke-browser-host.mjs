@@ -236,6 +236,22 @@ const layoutExpression = `(async () => {
   }
 })()`
 
+const mobileViewportExpression = `(() => {
+  const visibleBottom = document.documentElement.clientHeight
+  const bottom = selector => document.querySelector(selector)?.getBoundingClientRect().bottom ?? null
+  const shellBottom = bottom('[data-contrib-shell]')
+  const sidebarBottom = bottom('[data-slot="sidebar-wrapper"]')
+  const composerBottom = bottom('[data-slot="composer-dock"]')
+  const contained = value => typeof value === 'number' && value <= visibleBottom + 1
+  return {
+    composerBottom,
+    ok: contained(shellBottom) && contained(sidebarBottom) && contained(composerBottom),
+    shellBottom,
+    sidebarBottom,
+    visibleBottom
+  }
+})()`
+
 const executable = findExecutable()
 const debugPort = await freePort()
 const profile = mkdtempSync(join(tmpdir(), 'hermes-browser-smoke-'))
@@ -267,6 +283,7 @@ try {
   }
 
   for (const viewport of [
+    { width: 844, height: 390, mobile: true, smallViewportHeightDifference: 120 },
     { width: 1280, height: 800 },
     { width: 390, height: 844 },
     { width: 320, height: 568 }
@@ -307,19 +324,31 @@ try {
       width: viewport.width,
       height: viewport.height,
       deviceScaleFactor: 1,
-      mobile: false
+      mobile: viewport.mobile ?? false
     })
     const domReady = client.waitFor('Page.domContentEventFired', 30_000)
     await client.send('Page.navigate', { url })
     await domReady
     await sleep(4_000)
 
+    // Mobile browser controls shrink the small viewport without changing the
+    // legacy 100vh size. Apply this after navigation so Chromium recalculates
+    // the live top-level frame.
+    if (viewport.smallViewportHeightDifference) {
+      await client.send('Emulation.setSmallViewportHeightDifferenceOverride', {
+        difference: viewport.smallViewportHeightDifference
+      })
+      await sleep(100)
+    }
+
     const state = await evaluate(stateExpression)
     let htmlSandboxState = { skipped: true }
     let layoutState = { skipped: true }
+    let mobileViewportState = { skipped: true }
     let terminalState = { skipped: true }
     if (viewport.width === 1280) htmlSandboxState = await evaluate(htmlSandboxExpression)
     if (viewport.width === 1280) layoutState = await evaluate(layoutExpression)
+    if (viewport.smallViewportHeightDifference) mobileViewportState = await evaluate(mobileViewportExpression)
     if (requireTerminal && viewport.width === 1280) terminalState = await evaluate(terminalExpression)
 
     const failures = []
@@ -336,6 +365,15 @@ try {
     if (viewport.width === 1280 && !htmlSandboxState.ok) {
       failures.push(`browser HTML artifact escaped its sandbox: ${JSON.stringify(htmlSandboxState)}`)
     }
+    if (
+      viewport.smallViewportHeightDifference &&
+      mobileViewportState.visibleBottom !== viewport.height - viewport.smallViewportHeightDifference
+    ) {
+      failures.push(`mobile viewport emulation did not shrink the visible page: ${JSON.stringify(mobileViewportState)}`)
+    }
+    if (viewport.smallViewportHeightDifference && !mobileViewportState.ok) {
+      failures.push(`mobile browser controls cover the app shell: ${JSON.stringify(mobileViewportState)}`)
+    }
     if (requireTerminal && viewport.width === 1280 && !terminalState.ok) {
       failures.push(
         `browser Desktop host terminal failed: ${terminalState.error || terminalState.outputTail || 'marker missing'}`
@@ -351,7 +389,11 @@ try {
     failures.push(...failedRequests.map(error => `request: ${error}`))
 
     console.log(
-      JSON.stringify({ failures, htmlSandboxState, http: httpStatus, layoutState, state, terminalState, viewport }, null, 2)
+      JSON.stringify(
+        { failures, htmlSandboxState, http: httpStatus, layoutState, mobileViewportState, state, terminalState, viewport },
+        null,
+        2
+      )
     )
     try {
       await client.send('Page.close')
