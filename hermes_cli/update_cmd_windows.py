@@ -19,7 +19,7 @@ from hermes_cli.update_cmd_common import _best_effort
 
 logger = logging.getLogger("hermes_cli.update_cmd")  # log-record parity with the origin module
 
-_BACKEND_PURPOSES = ("serve", "dashboard", "webapp")
+_WEB_SERVER_PURPOSES = ("serve", "dashboard", "webapp")
 
 
 def _try_call(fn, log_message: str, *log_args, default=None):
@@ -373,7 +373,7 @@ def _ledger_manual_serve_holders(matches: list[tuple[int, str, str]]) -> list[di
     holder_pids = {int(pid) for pid, _name, _cmd in matches}
     return [
         entry for entry in ledger_entries()
-        if entry.get("purpose") in _BACKEND_PURPOSES and isinstance(entry.get("pid"), int) and entry["pid"] in holder_pids
+        if entry.get("purpose") in _WEB_SERVER_PURPOSES and isinstance(entry.get("pid"), int) and entry["pid"] in holder_pids
         and spawner_is_dead(entry) is not False  # False = live Desktop supervisor owns it; keep refusing
     ]
 
@@ -446,7 +446,7 @@ def _pause_manual_web_servers(matches: list[tuple[int, str, str]]) -> dict | Non
 
 def _is_backend_argv(argv: str) -> bool:
     """Whether argv identifies a Hermes web-server backend."""
-    return "hermes_cli.main" in argv.lower() and _hermes_holder_subcommand(argv) in _BACKEND_PURPOSES
+    return "hermes_cli.main" in argv.lower() and _hermes_holder_subcommand(argv) in _WEB_SERVER_PURPOSES
 
 
 def _live_argv_low(psutil, pid, cmdline: str) -> str | None:
@@ -611,7 +611,7 @@ def _looks_like_desktop_control_plane(cmdline: str) -> bool:
     A cmdline whose subcommand cannot be determined is NOT a control plane — callers must not guess
     ownership. See #90778, #91869.
     """
-    return "hermes_cli.main" in (cmdline or "").lower() and _hermes_holder_subcommand(cmdline) in _BACKEND_PURPOSES
+    return "hermes_cli.main" in (cmdline or "").lower() and _hermes_holder_subcommand(cmdline) in _WEB_SERVER_PURPOSES
 
 
 def _desktop_owns_gateway_lifecycle() -> bool:
@@ -626,7 +626,7 @@ def _desktop_owns_gateway_lifecycle() -> bool:
     from hermes_cli.update_cmd import _m
     with _best_effort('Desktop-lifecycle ledger probe failed: %s'):
         from hermes_cli.process_identity import ledger_entries, spawner_is_dead
-        if any(e.get("purpose") in _BACKEND_PURPOSES and spawner_is_dead(e) is False for e in ledger_entries()):
+        if any(e.get("purpose") in _WEB_SERVER_PURPOSES and spawner_is_dead(e) is False for e in ledger_entries()):
             return True
     psutil = _psutil()
     for pid, _name, cmdline in _try_call(_m()._detect_venv_python_processes, "Desktop-lifecycle holder scan failed: %s") or []:
