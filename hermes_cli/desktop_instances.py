@@ -664,10 +664,15 @@ def default_process_starter(plan: LaunchPlan) -> int:
         inherit_profile_home=False,
         extra=plan.env,
     )
+    # The short-lived CLI may itself be captured by Electron's execFile().
+    # Keep the long-lived Desktop from retaining those parent pipes after the CLI exits.
     proc = subprocess.Popen(
         [str(plan.executable), *plan.arguments],
         cwd=plan.cwd or None,
         env=env,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
     )
     return int(proc.pid)
 

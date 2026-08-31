@@ -10,9 +10,12 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import subprocess
+import sys
 from pathlib import Path
 from typing import Any
 
+import psutil
 import pytest
 
 from hermes_cli import main as cli_main
@@ -455,10 +458,11 @@ def test_default_process_starter_scrubs_parent_provider_secrets(tmp_path, monkey
     captured: dict[str, Any] = {}
 
     class FakePopen:
-        def __init__(self, args, cwd=None, env=None):
+        def __init__(self, args, cwd=None, env=None, **kwargs):
             captured["args"] = args
             captured["cwd"] = cwd
             captured["env"] = env
+            captured["options"] = kwargs
             self.pid = 4242
 
     monkeypatch.setenv("OPENAI_API_KEY", "sk-parent-secret")
@@ -483,6 +487,84 @@ def test_default_process_starter_scrubs_parent_provider_secrets(tmp_path, monkey
     assert "OPENAI_API_KEY" not in env
     assert "ANTHROPIC_API_KEY" not in env
     assert "sk-parent-secret" not in " ".join(str(value) for value in env.values())
+    assert captured["options"] == {
+        "stdin": subprocess.DEVNULL,
+        "stdout": subprocess.DEVNULL,
+        "stderr": subprocess.DEVNULL,
+    }
+
+
+def test_default_process_starter_releases_capturing_parent_pipes(tmp_path):
+    """A short-lived CLI must not wait for its long-lived Desktop child's stdio."""
+    repo_root = Path(__file__).resolve().parents[2]
+    pid_path = tmp_path / "desktop.pid"
+    stop_path = tmp_path / "stop-desktop"
+    desktop_code = (
+        "import time\n"
+        "from pathlib import Path\n"
+        f"stop = Path({str(stop_path)!r})\n"
+        "deadline = time.monotonic() + 6\n"
+        "while not stop.exists() and time.monotonic() < deadline:\n"
+        "    time.sleep(0.05)\n"
+    )
+    launcher_code = (
+        "import sys\n"
+        "from pathlib import Path\n"
+        "from hermes_cli.desktop_instances import LaunchPlan, default_process_starter\n"
+        "pid = default_process_starter(LaunchPlan(\n"
+        "    executable=Path(sys.executable),\n"
+        f"    arguments=['-c', {desktop_code!r}],\n"
+        "    env={},\n"
+        f"    cwd={str(tmp_path)!r},\n"
+        "))\n"
+        f"Path({str(pid_path)!r}).write_text(str(pid), encoding='utf-8')\n"
+        "print(f'launched {pid}', flush=True)\n"
+    )
+    launcher = subprocess.Popen(
+        [sys.executable, "-c", launcher_code],
+        cwd=repo_root,
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    )
+    desktop_pid: int | None = None
+
+    try:
+        assert launcher.wait(timeout=20) == 0
+        desktop_pid = int(pid_path.read_text(encoding="utf-8"))
+        assert psutil.Process(desktop_pid).is_running()
+
+        stdout, stderr = launcher.communicate(timeout=3)
+
+        assert stdout.strip() == f"launched {desktop_pid}"
+        assert stderr == ""
+    finally:
+        stop_path.touch()
+        if desktop_pid is not None:
+            try:
+                psutil.Process(desktop_pid).wait(timeout=5)
+            except psutil.NoSuchProcess:
+                pass
+        if launcher.poll() is None:
+            launcher.kill()
+        launcher.communicate(timeout=5)
+
+
+def test_default_process_starter_preserves_immediate_launch_errors(tmp_path):
+    from hermes_cli.desktop_instances import LaunchPlan, default_process_starter
+
+    plan = LaunchPlan(
+        executable=tmp_path / "missing-desktop-executable",
+        arguments=[],
+        env={},
+        cwd=str(tmp_path),
+    )
+
+    with pytest.raises(OSError):
+        default_process_starter(plan)
 
 
 def test_instance_spec_rejects_non_ssh_and_missing_remote_path():
