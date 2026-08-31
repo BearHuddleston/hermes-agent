@@ -5077,6 +5077,142 @@ def test_session_activate_does_not_rebind_after_client_gone_interrupt_claim(monk
         server._sessions.pop("live-sid", None)
 
 
+def test_prompt_submit_serializes_reconnect_against_orphan_deadline_claim(
+    monkeypatch,
+):
+    import queue
+
+    callbacks = []
+    interrupted = []
+    slot_claims = []
+    progress = queue.Queue()
+    release_reap = threading.Event()
+    thread_errors = []
+
+    class _ObservedLock:
+        def __init__(self):
+            self._lock = threading.Lock()
+
+        def __enter__(self):
+            if not self._lock.acquire(blocking=False):
+                progress.put("resume-lock")
+                self._lock.acquire()
+            return self
+
+        def __exit__(self, *_args):
+            self._lock.release()
+
+    class _Timer:
+        def __init__(self, _delay, callback):
+            callbacks.append(callback)
+            self.daemon = False
+
+        def start(self):
+            return None
+
+        def cancel(self):
+            return None
+
+    def _deadline_check(*_args, **_kwargs):
+        progress.put("reaper")
+        assert release_reap.wait(timeout=5.0)
+        return False
+
+    real_busy_submit = server._handle_busy_submit
+
+    def _busy_submit(*args, **kwargs):
+        progress.put("busy-submit")
+        return real_busy_submit(*args, **kwargs)
+
+    live_transport = object()
+    session = _session(
+        transport=server._detached_ws_transport,
+        running=True,
+        _client_gone_running_deadline=0.0,
+    )
+    server._sessions["deadline-sid"] = session
+    monkeypatch.setattr(server, "_session_resume_lock", _ObservedLock())
+    monkeypatch.setattr(server.threading, "Timer", _Timer)
+    monkeypatch.setattr(server, "_WS_ORPHAN_REAP_GRACE_S", 0.01)
+    monkeypatch.setattr(server, "_session_has_active_delegations", _deadline_check)
+    monkeypatch.setattr(
+        server,
+        "_ensure_active_session_slot",
+        lambda sid, claimed: slot_claims.append((sid, claimed)),
+    )
+    monkeypatch.setattr(server, "_handle_busy_submit", _busy_submit)
+    monkeypatch.setattr(
+        server,
+        "_interrupt_session_turn",
+        lambda sid, claimed, *, request_id=None: interrupted.append(
+            (sid, claimed, request_id)
+        )
+        or False,
+    )
+
+    response = {}
+
+    def _run_reap():
+        try:
+            callbacks.pop(0)()
+        except BaseException as exc:  # surface worker failures on the test thread
+            thread_errors.append(exc)
+
+    def _submit():
+        try:
+            response["value"] = _dispatch_sync(
+                {
+                    "id": "submit-during-deadline-claim",
+                    "method": "prompt.submit",
+                    "params": {
+                        "session_id": "deadline-sid",
+                        "text": "run this next",
+                        "queued": True,
+                    },
+                },
+                transport=live_transport,
+            )
+        except BaseException as exc:  # surface worker failures on the test thread
+            thread_errors.append(exc)
+
+    reap_thread = None
+    submit_thread = None
+    try:
+        server._schedule_ws_orphan_reap("deadline-sid")
+        reap_thread = threading.Thread(target=_run_reap)
+        reap_thread.start()
+        assert progress.get(timeout=5.0) == "reaper"
+
+        submit_thread = threading.Thread(target=_submit)
+        submit_thread.start()
+        progress.get(timeout=5.0)
+        release_reap.set()
+        reap_thread.join(timeout=5.0)
+        submit_thread.join(timeout=5.0)
+
+        assert not thread_errors
+        assert not reap_thread.is_alive()
+        assert not submit_thread.is_alive()
+        assert response["value"]["error"] == {
+            "code": 4009,
+            "message": "session disconnect interrupt settling",
+        }
+        assert session["transport"] is server._detached_ws_transport
+        assert session.get("queued_prompt") is None
+        assert slot_claims == []
+        assert interrupted == [
+            ("deadline-sid", session, "client-gone-deadline-sid")
+        ]
+    finally:
+        release_reap.set()
+        if reap_thread is not None:
+            reap_thread.join(timeout=5.0)
+        if submit_thread is not None:
+            submit_thread.join(timeout=5.0)
+        server._sessions.pop("deadline-sid", None)
+        server._pending_ws_reaps.pop("deadline-sid", None)
+
+
 def test_ws_orphan_reap_defers_running_turn_for_active_delegation(monkeypatch):
     callbacks = []
     interrupted = []

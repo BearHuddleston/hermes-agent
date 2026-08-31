@@ -423,25 +423,6 @@ def _(rid, params: dict) -> dict:
                             )
                             + "Update Hermes Desktop to continue it.",
                         )
-    if (limit_message := _ensure_active_session_slot(sid, session)) is not None:
-        # The refusal reason travels as machine-readable data, not as prose.
-        #
-        # An automated client has to tell "the machine is at capacity, retry later"
-        # from "this session has a live owner, and your write would interleave with
-        # theirs". Those call for different behaviour, and a client that had to
-        # distinguish them by matching the message text would silently change
-        # behaviour the next time the wording improved.
-        #
-        # Refused HERE, before the busy-queue check, before _ensure_session_db_row
-        # and before _start_agent_build: no user row is persisted and no model turn
-        # begins, so a refusal leaves the session exactly as it was.
-        reason = getattr(limit_message, "reason", None)
-        return _err(
-            rid,
-            4090,
-            str(limit_message),
-            {"reason": reason} if reason else None,
-        )
     # Which desktop window this message was typed into. Rewritten on every
     # submit, because one session can be driven from the app window and the HUD
     # in turn: a stale "hud" would tell the model the user is still floating
@@ -468,11 +449,38 @@ def _(rid, params: dict) -> dict:
             4121,
             "hosted room turns do not support isolated compute workers yet",
         )
-    # Re-bind to the current client transport for this request. This keeps
-    # streaming events on the active websocket even if an earlier disconnect
-    # or fallback moved the session transport to stdio.
-    if (t := current_transport()) is not None:
-        session["transport"] = t
+    # A prompt can be the first RPC from a reconnected client, so its transport
+    # rebind is the same ownership claim as session.resume / session.activate.
+    # Serialize it against disconnect teardown and orphan-deadline settlement:
+    # once the reaper claims an interrupt, this prompt must not revive the
+    # sentinel-parked record or queue work behind the turn being cancelled.
+    t = current_transport()
+    with _session_resume_lock:
+        # Publish the transport under the registry lock as the reconnect claim.
+        # This makes the identity check atomic not only with the orphan reaper,
+        # but also with idle/LRU teardown, which revalidates under this lock.
+        with _sessions_lock:
+            if _sessions.get(sid) is not session:
+                return _err(rid, 4001, "session not found")
+            if session.get("_client_gone_interrupt_requested"):
+                return _err(rid, 4009, "session disconnect interrupt settling")
+            if t is not None:
+                session["transport"] = t
+                session.setdefault("viewers", {})[t] = time.time()
+        if t is not None:
+            _cancel_ws_orphan_reap(sid)
+    if (limit_message := _ensure_active_session_slot(sid, session)) is not None:
+        # Ownership admission follows the reconnect claim above deliberately:
+        # a prompt is allowed to reattach its local transport, but it still may
+        # not persist input, queue work, or start a model turn without the
+        # cross-process session lease.
+        reason = getattr(limit_message, "reason", None)
+        return _err(
+            rid,
+            4090,
+            str(limit_message),
+            {"reason": reason} if reason else None,
+        )
     while True:
         busy_transport = None
         with session["history_lock"]:
