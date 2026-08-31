@@ -12,19 +12,21 @@ import tui_gateway.server as server
 
 
 def _stub_session(monkeypatch, *, title, profile_home=None):
+    session = {
+        "id": "session-1",
+        "title": title,
+        "source": "bot_room",
+        "profile_home": str(profile_home) if profile_home else None,
+    }
     monkeypatch.setattr(
         server,
         "_sess_nowait",
-        lambda _params, _rid: (
-            {
-                "id": "session-1",
-                "title": title,
-                "source": "bot_room",
-                "profile_home": str(profile_home) if profile_home else None,
-            },
-            None,
-        ),
+        lambda _params, _rid: (session, None),
     )
+    # prompt.submit now revalidates the exact live record while claiming the
+    # reconnect transport. Mirror _sess_nowait's production contract so these
+    # tests reach the hosted-room/admission behavior they exercise.
+    monkeypatch.setitem(server._sessions, session["id"], session)
 
 
 def test_direct_prompt_to_hosted_group_session_is_rejected(tmp_path, monkeypatch):
