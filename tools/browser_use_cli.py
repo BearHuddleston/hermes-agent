@@ -9,6 +9,7 @@ import logging
 import os
 import platform
 import re
+import shlex
 import shutil
 import subprocess
 import time
@@ -132,11 +133,25 @@ def _base_subprocess_env() -> dict:
     # an app-chooser dialog. BROWSER makes stdlib invoke the detected Chromium
     # executable directly instead. Keep an explicit operator override intact.
     if platform.system() == "Windows" and not env.get("BROWSER"):
-        from hermes_cli.browser_connect import get_chrome_debug_candidates
+        from hermes_cli.browser_connect import (
+            chromium_executable,
+            detect_default_chromium,
+            get_chrome_debug_candidates,
+        )
 
-        candidates = get_chrome_debug_candidates("Windows")
-        if candidates:
-            env["BROWSER"] = candidates[0]
+        default_browser = detect_default_chromium("Windows")
+        executable = (
+            chromium_executable(default_browser, "Windows") if default_browser else None
+        )
+        if not executable:
+            candidates = get_chrome_debug_candidates("Windows")
+            executable = candidates[0] if candidates else None
+        if executable:
+            # ``%s`` plus a trailing ``&`` are stdlib webbrowser template
+            # syntax: it shlex-splits once, substitutes the URL into argv, and
+            # uses BackgroundBrowser (poll instead of wait). shlex.join keeps
+            # paths with spaces intact; neither path nor URL reaches a shell.
+            env["BROWSER"] = shlex.join([executable, "%s", "&"])
     return env
 
 

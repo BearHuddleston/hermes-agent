@@ -14,11 +14,48 @@ Covers the three seams the integration relies on:
 import json
 import os
 import stat
+import subprocess
 import time
+import webbrowser
 
 import pytest
 
 import tools.browser_use_cli as bu_cli
+
+
+# tests/conftest.py replaces webbrowser.get before each test to prevent real
+# browser launches. Keep the stdlib selector so this module can exercise it
+# safely with subprocess.Popen intercepted below.
+_STDLIB_WEBBROWSER_GET = webbrowser.get
+
+
+def _launch_browser_spec(monkeypatch, browser_spec, url):
+    """Launch through the real stdlib controller with no real subprocess."""
+    launched = []
+
+    class BrowserProcess:
+        def wait(self):
+            raise AssertionError("webbrowser waited for Chromium to exit")
+
+        def poll(self):
+            return None
+
+    def fake_popen(argv, **kwargs):
+        launched.append((argv, kwargs))
+        return BrowserProcess()
+
+    # Mirror stdlib's BROWSER registration for a bare command while keeping
+    # its global registry isolated. Command templates bypass this registry.
+    monkeypatch.setattr(
+        webbrowser,
+        "_browsers",
+        {browser_spec.lower(): [None, webbrowser.GenericBrowser(browser_spec)]},
+    )
+    monkeypatch.setattr(subprocess, "Popen", fake_popen)
+
+    controller = _STDLIB_WEBBROWSER_GET(browser_spec)
+    assert controller.open(url, new=2) is True
+    return launched
 
 
 @pytest.fixture(autouse=True)
@@ -177,23 +214,27 @@ class TestSubprocessEnvironment:
         assert "/usr/bin" in parts
         assert "/home/u/.nvm/versions/node/v24.18.0/bin" in parts
 
-    def test_windows_subprocess_routes_chrome_urls_to_detected_browser(
+    def test_windows_subprocess_opens_chrome_urls_without_waiting_or_shell(
         self, monkeypatch
     ):
         """browser-harness opens chrome://inspect via stdlib webbrowser.
 
-        Windows' default webbrowser backend dispatches custom schemes through
-        the URL protocol registry, where chrome: is normally unregistered. A
-        direct BROWSER executable keeps that URI inside Chromium instead of
-        raising the native "Get an app to open this 'chrome' link" chooser.
+        The generated BROWSER command must make stdlib's launcher return while
+        Chromium stays open. It must also preserve the executable path and URL
+        as separate argv entries instead of passing either through a shell.
         """
         import sys
         from types import ModuleType
 
         chrome = r"C:\Program Files\Google\Chrome\Application\chrome.exe"
+        url = 'chrome://inspect/#remote-debugging?literal=$(not-a-shell)&quote="kept"'
         browser_tool = ModuleType("tools.browser_tool")
         browser_tool._build_browser_env = lambda: {}
         monkeypatch.setitem(sys.modules, "tools.browser_tool", browser_tool)
+        monkeypatch.setattr(
+            "hermes_cli.browser_connect.detect_default_chromium",
+            lambda system: None if system == "Windows" else "unexpected",
+        )
         monkeypatch.setattr(
             "hermes_cli.browser_connect.get_chrome_debug_candidates",
             lambda system: [chrome] if system == "Windows" else [],
@@ -201,8 +242,46 @@ class TestSubprocessEnvironment:
         monkeypatch.setattr(bu_cli.platform, "system", lambda: "Windows")
 
         env = bu_cli._base_subprocess_env()
+        launched = _launch_browser_spec(monkeypatch, env["BROWSER"], url)
+        assert len(launched) == 1
+        argv, kwargs = launched[0]
+        assert argv == [chrome, url]
+        assert kwargs.get("shell", False) is False
 
-        assert env["BROWSER"] == chrome
+    def test_windows_subprocess_prefers_installed_default_chromium(self, monkeypatch):
+        import sys
+        from types import ModuleType
+
+        edge = r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe"
+        url = "chrome://inspect/#remote-debugging"
+        browser_tool = ModuleType("tools.browser_tool")
+        setattr(browser_tool, "_build_browser_env", lambda: {})
+        monkeypatch.setitem(sys.modules, "tools.browser_tool", browser_tool)
+        monkeypatch.setattr(
+            "hermes_cli.browser_connect.detect_default_chromium",
+            lambda system: "edge" if system == "Windows" else None,
+        )
+        monkeypatch.setattr(
+            "hermes_cli.browser_connect.chromium_executable",
+            lambda browser, system: (
+                edge if (browser, system) == ("edge", "Windows") else None
+            ),
+        )
+        monkeypatch.setattr(
+            "hermes_cli.browser_connect.get_chrome_debug_candidates",
+            lambda _system: (_ for _ in ()).throw(
+                AssertionError("installed default must win over fallback discovery")
+            ),
+        )
+        monkeypatch.setattr(bu_cli.platform, "system", lambda: "Windows")
+
+        env = bu_cli._base_subprocess_env()
+        launched = _launch_browser_spec(monkeypatch, env["BROWSER"], url)
+
+        assert len(launched) == 1
+        argv, kwargs = launched[0]
+        assert argv == [edge, url]
+        assert kwargs.get("shell", False) is False
 
     def test_windows_subprocess_preserves_explicit_browser_override(self, monkeypatch):
         import sys
