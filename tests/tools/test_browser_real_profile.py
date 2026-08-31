@@ -283,6 +283,7 @@ class TestRealProfileCdpLaunch:
 
     def _reset(self):
         import tools.browser_tool as bt
+        bt._terminate_real_profile_chrome()
         bt._real_profile_cdp_cache.clear()
 
     def test_consent_off_is_noop(self):
@@ -291,6 +292,65 @@ class TestRealProfileCdpLaunch:
         with patch.object(bt, "_use_real_profile", return_value=False):
             cdp, err = bt._real_profile_cdp()
         assert cdp is None and err is None
+
+    def test_consent_revocation_reaps_owned_browser_before_snapshot_cleanup(self):
+        import tools.browser_tool as bt
+
+        owned_chrome = Mock()
+        owned_chrome.poll.return_value = None
+        unrelated_chrome = Mock()
+
+        def cleanup_snapshots():
+            owned_chrome.terminate.assert_called_once_with()
+            owned_chrome.wait.assert_called_once_with(timeout=5)
+
+        with patch.object(bt, "_use_real_profile", return_value=False), \
+             patch.object(bt, "_real_profile_chrome_procs", [owned_chrome]), \
+             patch.object(bt, "_real_profile_cdp_cache", {
+                 "cdp": "old", "scope": "profile-a"
+             }), \
+             patch.object(bt, "hermes_home_key", return_value="profile-a"), \
+             patch.object(bt, "_agent_browser_close_session") as close, \
+             patch("hermes_cli.browser_connect.cleanup_real_profile_snapshots",
+                   side_effect=cleanup_snapshots) as cleanup:
+            cdp, err = bt._real_profile_cdp()
+
+            assert bt._real_profile_chrome_procs == []
+            assert bt._real_profile_cdp_cache == {}
+
+        assert cdp is None and err is None
+        close.assert_called_once_with(bt._REAL_PROFILE_SESSION)
+        cleanup.assert_called_once_with()
+        owned_chrome.kill.assert_not_called()
+        unrelated_chrome.terminate.assert_not_called()
+        unrelated_chrome.kill.assert_not_called()
+
+    def test_consent_off_does_not_reap_another_profile_browser(self):
+        import tools.browser_tool as bt
+
+        other_profile_chrome = Mock()
+        other_profile_chrome.poll.return_value = None
+        cached = {
+            "cdp": "http://127.0.0.1:41000",
+            "scope": "profile-a",
+        }
+        procs = [other_profile_chrome]
+
+        with patch.object(bt, "_use_real_profile", return_value=False), \
+             patch.object(bt, "_real_profile_chrome_procs", procs), \
+             patch.object(bt, "_real_profile_cdp_cache", cached), \
+             patch.object(bt, "hermes_home_key", return_value="profile-b"), \
+             patch.object(bt, "_agent_browser_close_session") as close, \
+             patch("hermes_cli.browser_connect.cleanup_real_profile_snapshots"):
+            cdp, err = bt._real_profile_cdp()
+
+            assert bt._real_profile_chrome_procs == [other_profile_chrome]
+            assert bt._real_profile_cdp_cache == cached
+
+        assert cdp is None and err is None
+        close.assert_not_called()
+        other_profile_chrome.terminate.assert_not_called()
+        other_profile_chrome.kill.assert_not_called()
 
     def test_non_chromium_default_fails_closed(self):
         import tools.browser_tool as bt
@@ -357,6 +417,43 @@ class TestRealProfileCdpLaunch:
         assert cdp is None
         assert err and "snapshot reached" in err
         snapshot.assert_called_once_with("chrome")
+        self._reset()
+
+    def test_changed_browser_pin_reaps_owned_copy_browser(self):
+        """Switching principals must stop the old credential-bearing browser."""
+        import tools.browser_tool as bt
+
+        self._reset()
+        old_chrome = Mock()
+        old_chrome.poll.return_value = None
+        bt._real_profile_chrome_procs.append(old_chrome)
+        old_cdp = "http://127.0.0.1:41000"
+        bt._real_profile_cdp_cache.update({
+            "cdp": old_cdp,
+            "browser": "chrome",
+            "copy_dir": "/profile-a/browser-profile/chrome",
+        })
+
+        with patch.object(bt, "_use_real_profile", return_value=True), \
+             patch("hermes_cli.browser_connect.resolve_real_profile_browser",
+                   return_value=("edge", None)), \
+             patch("hermes_cli.browser_connect.real_profile_copy_dir",
+                   return_value="/profile-a/browser-profile/edge"), \
+             patch.object(bt, "_agent_browser_get_cdp", return_value=old_cdp), \
+             patch.object(bt, "_cdp_http_ready", return_value=True), \
+             patch.object(bt, "_cdp_on_data_dir", return_value=False), \
+             patch.object(bt, "_agent_browser_close_session") as close, \
+             patch("hermes_cli.browser_connect.snapshot_real_profile",
+                   return_value=(None, "snapshot reached")):
+            cdp, err = bt._real_profile_cdp()
+
+        assert cdp is None
+        assert err and "snapshot reached" in err
+        close.assert_called_once_with(bt._REAL_PROFILE_SESSION)
+        old_chrome.terminate.assert_called_once_with()
+        old_chrome.wait.assert_called_once_with(timeout=5)
+        old_chrome.kill.assert_not_called()
+        assert bt._real_profile_chrome_procs == []
         self._reset()
 
     def test_cached_cdp_requires_profile_copy_identity(self):
@@ -433,10 +530,22 @@ class TestRealProfileCdpLaunch:
 
         self._reset()
         proc = Mock(returncode=0, stdout="", stderr="")
+        chrome = Mock()
+        chrome.poll.return_value = None
+
+        def fake_popen(argv, **kw):
+            (tmp_path / "DevToolsActivePort").write_text(
+                "41000\n/devtools/browser/x\n", encoding="utf-8"
+            )
+            return chrome
+
         with patch.object(bt, "_use_real_profile", return_value=True), \
              patch("hermes_cli.browser_connect.detect_default_chromium", return_value="chrome"), \
              patch("hermes_cli.browser_connect.snapshot_real_profile",
                    return_value=(str(tmp_path), None)), \
+             patch("hermes_cli.browser_connect.chromium_executable",
+                   return_value="/usr/bin/chrome"), \
+             patch.object(bt.subprocess, "Popen", side_effect=fake_popen), \
              patch.object(bt, "_agent_browser_get_cdp",
                           side_effect=[None, "http://127.0.0.1:41000"]), \
              patch.object(bt, "_cdp_on_data_dir", return_value=False), \
@@ -450,6 +559,11 @@ class TestRealProfileCdpLaunch:
         assert err and "profile copy" in err
         close.assert_called_once_with(bt._REAL_PROFILE_SESSION)
         assert bt._real_profile_cdp_cache == {}
+        chrome.terminate.assert_called_once_with()
+        chrome.wait.assert_called_once_with(timeout=5)
+        chrome.kill.assert_not_called()
+        assert bt._real_profile_chrome_procs == []
+        self._reset()
 
     def test_launch_is_headless_and_agent_browser_attaches(self, tmp_path):
         """Real-profile browsing runs headless (no focus-stealing window).

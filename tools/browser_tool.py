@@ -1524,7 +1524,7 @@ def _use_real_profile() -> bool:
 # tasks reuse the same copy-browser instead of each launching a rival Chromium
 # on the same copied user-data-dir.
 _REAL_PROFILE_SESSION = "hermes-real-profile"
-_real_profile_cdp_lock = threading.Lock()
+_real_profile_cdp_lock = threading.RLock()
 _real_profile_cdp_cache: dict = {}
 _real_profile_chrome_procs: list = []  # Popen handles of directly-launched real browsers
 
@@ -1650,7 +1650,38 @@ def _agent_browser_close_session(session_name: str) -> None:
         logger.debug("real-profile session close failed: %s", e)
 
 
+def _real_profile_state_belongs_to_current_scope() -> bool:
+    """Return whether the shared browser state belongs to this Hermes profile."""
+    scope = _real_profile_cdp_cache.get("scope")
+    return scope is not None and scope == hermes_home_key()
+
+
+def _invalidate_real_profile_browser(*, close_session: bool = True) -> None:
+    """Drop real-profile state and stop only Chrome processes launched here."""
+    _real_profile_cdp_cache.clear()
+    try:
+        if close_session:
+            _agent_browser_close_session(_REAL_PROFILE_SESSION)
+    finally:
+        # agent-browser only attaches to the directly-launched process, so
+        # closing its session cannot reap Chrome. The Popen handles are the
+        # ownership boundary: never scan for or terminate an unrelated browser.
+        _terminate_real_profile_chrome()
+
+
+def _real_profile_launch_error(message: str) -> tuple:
+    """Return a launch error after fully releasing the owned browser."""
+    _invalidate_real_profile_browser()
+    return None, message
+
+
 def _real_profile_cdp() -> tuple:
+    """Serialize the shared real-profile browser lifecycle across local tasks."""
+    with _real_profile_cdp_lock:
+        return _real_profile_cdp_locked()
+
+
+def _real_profile_cdp_locked() -> tuple:
     """Resolve ``(cdp_url, error)`` for consented real-profile browsing.
 
     Snapshots the user's selected Chromium profile into a hermes-owned copy
@@ -1667,6 +1698,8 @@ def _real_profile_cdp() -> tuple:
     ``(None, None)`` when consent is off.
     """
     if not _use_real_profile():
+        if _real_profile_state_belongs_to_current_scope():
+            _invalidate_real_profile_browser()
         # Consent is off. If a snapshot store from a previous consented run is
         # still on disk, it holds copies of the user's cookies/logins — delete
         # it so revoking consent actually removes the credential copies. Cheap
@@ -1677,9 +1710,6 @@ def _real_profile_cdp() -> tuple:
             cleanup_real_profile_snapshots()
         except Exception as e:
             logger.debug("real-profile cleanup-on-consent-off failed: %s", e)
-        _real_profile_cdp_cache.pop("cdp", None)
-        _real_profile_cdp_cache.pop("browser", None)
-        _real_profile_cdp_cache.pop("copy_dir", None)
         return None, None
 
     # Lightpanda cannot load a Chromium profile — agent-browser rejects
@@ -1688,6 +1718,8 @@ def _real_profile_cdp() -> tuple:
     # even a host with no Chromium default reports the actionable conflict (the
     # engine setting) rather than a generic launch failure.
     if _using_lightpanda_engine():
+        if _real_profile_state_belongs_to_current_scope():
+            _invalidate_real_profile_browser()
         return None, (
             "browser.use_real_profile is on, but browser.engine is set to "
             "'lightpanda', which cannot load a real Chromium profile. Set "
@@ -1704,10 +1736,14 @@ def _real_profile_cdp() -> tuple:
 
     browser, resolve_error = resolve_real_profile_browser()
     if resolve_error:
+        if _real_profile_state_belongs_to_current_scope():
+            _invalidate_real_profile_browser()
         return None, resolve_error
 
     with _real_profile_cdp_lock:
         if browser is None:
+            if _real_profile_state_belongs_to_current_scope():
+                _invalidate_real_profile_browser()
             return None, (
                 "browser.use_real_profile is on, but your default browser is not a "
                 "supported Chromium browser (Chrome, Edge, Brave, Brave Origin, "
@@ -1717,6 +1753,8 @@ def _real_profile_cdp() -> tuple:
                 "toggle off."
             )
         if browser == UNSUPPORTED_CHANNEL:
+            if _real_profile_state_belongs_to_current_scope():
+                _invalidate_real_profile_browser()
             # A recognized pre-release channel (Beta/Dev/Canary) is the OS
             # default. Its profile lives in a channel-specific directory we
             # don't resolve, and normalizing it to the stable family would
@@ -1748,10 +1786,9 @@ def _real_profile_cdp() -> tuple:
             and _cdp_http_ready(cached)
             and _cdp_on_data_dir(cached, copy_dir)
         ):
+            _real_profile_cdp_cache["scope"] = hermes_home_key()
             return cached, None
-        _real_profile_cdp_cache.pop("cdp", None)
-        _real_profile_cdp_cache.pop("browser", None)
-        _real_profile_cdp_cache.pop("copy_dir", None)
+        _real_profile_cdp_cache.clear()
 
         # Reuse BEFORE writing anything. A shared copy-browser may already be up
         # from a previous hermes process; if it is driving OUR copy dir, hand it
@@ -1767,11 +1804,12 @@ def _real_profile_cdp() -> tuple:
             _real_profile_cdp_cache["cdp"] = existing
             _real_profile_cdp_cache["browser"] = browser
             _real_profile_cdp_cache["copy_dir"] = copy_dir
+            _real_profile_cdp_cache["scope"] = hermes_home_key()
             return existing, None
-        if existing:
-            # Stale/wrong-dir session (throwaway-temp fallback, or an old copy):
-            # close it so nothing holds the dir open before we overlay + relaunch.
-            _agent_browser_close_session(_REAL_PROFILE_SESSION)
+        # A stale/wrong-dir agent-browser session cannot reap Chrome when it was
+        # attached to a process we launched directly. Invalidate both lifecycle
+        # layers before overlaying credentials or launching the replacement.
+        _invalidate_real_profile_browser(close_session=bool(existing))
 
         # No live browser owns the dir now — safe to (re)snapshot + overlay.
         snap_dir, err = snapshot_real_profile(browser)
@@ -1881,15 +1919,13 @@ def _real_profile_cdp() -> tuple:
             except OSError:
                 pass
             if chrome_proc.poll() is not None:
-                _terminate_real_profile_chrome()
-                return None, (
+                return _real_profile_launch_error(
                     "browser.use_real_profile is on, but Chrome exited during "
                     "startup (another instance may hold the profile copy)."
                 )
             _time.sleep(0.25)
         if port is None:
-            _terminate_real_profile_chrome()
-            return None, (
+            return _real_profile_launch_error(
                 "browser.use_real_profile is on, but the real-profile browser "
                 "did not expose a debug port in time. Retry, or turn the toggle off."
             )
@@ -1899,7 +1935,7 @@ def _real_profile_cdp() -> tuple:
         try:
             browser_cmd = _find_agent_browser()
         except FileNotFoundError as e:
-            return None, (
+            return _real_profile_launch_error(
                 "browser.use_real_profile is on, but the local browser engine "
                 f"(agent-browser) is not installed: {e}"
             )
@@ -1916,16 +1952,18 @@ def _real_profile_cdp() -> tuple:
                 env=_build_browser_env(),
             )
         except subprocess.TimeoutExpired:
-            return None, (
+            return _real_profile_launch_error(
                 "browser.use_real_profile is on, but the real-profile browser "
                 "took too long to start. Retry, or turn the toggle off."
             )
         except (subprocess.SubprocessError, OSError) as e:
-            return None, f"browser.use_real_profile is on, but the launch failed: {e}"
+            return _real_profile_launch_error(
+                f"browser.use_real_profile is on, but the launch failed: {e}"
+            )
         if proc.returncode != 0:
             tail = (proc.stderr or proc.stdout or "").strip().splitlines()
             reason = tail[-1] if tail else f"exit {proc.returncode}"
-            return None, (
+            return _real_profile_launch_error(
                 f"browser.use_real_profile is on, but the real-profile browser "
                 f"failed to start: {reason}"
             )
@@ -1945,7 +1983,7 @@ def _real_profile_cdp() -> tuple:
         except (OSError, ValueError):
             pass
         if not cdp:
-            return None, (
+            return _real_profile_launch_error(
                 "browser.use_real_profile is on, but the real-profile browser "
                 "started without exposing a devtools endpoint. Retry, or turn "
                 "the toggle off."
@@ -1955,8 +1993,7 @@ def _real_profile_cdp() -> tuple:
             # session raced or failed, ``open --profile`` can return that old
             # session's endpoint instead of the requested profile copy. Never
             # relabel another profile's credential-bearing browser as ours.
-            _agent_browser_close_session(_REAL_PROFILE_SESSION)
-            return None, (
+            return _real_profile_launch_error(
                 "browser.use_real_profile is on, but the local browser opened a "
                 "different profile copy than requested. Hermes refused to attach; "
                 "retry, or turn the toggle off."
@@ -1964,6 +2001,7 @@ def _real_profile_cdp() -> tuple:
         _real_profile_cdp_cache["cdp"] = cdp
         _real_profile_cdp_cache["browser"] = browser
         _real_profile_cdp_cache["copy_dir"] = copy_dir
+        _real_profile_cdp_cache["scope"] = hermes_home_key()
         logger.info("real-profile browser ready for %s at %s (%s)", browser, cdp, copy_dir)
         return cdp, None
 
@@ -6017,6 +6055,13 @@ def cleanup_all_browsers() -> None:
         task_ids = list(_active_sessions.keys())
     for task_id in task_ids:
         cleanup_browser(task_id)
+
+    # The real-profile session attaches to Chrome launched directly by Hermes,
+    # so task/session cleanup cannot reap that process. Stop only the Popen
+    # handles owned by this process when the complete browser lifecycle resets.
+    with _real_profile_cdp_lock:
+        if _real_profile_cdp_cache or _real_profile_chrome_procs:
+            _invalidate_real_profile_browser()
 
     # Tear down CDP supervisors for all tasks so background threads exit.
     try:
