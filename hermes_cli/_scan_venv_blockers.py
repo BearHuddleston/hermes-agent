@@ -213,10 +213,9 @@ def _is_pausable_gateway(cmdline: str) -> bool:
     stop these processes (and is always active: ``hermes-setup`` invokes
     ``hermes update --yes --gateway``) — never gets the chance to run.
 
-    Only gateway invocations are exempted. Anything else running from the
-    venv (an operator's REPL, a stray script, a ``serve`` backend that
-    survived the desktop's own teardown) has no pause machinery downstream
-    and must keep blocking the handoff.
+    Only gateway invocations are exempted by this predicate. The separate
+    ledger-backed check below handles updater-owned web servers; everything
+    else running from the venv keeps blocking the handoff.
 
     Delegates to ``gateway.status.looks_like_gateway_command_line`` — the
     canonical ``gateway run`` matcher (profile-selector aware, shlex
@@ -239,9 +238,10 @@ def _is_updater_owned_backend(pid: int, cmdline: str) -> bool:
 
     The gateway exemption above keeps ``gateway run`` holders out of the
     blocker list because the updater's own pause machinery stops and resumes
-    them. ``hermes serve`` / ``hermes dashboard`` backends had no such
-    deferral, so a leaked serve child (or a Desktop-owned backend the
-    teardown lost track of) dead-ended the hand-off with ``venv-blocked`` —
+    them. ``hermes serve`` / ``hermes dashboard`` / ``hermes webapp``
+    backends need the same deferral, or a leaked server child (or a
+    Desktop-owned backend the teardown lost track of) dead-ended the hand-off
+    with ``venv-blocked`` —
     or, worse, survived the hand-off and made the shim quarantine fail with
     ``os error 32`` (#98336) — even though the updater downstream owns
     exactly this case with its ledger rungs (`_ledger_reapable_backend_pids`
@@ -251,7 +251,8 @@ def _is_updater_owned_backend(pid: int, cmdline: str) -> bool:
     Positive identity only — never name/substring matching (#90778, and the
     #99558 identity-guard contract):
 
-    - the argv's parsed SUBCOMMAND (token-based) is ``serve``/``dashboard``;
+    - the argv's parsed SUBCOMMAND (token-based) is an updater-owned web
+      server command;
     - the machine spawn ledger has a live-verified ``(pid, create_time)``
       entry for the process with a matching purpose;
     - ownership is provable: the recorded spawner is dead or unrecorded
@@ -277,12 +278,15 @@ def _updater_owned_backend_entry(pid: int, cmdline: str) -> dict | None:
     can carry tokens or private endpoints (#98350).
     """
     try:
-        from hermes_cli.update_cmd import _hermes_holder_subcommand  # noqa: PLC0415
+        from hermes_cli.update_cmd import (  # noqa: PLC0415
+            _WEB_SERVER_PURPOSES,
+            _hermes_holder_subcommand,
+        )
 
         purpose = _hermes_holder_subcommand(cmdline)
     except Exception:
         return None
-    if purpose not in ("serve", "dashboard"):
+    if purpose not in _WEB_SERVER_PURPOSES:
         return None
     try:
         from hermes_cli.process_identity import (  # noqa: PLC0415
@@ -296,7 +300,7 @@ def _updater_owned_backend_entry(pid: int, cmdline: str) -> dict | None:
     for entry in entries:
         if entry.get("pid") != pid:
             continue
-        if entry.get("purpose") not in ("serve", "dashboard"):
+        if entry.get("purpose") != purpose:
             return None
         dead = spawner_is_dead(entry)
         if dead is not False:
@@ -376,7 +380,7 @@ def main() -> None:
             continue
         deferred_entry = _updater_owned_backend_entry(pid, cmdline)
         if deferred_entry is not None:
-            # Ledger-verified serve/dashboard backend the CLI updater's own
+            # Ledger-verified web-server backend the CLI updater's own
             # rungs stop (and relaunch) downstream — reporting it here would
             # dead-end the hand-off before that machinery can run (#98336).
             deferred_entries.append(deferred_entry)
@@ -399,7 +403,7 @@ def main() -> None:
         # Diagnostic only: gateway processes present but not counted as
         # blockers because the downstream updater pauses them itself.
         "pausable_gateways": exempted_gateways,
-        # Diagnostic only: ledger-verified serve/dashboard backends deferred
+        # Diagnostic only: ledger-verified web-server backends deferred
         # to the updater's stop/relaunch rungs (#98336).
         "deferred_backends": len(deferred_entries),
         # Diagnostic only: sanitized evidence (structured ledger identity,

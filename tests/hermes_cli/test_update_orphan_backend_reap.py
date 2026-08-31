@@ -101,7 +101,7 @@ def test_orphan_webapp_dead_parent_qualifies():
     fake = _fake_psutil({200: backend})
     holders = _holders(cmdline="python.exe -m hermes_cli.main webapp")
     with patch.dict(sys.modules, {"psutil": fake}):
-        assert cli_main._orphaned_desktop_backend_pids(holders) == [200]
+        assert cli_main._orphaned_desktop_backend_pids(holders) == [(200, 10000)]
 
 
 def test_backend_with_live_parent_keeps_refusal():
