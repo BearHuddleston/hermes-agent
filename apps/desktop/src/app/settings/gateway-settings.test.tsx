@@ -36,6 +36,9 @@ afterEach(() => {
 })
 
 describe('GatewaySettings', () => {
+  // This file runs in CI alongside every workspace check. Cold module
+  // transforms can exceed the global 15s ceiling under that contention even
+  // though the assertions complete in under two seconds in isolation.
   it('loads the machine-level connection config (no profile scoping)', async () => {
     const { GatewaySettings } = await import('./gateway-settings')
 
@@ -58,5 +61,5 @@ describe('GatewaySettings', () => {
     // Browser-host mode has no native secret store, so a bridge without that
     // capability must not advertise a keychain toggle that cannot work.
     expect(screen.queryByText('Encrypt saved secrets with the OS keychain')).toBeNull()
-  })
+  }, 30_000)
 })
