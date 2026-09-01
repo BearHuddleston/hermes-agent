@@ -1123,6 +1123,14 @@ export function installBrowserDesktopBridge(): boolean {
       version: null
     }),
     terminal: {
+      // Electron's attach opens its buffered output gate after listeners are
+      // registered. Browser terminals already buffer until onData subscribes,
+      // so attachment is a liveness acknowledgement for the same contract.
+      attach: async (id: string) => {
+        const state = browserTerminals.get(id)
+
+        return Boolean(state && !state.closed && state.socket.readyState === WebSocket.OPEN)
+      },
       // The host process is remote from this renderer; unlike Electron, the
       // bridge cannot inspect a PTY child's live cwd. Shell OSC 7/9;9 output is
       // still observed by useTerminalSession, so return unknown rather than

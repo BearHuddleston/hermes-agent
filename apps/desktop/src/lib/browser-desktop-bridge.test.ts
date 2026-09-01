@@ -553,6 +553,8 @@ describe('browser-hosted Desktop bridge', () => {
     const socket = FakeWebSocket.instances[0]!
     const url = new URL(socket.url)
     expect(session).toMatchObject({ cwd: '/work', shell: 'powershell.exe' })
+    await expect(win.hermesDesktop!.terminal.attach(session.id)).resolves.toBe(true)
+    await expect(win.hermesDesktop!.terminal.attach('missing-terminal')).resolves.toBe(false)
     expect(url.pathname).toBe('/hermes/api/pty')
     expect(url.searchParams.get('token')).toBe('served-token')
     expect(url.searchParams.get('profile')).toBe('active-terminal')
