@@ -501,7 +501,11 @@ from hermes_cli.subcommands.console import build_console_parser
 from hermes_cli.subcommands.update import build_update_parser
 from hermes_cli.subcommands.uninstall import build_uninstall_parser
 from hermes_cli.subcommands.dashboard import build_dashboard_parser, build_serve_parser
-from hermes_cli.subcommands.gui import build_gui_parser
+from hermes_cli.subcommands.gui import (
+    build_gui_parser,
+    dispatch_desktop_instance,
+    refresh_isolated_desktop_instances,
+)
 from hermes_cli.subcommands.logs import build_logs_parser
 from hermes_cli.subcommands.prompt_size import build_prompt_size_parser
 from hermes_cli.subcommands.memory import build_memory_parser
@@ -8520,6 +8524,9 @@ def _register_linux_desktop_entry() -> None:
 
 def cmd_gui(args: argparse.Namespace):
     """Build and launch the native Electron desktop GUI."""
+    if dispatch_desktop_instance(args, runtime_root=PROJECT_ROOT):
+        return
+
     desktop_dir = PROJECT_ROOT / "apps" / "desktop"
     if not (desktop_dir / "package.json").exists():
         print(f"Desktop GUI source not found at: {desktop_dir}")
@@ -8777,6 +8784,8 @@ def cmd_gui(args: argparse.Namespace):
 
             # Build succeeded — write the stamp so next run can skip
             _write_desktop_build_stamp(PROJECT_ROOT, source_mode=source_mode)
+            if not source_mode and packaged_executable is not None:
+                refresh_isolated_desktop_instances(PROJECT_ROOT, packaged_executable)
 
     # Linux: register the app in the desktop launcher, so Hermes shows up
     # in the application menu with its icon. Best-effort and idempotent.

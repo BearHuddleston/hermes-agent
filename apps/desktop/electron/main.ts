@@ -230,6 +230,13 @@ import { snapHudBounds } from './hud-snap'
 import { createHudSnapShortcut } from './hud-snap-shortcut'
 import { buildHudWindowUrl } from './hud-url'
 import { resolveHudWindowing } from './hud-windowing'
+import { createIsolatedDesktopController } from './isolated-desktop-controller'
+import {
+  parseInstanceDeepLink,
+  resolveAppUserModelId,
+  shouldRegisterGlobalShortcuts,
+  shouldRegisterProtocolClient
+} from './isolated-desktop-instance'
 import { createLinkTitleWindow, guardLinkTitleSession, readLinkTitleWindowTitle } from './link-title-window'
 import { ensureMainWindow } from './main-window-lifecycle'
 import {
@@ -1306,7 +1313,7 @@ app.setName(APP_NAME)
 // need this, so gate it on Windows. (Fixes: desktop approval/turn notifications
 // never firing on Windows.)
 if (IS_WINDOWS) {
-  app.setAppUserModelId('com.nousresearch.hermes')
+  app.setAppUserModelId(resolveAppUserModelId(process.env))
 }
 
 // Seed the native About panel with the live Hermes version. This is refreshed
@@ -13610,6 +13617,10 @@ function applyHudSnapToPointer() {
 const hudSnapShortcut = createHudSnapShortcut(globalShortcut, applyHudSnapToPointer)
 
 function registerHudSnapShortcut() {
+  if (!shouldRegisterGlobalShortcuts(process.env)) {
+    return
+  }
+
   if (!hudSnapShortcut.register()) {
     rememberLog('[hud] snap shortcut unavailable — CommandOrControl+Shift+G may be owned by another app')
   }
@@ -14164,9 +14175,10 @@ function toggleQuickEntryWindow() {
 const quickEntryShortcut = createQuickEntryShortcut(globalShortcut, toggleQuickEntryWindow)
 
 function applyQuickEntrySettings(settings) {
-  const state = quickEntryShortcut.apply(settings)
+  const gated = shouldRegisterGlobalShortcuts(process.env) ? settings : { ...settings, enabled: false }
+  const state = quickEntryShortcut.apply(gated)
 
-  if (!settings.enabled) {
+  if (!gated.enabled) {
     // Turning the feature off must not leave an orphan always-on-top window.
     if (quickEntryWindow && !quickEntryWindow.isDestroyed()) {
       quickEntryWindow.close()
@@ -14982,6 +14994,17 @@ ipcMain.handle('hermes:secret-storage:set', async (_event: any, on: any) => appl
 // the registry lands separately; these handlers only manage the persisted
 // list, so they are safe to ship ahead of the switchover.
 ipcMain.handle('hermes:connections:list', async () => sanitizeConnectionsRegistry())
+
+const isolatedDesktopController = createIsolatedDesktopController({
+  env: process.env,
+  log: rememberLog,
+  readConnectionsRegistry: readDesktopConnectionsRegistry,
+  resolveHermesHome
+})
+
+ipcMain.handle('hermes:connections:open-isolated', async (_event, id) =>
+  isolatedDesktopController.openConnection(String(id || ''))
+)
 ipcMain.handle('hermes:connections:save', async (_event, payload) => {
   const saved = await saveRegistryConnection(payload)
 
@@ -17522,6 +17545,28 @@ function handleDeepLink(url) {
     return
   }
 
+  const instanceLink = parseInstanceDeepLink(url)
+  const thisInstance = String(process.env.HERMES_DESKTOP_INSTANCE || '').trim()
+
+  if (instanceLink) {
+    if (thisInstance && thisInstance !== instanceLink.instanceName) {
+      rememberLog(`[deeplink] ignoring ${url} — this shell is ${thisInstance}`)
+
+      return
+    }
+
+    if (!thisInstance) {
+      rememberLog(`[deeplink] forwarding ${url} to isolated instance ${instanceLink.instanceName}`)
+      // The controller logs the useful failure detail; consume the rejection
+      // here because protocol dispatch is intentionally fire-and-forget.
+      void isolatedDesktopController.launchByName(instanceLink.instanceName, instanceLink.remainder).catch(() => {})
+
+      return
+    }
+
+    url = instanceLink.remainder
+  }
+
   let parsed
 
   try {
@@ -17586,6 +17631,12 @@ ipcMain.handle('hermes:deep-link-ready', () => {
 })
 
 function registerDeepLinkProtocol() {
+  if (!shouldRegisterProtocolClient(process.env)) {
+    rememberLog('[deeplink] skipping protocol registration in isolated Desktop instance')
+
+    return
+  }
+
   try {
     if (process.defaultApp && process.argv.length >= 2) {
       // Dev: register with the electron exec path + entry script so the OS can
@@ -17686,6 +17737,11 @@ app.whenReady().then(() => {
   installEmbedReferer()
   installRemoteHeaderRules()
   registerDeepLinkProtocol()
+  const pendingIsolatedLink = process.env.HERMES_DESKTOP_PENDING_DEEP_LINK
+
+  if (pendingIsolatedLink) {
+    handleDeepLink(pendingIsolatedLink)
+  }
 
   ensureWslWindowsFonts()
   configureSpellChecker()

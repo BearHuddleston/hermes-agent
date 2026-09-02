@@ -1,4 +1,4 @@
-"""``hermes gui`` subcommand parser.
+"""``hermes gui`` / ``hermes desktop`` subcommand parser.
 
 Extracted verbatim from ``hermes_cli/main.py:main()`` (god-file Phase 2).
 Handler injected to avoid importing ``main``.
@@ -6,12 +6,40 @@ Handler injected to avoid importing ``main``.
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Callable
 
 
+def dispatch_desktop_instance(args, *, runtime_root: Path) -> bool:
+    """Dispatch ``desktop instance`` without growing the legacy GUI handler."""
+    if getattr(args, "desktop_action", None) != "instance":
+        return False
+
+    from hermes_cli.desktop_instances import cmd_desktop_instance
+
+    cmd_desktop_instance(args, runtime_root=runtime_root)
+    return True
+
+
+def refresh_isolated_desktop_instances(
+    runtime_root: Path, packaged_executable: Path
+) -> None:
+    """Best-effort refresh after the shared Desktop executable is replaced."""
+    try:
+        from hermes_cli.desktop_instances import repair_instances_for_runtime
+
+        refreshed = repair_instances_for_runtime(runtime_root, packaged_executable)
+    except Exception as exc:  # never block a build on instance plumbing
+        print(f"⚠ Could not refresh isolated Desktop instances: {exc}")
+        return
+    if refreshed:
+        print("✓ Refreshed isolated Desktop instance executables:")
+        for item in refreshed:
+            print(f"    - {item}")
+
+
 def build_gui_parser(subparsers, *, cmd_gui: Callable) -> None:
-    """Attach the ``gui`` subcommand to ``subparsers``."""
-    # =========================================================================
+    """Attach the ``gui`` / ``desktop`` subcommand to ``subparsers``."""
     gui_parser = subparsers.add_parser(
         "desktop",
         aliases=["gui"],
@@ -19,7 +47,9 @@ def build_gui_parser(subparsers, *, cmd_gui: Callable) -> None:
         description=(
             "Launch the Hermes Electron desktop app. By default this installs "
             "workspace Node dependencies, builds the current OS's unpacked "
-            "Electron app, then launches that packaged artifact."
+            "Electron app, then launches that packaged artifact. "
+            "Use `hermes desktop instance` for a separate isolated Desktop "
+            "shell (distinct from Settings → Connections)."
         ),
     )
     gui_parser.add_argument(
@@ -82,4 +112,134 @@ def build_gui_parser(subparsers, *, cmd_gui: Callable) -> None:
         default="Hermes Local Signing",
         help="Certificate name to create/use for --setup-tcc-identity (default: Hermes Local Signing)",
     )
-    gui_parser.set_defaults(func=cmd_gui)
+    gui_parser.set_defaults(func=cmd_gui, desktop_action=None, instance_action=None)
+
+    desktop_sub = gui_parser.add_subparsers(dest="desktop_action", required=False)
+    instance = desktop_sub.add_parser(
+        "instance",
+        help="Manage isolated Desktop shells (separate userData/home; shared runtime)",
+        description=(
+            "Create and launch named isolated Desktop applications. Each "
+            "instance has its own Electron userData, HERMES_HOME, and "
+            "single-instance lock, but shares the canonical Hermes install. "
+            "This is not Settings → Connections (which keeps one shared shell)."
+        ),
+    )
+    instance.set_defaults(func=cmd_gui)
+    instance_sub = instance.add_subparsers(dest="instance_action", required=False)
+
+    create = instance_sub.add_parser(
+        "create",
+        help="Register a named isolated Desktop instance and install its shortcut",
+    )
+    create.add_argument(
+        "instance_name", help="Instance slug (for example grace or athena)"
+    )
+    create.add_argument(
+        "--ssh-host",
+        required=True,
+        help="SSH config alias or hostname (remote state stays on that machine)",
+    )
+    create.add_argument(
+        "--remote-hermes-path",
+        required=True,
+        help="Absolute path to hermes on the remote machine",
+    )
+    create.add_argument(
+        "--remote-profile",
+        required=True,
+        help="Remote Hermes profile to attach (for example default)",
+    )
+    create.add_argument(
+        "--display-name",
+        help="Window/app name (default: 'Hermes <Name>')",
+    )
+    create.add_argument(
+        "--connection-id",
+        default="",
+        help="Exact Connections registry id this isolated shell belongs to",
+    )
+    create.add_argument(
+        "--ssh-user",
+        default="",
+        help="SSH username for the selected Connection (omit to use ssh config)",
+    )
+    create.add_argument(
+        "--ssh-port",
+        type=int,
+        default=22,
+        help="SSH port for the selected Connection (default: 22)",
+    )
+    create.add_argument(
+        "--ssh-key-path",
+        default="",
+        help="Absolute local path to the SSH private key used by this Connection",
+    )
+    create.add_argument(
+        "--skip-ssh-check",
+        action="store_true",
+        help="Do not probe ssh before writing the instance",
+    )
+    create.add_argument(
+        "--no-shortcut",
+        action="store_true",
+        help="Create the instance without writing a Desktop shortcut",
+    )
+    create.set_defaults(func=cmd_gui)
+
+    listed = instance_sub.add_parser("list", help="List isolated Desktop instances")
+    listed.set_defaults(func=cmd_gui)
+
+    show = instance_sub.add_parser(
+        "show", help="Print one instance manifest (non-secret)"
+    )
+    show.add_argument("instance_name")
+    show.set_defaults(func=cmd_gui)
+
+    launch = instance_sub.add_parser(
+        "launch",
+        help="Launch or focus an isolated Desktop instance",
+    )
+    launch.add_argument("instance_name")
+    launch.add_argument(
+        "--deep-link",
+        help="Forward a hermes:// URL into the isolated shell after launch",
+    )
+    launch.set_defaults(func=cmd_gui)
+
+    shortcut = instance_sub.add_parser(
+        "shortcut",
+        help="Recreate the OS shortcut for an isolated Desktop instance",
+    )
+    shortcut.add_argument("instance_name")
+    shortcut.set_defaults(func=cmd_gui)
+
+    repair = instance_sub.add_parser(
+        "repair",
+        help="Refresh named hardlinks after a Desktop update",
+    )
+    repair.add_argument("instance_name", nargs="?", default=None)
+    repair.add_argument(
+        "--all",
+        dest="all_instances",
+        action="store_true",
+        help="Repair every registered isolated instance",
+    )
+    repair.set_defaults(func=cmd_gui)
+
+    remove = instance_sub.add_parser(
+        "remove",
+        help="Remove the launcher and shortcut; never deletes remote state",
+    )
+    remove.add_argument("instance_name")
+    remove.add_argument(
+        "--purge-local",
+        action="store_true",
+        help="Also delete this instance's local HERMES_HOME and Electron userData",
+    )
+    remove.add_argument(
+        "--force",
+        action="store_true",
+        help="Remove the launcher even if the named executable appears locked",
+    )
+    remove.set_defaults(func=cmd_gui)
