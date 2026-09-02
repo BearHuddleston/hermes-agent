@@ -635,25 +635,29 @@ def _resume_guard(ctx: _Resume) -> dict | None:
     return None
 
 
+def _resume_reuse_live_locked(ctx: _Resume, sid: str, session: dict) -> dict:
+    """Reattach while the caller holds the resume lock."""
+    if _sessions.get(sid) is not session:
+        return _err(ctx.rid, 4007, "session no longer live; retry resume")
+    if session.get("_client_gone_interrupt_requested"):
+        return _err(ctx.rid, 4009, "session disconnect interrupt settling")
+    _cancel_ws_orphan_reap(sid)  # unconditionally: the fast path must never race the reap Timer
+    payload = _live_session_payload(sid, session, cols=ctx.cols, touch=True, omit_messages=ctx.omit_messages,
+                                    transport=current_transport() or _stdio_transport)
+    payload["resumed"] = ctx.target
+    if ctx.defer_history:
+        payload.update(messages=[], hydrating=bool(session.get("resume_hydrating")),
+                       message_count=int(session.get("resume_message_count") or payload["message_count"]))
+    # A lazy watch session never owns a run loop — overlay the child-run registry.
+    if session.get("agent") is None and _child_run_active(ctx.target):
+        payload.update(running=True, status="streaming")
+    return _ok(ctx.rid, payload)
+
+
 def _resume_reuse_live(ctx: _Resume, sid: str, session: dict) -> dict:
-    """Reattach an already-live session under the resume lock (held across the client-gone check,
-    transport rebind and reap cancel so grace expiry is atomic)."""
+    """Keep grace expiry atomic with the client-gone check, transport rebind and reap cancel."""
     with _session_resume_lock:
-        if _sessions.get(sid) is not session:
-            return _err(ctx.rid, 4007, "session no longer live; retry resume")
-        if session.get("_client_gone_interrupt_requested"):
-            return _err(ctx.rid, 4009, "session disconnect interrupt settling")
-        _cancel_ws_orphan_reap(sid)  # unconditionally: the fast path must never race the reap Timer
-        payload = _live_session_payload(sid, session, cols=ctx.cols, touch=True, omit_messages=ctx.omit_messages,
-                                        transport=current_transport() or _stdio_transport)
-        payload["resumed"] = ctx.target
-        if ctx.defer_history:
-            payload.update(messages=[], hydrating=bool(session.get("resume_hydrating")),
-                           message_count=int(session.get("resume_message_count") or payload["message_count"]))
-        # A lazy watch session never owns a run loop — overlay the child-run registry.
-        if session.get("agent") is None and _child_run_active(ctx.target):
-            payload.update(running=True, status="streaming")
-        return _ok(ctx.rid, payload)
+        return _resume_reuse_live_locked(ctx, sid, session)
 
 
 def _resume_response(
@@ -755,14 +759,11 @@ def _resume_eager(ctx: _Resume) -> dict:
         except Exception as e:
             return _err(ctx.rid, 5000, f"resume failed: {e}")
     with _session_resume_lock:
-        live = _find_live_session_by_key(ctx.target, ctx.profile_home)
-        if live is not None and not _session_profile_identity_matches(
-            live[1], ctx.profile_home, ctx.profile_incarnation):
-            live = None
+        live = _find_live_session_by_key(ctx.target, ctx.profile_home, ctx.profile_incarnation)
         if live is not None:
             with contextlib.suppress(Exception):
                 agent.close()
-            return _resume_reuse_live(ctx, *live)
+            return _resume_reuse_live_locked(ctx, *live)
         try:
             with _profile_build_scope(ctx.profile_home):
                 _init_session(sid, ctx.target, agent, history, cols=ctx.cols, cwd=ctx.profile_resume_cwd,
@@ -815,10 +816,7 @@ def _(rid, params: dict) -> dict:
         ctx.profile_resume_cwd = _str_param(ctx.found, "cwd") or _profile_configured_cwd(ctx.profile_home)
         # Fast path: reuse a session live IN THIS PROFILE (never another profile's runtime).
         with _session_resume_lock:
-            live = _find_live_session_by_key(ctx.target, ctx.profile_home)
-            if live is not None and not _session_profile_identity_matches(
-                live[1], ctx.profile_home, ctx.profile_incarnation):
-                live = None
+            live = _find_live_session_by_key(ctx.target, ctx.profile_home, ctx.profile_incarnation)
         if live is not None:
             return _resume_reuse_live(ctx, *live)
         if ctx.lazy:

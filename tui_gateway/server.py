@@ -77,6 +77,7 @@ with contextlib.suppress(Exception):
     prefetch_update_check()
 
 from tui_gateway.profile_lifecycle import ProfileLifecycleFence
+from tui_gateway.session_lifecycle import _PROFILE_INCARNATION_UNSET
 from tui_gateway.render import make_stream_renderer, render_diff, render_message  # noqa: F401
 
 _sessions: dict[str, dict] = {}
@@ -2542,13 +2543,11 @@ def _claim_or_reuse_live(sid: str, session_key: str, record: dict, lease) -> tup
     # See #100029.
     profile_home = record.get("profile_home")
     with _session_resume_lock:
-        live = _find_live_session_by_key(session_key, profile_home)
-        if live is not None and not _session_profile_identity_matches(
-            live[1],
-            record.get("profile_home"),
+        live = _find_live_session_by_key(
+            session_key,
+            profile_home,
             record.get("profile_incarnation"),
-        ):
-            live = None
+        )
         if live is not None:
             if lease is not None:
                 lease.release()
@@ -2737,15 +2736,30 @@ def _session_lookup_key(session: dict, *, fallback: str = "") -> str:
     return str(getattr(session.get("agent"), "session_id", None) or session.get("session_key") or fallback or "")
 
 
-def _find_live_session_by_key(session_key: str, profile_home=_ANY_PROFILE) -> tuple[str, dict] | None:
-    # Timestamp-based stored ids can exist in several profiles' stores; a bare-id match would hand
-    # profile B's resume profile A's runtime, so profile-aware callers match on (profile_home, key).
-    # Profile-aware callers pass the home they resolved; the match must then be on (profile_home,
-    # session_key). See #100029.
+def _find_live_session_by_key(
+    session_key: str,
+    profile_home=_ANY_PROFILE,
+    profile_incarnation=_PROFILE_INCARNATION_UNSET,
+) -> tuple[str, dict] | None:
+    # Stored session ids are timestamp-based and can legitimately exist in more
+    # than one profile's store, so a bare-id match can hand profile B's resume
+    # profile A's live runtime (#100029). Profile-aware callers pass the home
+    # they resolved; generation-aware callers also pass the incarnation so a
+    # stale runtime cannot hide a later winner for a recreated profile.
     for sid, session in list(_sessions.items()):
-        if (not session.get("_finalized") and _session_lookup_key(session, fallback=sid) == session_key
-                and _live_profile_matches(session, profile_home)):
-            return sid, session
+        if session.get("_finalized"):
+            continue
+        if _session_lookup_key(session, fallback=sid) != session_key:
+            continue
+        if profile_incarnation is _PROFILE_INCARNATION_UNSET:
+            if not _live_profile_matches(session, profile_home):
+                continue
+        elif (
+            not _live_profile_matches(session, profile_home)
+            or (session.get("profile_incarnation") or None) != profile_incarnation
+        ):
+            continue
+        return sid, session
     return None
 
 
