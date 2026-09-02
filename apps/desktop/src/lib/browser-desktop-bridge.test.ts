@@ -226,14 +226,16 @@ describe('browser-hosted Desktop bridge', () => {
     expect(url.hash).toBe('#/session-1')
   })
 
-  it('opens session windows on the HashRouter session route with spectator flags before the hash', async () => {
+  it('opens session windows on the owning profile HashRouter route with spectator flags before the hash', async () => {
     const win = mutableWindow()
     win.__HERMES_SESSION_TOKEN__ = 'served-token'
-    window.history.replaceState(null, '', '/?profile=research#/existing')
+    window.history.replaceState(null, '', '/?profile=work#/existing')
     const open = vi.spyOn(window, 'open').mockImplementation(() => null)
 
     expect(installBrowserDesktopBridge()).toBe(true)
-    await expect(win.hermesDesktop!.openSessionWindow('session / 1', { watch: true })).resolves.toEqual({ ok: true })
+    await expect(
+      win.hermesDesktop!.openSessionWindow('session / 1', { profile: 'research', watch: true })
+    ).resolves.toEqual({ ok: true })
 
     const [rawUrl, target, features] = open.mock.calls[0]
     const url = new URL(String(rawUrl))
@@ -243,6 +245,26 @@ describe('browser-hosted Desktop bridge', () => {
     expect(url.hash).toBe('#/session%20%2F%201')
     expect(target).toBe('_blank')
     expect(features).toBe('noopener,noreferrer')
+  })
+
+  it.each([
+    { expectedProfile: 'work', name: 'absent', opts: undefined },
+    { expectedProfile: 'work', name: 'undefined', opts: { profile: undefined } },
+    { expectedProfile: 'work', name: 'null', opts: { profile: null } },
+    { expectedProfile: 'work', name: 'blank', opts: { profile: '   ' } },
+    { expectedProfile: null, name: 'default', opts: { profile: 'default' } },
+    { expectedProfile: 'research', name: 'trimmed non-default', opts: { profile: ' research ' } }
+  ])('resolves a $name session-window profile against the ambient launch URL', async ({ expectedProfile, opts }) => {
+    const win = mutableWindow()
+    win.__HERMES_SESSION_TOKEN__ = 'served-token'
+    window.history.replaceState(null, '', '/?profile=work#/existing')
+    const open = vi.spyOn(window, 'open').mockImplementation(() => null)
+
+    expect(installBrowserDesktopBridge()).toBe(true)
+    await expect(win.hermesDesktop!.openSessionWindow('session-1', opts)).resolves.toEqual({ ok: true })
+
+    const [rawUrl] = open.mock.calls[0]
+    expect(new URL(String(rawUrl)).searchParams.get('profile')).toBe(expectedProfile)
   })
 
   it('exposes one same-origin registry source for Bot profile routing', async () => {

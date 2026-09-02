@@ -991,12 +991,23 @@ export function installBrowserDesktopBridge(): boolean {
     onPreviewFileChanged: noopUnsubscribe,
     openExternal,
     openPreviewInBrowser: openExternal,
-    openSessionWindow: async (sessionId: string, opts?: { watch?: boolean }) => {
+    openSessionWindow: async (
+      sessionId: string,
+      opts?: { profile?: null | string; watch?: boolean }
+    ) => {
       const id = sessionId.trim()
 
       if (!id) {return { error: 'invalid_session_id', ok: false }}
       const target = new URL(window.location.href)
       target.searchParams.set('win', 'secondary')
+
+      const profile = opts?.profile?.trim()
+
+      if (profile === 'default') {
+        target.searchParams.delete('profile')
+      } else if (profile) {
+        target.searchParams.set('profile', profile)
+      }
 
       if (opts?.watch) {
         target.searchParams.set('watch', '1')
