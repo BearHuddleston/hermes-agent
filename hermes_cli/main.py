@@ -854,7 +854,7 @@ try:
         mode=(
             "gui"
             if next((arg for arg in sys.argv[1:] if not arg.startswith("-")), "")
-            in {"dashboard", "serve", "gui", "desktop"}
+            in {"dashboard", "webapp", "serve", "gui", "desktop"}
             else "cli"
         )
     )
@@ -5193,6 +5193,7 @@ _LAZY_COMMAND_EXPORTS = {
         "_is_fork",
         "_leftover_pausable_gateway_pids",
         "_ledger_manual_serve_holders",
+        "_pause_manual_web_servers",
         "_relaunch_stopped_serves",
         "_serve_relaunch_commands",
         "_log_only_write",
@@ -6609,30 +6610,50 @@ def _build_web_ui(web_dir: Path, *, fatal: bool = False) -> bool:
     """
     if not (web_dir / "package.json").exists():
         return True
-    try:
-        import fcntl
-    except ImportError:
-        # Windows: no flock — fall through to the unserialized build.
-        return _do_build_web_ui(web_dir, fatal=fatal)
     project_root = web_dir.parent.parent if web_dir.parent.name == "apps" else web_dir.parent
+    lock_path = project_root / ".web_ui_build.lock"
     dist_index = project_root / "hermes_cli" / "web_dist" / "index.html"
     try:
-        lock_file = open(project_root / ".web_ui_build.lock", "a", encoding="utf-8")
+        from hermes_cli.webapp import (
+            WebappBuildError,
+            _exclusive_build_lock,
+            _try_file_lock,
+            _unlock_file,
+        )
+    except ImportError:
+        return _do_build_web_ui(web_dir, fatal=fatal)
+
+    try:
+        contender = lock_path.open("a+b")
     except OSError:
         return _do_build_web_ui(web_dir, fatal=fatal)
     try:
-        try:
-            fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except OSError:
-            if dist_index.exists():
-                # Another process is already building — serve the current
-                # dist instead of piling a second build onto the same tree.
-                return True
-            # No dist at all (first-ever build): wait for the builder.
-            fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
-        return _do_build_web_ui(web_dir, fatal=fatal)
+        if os.name == "nt":
+            contender.seek(0, os.SEEK_END)
+            if contender.tell() == 0:
+                contender.write(b"\0")
+                contender.flush()
+        if _try_file_lock(contender):
+            try:
+                return _do_build_web_ui(web_dir, fatal=fatal)
+            finally:
+                _unlock_file(contender)
+        if dist_index.exists():
+            # Preserve Dashboard's non-blocking warm-start behavior while a
+            # Webapp or another Dashboard process reifies root node_modules.
+            return True
     finally:
-        lock_file.close()
+        contender.close()
+
+    try:
+        # First build has no usable dist: wait for the shared workspace owner,
+        # then recheck/build under the same cross-platform lock.
+        with _exclusive_build_lock(lock_path):
+            return _do_build_web_ui(web_dir, fatal=fatal)
+    except WebappBuildError:
+        # Preserve the historical best-effort fallback on unusual read-only
+        # installs where the lock file cannot be opened.
+        return _do_build_web_ui(web_dir, fatal=fatal)
 
 
 def _do_build_web_ui(web_dir: Path, *, fatal: bool = False) -> bool:
@@ -6824,9 +6845,9 @@ def _desktop_dist_exists(desktop_dir: Path) -> bool:
 def _compute_desktop_content_hash(project_root: Path) -> str:
     """Return a SHA-256 hex digest of all source files that feed the desktop build.
 
-    Covers ``apps/desktop/`` (excluding anything matched by .gitignore)
-    plus the root ``package.json`` / ``package-lock.json`` (workspace config
-    that determines dependency resolution for the desktop workspace).
+    Covers ``apps/desktop/`` and its source-level ``apps/shared/`` Vite alias
+    (excluding anything matched by .gitignore), plus the root ``package.json`` /
+    ``package-lock.json`` workspace configuration.
 
     Parses the repo-root ``.gitignore`` via *pathspec* so we automatically
     skip ``node_modules/``, ``dist/``, ``*.pyc``, etc. without maintaining
@@ -6863,20 +6884,26 @@ def _compute_desktop_content_hash(project_root: Path) -> str:
             if not spec.match_file(rel):
                 _hash_file(p)
 
-    # Walk apps/desktop/ — prune ignored directories in-place
-    desktop_dir = project_root / "apps" / "desktop"
-    for dirpath, dirnames, filenames in os.walk(desktop_dir, topdown=True):
-        # Prune ignored directories so we never descend into them
-        dirnames[:] = [
-            d for d in dirnames
-            if not spec.match_file(str((Path(dirpath) / d).relative_to(project_root)))
-        ]
+    # Walk every source tree Vite resolves directly — prune ignored directories
+    # in-place. Sorting directories makes the digest stable across filesystems.
+    for source_dir in (
+        project_root / "apps" / "desktop",
+        project_root / "apps" / "shared",
+    ):
+        for dirpath, dirnames, filenames in os.walk(source_dir, topdown=True):
+            dirnames[:] = sorted(
+                d
+                for d in dirnames
+                if not spec.match_file(
+                    str((Path(dirpath) / d).relative_to(project_root))
+                )
+            )
 
-        for fn in sorted(filenames):
-            fp = Path(dirpath) / fn
-            rel = str(fp.relative_to(project_root))
-            if not spec.match_file(rel):
-                _hash_file(fp)
+            for fn in sorted(filenames):
+                fp = Path(dirpath) / fn
+                rel = str(fp.relative_to(project_root))
+                if not spec.match_file(rel):
+                    _hash_file(fp)
 
     return h.hexdigest()
 
@@ -8858,26 +8885,13 @@ def _find_stale_dashboard_pids(
 
 def _parse_dashboard_runtime(command: str) -> tuple[str, str, int] | None:
     """Best-effort parse of a dashboard/server cmdline into mode, host, and port."""
-    mode = None
-    if any(
-        pattern in command
-        for pattern in (
-            "hermes dashboard",
-            "hermes_cli.main dashboard",
-            "hermes_cli/main.py dashboard",
-        )
-    ):
-        mode = "dashboard"
-    elif any(
-        pattern in command
-        for pattern in (
-            "hermes serve",
-            "hermes_cli.main serve",
-            "hermes_cli/main.py serve",
-        )
-    ):
-        mode = "serve"
-    if mode is None:
+    try:
+        from hermes_cli.update_cmd import _hermes_holder_subcommand
+
+        mode = _hermes_holder_subcommand(command)
+    except Exception:
+        mode = None
+    if mode not in {"dashboard", "webapp", "serve"}:
         return None
 
     port = 9119
@@ -11217,6 +11231,7 @@ def _coalesce_session_name_args(argv: list) -> list:
         "uninstall",
         "profile",
         "dashboard",
+        "webapp",
         "serve",
         "desktop",
         "gui",
@@ -11936,34 +11951,40 @@ def _render_distribution_plan(plan) -> None:
         )
 
 
-def _report_dashboard_status() -> int:
-    """Print live listening dashboard/serve processes and return the count.
+def _report_dashboard_status(*, modes: set[str] | None = None) -> int:
+    """Print live listening Hermes web-server processes and return the count.
 
-    Serve-mode backends are INCLUDED (#81564): `--stop` kills them, so
-    `--status` hiding them left Desktop SSH backends invisible to the CLI —
-    an operator could kill what they couldn't see. Ledger-registered serves
-    (profiled launches the argv scan can't match) surface via the
-    spawn-ledger augmentation in _scan_dashboard_processes.
+    The default includes every mode ``dashboard --stop`` can affect. In
+    particular, serve-mode backends stay visible (#81564), while surface-
+    specific callers such as ``webapp --status`` can narrow the report.
+    Ledger-registered launches (including profiled commands the argv scan
+    cannot match) surface through ``_scan_dashboard_processes``.
     """
     from gateway.status import _pid_exists
 
+    accepted_modes = {"dashboard", "serve", "webapp"} if modes is None else modes
     live: list[tuple[int, str, str]] = []
     for pid, command in _self()._scan_dashboard_processes():
         runtime = _parse_dashboard_runtime(command)
         if runtime is None:
             continue
         mode, host, port = runtime
-        if port <= 0 or not _pid_exists(pid):
+        if mode not in accepted_modes:
             continue
-        if not _dashboard_listening(host, port):
+        if port < 0 or not _pid_exists(pid):
+            continue
+        # `--port 0` asks the OS for an ephemeral port, which is not present in
+        # argv. Positive process identity is the only status signal available;
+        # fixed ports additionally prove readiness with a TCP probe.
+        if port > 0 and not _dashboard_listening(host, port):
             continue
         live.append((pid, command, mode))
 
     if not live:
-        print("No hermes dashboard or serve processes running.")
+        print("No Hermes web server processes running.")
         return 0
 
-    print(f"{len(live)} hermes dashboard/serve process(es) running:")
+    print(f"{len(live)} Hermes web server process(es) running:")
     for pid, command, mode in live:
         print(f"    PID {pid} [{mode}]: {command}")
     return len(live)
@@ -11982,6 +12003,52 @@ def _dashboard_listening(host: str, port: int) -> bool:
             return True
     except OSError:
         return False
+
+
+def _dashboard_surface_at(host: str, port: int) -> str | None:
+    """Verified Hermes UI surface at ``host:port``, or ``None``.
+
+    The public status endpoint works in both loopback-token and gated-cookie
+    modes, so named-profile routing can distinguish Dashboard from Webapp
+    without possessing a session or attaching to an arbitrary TCP listener.
+    """
+    import json
+    from urllib.request import Request, urlopen
+
+    probe_host = _dashboard_probe_host(host)
+    authority = f"[{probe_host}]" if ":" in probe_host else probe_host
+    request = Request(
+        f"http://{authority}:{port}/api/status",
+        headers={"Accept": "application/json", "User-Agent": "hermes-surface-probe"},
+    )
+    try:
+        with urlopen(request, timeout=3.0) as response:  # nosec B310 -- local operator-selected listener
+            if getattr(response, "status", 200) != 200:
+                return None
+            raw = response.read(65_537)
+    except (OSError, ValueError):
+        return None
+    if len(raw) > 65_536:
+        return None
+    try:
+        payload = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, ValueError):
+        return None
+    if not isinstance(payload, dict):
+        return None
+    surface = payload.get("ui_surface")
+    if surface in {"dashboard", "webapp", "serve"}:
+        return surface
+    # Status payloads from Hermes versions predating ``ui_surface`` are always
+    # Dashboard: Webapp did not exist yet. Require a non-empty Hermes version
+    # and only fall back when the surface key is absent, never when it is invalid.
+    if (
+        "ui_surface" not in payload
+        and isinstance(payload.get("version"), str)
+        and payload["version"].strip()
+    ):
+        return "dashboard"
+    return None
 
 
 def _maybe_setup_dashboard_auth_interactively(args) -> None:
@@ -12238,6 +12305,61 @@ def _is_electron_packaged_web_dist(path: str) -> bool:
     return "app.asar" in path.replace("\\", "/")
 
 
+def cmd_webapp(args):
+    """Build the Desktop browser bundle, then hand off to the web server."""
+    # Lifecycle probes are positive-identity-only and scoped to THIS Webapp
+    # surface. They must never stop a native Desktop `serve` backend merely
+    # because both share the same HTTP implementation.
+    if getattr(args, "status", False):
+        _report_dashboard_status(modes={"webapp"})
+        raise SystemExit(0)
+    if getattr(args, "stop", False):
+        webapp_pids = {
+            pid
+            for pid, command in _self()._scan_dashboard_processes()
+            if (_parse_dashboard_runtime(command) or (None, "", 0))[0] == "webapp"
+        }
+        if not webapp_pids:
+            print("No Hermes Webapp processes running.")
+            raise SystemExit(0)
+        _self()._kill_stale_dashboard_processes(
+            reason="requested via webapp --stop",
+            include_pids=webapp_pids,
+        )
+        remaining = {
+            pid
+            for pid, command in _self()._scan_dashboard_processes()
+            if (_parse_dashboard_runtime(command) or (None, "", 0))[0] == "webapp"
+        }
+        raise SystemExit(1 if remaining else 0)
+
+    from hermes_cli.webapp import (
+        WebappBuildError,
+        activate_webapp_dist,
+        prepare_webapp_renderer,
+    )
+
+    try:
+        dist = prepare_webapp_renderer(
+            PROJECT_ROOT,
+            force=getattr(args, "force_build", False),
+            skip_build=getattr(args, "skip_build", False),
+        )
+    except WebappBuildError as exc:
+        print(f"✗ {exc}")
+        print("  Retry without --skip-build, or build manually:")
+        print("    npm run --workspace apps/desktop build:webapp")
+        raise SystemExit(1) from exc
+
+    if getattr(args, "build_only", False):
+        print("✓ Hermes Webapp renderer ready (--build-only)")
+        return None
+
+    activate_webapp_dist(dist)
+    args.skip_build = True
+    return cmd_dashboard(args)
+
+
 def cmd_dashboard(args):
     """Start the web UI server, or (with --stop/--status) manage running ones."""
     _token_file = getattr(args, "ssh_session_token_file", None)
@@ -12255,7 +12377,7 @@ def cmd_dashboard(args):
     if getattr(args, "stop", False):
         pids = _find_stale_dashboard_pids()
         if not pids:
-            print("No hermes dashboard processes running.")
+            print("No Hermes web server processes running.")
             sys.exit(0)
         # Reuse the same SIGTERM-grace-SIGKILL path used after `hermes update`.
         _self()._kill_stale_dashboard_processes(reason="requested via --stop")
@@ -12337,9 +12459,11 @@ def cmd_dashboard(args):
         # Desktop pool backends are intentionally per-profile.
         and os.environ.get("HERMES_DESKTOP") != "1"
     ):
+        expected_surface = "webapp" if getattr(args, "webapp_surface", False) else "dashboard"
         url = f"http://{args.host or '127.0.0.1'}:{args.port}/?profile={_launch_profile}"
-        if _dashboard_listening(args.host, args.port):
-            print(f"Machine dashboard already running on port {args.port}.")
+        listening_surface = _dashboard_surface_at(args.host, args.port)
+        if listening_surface == expected_surface:
+            print(f"Machine {expected_surface} already running on port {args.port}.")
             print(f"  Managing profile '{_launch_profile}': {url}")
             if not args.no_open:
                 try:
@@ -12348,6 +12472,14 @@ def cmd_dashboard(args):
                 except Exception:
                     pass
             sys.exit(0)
+        if listening_surface is not None or _dashboard_listening(args.host, args.port):
+            found = listening_surface or "unverified listener"
+            print(
+                f"Port {args.port} is already owned by {found}; refusing to open it "
+                f"as Hermes {expected_surface}."
+            )
+            print("  Stop that listener or choose a different --port.")
+            sys.exit(1)
 
         print(
             f"Routing to the machine dashboard (profile '{_launch_profile}' "
@@ -12358,7 +12490,13 @@ def cmd_dashboard(args):
             "-p", "default",
             # Preserve the lean serve path across the re-exec so a named-profile
             # `serve` doesn't silently rebuild the UI as `dashboard`.
-            "serve" if _headless_backend else "dashboard",
+            (
+                "serve"
+                if _headless_backend
+                else "webapp"
+                if getattr(args, "webapp_surface", False)
+                else "dashboard"
+            ),
             "--port", str(args.port),
             "--host", args.host,
             "--open-profile", _launch_profile,
@@ -12587,6 +12725,13 @@ def cmd_dashboard(args):
         ssh_session_token=_ssh_session_token,
         ssh_owner_nonce=_ssh_owner_nonce,
         start_mcp_discovery_after_bind=_mcp_discovery_after_bind,
+        ui_surface=(
+            "serve"
+            if _headless_backend
+            else "webapp"
+            if getattr(args, "webapp_surface", False)
+            else "dashboard"
+        ),
     )
 
 
@@ -12681,7 +12826,7 @@ _BUILTIN_SUBCOMMANDS = frozenset(
     {
         "acp", "approvals", "auth", "backup", "bundles", "checkpoints", "claw", "completion",
         "computer-use",
-        "config", "console", "cron", "curator", "dashboard", "serve", "debug", "doctor",
+        "config", "console", "cron", "curator", "dashboard", "webapp", "serve", "debug", "doctor",
         "dump", "egress", "fallback", "gateway", "hooks", "import", "import-agent", "insights",
         "gui", "desktop", "kanban", "login", "logout", "logs", "lsp", "mcp", "memory", "migrate", "moa",
         "journey", "memory-graph", "learning",
@@ -15018,6 +15163,7 @@ def main():
         subparsers,
         cmd_dashboard=cmd_dashboard,
         cmd_dashboard_register=cmd_dashboard_register,
+        cmd_webapp=cmd_webapp,
     )
 
 

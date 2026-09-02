@@ -41,6 +41,7 @@ def _(rid, params: dict) -> dict:
     # and each turn re-bind HERMES_HOME. None/own profile → launch (unchanged).
     profile = (params.get("profile") or "").strip() or None
     profile_home = _profile_home(profile)
+    profile_incarnation = _capture_profile_incarnation(profile_home)
 
     # The desktop composer owns its model/effort/fast as plain UI state and ships
     # it on every session.create. Honor each as a PER-SESSION override (built into
@@ -75,6 +76,11 @@ def _(rid, params: dict) -> dict:
     lease = None  # claimed lazily on the first turn (_ensure_active_session_slot)
 
     with _sessions_lock:
+        if _profile_home_rejected(profile_home, profile_incarnation):
+            raise FileNotFoundError(
+                "Profile incarnation is stale or home is missing or being deleted: "
+                f"{profile_home or _hermes_home}"
+            )
         _sessions[sid] = {
             "agent": None,
             "agent_error": None,
@@ -102,6 +108,7 @@ def _(rid, params: dict) -> dict:
             "room_plumbing": is_truthy_value(params.get("room_plumbing", False)),
             "follow_profile_config": is_truthy_value(params.get("follow_profile_config", False)),
             "profile_home": str(profile_home) if profile_home is not None else None,
+            "profile_incarnation": profile_incarnation,
             "running": False,
             "session_key": key,
             "show_reasoning": _load_show_reasoning(),
@@ -465,6 +472,7 @@ def _(rid, params: dict) -> dict:
     # local profile's state.db. None/own profile → the launch profile (unchanged).
     profile = (params.get("profile") or "").strip() or None
     profile_home = _profile_home(profile)
+    profile_incarnation = _capture_profile_incarnation(profile_home)
     defer_history = is_truthy_value(params.get("defer_history", False))
     # Desktop hydrates persisted transcripts through the authenticated REST
     # route in parallel. Suppress the duplicate WebSocket transcript only when
@@ -479,7 +487,10 @@ def _(rid, params: dict) -> dict:
     if profile_home is not None:
         from hermes_state import get_shared_session_db
 
-        db = get_shared_session_db(profile_home / "state.db")
+        db = get_shared_session_db(
+            profile_home / "state.db",
+            expected_profile_incarnation=profile_incarnation,
+        )
         owns_db = True
     else:
         db = _get_db()
@@ -519,11 +530,14 @@ def _(rid, params: dict) -> dict:
                 # (Nested per method_ctx rebinding — module helpers are
                 # invisible from installed handlers.)
                 def _find_live_unpersisted(needle: str, home) -> str:
-                    want_home = str(home) if home is not None else None
                     for live_sid, record in list(_sessions.items()):
                         if not isinstance(record, dict):
                             continue
-                        if (record.get("profile_home") or None) != want_home:
+                        if not _session_profile_identity_matches(
+                            record,
+                            home,
+                            profile_incarnation,
+                        ):
                             continue
                         if (
                             str(record.get("session_key") or "") == needle
@@ -734,29 +748,35 @@ def _(rid, params: dict) -> dict:
                 payload["status"] = "streaming"
             return payload
 
+        def _reuse_live_response_locked(sid: str, session: dict) -> dict:
+            if _sessions.get(sid) is not session:
+                return _err(rid, 4007, "session no longer live; retry resume")
+            if session.get("_client_gone_interrupt_requested"):
+                return _err(rid, 4009, "session disconnect interrupt settling")
+            # This resume reattaches the live record: cancel any pending
+            # ws-orphan reap timer armed while the client was detached
+            # (storm killer — _live_session_payload's rebind also cancels,
+            # but only when a transport is passed; cancel unconditionally
+            # here so the fast path can never race the reap Timer).
+            _cancel_ws_orphan_reap(sid)
+            return _ok(rid, _reuse_live_payload(sid, session))
+
         def _reuse_live_response(sid: str, session: dict) -> dict:
-            # The helper owns the resume lock because slow-path claim races can
-            # discover a live winner and return it after releasing their own lock.
-            # Keeping the client-gone check and transport rebind in one critical
-            # section makes grace expiry atomic across every reuse path.
+            # Slow-path claim races return their winner after releasing the lock.
+            # Keep the client-gone check and transport rebind atomic there, while
+            # the eager post-build recheck calls the locked helper directly.
             with _session_resume_lock:
-                if _sessions.get(sid) is not session:
-                    return _err(rid, 4007, "session no longer live; retry resume")
-                if session.get("_client_gone_interrupt_requested"):
-                    return _err(rid, 4009, "session disconnect interrupt settling")
-                # This resume reattaches the live record: cancel any pending
-                # ws-orphan reap timer armed while the client was detached
-                # (storm killer — _live_session_payload's rebind also cancels,
-                # but only when a transport is passed; cancel unconditionally
-                # here so the fast path can never race the reap Timer).
-                _cancel_ws_orphan_reap(sid)
-                return _ok(rid, _reuse_live_payload(sid, session))
+                return _reuse_live_response_locked(sid, session)
 
         # Fast path: if the session is already live IN THIS PROFILE, reuse it
         # under the lock. Never another profile's runtime of the same stored id
         # — that ran profile B's turn on profile A's agent/memory (#100029).
         with _session_resume_lock:
-            live = _find_live_session_by_key(target, profile_home)
+            live = _find_live_session_by_key(
+                target,
+                profile_home,
+                profile_incarnation,
+            )
         if live is not None:
             return _reuse_live_response(*live)
 
@@ -1079,7 +1099,11 @@ def _(rid, params: dict) -> dict:
         # live session while we were building. Re-check under the lock; if it won,
         # discard our just-built agent and reuse theirs (no worker/poller wired yet).
         with _session_resume_lock:
-            live = _find_live_session_by_key(target, profile_home)
+            live = _find_live_session_by_key(
+                target,
+                profile_home,
+                profile_incarnation,
+            )
             if live is not None:
                 try:
                     if hasattr(agent, "close"):
@@ -1088,7 +1112,7 @@ def _(rid, params: dict) -> dict:
                     pass
                 if lease is not None:
                     lease.release()
-                return _reuse_live_response(*live)
+                return _reuse_live_response_locked(*live)
             try:
                 init_home_token = (
                     set_hermes_home_override(str(profile_home))
@@ -1111,6 +1135,8 @@ def _(rid, params: dict) -> dict:
                         session_db=db,
                         source=source,
                         explicit_cwd=bool(profile_resume_cwd),
+                        profile_home=str(profile_home) if profile_home is not None else None,
+                        profile_incarnation=profile_incarnation,
                     )
                     # Ownership TRANSFER — the registered session's agent now
                     # holds this handle for its whole life, and _init_session
@@ -3416,14 +3442,21 @@ def _(rid, params: dict) -> dict:
         # parent's db while the agent stayed on the launch handle would
         # recreate the cross-profile split one turn later.
         parent_home = session.get("profile_home")
+        parent_incarnation = session.get("profile_incarnation")
+        if _profile_home_rejected(parent_home, parent_incarnation):
+            raise FileNotFoundError(
+                "Parent session belongs to a stale profile incarnation"
+            )
         if parent_home:
-            from hermes_state import SessionDB
+            from hermes_state import get_shared_session_db
 
             # DEDICATED handle, same ownership rule as session.resume: ours
             # until the branched agent takes it below. _make_agent raising, or
             # _init_session raising, both leave here without that transfer.
-            from hermes_state import get_shared_session_db
-            branch_db = get_shared_session_db(Path(parent_home) / "state.db")
+            branch_db = get_shared_session_db(
+                Path(parent_home) / "state.db",
+                expected_profile_incarnation=parent_incarnation,
+            )
             branch_owns_db = True
         home_token = (
             set_hermes_home_override(parent_home) if parent_home else None
@@ -3464,6 +3497,7 @@ def _(rid, params: dict) -> dict:
                 source=source,
                 profile_home=parent_home,
                 explicit_cwd=bool(session.get("explicit_cwd")),
+                profile_incarnation=parent_incarnation,
             )
             # Ownership TRANSFER — the branched session's agent holds this
             # handle for its whole life and closes it on teardown. Drop is

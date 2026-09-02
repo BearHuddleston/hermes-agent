@@ -25,12 +25,13 @@ logger = logging.getLogger(__name__)
 _PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
 
 
-def save_clipboard_image(dest: Path) -> bool:
+def save_clipboard_image(dest: Path, *, create_parent: bool = True) -> bool:
     """Extract an image from the system clipboard and save it as PNG.
 
     Returns True if an image was found and saved, False otherwise.
     """
-    dest.parent.mkdir(parents=True, exist_ok=True)
+    if create_parent:
+        dest.parent.mkdir(parents=True, exist_ok=True)
     if sys.platform == "darwin":
         return _macos_save(dest)
     if sys.platform == "win32":

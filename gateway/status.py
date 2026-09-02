@@ -735,8 +735,10 @@ def _get_code_identity_fields() -> dict[str, Any]:
 
 def _pid_record_belongs_to_current_profile(
     record: Optional[dict[str, Any]],
+    *,
+    expected_home: Optional[Path | str] = None,
 ) -> bool:
-    """Return True when the PID record's ``hermes_home`` matches the current process.
+    """Return True when the PID record's ``hermes_home`` matches its target.
 
     PID records written by ``_build_pid_record()`` include the gateway's
     ``hermes_home`` at write time. If a profile gateway was started (or recorded)
@@ -746,6 +748,10 @@ def _pid_record_belongs_to_current_profile(
 
     Records that predate the ``hermes_home`` field (pre-#74872 gateways) are
     accepted conservatively (no field → assume current profile).
+
+    Explicit cross-profile readers pass ``expected_home`` so a PID file is
+    checked against the profile directory that owns it rather than the
+    reader's process-level ``HERMES_HOME``.
     """
     if not isinstance(record, dict):
         return False
@@ -754,7 +760,8 @@ def _pid_record_belongs_to_current_profile(
         # Records without hermes_home belong to a pre-#74872 gateway;
         # accept them conservatively.
         return True
-    return _same_hermes_home(record_home, _get_process_hermes_home())
+    target_home = expected_home if expected_home is not None else _get_process_hermes_home()
+    return _same_hermes_home(record_home, target_home)
 
 
 def _build_runtime_status_record() -> dict[str, Any]:
@@ -2472,6 +2479,7 @@ def get_running_pid(
     Cleans up stale PID files automatically.
     """
     resolved_pid_path = pid_path or _get_pid_path()
+    expected_home = resolved_pid_path.parent if pid_path is not None else None
     resolved_lock_path = _get_gateway_lock_path(resolved_pid_path)
     lock_active = is_gateway_runtime_lock_active(resolved_lock_path)
     if not lock_active:
@@ -2498,7 +2506,10 @@ def get_running_pid(
         if recorded_start is not None and current_start is not None and current_start != recorded_start:
             continue
 
-        if not _pid_record_belongs_to_current_profile(record):
+        if not _pid_record_belongs_to_current_profile(
+            record,
+            expected_home=expected_home,
+        ):
             continue
 
         if _record_matches_live_gateway_pid(record, pid):

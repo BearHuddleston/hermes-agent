@@ -139,9 +139,16 @@ try:
 except Exception:
     pass
 
+from tui_gateway.profile_lifecycle import ProfileLifecycleFence
 from tui_gateway.render import make_stream_renderer, render_diff, render_message
 
 _sessions: dict[str, dict] = {}
+_profile_lifecycle = ProfileLifecycleFence()
+_PROFILE_INCARNATION_UNSET = object()
+# Compatibility aliases for tests and integrations that clear/inspect the
+# process-local fence between isolated gateway runs.
+_retired_profile_homes = _profile_lifecycle.retired_homes
+_retired_profile_incarnations = _profile_lifecycle.retired_incarnations
 _methods: dict[str, callable] = {}
 _pending: dict[str, tuple[str, threading.Event]] = {}
 _pending_prompt_payloads: dict[str, tuple[str, dict]] = {}
@@ -1193,24 +1200,35 @@ def _teardown_popped_session(
     """Finish a close after the caller has atomically detached the session."""
     if session is None:
         return False
-    run_thread = session.get("_run_thread")
-    if (
-        end_reason != "tui_shutdown"
-        and run_thread is not None
-        and run_thread is not threading.current_thread()
+    settled = True
+    seen_threads: set[int] = set()
+    for label, thread in (
+        ("turn", session.get("_run_thread")),
+        ("agent build", session.get("_agent_build_thread")),
     ):
+        if (
+            end_reason == "tui_shutdown"
+            or thread is None
+            or thread is threading.current_thread()
+            or id(thread) in seen_threads
+        ):
+            continue
+        seen_threads.add(id(thread))
         try:
-            if run_thread.is_alive():
-                run_thread.join(timeout=_TURN_SETTLE_BEFORE_CLOSE_SECONDS)
-            if run_thread.is_alive():
+            if thread.is_alive():
+                thread.join(timeout=_TURN_SETTLE_BEFORE_CLOSE_SECONDS)
+            if thread.is_alive():
                 logger.warning(
-                    "session turn thread still alive after %.1fs teardown grace",
+                    "session %s thread still alive after %.1fs teardown grace",
+                    label,
                     _TURN_SETTLE_BEFORE_CLOSE_SECONDS,
                 )
+                settled = False
         except Exception:
-            logger.debug("failed waiting for session turn thread", exc_info=True)
+            logger.debug("failed waiting for session %s thread", label, exc_info=True)
+            settled = False
     _teardown_session(session, end_reason=end_reason)
-    return True
+    return settled
 
 
 def _close_session_by_id(
@@ -1248,6 +1266,100 @@ def _ws_session_is_detached(session: dict | None) -> bool:
         session
         and not session.get("_finalized")
         and session.get("transport") is _detached_ws_transport
+    )
+
+
+def _profile_home_key(profile_home: Path | str) -> str:
+    return _profile_lifecycle.key(profile_home)
+
+
+def _capture_profile_incarnation(profile_home: Path | str | None) -> str | None:
+    return _profile_lifecycle.capture(profile_home or _hermes_home)
+
+
+def _session_profile_identity_matches(
+    session: dict,
+    profile_home: Path | str | None,
+    profile_incarnation: str | None,
+) -> bool:
+    expected_home = str(profile_home) if profile_home is not None else None
+    return (
+        (session.get("profile_home") or None) == expected_home
+        and (session.get("profile_incarnation") or None) == profile_incarnation
+    )
+
+
+def _profile_home_rejected(
+    profile_home: Path | str | None,
+    profile_incarnation: str | None | object = _PROFILE_INCARNATION_UNSET,
+) -> bool:
+    effective_home = profile_home or _hermes_home
+    incarnation_required = profile_incarnation is not _PROFILE_INCARNATION_UNSET
+    expected_incarnation = (
+        profile_incarnation if isinstance(profile_incarnation, str) else None
+    )
+    return _profile_lifecycle.rejected(
+        effective_home,
+        expected_incarnation,
+        require_incarnation=incarnation_required,
+    )
+
+
+@contextlib.contextmanager
+def _profile_home_lease(
+    profile_home: Path | str | None,
+    profile_incarnation: str | None,
+):
+    """Hold generation identity stable while binding a profile pathname."""
+    effective_home = profile_home or _hermes_home
+    with _profile_lifecycle.lease(effective_home, profile_incarnation) as home:
+        yield home
+
+
+def allow_profile_home(
+    profile_home: Path | str,
+    profile_incarnation: str | None = None,
+) -> None:
+    """Admit sessions for a profile that was explicitly created/recreated."""
+    with _sessions_lock:
+        _profile_lifecycle.allow(profile_home, profile_incarnation)
+
+
+def retire_profile_home(
+    profile_home: Path | str,
+    profile_incarnation: str | None = None,
+) -> int:
+    """Tear down every in-process session retaining ``profile_home``.
+
+    Profile DELETE marks the home unavailable before calling this function, so
+    finalization attempts fail closed instead of reopening state.db. The
+    registry pop prevents later title/history/cwd activity from using stale
+    session dictionaries after the directory is removed.
+    """
+    def _close_launch_db() -> int:
+        global _db
+
+        db, _db = _db, None
+        if db is None:
+            return 0
+        try:
+            db.close()
+            return 1
+        except Exception:
+            logger.debug("failed closing launch profile SessionDB", exc_info=True)
+            return 0
+
+    return _profile_lifecycle.retire_sessions(
+        profile_home,
+        profile_incarnation,
+        launch_home=_hermes_home,
+        sessions=_sessions,
+        sessions_lock=_sessions_lock,
+        close_session=lambda sid: _close_session_by_id(
+            sid,
+            end_reason="profile_deleted",
+        ),
+        close_launch_db=_close_launch_db,
     )
 
 
@@ -2326,7 +2438,14 @@ def _db_for_profile(profile: str | None = None):
     try:
         from hermes_state import get_shared_session_db
 
-        return get_shared_session_db(Path(profile_home) / "state.db"), True
+        profile_incarnation = _capture_profile_incarnation(profile_home)
+        return (
+            get_shared_session_db(
+                Path(profile_home) / "state.db",
+                expected_profile_incarnation=profile_incarnation,
+            ),
+            True,
+        )
     except Exception as exc:
         logger.warning(
             "TUI profile session store unavailable for %s: %s",
@@ -2376,7 +2495,7 @@ def _transfer_db_to_agent(agent, db) -> bool:
         return False
 
 
-def _open_profile_session_db(profile_home):
+def _open_profile_session_db(profile_home, expected_profile_incarnation=None):
     """Open a DEDICATED handle on ``profile_home``'s ``state.db`` — FAIL CLOSED.
 
     A named-profile agent whose profile store cannot be opened must surface a
@@ -2392,7 +2511,12 @@ def _open_profile_session_db(profile_home):
 
     db_path = Path(profile_home) / "state.db"
     try:
-        return get_shared_session_db(db_path)
+        return get_shared_session_db(
+            db_path,
+            expected_profile_incarnation=expected_profile_incarnation,
+        )
+    except FileNotFoundError:
+        raise
     except Exception as exc:
         raise RuntimeError(
             f"profile session store unavailable: {db_path}: {exc}"
@@ -2425,8 +2549,14 @@ def _response_profile_name(profile: str | None = None) -> str:
     otherwise the process launch profile.
     """
     name = (profile or "").strip()
-    if name and _profile_home(name) is not None:
-        return name
+    if name:
+        try:
+            if _profile_home(name) is not None:
+                return name
+        except FileNotFoundError:
+            # Response decoration must not turn a completed/error turn into a
+            # second failure merely because its former profile was retired.
+            pass
     return _current_profile_name()
 
 
@@ -2451,18 +2581,30 @@ def _profile_home(profile: str | None) -> Path | None:
     try:
         from hermes_cli import profiles as profiles_mod
 
-        home = Path(profiles_mod.get_profile_dir(name))
-    except Exception:
-        return None
+        canon = profiles_mod.normalize_profile_name(name)
+        profiles_mod.validate_profile_name(canon)
+        home = Path(profiles_mod.get_profile_dir(canon))
+    except (TypeError, ValueError) as exc:
+        raise FileNotFoundError(f"Profile '{name}' is invalid.") from exc
     # Already the launch profile? No override needed.
     if home.resolve() == Path(_hermes_home).resolve():
+        if _profile_home_rejected(home):
+            raise FileNotFoundError(f"Profile '{canon}' is missing or being deleted.")
         return None
-    if (home / "state.db").exists() or home.exists():
-        # Remember every sibling home this backend was asked to serve so the
-        # change watcher stats its store too (#99333 class).
-        _served_profile_homes.add(home)
-        return home
-    return None
+    with _sessions_lock:
+        if _profile_home_key(home) in _retired_profile_homes:
+            raise FileNotFoundError(f"Profile '{canon}' is missing or being deleted.")
+    if profiles_mod.profile_home_is_tombstoned(home):
+        raise FileNotFoundError(f"Profile '{canon}' is missing or being deleted.")
+    if not profiles_mod.profile_exists(canon):
+        raise FileNotFoundError(f"Profile '{canon}' is missing or being deleted.")
+    profile_incarnation = _capture_profile_incarnation(home)
+    if _profile_home_rejected(home, profile_incarnation):
+        raise FileNotFoundError(f"Profile '{canon}' is missing or being deleted.")
+    # Remember every validated sibling home this backend was asked to serve so
+    # the change watcher stats its store too (#99333 class).
+    _served_profile_homes.add(home)
+    return home
 
 
 # Profile homes served by this process besides the launch home — the only
@@ -2741,6 +2883,7 @@ def _compute_host_turn_frame(
         "cwd": _session_cwd(session),
         "context_cwd_is_launch_artifact": _context_cwd_is_launch_artifact(session),
         "profile_home": session.get("profile_home") or "",
+        "profile_incarnation": session.get("profile_incarnation") or "",
         "model_override": session.get("model_override"),
         "reasoning_config_override": session.get("create_reasoning_override"),
         "service_tier_override": session.get("create_service_tier_override"),
@@ -3430,7 +3573,21 @@ def _start_agent_build(sid: str, session: dict) -> None:
         session_db = None
         owns_db = False
         profile_home = current.get("profile_home")
+        profile_incarnation_value = current.get(
+            "profile_incarnation",
+            _PROFILE_INCARNATION_UNSET,
+        )
+        profile_incarnation = (
+            profile_incarnation_value
+            if isinstance(profile_incarnation_value, str)
+            else None
+        )
         try:
+            if _profile_home_rejected(profile_home, profile_incarnation_value):
+                raise FileNotFoundError(
+                    "Profile incarnation is stale or home is missing or being deleted: "
+                    f"{profile_home or _hermes_home}"
+                )
             history_ready = current.get("resume_history_ready")
             if history_ready is not None:
                 if not history_ready.wait(timeout=300.0):
@@ -3476,7 +3633,10 @@ def _start_agent_build(sid: str, session: dict) -> None:
                 # ``except`` below (clear agent_error, no agent turn) instead
                 # of silently binding _make_agent's launch-DB default and
                 # bleeding this session into the wrong profile's state.db.
-                session_db = _open_profile_session_db(profile_home)
+                session_db = _open_profile_session_db(
+                    profile_home,
+                    expected_profile_incarnation=profile_incarnation,
+                )
                 owns_db = True
 
             try:
@@ -3535,9 +3695,27 @@ def _start_agent_build(sid: str, session: dict) -> None:
             if _title_hint:
                 agent._session_title_hint = _title_hint
 
-            # Session DB row deferred to first run_conversation() call.
-            # pending_title applied post-first-message (see cli.exec handler).
-            current["agent"] = agent
+            # Publish only while this exact session generation is still live.
+            # Profile retirement marks the home and removes the record under the
+            # same lock, so a build that finishes late can never leak callbacks
+            # or an unclosed agent after deletion.
+            with _sessions_lock:
+                publish = (
+                    _sessions.get(sid) is current
+                    and not current.get("_closing")
+                    and not _profile_home_rejected(
+                        profile_home,
+                        profile_incarnation,
+                    )
+                )
+                if publish:
+                    # Session DB row deferred to first run_conversation() call.
+                    # pending_title applied post-first-message (see cli.exec handler).
+                    current["agent"] = agent
+            if not publish:
+                with contextlib.suppress(Exception):
+                    agent.close()
+                return
             _session_todo_state(current)
             # Baseline for the per-turn config sync; the profile home
             # override is still active here.
@@ -3664,6 +3842,14 @@ def _sess_nowait(params, rid):
     sid = params.get("session_id") or ""
     s = _sessions.get(sid)
     if s:
+        if _profile_home_rejected(
+            s.get("profile_home"),
+            s.get("profile_incarnation"),
+        ):
+            return (
+                None,
+                _err(rid, 4041, "profile incarnation is stale or home is unavailable"),
+            )
         return (s, None)
     # A session-scoped RPC hit a runtime id the gateway no longer holds
     # (detached on WS disconnect and orphan-reaped, LRU-evicted, or torn down
@@ -4113,11 +4299,20 @@ def _ensure_session_db_row(session: dict) -> bool:
     # unified list mis-tags it, and resume 404s ("session not found").
     profile_home = session.get("profile_home")
     if profile_home:
-        from hermes_state import SessionDB
+        from hermes_state import get_shared_session_db
 
         try:
-            from hermes_state import get_shared_session_db
-            db = get_shared_session_db(Path(profile_home) / "state.db")
+            if _profile_home_rejected(
+                profile_home,
+                session.get("profile_incarnation"),
+            ):
+                raise FileNotFoundError(
+                    f"Profile incarnation is stale or home is unavailable: {profile_home}"
+                )
+            db = get_shared_session_db(
+                Path(profile_home) / "state.db",
+                expected_profile_incarnation=session.get("profile_incarnation"),
+            )
         except Exception:
             logger.debug("failed to open profile db for session row", exc_info=True)
             return False
@@ -4329,11 +4524,21 @@ def _session_db(session: dict):
     db, close_db = None, False
     profile_home = session.get("profile_home")
     if profile_home:
-        from hermes_state import SessionDB
+        from hermes_state import get_shared_session_db
 
         try:
-            from hermes_state import get_shared_session_db
-            db, close_db = get_shared_session_db(Path(profile_home) / "state.db"), True
+            if _profile_home_rejected(
+                profile_home,
+                session.get("profile_incarnation"),
+            ):
+                raise FileNotFoundError(
+                    f"Profile incarnation is stale or home is unavailable: {profile_home}"
+                )
+            db = get_shared_session_db(
+                Path(profile_home) / "state.db",
+                expected_profile_incarnation=session.get("profile_incarnation"),
+            )
+            close_db = True
         except Exception:
             logger.debug("failed to open profile db for session", exc_info=True)
     else:
@@ -4524,7 +4729,11 @@ def _persist_session_git_meta(session: dict, cwd: str, generation: int) -> None:
         return
     # Snapshot the routing fields now; the live session dict may be gone by the
     # time the thread runs. `_session_db` reopens the profile-correct db inside.
-    db_session = {"session_key": session_key, "profile_home": session.get("profile_home")}
+    db_session = {
+        "session_key": session_key,
+        "profile_home": session.get("profile_home"),
+        "profile_incarnation": session.get("profile_incarnation"),
+    }
 
     def _run() -> None:
         try:
@@ -9375,9 +9584,32 @@ def _init_session(
     source: str | None = None,
     profile_home: str | None = None,
     explicit_cwd: bool = False,
+    profile_incarnation: str | None = None,
 ):
     now = time.time()
+    if profile_incarnation is None:
+        try:
+            captured_incarnation = _capture_profile_incarnation(profile_home)
+            if captured_incarnation is not None:
+                profile_incarnation = captured_incarnation
+        except Exception:
+            try:
+                if agent is not None and hasattr(agent, "close"):
+                    agent.close()
+            except Exception:
+                pass
+            raise
     with _sessions_lock:
+        if _profile_home_rejected(profile_home, profile_incarnation):
+            try:
+                if agent is not None and hasattr(agent, "close"):
+                    agent.close()
+            except Exception:
+                pass
+            raise FileNotFoundError(
+                "Profile incarnation is stale or home is missing or being deleted: "
+                f"{profile_home or _hermes_home}"
+            )
         _sessions[sid] = {
             "agent": agent,
             "session_key": key,
@@ -9403,6 +9635,7 @@ def _init_session(
             # launch profile. SessionBranch copies the parent's value so the
             # child stays on the same state.db.
             "profile_home": profile_home,
+            "profile_incarnation": profile_incarnation,
             # Per-session model override set by an in-session /model switch.
             # Honored on rebuild (/new, resume) so a switch in THIS session
             # never leaks into siblings via process-global env vars.
@@ -9417,8 +9650,23 @@ def _init_session(
         db = session_db
     elif profile_home:
         try:
-            db = _open_profile_session_db(profile_home)
+            db = _open_profile_session_db(
+                profile_home,
+                expected_profile_incarnation=profile_incarnation,
+            )
             _init_owns_db = True
+        except FileNotFoundError:
+            with _sessions_lock:
+                current = _sessions.get(sid)
+                if current is not None and current.get("agent") is agent:
+                    _sessions.pop(sid, None)
+            try:
+                close = getattr(agent, "close", None)
+                if callable(close):
+                    close()
+            except Exception:
+                logger.debug("failed to close stale-profile agent", exc_info=True)
+            raise
         except Exception:
             # FAIL CLOSED — same class as the deferred-build bind: a
             # named-profile session must never read/write the launch
@@ -10941,6 +11189,7 @@ def _deferred_session_record(
     """A live-session record whose AIAgent is built later (lazy watch / cold
     resume) — _init_session's shape minus the agent."""
     now = time.time()
+    profile_incarnation = _capture_profile_incarnation(profile_home)
     return {
         "agent": None,
         "agent_error": None,
@@ -10964,6 +11213,7 @@ def _deferred_session_record(
         "model_override": model_override,
         "pending_title": None,
         "profile_home": str(profile_home) if profile_home is not None else None,
+        "profile_incarnation": profile_incarnation,
         "resume_runtime_overrides": resume_runtime_overrides,
         "resume_session_id": session_key,
         "running": False,
@@ -11004,7 +11254,11 @@ def _claim_or_reuse_live(
     # same stored id under ANOTHER profile is not a winner to reuse (#100029).
     profile_home = record.get("profile_home")
     with _session_resume_lock:
-        live = _find_live_session_by_key(session_key, profile_home)
+        live = _find_live_session_by_key(
+            session_key,
+            profile_home,
+            record.get("profile_incarnation"),
+        )
         if live is not None:
             if lease is not None:
                 lease.release()
@@ -11014,6 +11268,16 @@ def _claim_or_reuse_live(
             _cancel_ws_orphan_reap(live[0])
             return live
         with _sessions_lock:
+            if _profile_home_rejected(
+                record.get("profile_home"),
+                record.get("profile_incarnation"),
+            ):
+                if lease is not None:
+                    lease.release()
+                raise FileNotFoundError(
+                    f"Profile home is missing or being deleted: "
+                    f"{record.get('profile_home') or _hermes_home}"
+                )
             _sessions[sid] = record
             _register_session_cwd(_sessions[sid])
         # A fresh runtime was minted for this stored session id: the new sid
@@ -11279,19 +11543,29 @@ def _session_lookup_key(session: dict, *, fallback: str = "") -> str:
 
 
 def _find_live_session_by_key(
-    session_key: str, profile_home=_ANY_PROFILE
+    session_key: str,
+    profile_home=_ANY_PROFILE,
+    profile_incarnation=_PROFILE_INCARNATION_UNSET,
 ) -> tuple[str, dict] | None:
     # Stored session ids are timestamp-based and can legitimately exist in more
     # than one profile's store, so a bare-id match can hand profile B's resume
     # profile A's live runtime (#100029). Profile-aware callers pass the home
-    # they resolved; the match must then be on (profile_home, session_key).
+    # they resolved; generation-aware callers also pass the incarnation so a
+    # stale runtime cannot hide a later winner for a recreated profile.
     for sid, session in list(_sessions.items()):
         if session.get("_finalized"):
             continue
-        if _session_lookup_key(session, fallback=sid) == session_key and _live_profile_matches(
-            session, profile_home
+        if _session_lookup_key(session, fallback=sid) != session_key:
+            continue
+        if profile_incarnation is _PROFILE_INCARNATION_UNSET:
+            if not _live_profile_matches(session, profile_home):
+                continue
+        elif (
+            not _live_profile_matches(session, profile_home)
+            or (session.get("profile_incarnation") or None) != profile_incarnation
         ):
-            return sid, session
+            continue
+        return sid, session
     return None
 
 
@@ -14361,18 +14635,32 @@ def _queue_attached_image(session: dict, img_bytes: bytes, ext: str, *, prefix: 
     ``session["attached_images"]`` so the next ``prompt.submit`` picks it up via
     the existing native-image-attach pipeline. Returns the written path.
     """
-    session["image_counter"] = session.get("image_counter", 0) + 1
-    img_dir = _session_images_dir(session)
-    img_dir.mkdir(parents=True, exist_ok=True)
-    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-    img_path = img_dir / f"{prefix}_{ts}_{session['image_counter']}{ext}"
-    try:
-        img_path.write_bytes(img_bytes)
-    except Exception:
-        session["image_counter"] = max(0, session["image_counter"] - 1)
-        raise
-    session.setdefault("attached_images", []).append(str(img_path))
-    return img_path
+    profile_home = session.get("profile_home")
+    profile_incarnation = session.get("profile_incarnation")
+    # Profile mutation takes the lifecycle lease before retiring sessions, so
+    # attachment writes use the same order: lifecycle → sessions → pathname.
+    with _profile_home_lease(profile_home, profile_incarnation):
+        with _sessions_lock:
+            session["image_counter"] = session.get("image_counter", 0) + 1
+            img_dir = _session_images_dir(session)
+            img_path = None
+            try:
+                if not img_dir.parent.is_dir():
+                    raise FileNotFoundError(
+                        "Profile home is missing or being deleted: "
+                        f"{img_dir.parent}"
+                    )
+                img_dir.mkdir(parents=False, exist_ok=True)
+                ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+                img_path = img_dir / f"{prefix}_{ts}_{session['image_counter']}{ext}"
+                img_path.write_bytes(img_bytes)
+            except Exception:
+                if img_path is not None:
+                    img_path.unlink(missing_ok=True)
+                session["image_counter"] = max(0, session["image_counter"] - 1)
+                raise
+            session.setdefault("attached_images", []).append(str(img_path))
+            return img_path
 
 
 _ATTACHMENT_REF_NEEDS_QUOTING_RE = None
@@ -14423,8 +14711,20 @@ def _desktop_attachment_dir(session: dict) -> Path:
     """
     profile_home = session.get("profile_home")
     base = Path(profile_home) if profile_home else _hermes_home
+    from hermes_constants import profile_deletion_marker_path
+
+    named_profile = profile_deletion_marker_path(base) is not None
+    if _profile_home_rejected(
+        profile_home,
+        session.get("profile_incarnation"),
+    ) or (named_profile and not base.is_dir()):
+        raise FileNotFoundError(
+            f"Profile incarnation is stale or home is missing or being deleted: {base}"
+        )
     root = base / "attachments"
-    root.mkdir(parents=True, exist_ok=True)
+    # Named homes are managed lifecycle objects: never recreate their parent.
+    # Arbitrary/custom HERMES_HOME paths retain the legacy lazy-create behavior.
+    root.mkdir(parents=not named_profile, exist_ok=True)
     return root
 
 
@@ -14526,10 +14826,21 @@ def _stage_session_file_attachment(
         payload = _decode_attachment_data_url(data_url)
         filename = _sanitize_attachment_name(name or Path(str(raw_path or "")).name)
 
-    upload_dir = _desktop_attachment_dir(session)
-    target = _unique_attachment_path(upload_dir, _sanitize_attachment_name(filename))
-    target.write_bytes(payload)
-    return target.resolve(), True
+    profile_home = session.get("profile_home")
+    profile_incarnation = session.get("profile_incarnation")
+    with _profile_home_lease(profile_home, profile_incarnation):
+        with _sessions_lock:
+            upload_dir = _desktop_attachment_dir(session)
+            target = _unique_attachment_path(
+                upload_dir,
+                _sanitize_attachment_name(filename),
+            )
+            try:
+                target.write_bytes(payload)
+            except Exception:
+                target.unlink(missing_ok=True)
+                raise
+            return target.resolve(), True
 
 
 # ── Methods: respond ─────────────────────────────────────────────────

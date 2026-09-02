@@ -2,10 +2,16 @@ import { act, cleanup, fireEvent, render, waitFor } from '@testing-library/react
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { onComposerAttachImagesRequest } from '@/app/chat/composer/focus'
+import { $rightRailActiveTabId } from '@/store/layout'
+import { $previewTabs } from '@/store/preview'
 import { $connection, $selectedStoredSessionId } from '@/store/session'
 
 import { forgetPreviewConsole, previewConsoleState } from './preview-console-store'
+import { activePreviewInput } from './preview-input'
+import { activePreviewNav } from './preview-nav'
 import { PreviewPane } from './preview-pane'
+import { readActivePreview } from './preview-reader'
+import { activePreviewScriptRunner } from './preview-script-runner'
 
 // The consent dialog has its own test file and needs a QueryClientProvider;
 // these tests exercise the pane's console/watch/webview wiring, not the
@@ -41,6 +47,9 @@ describe('PreviewPane console state', () => {
 
   afterEach(() => {
     cleanup()
+    globalThis.document.documentElement.removeAttribute('data-hermes-desktop-host')
+    $previewTabs.set([])
+    $rightRailActiveTabId.set(null)
     $connection.set(null)
     $selectedStoredSessionId.set(null)
     vi.unstubAllGlobals()
@@ -117,6 +126,52 @@ describe('PreviewPane console state', () => {
     expect(previewConsoleState(tabId).$logs.get().at(-1)?.message).toBe('streamed log line')
 
     forgetPreviewConsole(tabId)
+  })
+
+  it('uses a capability-minimal sandboxed iframe in browser-hosted Desktop', async () => {
+    globalThis.document.documentElement.dataset.hermesDesktopHost = 'browser'
+
+    const target = {
+      kind: 'url' as const,
+      label: 'Preview',
+      source: 'https://example.com',
+      url: 'https://example.com'
+    }
+
+    const tabId = 'url:https://example.com' as const
+
+    $previewTabs.set([{ id: tabId, target }])
+    $rightRailActiveTabId.set(tabId)
+
+    const rendered = render(
+      <PreviewPane
+        tabId={tabId}
+        target={target}
+      />
+    )
+
+    const frame = rendered.container.querySelector('iframe')
+
+    expect(frame).toBeInstanceOf(HTMLIFrameElement)
+    expect(rendered.container.querySelector('webview')).toBeNull()
+    expect(frame?.getAttribute('sandbox')).toBe(
+      'allow-forms allow-popups allow-scripts'
+    )
+    expect(frame?.getAttribute('sandbox')).not.toContain('allow-same-origin')
+    expect(frame?.getAttribute('allow')).toBe('fullscreen')
+    expect(frame?.getAttribute('allow')).not.toMatch(/camera|clipboard|microphone/)
+    expect(rendered.container.querySelector('[data-preview-browser]')).toBeNull()
+    expect(rendered.queryByRole('textbox', { name: 'Address' })).toBeNull()
+    expect(rendered.queryByRole('button', { name: 'Back' })).toBeNull()
+    expect(rendered.queryByRole('button', { name: /DevTools/i })).toBeNull()
+    expect(rendered.queryByRole('button', { name: /console/i })).toBeNull()
+    expect(activePreviewNav()).toBeNull()
+    expect(activePreviewScriptRunner()).toBeNull()
+    expect(activePreviewInput()).toBeNull()
+    await expect(readActivePreview()).resolves.toMatchObject({
+      text: '',
+      url: 'https://example.com'
+    })
   })
 
   // The bar is chrome for a LIVE page. A file peek, an artifact, and remote

@@ -1,4 +1,4 @@
-"""``hermes dashboard`` / ``hermes serve`` subcommand parsers.
+"""``hermes dashboard`` / ``hermes webapp`` / ``hermes serve`` parsers.
 
 ``dashboard`` is the browser web UI; ``serve`` is the same gateway, headless —
 what the desktop app and remote backends run. ``serve`` also skips the web UI
@@ -14,8 +14,13 @@ import argparse
 from typing import Callable
 
 
-def _add_server_runtime_args(parser) -> None:
-    """Attach the runtime flags shared by ``dashboard`` and ``serve``.
+def _add_server_runtime_args(
+    parser,
+    *,
+    build_hint: str = "cd web && npm run build",
+    lifecycle_target: str = "all running Hermes web server processes",
+) -> None:
+    """Attach the runtime flags shared by ``dashboard``, ``webapp``, and ``serve``.
 
     Both subcommands boot the *same* ``web_server.start_server`` (the
     JSON-RPC/WebSocket gateway). ``dashboard`` opens a browser UI on top of
@@ -45,7 +50,7 @@ def _add_server_runtime_args(parser) -> None:
         help=(
             "Skip the web UI build step and serve the existing dist directly. "
             "Useful for non-interactive contexts (Windows Scheduled Tasks, CI) "
-            "where npm may not be available. Pre-build with: cd web && npm run build"
+            f"where npm may not be available. Pre-build with: {build_hint}"
         ),
     )
     parser.add_argument(
@@ -75,12 +80,12 @@ def _add_server_runtime_args(parser) -> None:
     parser.add_argument(
         "--stop",
         action="store_true",
-        help="Stop all running Hermes web server processes and exit",
+        help=f"Stop {lifecycle_target} and exit",
     )
     parser.add_argument(
         "--status",
         action="store_true",
-        help="List running Hermes web server processes and exit",
+        help=f"List {lifecycle_target} and exit",
     )
 
 
@@ -139,9 +144,13 @@ def build_serve_parser(
 
 
 def build_dashboard_parser(
-    subparsers, *, cmd_dashboard: Callable, cmd_dashboard_register: Callable
+    subparsers,
+    *,
+    cmd_dashboard: Callable,
+    cmd_dashboard_register: Callable,
+    cmd_webapp: Callable,
 ) -> None:
-    """Attach the ``dashboard`` and ``serve`` subcommands.
+    """Attach the ``dashboard``, ``webapp``, and ``serve`` subcommands.
 
     Both share the same backend (``cmd_dashboard`` → ``start_server``).
     ``dashboard`` is the browser UI; ``serve`` is the headless backend used by
@@ -241,3 +250,41 @@ def build_dashboard_parser(
         ),
     )
     dashboard_register_parser.set_defaults(func=cmd_dashboard_register)
+
+    # =========================================================================
+    # webapp command — the Desktop workspace rendered in a normal browser
+    #
+    # The command prepares the renderer and then hands off to the same hardened
+    # server process as `dashboard`; it does not create a second backend stack.
+    # =========================================================================
+    webapp_parser = subparsers.add_parser(
+        "webapp",
+        help="Start the Hermes Desktop workspace in a browser",
+        description=(
+            "Launch the current Hermes Desktop workspace in a normal browser, "
+            "backed by the authenticated Hermes web server."
+        ),
+    )
+    _add_server_runtime_args(
+        webapp_parser,
+        build_hint="cd apps/desktop && npm run build:webapp",
+        lifecycle_target="running Hermes Webapp processes",
+    )
+    webapp_parser.add_argument(
+        "--no-open", action="store_true", help="Don't open browser automatically"
+    )
+    webapp_parser.add_argument(
+        "--build-only",
+        action="store_true",
+        help="Build the browser-hosted Desktop renderer but do not start the server",
+    )
+    webapp_parser.add_argument(
+        "--force-build",
+        action="store_true",
+        help="Rebuild the browser-hosted Desktop renderer even when its content stamp matches",
+    )
+    webapp_parser.set_defaults(
+        func=cmd_webapp,
+        headless_backend=False,
+        webapp_surface=True,
+    )

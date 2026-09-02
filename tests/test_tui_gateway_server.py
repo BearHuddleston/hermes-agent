@@ -20,6 +20,16 @@ from tui_gateway import server
 from tui_gateway.transport import bind_transport, reset_transport
 
 
+_TEST_PROFILE_INCARNATION = "f" * 32
+
+
+def _stamp_test_profile_home(profile_home: Path) -> None:
+    profile_home.joinpath(".profile-incarnation").write_text(
+        _TEST_PROFILE_INCARNATION + "\n",
+        encoding="utf-8",
+    )
+
+
 def _dispatch_sync(req: dict, transport=None) -> dict | None:
     """Run one RPC to completion synchronously, regardless of pool routing.
 
@@ -3937,7 +3947,10 @@ def test_session_resume_profile_uses_profile_db_cwd(monkeypatch, tmp_path):
 
     monkeypatch.setenv("TERMINAL_CWD", str(launch_cwd))
     monkeypatch.setattr(server, "_profile_home", lambda _profile: profile_home)
-    monkeypatch.setattr("hermes_state.get_shared_session_db", lambda db_path=None: profile_db)
+    monkeypatch.setattr(
+        "hermes_state.get_shared_session_db",
+        lambda db_path=None, **_kwargs: profile_db,
+    )
     monkeypatch.setattr(server, "_get_db", lambda: launch_db)
     monkeypatch.setattr(server, "_enable_gateway_prompts", lambda: None)
     monkeypatch.setattr(server, "_set_session_context", lambda target: [])
@@ -3982,6 +3995,7 @@ def test_session_cwd_set_profile_session_updates_profile_db(monkeypatch, tmp_pat
     target = "stored-profile-session"
     profile_home = tmp_path / "profiles" / "worker"
     profile_home.mkdir(parents=True)
+    _stamp_test_profile_home(profile_home)
     new_cwd = tmp_path / "new-workspace"
     new_cwd.mkdir()
     captured = {}
@@ -4001,12 +4015,19 @@ def test_session_cwd_set_profile_session_updates_profile_db(monkeypatch, tmp_pat
 
     import tools.terminal_tool as terminal_tool
 
-    monkeypatch.setattr("hermes_state.get_shared_session_db", lambda db_path=None: profile_db)
+    monkeypatch.setattr(
+        "hermes_state.get_shared_session_db",
+        lambda db_path=None, **_kwargs: profile_db,
+    )
     monkeypatch.setattr(server, "_get_db", lambda: LaunchDB())
     monkeypatch.setattr(terminal_tool, "cleanup_vm", lambda _key: None)
     monkeypatch.setattr(server, "_register_session_cwd", lambda _session: None)
 
-    session = {"session_key": target, "profile_home": str(profile_home)}
+    session = {
+        "session_key": target,
+        "profile_home": str(profile_home),
+        "profile_incarnation": _TEST_PROFILE_INCARNATION,
+    }
     assert server._set_session_cwd(session, str(new_cwd)) == str(new_cwd)
     assert session["cwd"] == str(new_cwd)
     assert session["explicit_cwd"] is True
@@ -7884,10 +7905,11 @@ def test_ensure_session_db_row_stamps_profile_name(monkeypatch, tmp_path):
     row happened to be read (the cross-profile session-jump bug)."""
     profile_home = tmp_path / "profiles" / "mlperf"
     profile_home.mkdir(parents=True)
+    _stamp_test_profile_home(profile_home)
     created = []
 
     class _ProfileDB:
-        def __init__(self, db_path=None):
+        def __init__(self, db_path=None, **_kwargs):
             created.append({"db_path": db_path})
 
         def create_session(self, key, **kwargs):
@@ -7900,7 +7922,11 @@ def test_ensure_session_db_row_stamps_profile_name(monkeypatch, tmp_path):
     monkeypatch.setattr(server, "_resolve_model", lambda: "test-model")
 
     server._ensure_session_db_row(
-        {"session_key": "k1", "profile_home": str(profile_home)}
+        {
+            "session_key": "k1",
+            "profile_home": str(profile_home),
+            "profile_incarnation": _TEST_PROFILE_INCARNATION,
+        }
     )
 
     assert created and created[0]["key"] == "k1"
@@ -14976,7 +15002,7 @@ def test_session_list_honors_params_profile_opens_profile_db(monkeypatch, tmp_pa
             return [{"id": "launch-1", "source": "tui", "title": "L"}]
 
     class ProfileDB:
-        def __init__(self, db_path=None):
+        def __init__(self, db_path=None, **_kwargs):
             seen["db_path"] = db_path
 
         def list_sessions_rich(self, **kwargs):
@@ -15024,7 +15050,7 @@ def test_session_most_recent_honors_params_profile(monkeypatch, tmp_path):
             return [{"id": "launch-tip", "source": "tui", "title": "L", "started_at": 9}]
 
     class ProfileDB2:
-        def __init__(self, db_path=None):
+        def __init__(self, db_path=None, **_kwargs):
             self.db_path = db_path
 
         def list_sessions_rich(self, **kwargs):
@@ -15152,7 +15178,7 @@ def test_session_delete_honors_params_profile_sessions_dir(monkeypatch, tmp_path
     captured: dict = {}
 
     class ProfileDB:
-        def __init__(self, db_path=None):
+        def __init__(self, db_path=None, **_kwargs):
             captured["db_path"] = db_path
 
         def delete_session(self, sid, sessions_dir=None):
@@ -15185,6 +15211,7 @@ def test_session_title_uses_session_profile_db_not_launch(monkeypatch, tmp_path)
     """session.title on a non-launch profile session must not touch launch DB."""
     profile_home = tmp_path / "profiles" / "mlperf"
     profile_home.mkdir(parents=True)
+    _stamp_test_profile_home(profile_home)
     seen: dict = {}
 
     class LaunchDB:
@@ -15200,7 +15227,7 @@ def test_session_title_uses_session_profile_db_not_launch(monkeypatch, tmp_path)
             return {"id": _key, "title": "from-launch"}
 
     class ProfileDB:
-        def __init__(self, db_path=None):
+        def __init__(self, db_path=None, **_kwargs):
             self.db_path = db_path
             seen["db_path"] = db_path
 
@@ -15227,6 +15254,7 @@ def test_session_title_uses_session_profile_db_not_launch(monkeypatch, tmp_path)
         "running": False,
         "pending_title": None,
         "profile_home": str(profile_home),
+        "profile_incarnation": _TEST_PROFILE_INCARNATION,
         "agent": None,
         "created_at": 1.0,
         "last_active": 1.0,
@@ -15260,6 +15288,7 @@ def test_session_history_uses_session_profile_db(monkeypatch, tmp_path):
     """session.history must read durable messages from the profile state.db."""
     profile_home = tmp_path / "profiles" / "mlperf"
     profile_home.mkdir(parents=True)
+    _stamp_test_profile_home(profile_home)
     seen: dict = {}
 
     class LaunchDB:
@@ -15268,7 +15297,7 @@ def test_session_history_uses_session_profile_db(monkeypatch, tmp_path):
             return [{"role": "user", "content": "launch"}]
 
     class ProfileDB:
-        def __init__(self, db_path=None):
+        def __init__(self, db_path=None, **_kwargs):
             seen["db_path"] = db_path
 
         def get_messages_as_conversation(self, _key, include_ancestors=True, **_kwargs):
@@ -15284,6 +15313,7 @@ def test_session_history_uses_session_profile_db(monkeypatch, tmp_path):
         "history_lock": __import__("threading").Lock(),
         "running": False,
         "profile_home": str(profile_home),
+        "profile_incarnation": _TEST_PROFILE_INCARNATION,
         "agent": None,
         "created_at": 1.0,
         "last_active": 1.0,
@@ -15347,6 +15377,7 @@ def test_session_status_uses_session_profile_db(monkeypatch, tmp_path):
     """session.status must load meta from the session profile state.db."""
     profile_home = tmp_path / "profiles" / "mlperf"
     profile_home.mkdir(parents=True)
+    _stamp_test_profile_home(profile_home)
     seen: dict = {}
 
     class LaunchDB:
@@ -15355,7 +15386,7 @@ def test_session_status_uses_session_profile_db(monkeypatch, tmp_path):
             return {"id": _key, "title": "launch-title", "started_at": 1}
 
     class ProfileDB:
-        def __init__(self, db_path=None):
+        def __init__(self, db_path=None, **_kwargs):
             seen["db_path"] = db_path
 
         def get_session(self, _key):
@@ -15371,6 +15402,7 @@ def test_session_status_uses_session_profile_db(monkeypatch, tmp_path):
         "history_lock": __import__("threading").Lock(),
         "running": False,
         "profile_home": str(profile_home),
+        "profile_incarnation": _TEST_PROFILE_INCARNATION,
         "agent": None,
         "created_at": 1.0,
         "last_active": 1.0,
@@ -15393,6 +15425,7 @@ def test_teardown_ends_session_in_profile_db(monkeypatch, tmp_path):
     """_teardown_session must end_session on the profile store, not launch."""
     profile_home = tmp_path / "profiles" / "mlperf"
     profile_home.mkdir(parents=True)
+    _stamp_test_profile_home(profile_home)
     seen: dict = {}
 
     class LaunchDB:
@@ -15404,7 +15437,7 @@ def test_teardown_ends_session_in_profile_db(monkeypatch, tmp_path):
             seen["launch_end"] = True
 
     class ProfileDB:
-        def __init__(self, db_path=None):
+        def __init__(self, db_path=None, **_kwargs):
             seen["db_path"] = db_path
 
         def get_session(self, _key):
@@ -15422,6 +15455,7 @@ def test_teardown_ends_session_in_profile_db(monkeypatch, tmp_path):
     session = {
         "session_key": "ml-sess",
         "profile_home": str(profile_home),
+        "profile_incarnation": _TEST_PROFILE_INCARNATION,
         "agent": None,
         "history": [],
         "source": "tui",
@@ -15437,6 +15471,8 @@ def test_session_branch_writes_to_parent_profile_db(monkeypatch, tmp_path):
     """session.branch must copy history into the parent's profile state.db."""
     profile_home = tmp_path / "profiles" / "mlperf"
     profile_home.mkdir(parents=True)
+    _stamp_test_profile_home(profile_home)
+    (profile_home / "profile.yaml").write_text("name: mlperf\n", encoding="utf-8")
     seen: dict = {"msgs": []}
 
     class LaunchDB:
@@ -15454,7 +15490,7 @@ def test_session_branch_writes_to_parent_profile_db(monkeypatch, tmp_path):
             return True
 
     class ProfileDB:
-        def __init__(self, db_path=None):
+        def __init__(self, db_path=None, **_kwargs):
             seen["db_path"] = db_path
             seen.setdefault("inits", 0)
             seen["inits"] += 1
@@ -15503,6 +15539,7 @@ def test_session_branch_writes_to_parent_profile_db(monkeypatch, tmp_path):
         "running": False,
         "cols": 80,
         "profile_home": str(profile_home),
+        "profile_incarnation": _TEST_PROFILE_INCARNATION,
         "source": "tui",
         "agent": FakeAgent(),
         "created_at": 1.0,
@@ -15875,13 +15912,15 @@ def test_session_branch_installs_parent_profile_secret_scope(monkeypatch, tmp_pa
 
     profile_home = tmp_path / "profiles" / "mlperf"
     profile_home.mkdir(parents=True)
+    _stamp_test_profile_home(profile_home)
+    (profile_home / "profile.yaml").write_text("name: mlperf\n", encoding="utf-8")
     (profile_home / ".env").write_text(
         "PROXMOX_TOKEN=mlperf-secret\n", encoding="utf-8"
     )
     seen: dict = {"msgs": []}
 
     class ProfileDB:
-        def __init__(self, db_path=None):
+        def __init__(self, db_path=None, **_kwargs):
             pass
 
         def get_session_title(self, _key):
@@ -15925,6 +15964,7 @@ def test_session_branch_installs_parent_profile_secret_scope(monkeypatch, tmp_pa
         "running": False,
         "cols": 80,
         "profile_home": str(profile_home),
+        "profile_incarnation": _TEST_PROFILE_INCARNATION,
         "source": "tui",
         "agent": FakeAgent(),
         "created_at": 1.0,
@@ -15967,6 +16007,8 @@ def test_session_branch_uses_persisted_display_history_after_compaction(monkeypa
     """A live branch must copy the complete visible transcript, not the compacted model tail."""
     profile_home = tmp_path / "profiles" / "mlperf"
     profile_home.mkdir(parents=True)
+    _stamp_test_profile_home(profile_home)
+    (profile_home / "profile.yaml").write_text("name: mlperf\n", encoding="utf-8")
     seen: dict = {"msgs": []}
 
     display_history = [
@@ -15983,7 +16025,7 @@ def test_session_branch_uses_persisted_display_history_after_compaction(monkeypa
             return "launch"
 
     class ProfileDB:
-        def __init__(self, db_path=None):
+        def __init__(self, db_path=None, **_kwargs):
             seen.setdefault("inits", 0)
             seen["inits"] += 1
 
@@ -16042,6 +16084,7 @@ def test_session_branch_uses_persisted_display_history_after_compaction(monkeypa
         "running": False,
         "cols": 80,
         "profile_home": str(profile_home),
+        "profile_incarnation": _TEST_PROFILE_INCARNATION,
         "source": "tui",
         "agent": FakeAgent(),
         "created_at": 1.0,
@@ -16091,6 +16134,7 @@ def test_pending_title_finalizer_uses_session_profile_db(monkeypatch, tmp_path):
     """Post-turn pending_title must land in the session profile store."""
     profile_home = tmp_path / "profiles" / "mlperf"
     profile_home.mkdir(parents=True)
+    _stamp_test_profile_home(profile_home)
     seen: dict = {}
 
     class LaunchDB:
@@ -16099,7 +16143,7 @@ def test_pending_title_finalizer_uses_session_profile_db(monkeypatch, tmp_path):
             return True
 
     class ProfileDB:
-        def __init__(self, db_path=None):
+        def __init__(self, db_path=None, **_kwargs):
             seen["db_path"] = db_path
 
         def set_session_title(self, key, title):
@@ -16115,6 +16159,7 @@ def test_pending_title_finalizer_uses_session_profile_db(monkeypatch, tmp_path):
         "session_key": "ml-sess",
         "pending_title": "deferred-title",
         "profile_home": str(profile_home),
+        "profile_incarnation": _TEST_PROFILE_INCARNATION,
         "history": [],
     }
     # Exercise the same close pattern as the post-turn finalizer.

@@ -98,11 +98,30 @@ _retired: Dict[int, _Generation] = {}  # id(db) → generation
 _opening: Dict[Path, threading.Event] = {}
 
 
-def _open_session_db(path: Path) -> "SessionDB":
+def _open_session_db(
+    path: Path,
+    expected_profile_incarnation: Optional[str] = None,
+) -> "SessionDB":
     """Construct the SessionDB for *path* (call-time import avoids cycles)."""
     from hermes_state import SessionDB
 
-    return SessionDB(db_path=path)
+    return SessionDB(
+        db_path=path,
+        expected_profile_incarnation=expected_profile_incarnation,
+    )
+
+
+def _assert_expected_profile_incarnation(
+    path: Path,
+    expected_profile_incarnation: Optional[str],
+) -> None:
+    """Reject a stale named-profile acquisition before lending a generation."""
+    if expected_profile_incarnation is None:
+        return
+    from hermes_cli.profile_incarnation import profile_incarnation_matches
+
+    if not profile_incarnation_matches(path.parent, expected_profile_incarnation):
+        raise FileNotFoundError(f"Named profile incarnation is stale: {path.parent}")
 
 
 def _teardown(db: "SessionDB") -> None:
@@ -117,7 +136,10 @@ def _teardown(db: "SessionDB") -> None:
         logger.debug("Error closing shared SessionDB", exc_info=True)
 
 
-def acquire(db_path: Optional[Path] = None) -> "SessionDB":
+def acquire(
+    db_path: Optional[Path] = None,
+    expected_profile_incarnation: Optional[str] = None,
+) -> "SessionDB":
     """Return the shared SessionDB for *db_path*, incrementing its refcount.
 
     The same resolved path always returns the same ``SessionDB`` instance
@@ -143,7 +165,14 @@ def acquire(db_path: Optional[Path] = None) -> "SessionDB":
     except OSError:
         path = raw_path
 
+    # A shared generation may predate this caller, so constructor-time checks
+    # alone are insufficient: validate every incarnation-scoped acquisition
+    # before an existing handle can be lent. If no generation exists (or it is
+    # retired below), SessionDB repeats the check under the profile lifecycle
+    # lease while opening the fresh connection, closing the validation/open
+    # race with profile delete/recreate.
     while True:
+        _assert_expected_profile_incarnation(path, expected_profile_incarnation)
         with _lock:
             generation = _generations.get(path)
             if generation is not None:
@@ -175,7 +204,12 @@ def acquire(db_path: Optional[Path] = None) -> "SessionDB":
     # Open a fresh generation OUTSIDE the lock.  The per-path opening marker
     # prevents redundant writer connections without serialising other files.
     try:
-        db = _open_session_db(path)
+        if expected_profile_incarnation is None:
+            # Keep the historical one-argument seam for tests and embedders that
+            # patch the opener; incarnation-scoped calls use the extended form.
+            db = _open_session_db(path)
+        else:
+            db = _open_session_db(path, expected_profile_incarnation)
         db._shared_registry_owned = True
         identity = _stat_db_file_identity(path)
     except BaseException:
@@ -318,8 +352,11 @@ def stats() -> Dict[str, int]:
 # Kept so call sites and tests can import either from hermes_state
 # (the historical path) or from this module directly.
 
-def get_shared_session_db(db_path: Optional[Path] = None) -> "SessionDB":
-    return acquire(db_path)
+def get_shared_session_db(
+    db_path: Optional[Path] = None,
+    expected_profile_incarnation: Optional[str] = None,
+) -> "SessionDB":
+    return acquire(db_path, expected_profile_incarnation)
 
 
 def release_shared_session_db(db: "SessionDB") -> bool:

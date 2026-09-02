@@ -13,6 +13,8 @@ patches on ``hermes_cli.main`` resolve unchanged.
 """
 
 import os
+import re
+import shlex
 import subprocess
 import sys
 from pathlib import Path
@@ -25,11 +27,65 @@ def _m():
     return main
 
 
+def _is_dashboard_lifecycle_probe(command: str) -> bool:
+    """True for short-lived ``--stop`` / ``--status`` web-server commands."""
+    # Shell/process wrappers can carry the complete Hermes command as one
+    # quoted argv token. The exact flag boundary handles that shape before the
+    # structured parser below handles ordinary console-script argv.
+    if re.search(r"(?<!\S)--(?:status|stop)(?=\s|$|['\";])", command):
+        return True
+    try:
+        argv = shlex.split(command, posix=sys.platform != "win32")
+    except ValueError:
+        return False
+    index = _dashboard_subcommand_index(argv)
+    if index is None:
+        return False
+    return any(token in {"--status", "--stop"} for token in argv[index + 1 :])
+
+
+def _is_hermes_web_server_command(command: str) -> bool:
+    """True only when argv structurally invokes a Hermes web-server command."""
+    try:
+        from hermes_cli.update_cmd import _hermes_holder_subcommand
+
+        return _hermes_holder_subcommand(command) in {"dashboard", "serve", "webapp"}
+    except Exception:
+        return False
+
+
+def _ledger_web_server_processes() -> dict[int, str]:
+    """Positively identified live web servers for this Hermes install."""
+    try:
+        from hermes_cli.process_identity import ledger_entries
+
+        entries = ledger_entries()
+    except Exception:
+        return {}
+
+    processes: dict[int, str] = {}
+    for entry in entries:
+        if entry.get("purpose") not in {"dashboard", "serve", "webapp"}:
+            continue
+        pid = entry.get("pid")
+        if not isinstance(pid, int) or pid <= 0:
+            continue
+        command = str(entry.get("argv") or "")
+        # register_self intentionally records only a bounded argv prefix. When
+        # the process table is unreadable, treat the positive identity as an
+        # ephemeral port so status reports the live process without guessing a
+        # fixed listener address.
+        if "--port" not in command.split():
+            command = f"{command} --port 0".strip()
+        processes[pid] = command
+    return processes
+
+
 def _scan_dashboard_processes(
     *,
     exclude_pids: set[int] | None = None,
 ) -> list[tuple[int, str]]:
-    """Return matching ``dashboard``/``serve`` processes with their cmdlines.
+    """Return matching ``dashboard``/``webapp``/``serve`` processes.
 
     ``hermes dashboard`` is a long-lived server process commonly started and
     forgotten.  When ``hermes update`` replaces files on disk, the running
@@ -51,19 +107,13 @@ def _scan_dashboard_processes(
     backend process; ``_kill_stale_dashboard_processes`` reads it and
     passes it here.  (#37532)
 
-    Returns an empty list on any scan error (missing ps/wmic, timeout, etc.).
+    Positively registered processes survive a process-table scan failure. The
+    legacy argv matcher remains only for older Hermes versions that predate the
+    spawn ledger.
     """
-    patterns = [
-        "hermes dashboard",
-        "hermes_cli.main dashboard",
-        "hermes_cli/main.py dashboard",
-        # The headless backend (`hermes serve`) is the same long-lived server
-        # under a different command name — the desktop app spawns it. Reap it
-        # on update for the same frontend/backend-mismatch reason.
-        "hermes serve",
-        "hermes_cli.main serve",
-        "hermes_cli/main.py serve",
-    ]
+    positive = _ledger_web_server_processes()
+    positive_pids = set(positive)
+
     self_pid = os.getpid()
     dashboard_processes: list[tuple[int, str]] = []
 
@@ -92,22 +142,24 @@ def _scan_dashboard_processes(
                 errors="ignore",
             )
             if result is None or result.returncode != 0 or result.stdout is None:
-                return []
+                result = None
             current_cmd = ""
-            for line in result.stdout.split("\n"):
+            for line in (result.stdout if result is not None else "").split("\n"):
                 line = line.strip()
                 if line.startswith("CommandLine="):
                     current_cmd = line[len("CommandLine=") :]
                 elif line.startswith("ProcessId="):
                     pid_str = line[len("ProcessId=") :]
+                    try:
+                        pid = int(pid_str)
+                    except ValueError:
+                        continue
                     if (
-                        any(p in current_cmd for p in patterns)
-                        and int(pid_str) != self_pid
+                        (pid in positive_pids or _is_hermes_web_server_command(current_cmd))
+                        and not _is_dashboard_lifecycle_probe(current_cmd)
+                        and pid != self_pid
                     ):
-                        try:
-                            dashboard_processes.append((int(pid_str), current_cmd))
-                        except ValueError:
-                            pass
+                        dashboard_processes.append((pid, current_cmd))
         else:
             # Linux / macOS: scan the process table via ps and match against
             # the same explicit patterns list used on Windows.  Using ps
@@ -134,10 +186,21 @@ def _scan_dashboard_processes(
                     except ValueError:
                         continue
                     command = parts[1]
-                    if any(p in command for p in patterns) and pid != self_pid:
+                    if (
+                        (pid in positive_pids or _is_hermes_web_server_command(command))
+                        and not _is_dashboard_lifecycle_probe(command)
+                        and pid != self_pid
+                    ):
                         dashboard_processes.append((pid, command))
     except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
-        return []
+        pass
+
+    seen = {pid for pid, _command in dashboard_processes}
+    dashboard_processes.extend(
+        (pid, command)
+        for pid, command in positive.items()
+        if pid != self_pid and pid not in seen
+    )
 
     if exclude_pids:
         dashboard_processes = [
@@ -192,7 +255,7 @@ def _hermes_home_for_pid(pid: int) -> str | None:
 
 
 def _is_ephemeral_port_zero_backend(argv: list[str]) -> bool:
-    """True for Desktop-style ``serve|dashboard --port 0`` backends (#78821).
+    """True for Desktop-style ``serve|dashboard|webapp --port 0`` backends (#78821).
 
     Ephemeral-port backends are owned by Hermes Desktop (or become PPID-1
     orphans after a prior update respawn).  Replaying them after
@@ -212,13 +275,13 @@ def _is_ephemeral_port_zero_backend(argv: list[str]) -> bool:
 
 def _dashboard_subcommand_index(argv: list[str]) -> int | None:
     for i, tok in enumerate(argv):
-        if tok in ("serve", "dashboard"):
+        if tok in ("serve", "dashboard", "webapp"):
             return i
     return None
 
 
 def _normalize_dashboard_cmdline(argv: list[str]) -> tuple[str, ...]:
-    """Collapse argv to profile flags + serve/dashboard tail for dedupe."""
+    """Collapse argv to profile flags + web-server subcommand tail for dedupe."""
     idx = _dashboard_subcommand_index(argv)
     if idx is None:
         return tuple(argv)
@@ -357,8 +420,9 @@ def _kill_stale_dashboard_processes(
     *,
     restart_managed: bool = False,
     already_restarted_units: "set[str] | None" = None,
+    include_pids: set[int] | None = None,
 ) -> dict[str, list]:
-    """Kill running ``hermes dashboard`` / ``hermes serve`` processes.
+    """Kill selected ``dashboard`` / ``webapp`` / ``serve`` processes.
 
     Called at the end of ``hermes update`` (default ``reason``) and also
     from ``hermes dashboard --stop`` (which overrides ``reason``).  The
@@ -388,6 +452,10 @@ def _kill_stale_dashboard_processes(
     restarted process is found again here and restarted a second time for
     no benefit (review on #83595). PIDs owned by one of these units are
     left untouched.
+
+    *include_pids* narrows an explicit lifecycle request to positively
+    identified owners (used by ``hermes webapp --stop`` so it cannot touch a
+    native Desktop ``serve`` backend).
     """
     if restart_managed and _m()._restart_managed_dashboard_service(reason):
         # The dashboard unit is handled; every OTHER backend is not (#92145).
@@ -431,6 +499,8 @@ def _kill_stale_dashboard_processes(
         exclude |= _lock_owned_serve_pids()
 
     pids = _m()._find_stale_dashboard_pids(exclude_pids=exclude or None)
+    if include_pids is not None:
+        pids = [pid for pid in pids if pid in include_pids]
     if not pids:
         return {"matched": [], "killed": [], "failed": []}
 
@@ -472,7 +542,7 @@ def _kill_stale_dashboard_processes(
                 return {"matched": [], "killed": [], "failed": []}
 
     print()
-    print(f"⟲ Stopping {len(pids)} dashboard process(es) ({reason})")
+    print(f"⟲ Stopping {len(pids)} Hermes web server process(es) ({reason})")
 
     killed: list[int] = []
     failed: list[tuple[int, str]] = []
@@ -612,8 +682,8 @@ def _kill_stale_dashboard_processes(
             print("    hermes dashboard --port <port>")
     elif killed:
         unrecovered = list(killed)
-        print("  Restart the dashboard when you're ready:")
-        print("    hermes dashboard --port <port>")
+        print("  Restart the browser surface or backend when you're ready:")
+        print("    hermes dashboard|webapp|serve --port <port>")
 
     return {
         "matched": list(pids),

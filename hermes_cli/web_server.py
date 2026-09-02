@@ -60,6 +60,8 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from hermes_cli import __version__, __release_date__
+import hermes_cli.web_host_terminal as _web_host_terminal
+from hermes_constants import WEBAPP_ATTACHMENT_MAX_BYTES
 from hermes_cli.config import (
     build_cron_model_impact,
     cfg_get,
@@ -88,6 +90,10 @@ from hermes_cli.config import (
     redact_key,
     write_platform_config_field,
     _deep_merge,
+)
+from hermes_cli.profile_incarnation import (
+    ensure_profile_incarnation,
+    profile_incarnation_lease,
 )
 from plugins.memory.config_schema import (
     ProviderConfigSchema,
@@ -2365,7 +2371,7 @@ def _is_sensitive_path(path: Path) -> bool:
     return any(part.lower() in _SENSITIVE_MANAGED_DIR_NAMES for part in path.parts)
 
 
-_FS_DATA_URL_MAX_BYTES = 16 * 1024 * 1024
+_FS_DATA_URL_MAX_BYTES = WEBAPP_ATTACHMENT_MAX_BYTES
 _FS_TEXT_SOURCE_MAX_BYTES = 64 * 1024 * 1024
 _FS_TEXT_PREVIEW_MAX_BYTES = 512 * 1024
 # Upper bound for the in-app spot editor's save. The editor only opens
@@ -2842,26 +2848,79 @@ async def upload_chat_image(payload: ChatImageUpload, profile: Optional[str] = N
     def _run():
         data, mime_type, ext = _decode_chat_image_upload(payload)
         with _profile_scope(profile) as scoped_home:
-            home = scoped_home or get_hermes_home()
-            img_dir = Path(home) / "images"
-            try:
-                img_dir.mkdir(parents=True, exist_ok=True)
-            except PermissionError:
-                raise HTTPException(status_code=403, detail="Image directory is not writable")
-            except OSError as exc:
-                raise HTTPException(status_code=500, detail=f"Could not create image directory: {exc}")
+            from hermes_constants import named_profile_home_is_unavailable
 
-            stem = Path(_sanitize_chat_image_filename(payload.filename)).stem or "pasted-image"
-            stem = re.sub(r"[^A-Za-z0-9_.-]+", "_", stem).strip("._-") or "pasted-image"
-            ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-            target = img_dir / f"dashboard_{ts}_{secrets.token_hex(4)}_{stem}{ext}"
-
+            home = Path(scoped_home or get_hermes_home())
+            if named_profile_home_is_unavailable(home):
+                raise HTTPException(status_code=404, detail="Profile home is unavailable")
             try:
-                target.write_bytes(data)
-            except PermissionError:
-                raise HTTPException(status_code=403, detail="Image directory is not writable")
-            except OSError as exc:
-                raise HTTPException(status_code=500, detail=f"Could not write image: {exc}")
+                expected_incarnation = ensure_profile_incarnation(home)
+            except FileNotFoundError as exc:
+                raise HTTPException(
+                    status_code=404,
+                    detail="Profile home is unavailable",
+                ) from exc
+
+        try:
+            incarnation_lease = profile_incarnation_lease(
+                home,
+                expected_incarnation,
+                require_incarnation=expected_incarnation is not None,
+            )
+            with incarnation_lease:
+                img_dir = home / "images"
+                try:
+                    # Never recreate a named profile parent if DELETE wins after
+                    # resolution; the lifecycle owner publishes the parent.
+                    img_dir.mkdir(parents=False, exist_ok=True)
+                except FileNotFoundError:
+                    raise HTTPException(status_code=404, detail="Profile home is unavailable")
+                except PermissionError:
+                    raise HTTPException(status_code=403, detail="Image directory is not writable")
+                except OSError as exc:
+                    raise HTTPException(
+                        status_code=500,
+                        detail=f"Could not create image directory: {exc}",
+                    ) from exc
+                if named_profile_home_is_unavailable(home):
+                    raise HTTPException(status_code=404, detail="Profile home is unavailable")
+
+                stem = Path(_sanitize_chat_image_filename(payload.filename)).stem or "pasted-image"
+                stem = re.sub(r"[^A-Za-z0-9_.-]+", "_", stem).strip("._-") or "pasted-image"
+                ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+                target = img_dir / f"dashboard_{ts}_{secrets.token_hex(4)}_{stem}{ext}"
+
+                completed = False
+                try:
+                    try:
+                        target.write_bytes(data)
+                    except PermissionError:
+                        raise HTTPException(
+                            status_code=403,
+                            detail="Image directory is not writable",
+                        )
+                    except OSError as exc:
+                        raise HTTPException(
+                            status_code=500,
+                            detail=f"Could not write image: {exc}",
+                        ) from exc
+                    if named_profile_home_is_unavailable(home) or not target.is_file():
+                        raise HTTPException(
+                            status_code=404,
+                            detail="Profile was deleted during upload",
+                        )
+                    completed = True
+                finally:
+                    if not completed:
+                        try:
+                            target.unlink(missing_ok=True)
+                        except OSError:
+                            pass
+        except FileNotFoundError as exc:
+            raise HTTPException(
+                status_code=404,
+                detail="Profile was deleted or replaced during upload",
+            ) from exc
 
         return {
             "ok": True,
@@ -2875,6 +2934,11 @@ async def upload_chat_image(payload: ChatImageUpload, profile: Optional[str] = N
     # keep both off the event loop (asyncio.to_thread copies the contextvar
     # context, so the profile override stays scoped to the worker thread).
     return await asyncio.to_thread(_run)
+
+
+import hermes_cli.web_routers.uploads as _upload_routes  # noqa: E402
+
+app.include_router(_upload_routes.router)
 
 
 @app.get("/api/files")
@@ -4065,6 +4129,7 @@ async def get_status(profile: Optional[str] = None):
         # ``PUBLIC_API_PATHS`` documents this endpoint as serving.
         status = {
             "version": __version__,
+            "ui_surface": getattr(app.state, "ui_surface", "dashboard"),
             "release_date": __release_date__,
             "config_version": current_ver,
             "latest_config_version": latest_ver,
@@ -15191,6 +15256,8 @@ def _fallback_profile_dicts(profiles_mod) -> List[Dict[str, Any]]:
             entry_path = Path(entry.path)
             if not entry.is_dir() or not profiles_mod._PROFILE_ID_RE.match(entry.name):
                 continue
+            if profiles_mod.profile_home_is_tombstoned(entry_path):
+                continue
             model, provider = _safe(lambda entry=entry_path: profiles_mod._read_config_model(entry), (None, None))
             profiles.append({
                 "name": entry.name,
@@ -16282,12 +16349,13 @@ async def get_models_analytics(
 
 
 # ---------------------------------------------------------------------------
-# /api/pty — PTY-over-WebSocket bridge for the dashboard "Chat" tab.
+# /api/pty — authenticated PTY-over-WebSocket bridge.
 #
-# The endpoint spawns the same ``hermes --tui`` binary the CLI uses, behind
-# a POSIX pseudo-terminal, and forwards bytes + resize escapes across a
-# WebSocket.  The browser renders the ANSI through xterm.js (see
-# web/src/pages/ChatPage.tsx).
+# Dashboard Chat spawns the same ``hermes --tui`` binary the CLI uses. Webapp's
+# Desktop terminal requests ``?mode=shell`` and spawns the host's interactive
+# shell through the SAME transport and auth/origin gates. Shell mode is allowed
+# only on loopback or an authenticated Webapp bind; unauthenticated public binds
+# fail closed. The browser renders either process through xterm.js.
 #
 # Auth: ``?token=<session_token>`` query param (browsers can't set
 # Authorization on the WS upgrade).  Same ephemeral ``_SESSION_TOKEN`` as
@@ -16431,6 +16499,46 @@ _VALID_CHANNEL_RE = re.compile(r"^[A-Za-z0-9._-]{1,128}$")
 # Starlette's TestClient reports the peer as "testclient"; treat it as
 # loopback so tests don't need to rewrite request scope.
 _LOOPBACK_HOSTS = frozenset({"127.0.0.1", "::1", "localhost", "testclient"})
+_HOST_TERMINAL_META_PREFIX = "\0HERMES_TERMINAL_META:"
+
+
+def _host_terminal_request_allowed() -> bool:
+    return _web_host_terminal.request_allowed(
+        ui_surface=getattr(app.state, "ui_surface", "dashboard"),
+        auth_required=bool(getattr(app.state, "auth_required", False)),
+        bound_host=getattr(app.state, "bound_host", "") or "",
+        loopback_hosts=_LOOPBACK_HOSTS,
+    )
+
+
+def _host_shell_command(candidate: str) -> Optional[str]:
+    return _web_host_terminal.shell_command(candidate)
+
+
+def _host_shell_spec() -> tuple[list[str], str]:
+    return _web_host_terminal.shell_spec(_host_shell_command)
+
+
+def _safe_host_terminal_cwd(requested: Optional[str]) -> str:
+    return _web_host_terminal.safe_cwd(requested)
+
+
+def _resolve_host_terminal_argv(
+    profile: Optional[str] = None,
+    requested_cwd: Optional[str] = None,
+) -> tuple[list[str], str, dict, str]:
+    return _web_host_terminal.resolve_argv(
+        profile=profile,
+        requested_cwd=requested_cwd,
+        resolve_profile_dir=_resolve_profile_dir,
+        resolve_shell_spec=_host_shell_spec,
+        resolve_cwd=_safe_host_terminal_cwd,
+        version=__version__,
+    )
+
+
+def _pty_query_dimension(raw: Optional[str], default: int, maximum: int) -> int:
+    return _web_host_terminal.query_dimension(raw, default, maximum)
 
 
 def _ws_client_reason(ws: "WebSocket") -> Optional[str]:
@@ -16597,7 +16705,11 @@ def _gateway_ws_ticket_from_subprotocol(ws: "WebSocket") -> tuple[str, str]:
     return (ticket, "ok") if ticket else ("", "invalid")
 
 
-def _ws_auth_reason(ws: "WebSocket") -> tuple[Optional[str], str]:
+def _ws_auth_reason(
+    ws: "WebSocket",
+    *,
+    allow_internal: bool = False,
+) -> tuple[Optional[str], str]:
     """Validate WS-upgrade auth; return ``(reason, credential)``.
 
     ``reason`` is None when the credential is accepted, else a short
@@ -16627,7 +16739,9 @@ def _ws_auth_reason(ws: "WebSocket") -> tuple[Optional[str], str]:
     ``_SESSION_TOKEN`` must not grant WS access once the gate is engaged).
 
     Audit-logs the rejection so operators can debug "WS keeps closing"
-    issues from the log.
+    issues from the log. ``allow_internal`` is enabled only by the two
+    server-child endpoints (``/api/ws`` and ``/api/pub``); browser-facing
+    WebSockets must use a single-use ticket when the auth gate is active.
     """
     auth_required = bool(getattr(app.state, "auth_required", False))
     if auth_required:
@@ -16645,6 +16759,14 @@ def _ws_auth_reason(ws: "WebSocket") -> tuple[Optional[str], str]:
         # they survive reconnects and slow cold boots.
         internal = ws.query_params.get("internal", "")
         if internal:
+            if not allow_internal:
+                audit_log(
+                    AuditEvent.WS_TICKET_REJECTED,
+                    reason="internal: endpoint not allowed",
+                    ip=(ws.client.host if ws.client else ""),
+                    path=ws.url.path,
+                )
+                return "internal_not_allowed", "internal"
             try:
                 info = consume_internal_credential(internal)
                 # Stamp the server-minted identity onto the WS object so the
@@ -16710,9 +16832,9 @@ def _ws_auth_reason(ws: "WebSocket") -> tuple[Optional[str], str]:
     return "token_mismatch", "token"
 
 
-def _ws_auth_ok(ws: "WebSocket") -> bool:
+def _ws_auth_ok(ws: "WebSocket", *, allow_internal: bool = False) -> bool:
     """True when the WS-upgrade credential is accepted. See _ws_auth_reason."""
-    return _ws_auth_reason(ws)[0] is None
+    return _ws_auth_reason(ws, allow_internal=allow_internal)[0] is None
 
 # Per-channel subscriber registry used by /api/pub (PTY-side gateway → dashboard)
 # and /api/events (dashboard → browser sidebar).  Keyed by an opaque channel id
@@ -17626,6 +17748,7 @@ async def console_ws(ws: WebSocket) -> None:
 @app.websocket("/api/pty")
 async def pty_ws(ws: WebSocket) -> None:
     peer = ws.client.host if ws.client else "?"
+    host_terminal = (ws.query_params.get("mode") or "").strip().lower() == "shell"
 
     if not _DASHBOARD_EMBEDDED_CHAT_ENABLED:
         _log.info("pty refused: embedded chat disabled peer=%s", peer)
@@ -17660,72 +17783,112 @@ async def pty_ws(ws: WebSocket) -> None:
         await ws.close(code=4408, reason=_ws_close_reason(client_reason))
         return
 
+    if host_terminal and not _host_terminal_request_allowed():
+        _log.warning(
+            "host terminal refused surface=%s mode=%s peer=%s",
+            getattr(app.state, "ui_surface", "dashboard"),
+            mode,
+            peer,
+        )
+        await ws.close(code=4403, reason="host terminal requires authenticated Webapp")
+        return
+
+    if host_terminal and ws.query_params.get("attach") is not None:
+        _log.warning("host terminal refused attach token peer=%s", peer)
+        await ws.close(code=4403, reason="host terminal does not support reattach")
+        return
+
     await ws.accept()
     _log.info("pty accepted peer=%s mode=%s cred=%s", peer, mode, cred)
 
     # On native Windows, the POSIX PTY bridge can't be imported.  Tell the
     # client and close cleanly rather than pretending the feature works.
     if not _PTY_BRIDGE_AVAILABLE:
-        await ws.send_text(
-            "\r\n\x1b[31mChat unavailable: the embedded terminal requires a "
-            "POSIX PTY, which native Windows Python doesn't provide.\x1b[0m\r\n"
-            "\x1b[33mInstall Hermes inside WSL2 to use the dashboard's /chat "
-            "tab — the rest of the dashboard works here.\x1b[0m\r\n"
-        )
+        if host_terminal:
+            await ws.send_text(
+                "\r\n\x1b[31mTerminal unavailable: pseudo-terminal support "
+                "is not installed on this host.\x1b[0m\r\n"
+            )
+        else:
+            await ws.send_text(
+                "\r\n\x1b[31mChat unavailable: the embedded terminal requires a "
+                "POSIX PTY, which native Windows Python doesn't provide.\x1b[0m\r\n"
+                "\x1b[33mInstall Hermes inside WSL2 to use the dashboard's /chat "
+                "tab — the rest of the dashboard works here.\x1b[0m\r\n"
+            )
         await ws.close(code=1011)
         return
+
+    pty_bridge_class = PtyBridge
+    assert pty_bridge_class is not None
 
     # --- spawn PTY ------------------------------------------------------
-    raw_resume = ws.query_params.get("resume") or None
-    resume = raw_resume
     profile = ws.query_params.get("profile") or None
-    channel = _channel_or_close_code(ws)
-    sidecar_url = _build_sidecar_url(channel) if channel else None
-    force_fresh = (ws.query_params.get("fresh") or "").strip().lower() in {
-        "1",
-        "true",
-        "yes",
-        "on",
-    }
+    raw_resume: Optional[str] = None
+    resume: Optional[str] = None
     active_session_file: Optional[Path] = None
+    shell_name = ""
 
-    if channel:
-        active_session_file = _active_session_file_for_channel(ws.app, channel)
-        if force_fresh:
-            resume = None
-            _forget_active_session_file(active_session_file)
-        elif not resume:
-            resume = _read_active_session_file(active_session_file)
-            if resume:
-                # The client only knows to pin the viewport to the bottom
-                # when it requested `?resume=`. Tell it a replay is coming
-                # anyway so the implicit active-session fallback gets the
-                # same follow-scroll treatment as an explicit resume (#93518).
-                await ws.send_json({"type": "resume", "id": resume})
+    if host_terminal:
+        try:
+            argv, cwd, env, shell_name = await asyncio.to_thread(
+                _resolve_host_terminal_argv,
+                profile=profile,
+                requested_cwd=ws.query_params.get("cwd") or None,
+            )
+        except HTTPException as exc:
+            await ws.send_text(f"\r\n\x1b[31mTerminal unavailable: {exc.detail}\x1b[0m\r\n")
+            await ws.close(code=1011)
+            return
+    else:
+        raw_resume = ws.query_params.get("resume") or None
+        resume = raw_resume
+        channel = _channel_or_close_code(ws)
+        sidecar_url = _build_sidecar_url(channel) if channel else None
+        force_fresh = (ws.query_params.get("fresh") or "").strip().lower() in {
+            "1",
+            "true",
+            "yes",
+            "on",
+        }
 
-    resolve_kwargs = {
-        "resume": resume,
-        "sidecar_url": sidecar_url,
-        "profile": profile,
-    }
-    if active_session_file is not None:
-        resolve_kwargs["active_session_file"] = str(active_session_file)
+        if channel:
+            active_session_file = _active_session_file_for_channel(ws.app, channel)
+            if force_fresh:
+                resume = None
+                _forget_active_session_file(active_session_file)
+            elif not resume:
+                resume = _read_active_session_file(active_session_file)
+                if resume:
+                    # The client only knows to pin the viewport to the bottom
+                    # when it requested `?resume=`. Tell it a replay is coming
+                    # anyway so the implicit active-session fallback gets the
+                    # same follow-scroll treatment as an explicit resume (#93518).
+                    await ws.send_json({"type": "resume", "id": resume})
 
-    try:
-        argv, cwd, env = await _resolve_chat_argv_async(**resolve_kwargs)
-    except HTTPException as exc:
-        # Unknown/invalid profile from _resolve_profile_dir.
-        await ws.send_text(f"\r\n\x1b[31mChat unavailable: {exc.detail}\x1b[0m\r\n")
-        await ws.close(code=1011)
-        return
-    except SystemExit as exc:
-        # _make_tui_argv calls sys.exit(1) when node/npm is missing.
-        await ws.send_text(f"\r\n\x1b[31mChat unavailable: {exc}\x1b[0m\r\n")
-        await ws.close(code=1011)
-        return
+        resolve_kwargs = {
+            "resume": resume,
+            "sidecar_url": sidecar_url,
+            "profile": profile,
+        }
+        if active_session_file is not None:
+            resolve_kwargs["active_session_file"] = str(active_session_file)
+
+        try:
+            argv, cwd, env = await _resolve_chat_argv_async(**resolve_kwargs)
+        except HTTPException as exc:
+            # Unknown/invalid profile from _resolve_profile_dir.
+            await ws.send_text(f"\r\n\x1b[31mChat unavailable: {exc.detail}\x1b[0m\r\n")
+            await ws.close(code=1011)
+            return
+        except SystemExit as exc:
+            # _make_tui_argv calls sys.exit(1) when node/npm is missing.
+            await ws.send_text(f"\r\n\x1b[31mChat unavailable: {exc}\x1b[0m\r\n")
+            await ws.close(code=1011)
+            return
 
 
-    attach_token = ws.query_params.get("attach") or None
+    attach_token = None if host_terminal else (ws.query_params.get("attach") or None)
     registry_resume = raw_resume
     if raw_resume and env:
         registry_resume = env.get("HERMES_TUI_RESUME") or raw_resume
@@ -17734,20 +17897,39 @@ async def pty_ws(ws: WebSocket) -> None:
         attach_token = f"{attach_token}\0{profile or ''}\0{registry_resume or ''}"
 
     def _spawn():
-        return PtyBridge.spawn(argv, cwd=cwd, env=env)
+        if host_terminal:
+            return pty_bridge_class.spawn(
+                argv,
+                cwd=cwd,
+                env=env,
+                cols=_pty_query_dimension(ws.query_params.get("cols"), 80, 2000),
+                rows=_pty_query_dimension(ws.query_params.get("rows"), 24, 1000),
+            )
+        return pty_bridge_class.spawn(argv, cwd=cwd, env=env)
 
     if attach_token is None:
         # Legacy path: 1:1 socket<->PTY, killed on disconnect (unchanged).
         try:
             bridge = _spawn()
         except PtyUnavailableError as exc:
-            await ws.send_text(f"\r\n\x1b[31mChat unavailable: {exc}\x1b[0m\r\n")
+            label = "Terminal" if host_terminal else "Chat"
+            await ws.send_text(f"\r\n\x1b[31m{label} unavailable: {exc}\x1b[0m\r\n")
             await ws.close(code=1011)
             return
         except (FileNotFoundError, OSError) as exc:
-            await ws.send_text(f"\r\n\x1b[31mChat failed to start: {exc}\x1b[0m\r\n")
+            label = "Terminal" if host_terminal else "Chat"
+            await ws.send_text(f"\r\n\x1b[31m{label} failed to start: {exc}\x1b[0m\r\n")
             await ws.close(code=1011)
             return
+        if host_terminal:
+            try:
+                await ws.send_text(
+                    _HOST_TERMINAL_META_PREFIX
+                    + json.dumps({"shell": shell_name}, separators=(",", ":"))
+                )
+            except Exception:
+                await asyncio.to_thread(bridge.close)
+                return
         await _legacy_pump(ws, bridge)
         return
 
@@ -17825,7 +18007,7 @@ async def gateway_ws(ws: WebSocket) -> None:
         await ws.close(code=4403)
         return
 
-    if not _ws_auth_ok(ws):
+    if not _ws_auth_ok(ws, allow_internal=True):
         await ws.close(code=4401)
         return
 
@@ -17864,7 +18046,7 @@ async def pub_ws(ws: WebSocket) -> None:
         await ws.close(code=4403)
         return
 
-    if not _ws_auth_ok(ws):
+    if not _ws_auth_ok(ws, allow_internal=True):
         await ws.close(code=4401)
         return
 
@@ -19764,6 +19946,7 @@ def start_server(
     ssh_session_token: Optional[str] = None,
     ssh_owner_nonce: Optional[str] = None,
     start_mcp_discovery_after_bind: bool = False,
+    ui_surface: str = "dashboard",
 ):
     """Start the web UI server.
 
@@ -19785,6 +19968,9 @@ def start_server(
     """
     _apply_ssh_session_token(ssh_session_token or "")
     _apply_ssh_owner_nonce(ssh_owner_nonce)
+    if ui_surface not in {"dashboard", "webapp", "serve"}:
+        raise ValueError(f"unsupported web UI surface: {ui_surface}")
+    app.state.ui_surface = "serve" if headless else ui_surface
 
     # Raise RLIMIT_NOFILE for dashboard-mode starts that don't route through
     # the `serve` path in main.py (which applies the same floor). Canonical
@@ -20122,8 +20308,10 @@ def start_server(
                     register_self,
                 )
 
+                surface = getattr(app.state, "ui_surface", "dashboard")
+                purpose = "serve" if headless else "webapp" if surface == "webapp" else "dashboard"
                 register_self(
-                    "serve" if headless else "dashboard",
+                    purpose,
                     detail={
                         "host": host,
                         "port": actual_port,

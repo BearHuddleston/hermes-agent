@@ -61,7 +61,7 @@ def _(rid, params: dict) -> dict:
         return text
 
     def _open_profile_session_db(profile_path):
-        """Read-only attach for roster previews, or None.
+        """Lifecycle-checked, read-only attach for roster previews, or None.
 
         A writable ``SessionDB()`` waits up to 20s of write-lock patience and
         runs schema init. The Bots roster polls ``profiles.list`` every 5s
@@ -69,11 +69,20 @@ def _(rid, params: dict) -> dict:
         the RPC past the desktop timeout and leave the sidebar on an
         infinite spinner. ``read_only=True`` is the cross-profile inspect
         path (no write lock, no DDL) SessionDB already documents for this.
+
+        A stale ``ProfileInfo`` may outlive DELETE. Check the durable named-
+        profile tombstone first; if deletion wins after this check, SQLite's
+        ``mode=ro`` open fails instead of recreating the removed directory.
         """
         try:
             from pathlib import Path
 
-            db_path = Path(profile_path) / "state.db"
+            from hermes_constants import named_profile_home_is_unavailable
+
+            profile_dir = Path(profile_path)
+            db_path = profile_dir / "state.db"
+            if named_profile_home_is_unavailable(profile_dir):
+                return None
             if not db_path.exists():
                 return None
             from hermes_state import SessionDB
@@ -872,7 +881,12 @@ def _(rid, params: dict) -> dict:
                             existing["_ui_meta_revisions"] = revisions
                             from utils import atomic_yaml_write
 
-                            atomic_yaml_write(meta_path, existing, sort_keys=False)
+                            atomic_yaml_write(
+                                meta_path,
+                                existing,
+                                sort_keys=False,
+                                create_parent=False,
+                            )
                             applied["ui_meta"] = True
                             applied["ui_meta_revisions"] = {
                                 key: revisions[key] for key in incoming
@@ -1059,10 +1073,10 @@ def _(rid, params: dict) -> dict:
         import re as _re
         from pathlib import Path as _Path
 
-        from hermes_cli.profiles import get_profile_dir
+        from hermes_cli.profiles import get_profile_dir, profile_home_is_tombstoned
 
         profile_dir = _Path(get_profile_dir(name))
-        if not profile_dir.is_dir():
+        if not profile_dir.is_dir() or profile_home_is_tombstoned(profile_dir):
             return _err(rid, 4064, f"profile '{name}' not found")
 
         assets_dir = profile_dir / "assets"
@@ -1106,7 +1120,9 @@ def _(rid, params: dict) -> dict:
         else:
             return _err(rid, 4070, "unsupported image format (PNG/JPEG/WebP only)")
 
-        assets_dir.mkdir(parents=True, exist_ok=True)
+        if profile_home_is_tombstoned(profile_dir):
+            return _err(rid, 4064, f"profile '{name}' not found")
+        assets_dir.mkdir(parents=False, exist_ok=True)
         # One canonical file per asset: clear other extensions first.
         for ext in exts.values():
             stale = assets_dir / f"{asset}.{ext}"

@@ -1087,25 +1087,43 @@ def _(rid, params: dict) -> dict:
     except Exception as e:
         return _err(rid, 5027, f"clipboard unavailable: {e}")
 
-    session["image_counter"] = session.get("image_counter", 0) + 1
-    img_dir = _session_images_dir(session)
-    img_dir.mkdir(parents=True, exist_ok=True)
-    img_path = (
-        img_dir
-        / f"clip_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{session['image_counter']}.png"
-    )
-
-    # Save-first: mirrors CLI keybinding path; more robust than has_image() precheck
-    if not save_clipboard_image(img_path):
-        session["image_counter"] = max(0, session["image_counter"] - 1)
-        msg = (
-            "Clipboard has image but extraction failed"
-            if has_clipboard_image()
-            else "No image found in clipboard"
+    with _sessions_lock:
+        session["image_counter"] = session.get("image_counter", 0) + 1
+        img_dir = _session_images_dir(session)
+        profile_home = session.get("profile_home")
+        if _profile_home_rejected(
+            profile_home,
+            session.get("profile_incarnation"),
+        ) or not img_dir.parent.is_dir():
+            session["image_counter"] = max(0, session["image_counter"] - 1)
+            return _err(
+                rid,
+                4041,
+                "profile incarnation is stale or home is missing or being deleted",
+            )
+        img_dir.mkdir(parents=False, exist_ok=True)
+        img_path = (
+            img_dir
+            / f"clip_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{session['image_counter']}.png"
         )
-        return _ok(rid, {"attached": False, "message": msg})
 
-    session.setdefault("attached_images", []).append(str(img_path))
+        # Save-first: mirrors CLI keybinding path; more robust than has_image() precheck
+        if not save_clipboard_image(img_path, create_parent=False):
+            session["image_counter"] = max(0, session["image_counter"] - 1)
+            msg = (
+                "Clipboard has image but extraction failed"
+                if has_clipboard_image()
+                else "No image found in clipboard"
+            )
+            return _ok(rid, {"attached": False, "message": msg})
+        if _profile_home_rejected(
+            profile_home,
+            session.get("profile_incarnation"),
+        ):
+            session["image_counter"] = max(0, session["image_counter"] - 1)
+            return _err(rid, 4041, "profile incarnation changed during clipboard paste")
+
+        session.setdefault("attached_images", []).append(str(img_path))
     return _ok(
         rid,
         {

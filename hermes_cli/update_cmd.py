@@ -5615,6 +5615,7 @@ _HOLDER_VALUE_FLAGS_FALLBACK = frozenset(
     }
 )
 _holder_value_flags_cache: frozenset | None = None
+_WEB_SERVER_PURPOSES = frozenset({"serve", "dashboard", "webapp"})
 
 
 def _holder_value_flags() -> frozenset:
@@ -5669,7 +5670,13 @@ def _hermes_holder_subcommand(cmdline: str) -> str | None:
     entry_idx: int | None = None
     for i, token in enumerate(tokens):
         low = token.lower().strip('"')
-        if low.endswith("hermes_cli.main") and i > 0 and tokens[i - 1] == "-m":
+        if low == "hermes_cli.main" and i > 0 and tokens[i - 1] == "-m":
+            entry_idx = i
+            break
+        normalized = low.replace("\\", "/")
+        if normalized == "hermes_cli/main.py" or normalized.endswith(
+            "/hermes_cli/main.py"
+        ):
             entry_idx = i
             break
         base = low.rsplit("\\", 1)[-1].rsplit("/", 1)[-1]
@@ -5909,10 +5916,10 @@ def _refuse_gateway_ancestor_tree_kill(
 def _ledger_manual_serve_holders(
     matches: list[tuple[int, str, str]],
 ) -> list[dict]:
-    """Ledger entries for venv holders that are MANUAL serve/dashboard backends.
+    """Ledger entries for venv holders that are manual web-server backends.
 
     Positive identity only (#63206): the process self-registered in the spawn
-    ledger with purpose serve/dashboard, its (pid, create_time) still matches
+    ledger with a serve/dashboard/webapp purpose, its identity still matches
     a live process, and its recorded spawner is NOT alive (a Desktop-owned
     backend keeps its live Electron spawner and must keep the refusal — the
     app would respawn what we kill; a PowerShell-launched serve has no live
@@ -5927,7 +5934,7 @@ def _ledger_manual_serve_holders(
     holder_pids = {int(pid) for pid, _name, _cmd in matches}
     out: list[dict] = []
     for entry in ledger_entries():
-        if entry.get("purpose") not in ("serve", "dashboard"):
+        if entry.get("purpose") not in _WEB_SERVER_PURPOSES:
             continue
         pid = entry.get("pid")
         if not isinstance(pid, int) or pid not in holder_pids:
@@ -5994,12 +6001,12 @@ def _relaunch_stopped_serves(token: dict) -> None:
     skipped = len(entries) - len(commands)
     failed: list = []
     if commands:
-        print("  ⟲ Relaunching stopped serve/dashboard backend(s)")
+        print("  ⟲ Relaunching stopped serve/dashboard/webapp backend(s)")
         failed = _m()._respawn_dashboard_processes(commands)
     if skipped or failed:
         print(
             "  ⚠ Some stopped backends could not be relaunched automatically; "
-            "restart them manually (hermes serve --host <ip> --port <port>)."
+            "restart them manually with their original web-server command."
         )
     try:
         from hermes_cli.update_receipt import record_step
@@ -6011,6 +6018,32 @@ def _relaunch_stopped_serves(token: dict) -> None:
         )
     except Exception:
         pass
+
+
+def _pause_manual_web_servers(
+    matches: list[tuple[int, str, str]],
+) -> dict | None:
+    """Stop ledger-identified manual web servers and arm exact relaunch."""
+    entries = _m()._ledger_manual_serve_holders(matches)
+    if not entries:
+        return None
+    print(
+        f"  ⚠ {len(entries)} manual serve/dashboard/webapp backend(s) hold "
+        "the venv; stopping them for the update (they will be relaunched on "
+        "their recorded endpoints)"
+    )
+    _m()._stop_process_trees([int(entry["pid"]) for entry in entries])
+    token = {"pending": True, "entries": entries}
+    try:
+        from hermes_cli.update_receipt import record_step
+
+        record_step("serve_pause", True, f"stopped={len(entries)}")
+    except Exception:
+        pass
+    import atexit
+
+    atexit.register(_m()._relaunch_stopped_serves, token)
+    return token
 
 
 def _orphaned_desktop_backend_pids(
@@ -6057,9 +6090,10 @@ def _orphaned_desktop_backend_pids(
     except Exception:
         return None
 
-    def _is_backend(argv_low: str) -> bool:
-        return "hermes_cli.main" in argv_low and (
-            " serve" in argv_low or " dashboard" in argv_low
+    def _is_backend(argv: str) -> bool:
+        return (
+            "hermes_cli.main" in argv.lower()
+            and _hermes_holder_subcommand(argv) in _WEB_SERVER_PURPOSES
         )
 
     # Pass 1: find orphaned backend ROOTS among the holders.
@@ -6076,7 +6110,7 @@ def _orphaned_desktop_backend_pids(
         except Exception:
             pass
         low = argv.lower()
-        if not _is_backend(low):
+        if not _is_backend(argv):
             remaining.append((int(pid), low))
             continue
         try:
@@ -6145,8 +6179,8 @@ def _ledger_reapable_backend_pids(
 
     - its ``(pid, create_time)`` matches a live ledger entry (PID reuse
       cannot forge this pair);
-    - the entry's purpose is a reapable backend kind (serve/dashboard/
-      gateway — never interactive processes);
+    - the entry's purpose is a reapable backend kind (serve/dashboard/webapp/
+      gateway/helper — never interactive processes);
     - the entry's recorded SPAWNER is provably dead (``spawner_is_dead``).
 
     Unlike the heuristic rungs, this is safe in ANY update context — no
@@ -6181,7 +6215,7 @@ def _ledger_reapable_backend_pids(
 def _handoff_reapable_backend_pids(
     matches: list[tuple[int, str, str]],
 ) -> list[int] | None:
-    """PIDs of Hermes ``serve``/``dashboard`` backends safe to reap during a
+    """PIDs of Hermes web-server backends safe to reap during a
     GUI-updater hand-off, INCLUDING ones with a still-live parent.
 
     Complements ``_orphaned_desktop_backend_pids``, which only reaps backends
@@ -6207,7 +6241,7 @@ def _handoff_reapable_backend_pids(
 
     Guarded conservatively:
 
-    - Only Hermes backends (``hermes_cli.main`` + ``serve``/``dashboard``)
+    - Only Hermes backends (``hermes_cli.main`` + a known web-server command)
       from THIS install's venv qualify; a non-backend holder (operator REPL,
       stray script) disqualifies the whole set → ``None`` (keep refusing), so
       we never widen the blast radius during a hand-off.
@@ -6225,9 +6259,10 @@ def _handoff_reapable_backend_pids(
     except Exception:
         return None
 
-    def _is_backend(argv_low: str) -> bool:
-        return "hermes_cli.main" in argv_low and (
-            " serve" in argv_low or " dashboard" in argv_low
+    def _is_backend(argv: str) -> bool:
+        return (
+            "hermes_cli.main" in argv.lower()
+            and _hermes_holder_subcommand(argv) in _WEB_SERVER_PURPOSES
         )
 
     roots: list[int] = []
@@ -6240,7 +6275,7 @@ def _handoff_reapable_backend_pids(
             continue
         except Exception:
             pass
-        if not _is_backend(argv.lower()):
+        if not _is_backend(argv):
             # A non-backend holder during a hand-off is unexpected; refuse the
             # whole set rather than reap something we cannot justify.
             return None
@@ -6297,7 +6332,7 @@ def _stop_process_trees(
 
 
 def _looks_like_desktop_control_plane(cmdline: str) -> bool:
-    """True for this-install ``hermes serve`` / ``hermes dashboard`` argv.
+    """True for this-install Desktop/dashboard/Webapp control-plane argv.
 
     That is the Desktop control plane, not the messaging gateway. Serve and
     dashboard do not host platform adapters (#92091); do not feed this into
@@ -6311,7 +6346,7 @@ def _looks_like_desktop_control_plane(cmdline: str) -> bool:
     """
     if "hermes_cli.main" not in (cmdline or "").lower():
         return False
-    return _hermes_holder_subcommand(cmdline) in ("serve", "dashboard")
+    return _hermes_holder_subcommand(cmdline) in _WEB_SERVER_PURPOSES
 
 
 def _desktop_owns_gateway_lifecycle() -> bool:
@@ -6330,7 +6365,7 @@ def _desktop_owns_gateway_lifecycle() -> bool:
         from hermes_cli.process_identity import ledger_entries, spawner_is_dead
 
         for entry in ledger_entries():
-            if entry.get("purpose") not in ("serve", "dashboard"):
+            if entry.get("purpose") not in _WEB_SERVER_PURPOSES:
                 continue
             if spawner_is_dead(entry) is False:
                 return True
@@ -6604,7 +6639,7 @@ def _pause_windows_gateways_for_update() -> dict | None:
         # who run gateway-less (no autostart entry) get nothing forced on them.
         #
         # Exception: Desktop currently owns this install's gateway lifecycle
-        # (live supervised serve/dashboard). A vestigial Startup/Scheduled
+        # (live supervised serve/dashboard/webapp). A vestigial Startup/Scheduled
         # Task is not the owner — spawning ``gateway run`` beside Desktop
         # races ports/state (#76129). Serve is the control plane, not proof
         # messaging is served; the skip is ownership, not liveness (#92091).
@@ -7259,7 +7294,8 @@ def _gateway_recovery_partition(
     and ``skipped`` lists every other inventoried runtime the recovery pass
     deliberately does NOT touch *through a profile command*, each with an
     explicit reason.  Nothing from the spawn ledger may vanish silently:
-    manual gateways have no relaunch authority, and serve/dashboard runtimes
+    manual gateways and webapp runtimes have no relaunch authority, while
+    serve/dashboard runtimes
     (the ``update_inventory`` serve collector) have no per-profile relaunch
     command at all.
 
@@ -7299,10 +7335,10 @@ def _gateway_recovery_partition(
                             ),
                         }
                     )
-            elif kind in ("serve", "dashboard"):
+            elif kind in _WEB_SERVER_PURPOSES:
                 if supervisor == "desktop":
                     reason = (
-                        "desktop app owns and respawns this serve backend;"
+                        "desktop app owns and respawns this control-plane backend;"
                         " the recovery pass must not restart it out from under"
                         " its supervisor"
                     )
@@ -7317,12 +7353,19 @@ def _gateway_recovery_partition(
                     # `hermes-serve*` from systemd instead of trusting this
                     # classification; survivors are reported afterwards by
                     # _surviving_pre_update_serve_runtimes (#92145).
-                    reason = (
+                    if kind in {"serve", "dashboard"}:
+                        reason = (
                         "no per-profile relaunch command reaches a serve/"
                         "dashboard runtime; recovered by the fresh systemd"
                         " unit pass when it owns a hermes-serve* unit, else"
                         " left running for explicit operator restart"
-                    )
+                        )
+                    else:
+                        reason = (
+                        "manually launched web server has no relaunch"
+                        " authority; left running for explicit operator"
+                        " restart"
+                        )
                 skipped.append(
                     {
                         "profile": profile,
@@ -8411,46 +8454,16 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 _time.sleep(1.0)
                 _venv_holders = _m()._detect_venv_python_processes()
         if _venv_holders:
-            # Manual serve/dashboard rung (#63206): a network-bound
+            # Manual web-server rung (#63206): a network-bound
             # `hermes serve --host <ip>` powering a REMOTE Desktop holds the
             # venv and used to dead-end the update with exit 2 — the user's
             # only option was killing the backend by hand, and nothing ever
             # brought it back (the remote client's endpoint stayed dead).
-            # Positive ledger identity only: self-registered serve/dashboard
-            # whose recorded spawner is not alive (Desktop-owned backends
-            # keep the refusal — the app respawns what we kill). Stop them,
-            # and register an idempotent atexit relaunch built from the
-            # ledger's structured host/port/profile so the endpoint comes
-            # back on the SAME bind after the update — success or failure.
-            _serve_entries = _m()._ledger_manual_serve_holders(_venv_holders)
-            if _serve_entries:
-                print(
-                    f"  ⚠ {len(_serve_entries)} manual serve/dashboard "
-                    "backend(s) hold the venv; stopping them for the update "
-                    "(they will be relaunched on their recorded endpoints)"
-                )
-                _m()._stop_process_trees(
-                    [int(e["pid"]) for e in _serve_entries]
-                )
-                _serve_resume_token = {
-                    "pending": True,
-                    "entries": _serve_entries,
-                }
-                try:
-                    from hermes_cli.update_receipt import record_step
-
-                    record_step(
-                        "serve_pause",
-                        True,
-                        f"stopped={len(_serve_entries)}",
-                    )
-                except Exception:
-                    pass
-                import atexit as _serve_atexit
-
-                _serve_atexit.register(
-                    _m()._relaunch_stopped_serves, _serve_resume_token
-                )
+            # Positive ledger identity only: self-registered serve/dashboard/
+            # webapp whose recorded spawner is not alive. Stop them and arm an
+            # idempotent exact-endpoint relaunch for both success and rollback.
+            _serve_resume_token = _m()._pause_manual_web_servers(_venv_holders)
+            if _serve_resume_token:
                 _time.sleep(1.0)
                 _venv_holders = _m()._detect_venv_python_processes()
         if _venv_holders:
