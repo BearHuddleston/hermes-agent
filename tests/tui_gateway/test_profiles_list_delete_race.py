@@ -675,6 +675,52 @@ def test_live_session_reuse_is_scoped_to_profile_incarnation(
             srv._sessions.pop("new-runtime", None)
 
 
+def test_live_session_reuse_skips_stale_incarnation_before_current_winner(
+    home: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    profile_dir = profiles.create_profile("worker", no_alias=True, no_skills=True)
+    current_incarnation = profile_dir.joinpath(".profile-incarnation").read_text(
+        encoding="utf-8"
+    ).strip()
+    old_record = {
+        "session_key": "shared-key",
+        "profile_home": str(profile_dir),
+        "profile_incarnation": "0" * 32,
+    }
+    current_record = {
+        "session_key": "shared-key",
+        "profile_home": str(profile_dir),
+        "profile_incarnation": current_incarnation,
+    }
+    fresh_record = {
+        "session_key": "shared-key",
+        "profile_home": str(profile_dir),
+        "profile_incarnation": current_incarnation,
+        "cwd": str(home),
+    }
+    monkeypatch.setattr(srv, "_register_session_cwd", lambda _record: None)
+    with srv._sessions_lock:
+        # Dict insertion order makes the stale generation the first home/key
+        # match. It must not hide the later live runtime for this generation.
+        srv._sessions["old-runtime"] = old_record
+        srv._sessions["current-runtime"] = current_record
+    try:
+        reused = srv._claim_or_reuse_live(
+            "new-runtime",
+            "shared-key",
+            fresh_record,
+            None,
+        )
+        assert reused == ("current-runtime", current_record)
+        assert "new-runtime" not in srv._sessions
+    finally:
+        with srv._sessions_lock:
+            srv._sessions.pop("old-runtime", None)
+            srv._sessions.pop("current-runtime", None)
+            srv._sessions.pop("new-runtime", None)
+
+
 def test_new_profile_stays_unpublished_until_initialization_completes(
     home: Path,
     monkeypatch: pytest.MonkeyPatch,

@@ -748,35 +748,35 @@ def _(rid, params: dict) -> dict:
                 payload["status"] = "streaming"
             return payload
 
+        def _reuse_live_response_locked(sid: str, session: dict) -> dict:
+            if _sessions.get(sid) is not session:
+                return _err(rid, 4007, "session no longer live; retry resume")
+            if session.get("_client_gone_interrupt_requested"):
+                return _err(rid, 4009, "session disconnect interrupt settling")
+            # This resume reattaches the live record: cancel any pending
+            # ws-orphan reap timer armed while the client was detached
+            # (storm killer — _live_session_payload's rebind also cancels,
+            # but only when a transport is passed; cancel unconditionally
+            # here so the fast path can never race the reap Timer).
+            _cancel_ws_orphan_reap(sid)
+            return _ok(rid, _reuse_live_payload(sid, session))
+
         def _reuse_live_response(sid: str, session: dict) -> dict:
-            # The helper owns the resume lock because slow-path claim races can
-            # discover a live winner and return it after releasing their own lock.
-            # Keeping the client-gone check and transport rebind in one critical
-            # section makes grace expiry atomic across every reuse path.
+            # Slow-path claim races return their winner after releasing the lock.
+            # Keep the client-gone check and transport rebind atomic there, while
+            # the eager post-build recheck calls the locked helper directly.
             with _session_resume_lock:
-                if _sessions.get(sid) is not session:
-                    return _err(rid, 4007, "session no longer live; retry resume")
-                if session.get("_client_gone_interrupt_requested"):
-                    return _err(rid, 4009, "session disconnect interrupt settling")
-                # This resume reattaches the live record: cancel any pending
-                # ws-orphan reap timer armed while the client was detached
-                # (storm killer — _live_session_payload's rebind also cancels,
-                # but only when a transport is passed; cancel unconditionally
-                # here so the fast path can never race the reap Timer).
-                _cancel_ws_orphan_reap(sid)
-                return _ok(rid, _reuse_live_payload(sid, session))
+                return _reuse_live_response_locked(sid, session)
 
         # Fast path: if the session is already live IN THIS PROFILE, reuse it
         # under the lock. Never another profile's runtime of the same stored id
         # — that ran profile B's turn on profile A's agent/memory (#100029).
         with _session_resume_lock:
-            live = _find_live_session_by_key(target, profile_home)
-            if live is not None and not _session_profile_identity_matches(
-                live[1],
+            live = _find_live_session_by_key(
+                target,
                 profile_home,
                 profile_incarnation,
-            ):
-                live = None
+            )
         if live is not None:
             return _reuse_live_response(*live)
 
@@ -1099,7 +1099,11 @@ def _(rid, params: dict) -> dict:
         # live session while we were building. Re-check under the lock; if it won,
         # discard our just-built agent and reuse theirs (no worker/poller wired yet).
         with _session_resume_lock:
-            live = _find_live_session_by_key(target, profile_home)
+            live = _find_live_session_by_key(
+                target,
+                profile_home,
+                profile_incarnation,
+            )
             if live is not None:
                 try:
                     if hasattr(agent, "close"):
@@ -1108,7 +1112,7 @@ def _(rid, params: dict) -> dict:
                     pass
                 if lease is not None:
                     lease.release()
-                return _reuse_live_response(*live)
+                return _reuse_live_response_locked(*live)
             try:
                 init_home_token = (
                     set_hermes_home_override(str(profile_home))
