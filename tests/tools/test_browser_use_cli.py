@@ -14,11 +14,48 @@ Covers the three seams the integration relies on:
 import json
 import os
 import stat
+import subprocess
 import time
+import webbrowser
 
 import pytest
 
 import tools.browser_use_cli as bu_cli
+
+
+# tests/conftest.py replaces webbrowser.get before each test to prevent real
+# browser launches. Keep the stdlib selector so this module can exercise it
+# safely with subprocess.Popen intercepted below.
+_STDLIB_WEBBROWSER_GET = webbrowser.get
+
+
+def _launch_browser_spec(monkeypatch, browser_spec, url):
+    """Launch through the real stdlib controller with no real subprocess."""
+    launched = []
+
+    class BrowserProcess:
+        def wait(self):
+            raise AssertionError("webbrowser waited for Chromium to exit")
+
+        def poll(self):
+            return None
+
+    def fake_popen(argv, **kwargs):
+        launched.append((argv, kwargs))
+        return BrowserProcess()
+
+    # Mirror stdlib's BROWSER registration for a bare command while keeping
+    # its global registry isolated. Command templates bypass this registry.
+    monkeypatch.setattr(
+        webbrowser,
+        "_browsers",
+        {browser_spec.lower(): [None, webbrowser.GenericBrowser(browser_spec)]},
+    )
+    monkeypatch.setattr(subprocess, "Popen", fake_popen)
+
+    controller = _STDLIB_WEBBROWSER_GET(browser_spec)
+    assert controller.open(url, new=2) is True
+    return launched
 
 
 @pytest.fixture(autouse=True)
@@ -32,7 +69,7 @@ def _clean_env(monkeypatch):
 def _fake_cli(tmp_path, body):
     """Write an executable fake browser-use CLI and return its path."""
     script = tmp_path / "browser-use"
-    script.write_text("#!/bin/sh\n" + body)
+    script.write_text("#!/bin/sh\n" + body, encoding="utf-8")
     script.chmod(script.stat().st_mode | stat.S_IXUSR)
     return str(script)
 
@@ -176,6 +213,107 @@ class TestSubprocessEnvironment:
         parts = env["PATH"].split(os.pathsep)
         assert "/usr/bin" in parts
         assert "/home/u/.nvm/versions/node/v24.18.0/bin" in parts
+
+    def test_windows_subprocess_opens_chrome_urls_without_waiting_or_shell(
+        self, monkeypatch
+    ):
+        """browser-harness opens chrome://inspect via stdlib webbrowser.
+
+        The generated BROWSER command must make stdlib's launcher return while
+        Chromium stays open. It must also preserve the executable path and URL
+        as separate argv entries instead of passing either through a shell.
+        """
+        import sys
+        from types import ModuleType
+
+        chrome = r"C:\Program Files\Google\Chrome\Application\chrome.exe"
+        url = 'chrome://inspect/#remote-debugging?literal=$(not-a-shell)&quote="kept"'
+        browser_tool = ModuleType("tools.browser_tool")
+        browser_tool._build_browser_env = lambda: {}
+        monkeypatch.setitem(sys.modules, "tools.browser_tool", browser_tool)
+        monkeypatch.setattr(
+            "hermes_cli.browser_connect.detect_default_chromium",
+            lambda system: None if system == "Windows" else "unexpected",
+        )
+        monkeypatch.setattr(
+            "hermes_cli.browser_connect.get_chrome_debug_candidates",
+            lambda system: [chrome] if system == "Windows" else [],
+        )
+        monkeypatch.setattr(bu_cli.platform, "system", lambda: "Windows")
+
+        env = bu_cli._base_subprocess_env()
+        launched = _launch_browser_spec(monkeypatch, env["BROWSER"], url)
+        assert len(launched) == 1
+        argv, kwargs = launched[0]
+        assert argv == [chrome, url]
+        assert kwargs.get("shell", False) is False
+
+    def test_windows_subprocess_prefers_installed_default_chromium(self, monkeypatch):
+        import sys
+        from types import ModuleType
+
+        edge = r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe"
+        url = "chrome://inspect/#remote-debugging"
+        browser_tool = ModuleType("tools.browser_tool")
+        setattr(browser_tool, "_build_browser_env", lambda: {})
+        monkeypatch.setitem(sys.modules, "tools.browser_tool", browser_tool)
+        monkeypatch.setattr(
+            "hermes_cli.browser_connect.detect_default_chromium",
+            lambda system: "edge" if system == "Windows" else None,
+        )
+        monkeypatch.setattr(
+            "hermes_cli.browser_connect.chromium_executable",
+            lambda browser, system: (
+                edge if (browser, system) == ("edge", "Windows") else None
+            ),
+        )
+        monkeypatch.setattr(
+            "hermes_cli.browser_connect.get_chrome_debug_candidates",
+            lambda _system: (_ for _ in ()).throw(
+                AssertionError("installed default must win over fallback discovery")
+            ),
+        )
+        monkeypatch.setattr(bu_cli.platform, "system", lambda: "Windows")
+
+        env = bu_cli._base_subprocess_env()
+        launched = _launch_browser_spec(monkeypatch, env["BROWSER"], url)
+
+        assert len(launched) == 1
+        argv, kwargs = launched[0]
+        assert argv == [edge, url]
+        assert kwargs.get("shell", False) is False
+
+    def test_windows_subprocess_preserves_explicit_browser_override(self, monkeypatch):
+        import sys
+        from types import ModuleType
+
+        browser_tool = ModuleType("tools.browser_tool")
+        browser_tool._build_browser_env = lambda: {"BROWSER": "custom-browser %s"}
+        monkeypatch.setitem(sys.modules, "tools.browser_tool", browser_tool)
+        monkeypatch.setattr(bu_cli.platform, "system", lambda: "Windows")
+        monkeypatch.setattr(
+            "hermes_cli.browser_connect.get_chrome_debug_candidates",
+            lambda _system: (_ for _ in ()).throw(
+                AssertionError("explicit BROWSER must skip candidate discovery")
+            ),
+        )
+
+        env = bu_cli._base_subprocess_env()
+
+        assert env["BROWSER"] == "custom-browser %s"
+
+    def test_non_windows_subprocess_does_not_force_browser(self, monkeypatch):
+        import sys
+        from types import ModuleType
+
+        browser_tool = ModuleType("tools.browser_tool")
+        browser_tool._build_browser_env = lambda: {}
+        monkeypatch.setitem(sys.modules, "tools.browser_tool", browser_tool)
+        monkeypatch.setattr(bu_cli.platform, "system", lambda: "Linux")
+
+        env = bu_cli._base_subprocess_env()
+
+        assert "BROWSER" not in env
 
 
 class TestToolSurfaceSwap:
@@ -906,7 +1044,7 @@ class TestFindCliManagedBin:
         bin_dir = tmp_path / "home" / "bin"
         bin_dir.mkdir(parents=True)
         bu = bin_dir / "browser-use"
-        bu.write_text("#!/bin/sh\n")
+        bu.write_text("#!/bin/sh\n", encoding="utf-8")
         bu.chmod(bu.stat().st_mode | stat.S_IXUSR)
         assert bu_cli._find_cli_unpatched() == [str(bu)]
 
@@ -914,7 +1052,7 @@ class TestFindCliManagedBin:
         bin_dir = tmp_path / "home" / "bin"
         bin_dir.mkdir(parents=True)
         uvx = bin_dir / "uvx"
-        uvx.write_text("#!/bin/sh\n")
+        uvx.write_text("#!/bin/sh\n", encoding="utf-8")
         uvx.chmod(uvx.stat().st_mode | stat.S_IXUSR)
         assert bu_cli._find_cli_unpatched() == [str(uvx), "browser-use"]
 
@@ -928,7 +1066,7 @@ class TestFindCliManagedBin:
         cli_dir = tmp_path / "userhome" / ".local" / "bin"
         cli_dir.mkdir(parents=True)
         cli = cli_dir / "browser-use"
-        cli.write_text("#!/bin/sh\n")
+        cli.write_text("#!/bin/sh\n", encoding="utf-8")
         cli.chmod(cli.stat().st_mode | stat.S_IXUSR)
         assert bu_cli._find_cli_unpatched() == [str(cli)]
 
@@ -940,12 +1078,12 @@ class TestFindCliManagedBin:
         user_dir = tmp_path / "userhome" / ".local" / "bin"
         user_dir.mkdir(parents=True)
         user_cli = user_dir / "browser-use"
-        user_cli.write_text("#!/bin/sh\n")
+        user_cli.write_text("#!/bin/sh\n", encoding="utf-8")
         user_cli.chmod(user_cli.stat().st_mode | stat.S_IXUSR)
         managed_dir = tmp_path / "home" / "bin"
         managed_dir.mkdir(parents=True)
         managed_cli = managed_dir / "browser-use"
-        managed_cli.write_text("#!/bin/sh\n")
+        managed_cli.write_text("#!/bin/sh\n", encoding="utf-8")
         managed_cli.chmod(managed_cli.stat().st_mode | stat.S_IXUSR)
         assert bu_cli._find_cli_unpatched() == [str(managed_cli)]
 
@@ -954,13 +1092,13 @@ class TestFindCliManagedBin:
         path_dir = tmp_path / "onpath"
         path_dir.mkdir()
         path_cli = path_dir / "browser-use"
-        path_cli.write_text("#!/bin/sh\n")
+        path_cli.write_text("#!/bin/sh\n", encoding="utf-8")
         path_cli.chmod(path_cli.stat().st_mode | stat.S_IXUSR)
         monkeypatch.setenv("PATH", str(path_dir))
         managed_dir = tmp_path / "home" / "bin"
         managed_dir.mkdir(parents=True)
         managed_cli = managed_dir / "browser-use"
-        managed_cli.write_text("#!/bin/sh\n")
+        managed_cli.write_text("#!/bin/sh\n", encoding="utf-8")
         managed_cli.chmod(managed_cli.stat().st_mode | stat.S_IXUSR)
         assert bu_cli._find_cli_unpatched() == [str(managed_cli)]
 
@@ -968,7 +1106,7 @@ class TestFindCliManagedBin:
         cli_dir = tmp_path / "userhome" / ".local" / "bin"
         cli_dir.mkdir(parents=True)
         uvx = cli_dir / "uvx"
-        uvx.write_text("#!/bin/sh\n")
+        uvx.write_text("#!/bin/sh\n", encoding="utf-8")
         uvx.chmod(uvx.stat().st_mode | stat.S_IXUSR)
         assert bu_cli._find_cli_unpatched() == [str(uvx), "browser-use"]
 
@@ -996,7 +1134,7 @@ class TestInstallCli:
         bin_dir = tmp_path / "home" / "bin"
         bin_dir.mkdir(parents=True)
         cli = bin_dir / "browser-use"
-        cli.write_text("#!/bin/sh\n")
+        cli.write_text("#!/bin/sh\n", encoding="utf-8")
         cli.chmod(cli.stat().st_mode | stat.S_IXUSR)
         monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
         monkeypatch.setenv("PATH", str(tmp_path / "empty"))
@@ -1049,7 +1187,7 @@ class TestInstallCli:
         monkeypatch.setenv("HERMES_HOME", str(home))
         monkeypatch.setenv("PATH", str(tmp_path / "empty"))
         uv = tmp_path / "uv"
-        uv.write_text('#!/bin/sh\necho "no network" >&2\nexit 1\n')
+        uv.write_text('#!/bin/sh\necho "no network" >&2\nexit 1\n', encoding="utf-8")
         uv.chmod(uv.stat().st_mode | stat.S_IXUSR)
         import sys as _sys
         import types as _types
