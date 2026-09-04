@@ -222,7 +222,7 @@ class ComputeHost:
                     self._reply("turn.error", sid, request_id, message="session busy")
                     return
                 session.update(running=True, _turn_cancel_requested=False, last_active=time.time())
-                server._start_inflight_turn(session, inflight)
+                server._start_inflight_turn(session, inflight, display_kind=frame.get("display_kind") or None)
             self._reply("turn.started", sid, request_id, started_ns=now_ns())
             with contextlib.suppress(Exception):
                 server._ensure_session_db_row(session)

@@ -1,15 +1,17 @@
 from __future__ import annotations
 
+import asyncio
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from io import BytesIO
 import os
 from pathlib import Path
 import shutil
+import tempfile
 import threading
 
 import pytest
-from fastapi import HTTPException
+from fastapi import HTTPException, UploadFile
 from fastapi.testclient import TestClient
 
 from hermes_cli import profile_incarnation, profiles, web_server
@@ -89,6 +91,31 @@ def test_browser_upload_rejects_oversize_without_leaving_partial_file(
     assert response.json()["detail"] == "File is too large; cap is 16 MiB"
     upload_root = tmp_path / "hermes-home" / "uploads"
     assert not upload_root.exists() or list(upload_root.iterdir()) == []
+
+
+@pytest.mark.parametrize("payload", [b"", b"12345678", b"123456789"])
+def test_browser_upload_checks_actual_spooled_size_and_closes_upload(
+    payload: bytes, tmp_path: Path, monkeypatch
+):
+    home = tmp_path / "hermes-home"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    monkeypatch.setattr(uploads, "_MAX_UPLOAD_BYTES", 8)
+    spool = tempfile.SpooledTemporaryFile(max_size=4, mode="w+b")
+    spool.write(payload)
+    file = UploadFile(file=spool, size=0, filename="notes.txt")
+
+    if len(payload) > 8:
+        with pytest.raises(HTTPException) as exc_info:
+            asyncio.run(uploads.upload_chat_file(file=file))
+        assert exc_info.value.status_code == 413
+        assert not (home / "uploads").exists()
+    else:
+        result = asyncio.run(uploads.upload_chat_file(file=file))
+        assert result["size"] == len(payload)
+        assert Path(result["path"]).read_bytes() == payload
+    assert spool.closed
 
 
 def test_browser_file_cleanup_failure_preserves_primary_staging_error(

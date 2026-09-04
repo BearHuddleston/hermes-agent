@@ -32,7 +32,7 @@ from hermes_cli.profile_lifecycle import (
     serialized_profile_mutation,
     verify_profile_resources_released,
 )
-from hermes_constants import clear_named_profile_deleted, named_profile_is_deleted
+from hermes_constants import named_profile_is_deleted
 
 logger = logging.getLogger(__name__)
 
@@ -841,7 +841,7 @@ def _prepare_profile_creation_target(canon: str, profile_dir: Path) -> None:
 def _initialize_profile(
     name: str, clone_from: Optional[str] = None, clone_all: bool = False, clone_config: bool = False,
     no_alias: bool = False, no_skills: bool = False, description: Optional[str] = None,
-    _target_dir: Optional[Path] = None,
+    *, _target_dir: Path,
 ) -> Path:
     """Initialize a staged profile directory before publication.
 
@@ -857,13 +857,9 @@ def _initialize_profile(
     canon = _canon_valid(name)
     if canon == "default":
         raise ValueError("Cannot create a profile named 'default' — it is the built-in profile (~/.hermes).")
-    profile_dir = _target_dir or get_profile_dir(canon)
-    if _target_dir is None:
-        _prepare_profile_creation_target(canon, profile_dir)
-    elif profile_dir.exists():
+    profile_dir = _target_dir
+    if profile_dir.exists():
         raise FileExistsError(f"Profile '{canon}' already exists at {profile_dir}")
-    if _target_dir is None:
-        clear_named_profile_deleted(profile_dir)
     source_dir = None
     if clone_from is not None or clone_all or clone_config:
         source_dir = _resolve_clone_source(clone_from)

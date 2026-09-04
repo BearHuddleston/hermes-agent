@@ -444,9 +444,6 @@ def _pause_manual_web_servers(matches: list[tuple[int, str, str]]) -> dict | Non
     return token
 
 
-def _is_backend_argv(argv: str) -> bool:
-    """Whether argv identifies a Hermes web-server backend."""
-    return "hermes_cli.main" in argv.lower() and _hermes_holder_subcommand(argv) in _WEB_SERVER_PURPOSES
 
 
 def _live_argv_low(psutil, pid, cmdline: str) -> str | None:
@@ -490,7 +487,7 @@ def _orphaned_desktop_backend_pids(matches: list[tuple[int, str, str]]) -> list[
         low = _live_argv_low(psutil, pid, cmdline)
         if low is None:
             continue  # exited between scan and classification — nothing to reap
-        if not _is_backend_argv(low):
+        if not _looks_like_desktop_control_plane(low):
             remaining.append(int(pid))
             continue
         try:
@@ -567,7 +564,7 @@ def _handoff_reapable_backend_pids(matches: list[tuple[int, str, str]]) -> list[
         low = _live_argv_low(psutil, pid, cmdline)
         if low is None:
             continue  # exited — nothing to reap
-        if not _is_backend_argv(low):
+        if not _looks_like_desktop_control_plane(low):
             return None  # unexpected non-backend holder: refuse the whole set
         roots.append(int(pid))
     return roots or None

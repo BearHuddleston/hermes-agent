@@ -503,7 +503,7 @@ _TRUNCATION_PARAMS = (
 
 
 def _lock_in_submit_turn(
-    rid, sid, session, text, params, has_truncation, requested_rebind_ids, hosted_task):
+    rid, sid, session, text, params, has_truncation, requested_rebind_ids, hosted_task, display_kind):
     """Under ``history_lock``: refuse watch-child races / malformed truncation, apply the
     cut, mark the turn running + in flight.  Returns ``(err, survivor_fields)``."""
     fields = {}
@@ -527,7 +527,7 @@ def _lock_in_submit_turn(
         session["last_active"] = time.time()
         if hosted_task is not None:
             session["_hosted_room_task"] = dict(hosted_task)
-        _start_inflight_turn(session, text)
+        _start_inflight_turn(session, text, display_kind=display_kind)
     return None, fields
 
 
@@ -597,7 +597,7 @@ def _(rid, params: dict) -> dict:
         {r for r in raw_rebind_ids if isinstance(r, int) and not isinstance(r, bool)}
         if isinstance(raw_rebind_ids, list) else None)
     err, survivor_fields = _lock_in_submit_turn(
-        rid, sid, session, text, params, has_truncation, requested_rebind_ids, hosted_task)
+        rid, sid, session, text, params, has_truncation, requested_rebind_ids, hosted_task, display_kind)
     if err is not None:
         return err
     if turn_isolation:
@@ -644,6 +644,7 @@ def _attached_image_result(session, image_path, **extra) -> dict:
 
 @method("clipboard.paste")
 def _(rid, params: dict) -> dict:
+    sid = params.get("session_id") or ""
     session, err = _sess_building(params, rid)
     if err:
         return err
@@ -652,43 +653,56 @@ def _(rid, params: dict) -> dict:
     except Exception as e:
         return _err(rid, 5027, f"clipboard unavailable: {e}")
 
+    import tempfile
+
     with _sessions_lock:
-        session["image_counter"] = session.get("image_counter", 0) + 1
-        img_dir = _session_images_dir(session)
-        profile_home = session.get("profile_home")
+        profile_home = session.get("profile_home") or None
+        profile_incarnation = session.get("profile_incarnation") or None
         if _profile_home_rejected(
             profile_home,
-            session.get("profile_incarnation"),
-        ) or not img_dir.parent.is_dir():
-            session["image_counter"] = max(0, session["image_counter"] - 1)
+            profile_incarnation,
+        ) or not _session_images_dir(session).parent.is_dir():
             return _err(
                 rid,
                 4041,
                 "profile incarnation is stale or home is missing or being deleted",
             )
-        img_dir.mkdir(parents=False, exist_ok=True)
-        img_path = (
-            img_dir
-            / f"clip_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{session['image_counter']}.png"
-        )
 
-        # Save-first: mirrors CLI keybinding path; more robust than has_image() precheck
-        if not save_clipboard_image(img_path, create_parent=False):
-            session["image_counter"] = max(0, session["image_counter"] - 1)
+    # Native clipboard helpers can wait on several subprocesses. Keep both
+    # lifecycle and session locks free while extracting outside reusable homes.
+    with tempfile.TemporaryDirectory(
+        prefix="hermes-clipboard-", ignore_cleanup_errors=True,
+    ) as tmpdir:
+        staged_path = Path(tmpdir) / "clipboard.png"
+        # Save-first: mirrors CLI keybinding path; more robust than has_image().
+        if not save_clipboard_image(staged_path, create_parent=False):
             msg = (
                 "Clipboard has image but extraction failed"
                 if has_clipboard_image()
                 else "No image found in clipboard"
             )
             return _ok(rid, {"attached": False, "message": msg})
-        if _profile_home_rejected(
-            profile_home,
-            session.get("profile_incarnation"),
-        ):
-            session["image_counter"] = max(0, session["image_counter"] - 1)
-            return _err(rid, 4041, "profile incarnation changed during clipboard paste")
+        img_bytes = staged_path.read_bytes()
 
-        session.setdefault("attached_images", []).append(str(img_path))
+    try:
+        # Retain the captured identity even if the session was rebound while
+        # extraction ran. The shared publisher uses these same reentrant locks.
+        with _profile_home_lease(profile_home, profile_incarnation):
+            with _sessions_lock:
+                if (
+                    _sessions.get(sid) is not session
+                    or session.get("_closing")
+                    or session.get("_finalized")
+                ):
+                    return _err(rid, 4001, "session not found")
+                if not _session_profile_identity_matches(
+                    session, profile_home, profile_incarnation,
+                ):
+                    return _err(rid, 4041, "profile incarnation changed during clipboard paste")
+                img_path = _queue_attached_image(session, img_bytes, ".png", prefix="clip")
+    except FileNotFoundError:
+        return _err(rid, 4041, "profile incarnation changed during clipboard paste")
+
     return _ok(
         rid,
         {
@@ -873,11 +887,15 @@ def _(rid, params: dict) -> dict:
         return err
     raw, data_url, name = (
         str(params.get(k, "") or "").strip() for k in ("path", "data_url", "name"))
-    if not raw and not data_url:
+    staged_upload = params.get("staged_upload")
+    if not raw and not data_url and staged_upload is None:
         return _err(rid, 4015, "path or data_url required")
     try:
-        stored_path, uploaded = _stage_session_file_attachment(
-            session, raw_path=raw, data_url=data_url, name=name)
+        if staged_upload is not None:
+            stored_path, uploaded = _stage_browser_file_attachment(session, staged_upload, name)
+        else:
+            stored_path, uploaded = _stage_session_file_attachment(
+                session, raw_path=raw, data_url=data_url, name=name)
         ref_path = _attachment_ref_path(session, stored_path)
         return _ok(rid, {
             "attached": True, "name": stored_path.name, "path": str(stored_path),

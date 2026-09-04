@@ -152,6 +152,58 @@ def _sanitize_attachment_name(name: str) -> str:
     return candidate.strip().strip(".") or "attachment"
 
 
+def _stage_browser_file_attachment(
+    session: dict,
+    staged_upload: object,
+    name: str,
+) -> tuple[Path, bool]:
+    """Copy an upload from its captured owner into this session's workspace.
+
+    Source and destination may be different profiles on the same installation
+    (an owner-routed tile can receive a foreground browser pick). Lease both
+    generations; do not infer either identity from the ambient profile.
+    """
+    from hermes_constants import WEBAPP_ATTACHMENT_MAX_BYTES
+    from hermes_cli.install_identity import get_install_id
+
+    if not isinstance(staged_upload, dict):
+        raise ValueError("invalid staged upload")
+    install_id = get_install_id()
+    if not install_id or staged_upload.get("install_id") != install_id:
+        raise ValueError("Staged attachment belongs to another Hermes backend; select the file again")
+    raw_home = staged_upload.get("profile_home")
+    raw_path = staged_upload.get("path")
+    incarnation = staged_upload.get("profile_incarnation")
+    if (
+        not isinstance(raw_home, str) or not raw_home
+        or not isinstance(raw_path, str) or not raw_path
+        or (incarnation is not None and not isinstance(incarnation, str))
+    ):
+        raise ValueError("invalid staged upload source")
+
+    with _profile_home_lease(raw_home, incarnation) as home:
+        with _profile_home_lease(
+            session.get("profile_home"), session.get("profile_incarnation")
+        ):
+            source = Path(raw_path)
+            if source.is_symlink():
+                raise ValueError("staged upload is no longer a regular file")
+            source = source.resolve(strict=True)
+            if (
+                source.parent != (home / "uploads").resolve(strict=True)
+                or not source.name.startswith("web-")
+                or not source.is_file()
+            ):
+                raise ValueError("staged upload is outside its source profile")
+            if source.stat().st_size > WEBAPP_ATTACHMENT_MAX_BYTES:
+                raise ValueError("staged upload exceeds the browser attachment size limit")
+            # Keep the existing out-of-workspace copy into attachments/, which
+            # is visible to container/SSH terminal backends through cache mounts.
+            return _stage_session_file_attachment(
+                session, raw_path=str(source), data_url="", name=name
+            )
+
+
 def _stage_session_file_attachment(
     session: dict, *, raw_path: str, data_url: str, name: str) -> tuple[Path, bool]:
     """Make a desktop file attachment available to the gateway agent: ``(stored_path, uploaded)``.

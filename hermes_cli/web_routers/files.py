@@ -25,7 +25,8 @@ from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse
 
 from hermes_cli._subprocess_compat import windows_hide_flags
-from hermes_cli.profile_incarnation import ensure_profile_incarnation, profile_incarnation_lease
+from hermes_cli.profile_incarnation import profile_incarnation_lease
+from hermes_cli.web_routers.uploads import _resolve_upload_generation
 from hermes_cli.web_deps import late
 from hermes_cli.web_server_files import (
     _fs_path, _managed_file_entry, _managed_response_meta, _resolve_managed_path,
@@ -330,20 +331,10 @@ async def upload_chat_image(payload: ChatImageUpload, profile: Optional[str] = N
     ``image.attach`` already use.
     """
     def _run():
-        data, mime_type, ext = _decode_chat_image_upload(payload)
-        with _profile_scope(profile) as scoped_home:
-            from hermes_constants import named_profile_home_is_unavailable
+        from hermes_constants import named_profile_home_is_unavailable
 
-            home = Path(scoped_home or get_hermes_home())
-            if named_profile_home_is_unavailable(home):
-                raise HTTPException(status_code=404, detail="Profile home is unavailable")
-            try:
-                expected_incarnation = ensure_profile_incarnation(home)
-            except FileNotFoundError as exc:
-                raise HTTPException(
-                    status_code=404,
-                    detail="Profile home is unavailable",
-                ) from exc
+        data, mime_type, ext = _decode_chat_image_upload(payload)
+        home, expected_incarnation = _resolve_upload_generation(profile)
 
         try:
             incarnation_lease = profile_incarnation_lease(

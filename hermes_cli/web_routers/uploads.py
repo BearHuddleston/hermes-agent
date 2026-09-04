@@ -8,12 +8,12 @@ from pathlib import Path
 import re
 import secrets
 import stat
-import tempfile
 import time
 
 from fastapi import APIRouter, File, HTTPException, UploadFile
 
 from hermes_constants import WEBAPP_ATTACHMENT_MAX_BYTES
+from hermes_cli.install_identity import get_install_id
 from hermes_cli.profile_incarnation import (
     ensure_profile_incarnation,
     profile_incarnation_lease,
@@ -22,7 +22,7 @@ from hermes_cli.web_deps import late
 
 
 router = APIRouter()
-_profile_scope = late("_profile_scope")
+_profile_scope = late("_profile_scope", "hermes_cli.web_server_profiles")
 _MAX_UPLOAD_BYTES = WEBAPP_ATTACHMENT_MAX_BYTES
 _CHUNK_BYTES = 1024 * 1024
 _UPLOAD_RETENTION_SECONDS = 7 * 24 * 60 * 60
@@ -156,32 +156,35 @@ async def upload_chat_file(
         _resolve_upload_generation,
         profile,
     )
-    total = 0
-    staged = tempfile.TemporaryFile(mode="w+b")
     try:
-        while True:
-            chunk = await file.read(_CHUNK_BYTES)
-            if not chunk:
-                break
-            total += len(chunk)
-            if total > _MAX_UPLOAD_BYTES:
-                cap_mib = _MAX_UPLOAD_BYTES // (1024 * 1024)
-                raise HTTPException(
-                    status_code=413,
-                    detail=f"File is too large; cap is {cap_mib} MiB",
-                )
-            await asyncio.to_thread(staged.write, chunk)
-        await asyncio.to_thread(staged.flush)
-        await asyncio.to_thread(os.fsync, staged.fileno())
+        # FastAPI has already spooled the complete upload outside the profile.
+        # Check the actual bytes, then publish that spool under the captured lease.
+        total = await asyncio.to_thread(file.file.seek, 0, os.SEEK_END)
+        if total > _MAX_UPLOAD_BYTES:
+            cap_mib = _MAX_UPLOAD_BYTES // (1024 * 1024)
+            raise HTTPException(
+                status_code=413,
+                detail=f"File is too large; cap is {cap_mib} MiB",
+            )
         target = await asyncio.to_thread(
             _publish_staged_upload,
-            staged,
+            file.file,
             profile_home,
             expected_incarnation,
             file.filename or "attachment",
         )
     finally:
-        staged.close()
         await file.close()
 
-    return {"ok": True, "path": str(target), "size": total}
+    result = {"ok": True, "path": str(target), "size": total}
+    install_id = await asyncio.to_thread(get_install_id)
+    if install_id:
+        # Identity is already persisted by Hermes. If it is unavailable, keep
+        # the legacy path/byte-upload flow rather than invent an ephemeral id.
+        result["staged_upload"] = {
+            "install_id": install_id,
+            "path": str(target),
+            "profile_home": str(profile_home),
+            "profile_incarnation": expected_incarnation,
+        }
+    return result

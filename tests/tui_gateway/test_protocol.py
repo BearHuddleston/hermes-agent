@@ -775,7 +775,7 @@ def test_session_resume_returns_hydrated_messages(server, monkeypatch):
     assert "error" not in resp
     assert resp["result"]["message_count"] == 3
     assert resp["result"]["messages"] == [
-        {"role": "user", "text": "hello"},
+        {"role": "user", "text": "hello", "user_originated": True},
         {"role": "assistant", "text": "yo", "reasoning": "thoughts"},
         {"role": "tool", "name": "tool", "context": ""},
     ]

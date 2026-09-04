@@ -6,10 +6,12 @@ import type {
   HermesApiRequest,
   HermesConnection,
   HermesSelectPathsOptions,
+  HermesStagedUpload,
   HermesTerminalExit,
   HermesTerminalSession
 } from '@/global'
 import { bytesToBase64 } from '@/lib/base64'
+import { createGitRestBridge } from '@/lib/git-rest'
 import { $connection } from '@/store/session'
 
 interface BrowserBootstrapWindow {
@@ -23,10 +25,12 @@ interface BrowserBootstrap {
   authRequired: boolean
   basePath: string
   token: string
+  stagedUploads: Map<string, HermesStagedUpload>
 }
 
 const SESSION_HEADER = 'X-Hermes-Session-Token'
 const DEFAULT_TIMEOUT_MS = 30_000
+const STAGED_UPLOAD_CACHE_LIMIT = 256
 const REAUTH_EVENT = 'hermes:browser-reauth-required'
 const TERMINAL_META_PREFIX = '\u0000HERMES_TERMINAL_META:'
 
@@ -89,7 +93,8 @@ function browserBootstrap(): BrowserBootstrap | null {
   return {
     authRequired,
     basePath: normalizedBasePath(win.__HERMES_BASE_PATH__),
-    token
+    token,
+    stagedUploads: new Map()
   }
 }
 
@@ -299,10 +304,24 @@ async function stageBrowserFile(
     profile
   })
 
-  const payload = JSON.parse(text) as { detail?: string; path?: string }
+  const payload = JSON.parse(text) as { detail?: string; path?: string; staged_upload?: HermesStagedUpload }
 
   if (!response.ok || !payload.path) {
     throw new Error(payload.detail || `File upload failed (${response.status})`)
+  }
+
+  // Keep the existing string-path bridge for pickers and drops. Composer chips
+  // carry this small source descriptor so draft cloning and retries retain it.
+  if (payload.staged_upload?.path === payload.path) {
+    bootstrap.stagedUploads.set(payload.path, payload.staged_upload)
+
+    // Chips retain their own descriptors. Bound the string-path compatibility
+    // cache without consuming lookups shared by multiple attachment occurrences.
+    if (bootstrap.stagedUploads.size > STAGED_UPLOAD_CACHE_LIMIT) {
+      const oldest = bootstrap.stagedUploads.keys().next().value
+
+      if (oldest !== undefined) { bootstrap.stagedUploads.delete(oldest) }
+    }
   }
 
   return payload.path
@@ -808,52 +827,7 @@ export function installBrowserDesktopBridge(): boolean {
     return true
   }
 
-  const git = {
-    baseBranchList: async (repoPath: string) =>
-      (await gitGet<{ branches: unknown[] }>('base-branches', { path: repoPath })).branches,
-    branchList: async (repoPath: string) =>
-      (await gitGet<{ branches: unknown[] }>('branches', { path: repoPath })).branches,
-    branchSwitch: (repoPath: string, branch: string) => gitPost('branch/switch', { branch, path: repoPath }),
-    fileDiff: async (repoPath: string, filePath: string) =>
-      (await gitGet<{ diff: string }>('file-diff', { file: filePath, path: repoPath })).diff,
-    repoStatus: (repoPath: string) => gitGet('status', { path: repoPath }),
-    review: {
-      commit: (repoPath: string, message: string, push: boolean) =>
-        gitPost('review/commit', { message, path: repoPath, push }),
-      commitContext: (repoPath: string) => gitGet('review/commit-context', { path: repoPath }),
-      createPr: (repoPath: string) => gitPost('review/create-pr', { path: repoPath }),
-      fetchPrComment: async () => null,
-      diff: async (repoPath: string, filePath: string, scope: string, baseRef?: null | string, staged?: boolean) =>
-        (await gitGet<{ diff: string }>('review/diff', {
-          base: baseRef,
-          file: filePath,
-          path: repoPath,
-          scope,
-          staged
-        })).diff,
-      list: (repoPath: string, scope: string, baseRef?: null | string) =>
-        gitGet('review/list', { base: baseRef, path: repoPath, scope }),
-      prList: (repoPath: string, branches: string[], numbers?: number[]) =>
-        gitPost('review/pr-list', { branches, numbers: numbers || [], path: repoPath }),
-      push: (repoPath: string) => gitPost('review/push', { path: repoPath }),
-      revert: (repoPath: string, filePath?: null | string) =>
-        gitPost('review/revert', { file: filePath || null, path: repoPath }),
-      revParse: async (repoPath: string, ref?: null | string) =>
-        (await gitGet<{ sha: null | string }>('review/rev-parse', { path: repoPath, ref })).sha,
-      shipInfo: (repoPath: string) => gitGet('review/ship-info', { path: repoPath }),
-      stage: (repoPath: string, filePath?: null | string) =>
-        gitPost('review/stage', { file: filePath || null, path: repoPath }),
-      unstage: (repoPath: string, filePath?: null | string) =>
-        gitPost('review/unstage', { file: filePath || null, path: repoPath })
-    },
-    scanRepos: async () => [],
-    worktreeAdd: (repoPath: string, options?: Record<string, unknown>) =>
-      gitPost('worktree/add', { path: repoPath, ...options }),
-    worktreeList: async (repoPath: string) =>
-      (await gitGet<{ worktrees: unknown[] }>('worktrees', { path: repoPath })).worktrees,
-    worktreeRemove: (repoPath: string, worktreePath: string, options?: { force?: boolean }) =>
-      gitPost('worktree/remove', { force: Boolean(options?.force), path: repoPath, worktreePath })
-  } as NonNullable<Window['hermesDesktop']['git']>
+  const git = createGitRestBridge({ get: gitGet, post: gitPost })
 
   const getGatewayWsUrl = async (profile?: null | string) => {
     try {
@@ -966,6 +940,7 @@ export function installBrowserDesktopBridge(): boolean {
     git,
     getPathForFile: () => '',
     stageFileForAttach: (file: File) => stageBrowserFile(bootstrap, file, browserProfile()),
+    getStagedFileForAttach: (path: string) => bootstrap.stagedUploads.get(path),
     gitRoot: async (path: string) => (await fsGet<{ root: null | string }>('git-root', path)).root,
     normalizePreviewTarget: async () => null,
     readDir: (path: string) =>

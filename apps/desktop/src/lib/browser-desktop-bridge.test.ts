@@ -343,6 +343,56 @@ describe('browser-hosted Desktop bridge', () => {
     expect(new Headers(init.headers).get('X-Hermes-Session-Token')).toBe('served-token')
   })
 
+  it('routes Git through the browser transport and resolves the profile at call time', async () => {
+    const win = mutableWindow()
+    win.__HERMES_SESSION_TOKEN__ = 'served-token'
+    win.__HERMES_BASE_PATH__ = '/hermes'
+    window.history.replaceState(null, '', '/hermes/?profile=launch-profile#/')
+
+    const worktrees = [{ branch: 'main', detached: false, isMain: true, locked: false, path: '/srv/my repo' }]
+
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ worktrees }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ diff: 'working diff' }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ ok: true }), { status: 200 }))
+
+    vi.stubGlobal('fetch', fetchMock)
+    expect(installBrowserDesktopBridge()).toBe(true)
+    const git = win.hermesDesktop!.git!
+
+    await expect(git.worktreeList('/srv/my repo')).resolves.toEqual(worktrees)
+    const [listUrl, listInit] = fetchMock.mock.calls[0] as [URL, RequestInit]
+    expect(listUrl.pathname).toBe('/hermes/api/git/worktrees')
+    expect(listUrl.searchParams.get('path')).toBe('/srv/my repo')
+    expect(listUrl.searchParams.get('profile')).toBe('launch-profile')
+    expect(new Headers(listInit.headers).get('X-Hermes-Session-Token')).toBe('served-token')
+
+    $connection.set({ profile: 'active-profile' } as never)
+    await expect(git.review.diff('/srv/my repo', 'a b.txt', 'uncommitted', null, false)).resolves.toBe(
+      'working diff'
+    )
+    const [diffUrl] = fetchMock.mock.calls[1] as [URL, RequestInit]
+    expect(diffUrl.searchParams.get('profile')).toBe('active-profile')
+    expect(diffUrl.searchParams.get('file')).toBe('a b.txt')
+    expect(diffUrl.searchParams.get('staged')).toBe('false')
+    expect(diffUrl.searchParams.has('base')).toBe(false)
+
+    await git.review.stage('/srv/my repo', '')
+    const [stageUrl, stageInit] = fetchMock.mock.calls[2] as [URL, RequestInit]
+    expect(stageUrl.pathname).toBe('/hermes/api/git/review/stage')
+    expect(stageUrl.searchParams.get('profile')).toBe('active-profile')
+    expect(stageInit.method).toBe('POST')
+    expect(JSON.parse(String(stageInit.body))).toEqual({ file: null, path: '/srv/my repo' })
+
+    const requestCount = fetchMock.mock.calls.length
+    await expect(git.scanRepos(['/srv'])).resolves.toEqual([])
+    await expect(
+      git.review.fetchPrComment('/srv/my repo', 'https://github.com/example/repo/pull/1')
+    ).resolves.toBeNull()
+    expect(fetchMock).toHaveBeenCalledTimes(requestCount)
+  })
+
   it('keeps recovery and filesystem bridge methods safe in browser mode', async () => {
     const win = mutableWindow()
     win.__HERMES_SESSION_TOKEN__ = 'served-token'

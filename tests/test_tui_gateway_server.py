@@ -2747,7 +2747,7 @@ def test_history_to_messages_preserves_tool_calls_for_resume_display():
     ]
 
     assert server._history_to_messages(history) == [
-        {"role": "user", "text": "first prompt"},
+        {"user_originated": True, "role": "user", "text": "first prompt"},
         {
             "args": {"pattern": "resume"},
             "context": "resume",
@@ -2755,7 +2755,7 @@ def test_history_to_messages_preserves_tool_calls_for_resume_display():
             "role": "tool",
         },
         {"role": "assistant", "text": "first answer"},
-        {"role": "user", "text": "second prompt"},
+        {"user_originated": True, "role": "user", "text": "second prompt"},
     ]
 
 
@@ -2803,7 +2803,7 @@ def test_history_to_messages_preserves_live_ask_without_compaction_scaffolding()
                 "reasoning": "internal compaction reasoning",
             }
         ]
-    ) == [{"role": "user", "text": "test the browser controller"}]
+    ) == [{"user_originated": True, "role": "user", "text": "test the browser controller"}]
 
 
 def test_history_to_messages_unwraps_merged_assistant_carrier():
@@ -2921,7 +2921,7 @@ def test_history_to_messages_keeps_reasoning_only_assistant_turn():
     ]
 
     assert server._history_to_messages(history) == [
-        {"role": "user", "text": "think about this"},
+        {"user_originated": True, "role": "user", "text": "think about this"},
         {"role": "assistant", "text": "", "reasoning": "step-by-step thoughts"},
         {"role": "assistant", "text": "here is the answer"},
     ]
@@ -2938,7 +2938,7 @@ def test_history_to_messages_still_drops_empty_assistant_without_reasoning():
     ]
 
     assert server._history_to_messages(history) == [
-        {"role": "user", "text": "hi"},
+        {"user_originated": True, "role": "user", "text": "hi"},
         {"role": "assistant", "text": "real reply"},
     ]
 
@@ -2960,7 +2960,7 @@ def test_history_to_messages_renders_multimodal_content():
     ]
 
     assert server._history_to_messages(history) == [
-        {"role": "user", "text": "look here\ndata:image/png;base64,abc"},
+        {"user_originated": True, "role": "user", "text": "look here\ndata:image/png;base64,abc"},
         {"role": "assistant", "text": "saw it"},
     ]
 
@@ -2991,9 +2991,9 @@ def test_history_to_messages_hides_gateway_system_markers():
     ]
 
     assert server._history_to_messages(history) == [
-        {"role": "user", "text": "first question"},
+        {"user_originated": True, "role": "user", "text": "first question"},
         {"role": "assistant", "text": "first answer"},
-        {"role": "user", "text": "second question"},
+        {"user_originated": True, "role": "user", "text": "second question"},
         {"role": "assistant", "text": "second answer"},
     ]
 
@@ -3029,8 +3029,8 @@ def test_history_to_messages_drops_display_hidden_scaffolding():
     projected = server._history_to_messages(history)
 
     assert projected == [
-        {"role": "user", "text": "go"},
-        {"role": "user", "text": "i love you"},
+        {"user_originated": True, "role": "user", "text": "go"},
+        {"user_originated": True, "role": "user", "text": "i love you"},
         {"role": "assistant", "text": "Love you too"},
     ]
     # Server-only sidecar never crosses the wire.
@@ -3059,7 +3059,7 @@ def test_history_to_messages_projects_a_skill_turn_to_its_invocation():
 
     assert server._history_to_messages(history) == [
         {
-            "role": "user",
+            "user_originated": True, "role": "user",
             "text": "/work fix the title leak",
             "display_kind": "skill_invocation",
         },
@@ -3075,7 +3075,7 @@ def test_history_to_messages_projects_a_bare_skill_turn_to_the_command():
     )
 
     assert server._history_to_messages([{"role": "user", "content": scaffolded}]) == [
-        {"role": "user", "text": "/work", "display_kind": "skill_invocation"}
+        {"user_originated": True, "role": "user", "text": "/work", "display_kind": "skill_invocation"}
     ]
 
 
@@ -3138,9 +3138,9 @@ def test_history_to_messages_types_a_legacy_auto_continue_row():
     projected = server._history_to_messages(history)
 
     assert projected == [
-        {"role": "user", "text": "keep going"},
+        {"user_originated": True, "role": "user", "text": "keep going"},
         {
-            "role": "user",
+            "user_originated": True, "role": "user",
             "text": server._auto_continue_note("keep going"),
             "display_kind": "auto_continue",
         },
@@ -3157,7 +3157,7 @@ def test_history_to_messages_keeps_real_user_bracket_text():
     ]
 
     assert server._history_to_messages(history) == [
-        {"role": "user", "text": "why does [System: ...] show up in my chat?"},
+        {"user_originated": True, "role": "user", "text": "why does [System: ...] show up in my chat?"},
         {"role": "assistant", "text": "it should not"},
     ]
 
@@ -3232,7 +3232,7 @@ def test_session_resume_uses_parent_lineage_for_display(monkeypatch, omit_messag
     )
 
     expected = [] if omit_messages else [
-        {"role": "user", "text": "root prompt"},
+        {"role": "user", "text": "root prompt", "user_originated": True},
         {"role": "assistant", "text": "root answer"},
     ]
     assert resp["result"]["messages"] == expected
@@ -10575,7 +10575,7 @@ def test_session_compress_returns_compute_host_history(monkeypatch):
         "turn_isolation": True,
         "host_ack": {key: value for key, value in ack.items() if key != "messages"},
         "info": {"usage": {"total": 42}},
-        "messages": [{"role": "user", "text": "compressed context"}],
+        "messages": [{"role": "user", "text": "compressed context", "user_originated": True}],
         "usage": {"total": 42},
     }
 
@@ -16777,6 +16777,7 @@ def test_session_activate_returns_inflight_stream_before_completion(monkeypatch)
             "assistant": "partial answer",
             "streaming": True,
             "user": "write a long answer",
+            "user_originated": True,
         }
         turn_started_at = resp["result"]["turn_started_at"]
         assert turn_started_at == server._sessions["sid-live"]["inflight_turn"]["started_at"]
@@ -16795,7 +16796,7 @@ def test_session_activate_returns_inflight_stream_before_completion(monkeypatch)
         assert completed["result"].get("inflight") is None
         assert completed["result"]["turn_started_at"] is None
         assert completed["result"]["messages"] == [
-            {"role": "user", "text": "write a long answer"},
+            {"role": "user", "text": "write a long answer", "user_originated": True},
             {"role": "assistant", "text": "partial answer complete"},
         ]
     finally:
@@ -16873,7 +16874,7 @@ def test_session_activate_switches_live_session_without_closing_siblings(monkeyp
         assert resp["result"]["status"] == "working"
         assert resp["result"]["info"] == {"model": "model-b"}
         assert resp["result"]["messages"] == [
-            {"role": "user", "text": "new prompt"},
+            {"role": "user", "text": "new prompt", "user_originated": True},
             {"role": "assistant", "text": "new answer"},
         ]
     finally:

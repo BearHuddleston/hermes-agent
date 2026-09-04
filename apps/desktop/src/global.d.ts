@@ -303,6 +303,8 @@ declare global {
       /** Browser-hosted drag/drop stages File bytes in authenticated,
        *  profile-scoped host storage. Native shells already expose real paths. */
       stageFileForAttach?: (file: File) => Promise<string>
+      /** Source ownership returned when this browser stages a file on its host. */
+      getStagedFileForAttach?: (path: string) => HermesStagedUpload | undefined
       normalizePreviewTarget: (target: string, baseDir?: string) => Promise<HermesPreviewTarget | null>
       watchPreviewFile: (url: string) => Promise<HermesPreviewWatch>
       /** Watch a directory for entry churn (disk-plugin door); same watcher
@@ -1436,6 +1438,14 @@ export interface HermesPreviewFileChanged {
   id: string
   path: string
   url: string
+}
+
+/** Backend-provided source identity, not an authorization token. */
+export interface HermesStagedUpload {
+  install_id: string
+  path: string
+  profile_home: string
+  profile_incarnation: string | null
 }
 
 export interface HermesSelectPathsOptions {
