@@ -79,6 +79,10 @@ capability-minimal sandboxed iframe, with an **Open in browser** action for
 sites that reject embedding. Electron-only DevTools and trusted-input preview
 automation are not exposed through that iframe.
 
+Host files download through your browser's download manager. Supported audio
+and video play inline with seeking, using the server's existing file-access
+rules and size limit.
+
 Useful build/lifecycle flags:
 
 - `--skip-build` reuses `apps/desktop/dist-webapp`.

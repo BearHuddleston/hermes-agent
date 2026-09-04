@@ -274,6 +274,12 @@ declare global {
         path?: string
         saved: boolean
       }>
+      /** Browser media elements need an authenticated HTTP source, not Electron's custom protocol. */
+      getGatewayFileStreamUrl?: (payload: {
+        connectionId?: null | string
+        path: string
+        profile?: null | string
+      }) => Promise<string>
       saveImageFromUrl: (url: string) => Promise<boolean>
       /** Edit verb against the window's focused element (the custom context
        *  menu's Cut/Copy/Paste/Select all). */

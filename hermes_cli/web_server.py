@@ -391,9 +391,10 @@ def _has_valid_session_token(request: Request) -> bool:
     return hmac.compare_digest(auth.encode(), f"Bearer {_SESSION_TOKEN}".encode())
 
 
-# Routes that may also authenticate via ``?token=`` (download links opened by
-# the OS shell / a new tab, where no header can be set). Kept narrow.
-_QUERY_TOKEN_API_PATHS: frozenset[str] = frozenset({"/api/files/download"})
+# Routes that may also authenticate via ``?token=`` (browser downloads and
+# audio/video elements cannot set headers). The OAuth gate still requires its
+# session cookie; query tokens are only accepted by the loopback token gate.
+_QUERY_TOKEN_API_PATHS: frozenset[str] = frozenset({"/api/files/download", "/api/files/stream"})
 
 
 def _has_valid_query_token(request: Request, path: str) -> bool:

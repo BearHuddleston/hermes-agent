@@ -488,6 +488,7 @@ def _managed_file_response(
 
 
 @router.get("/api/files/download")
+@router.head("/api/files/download")
 async def download_managed_file(request: Request, path: str):
     """Stream a managed file as an attachment download.
 

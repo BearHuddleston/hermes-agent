@@ -122,6 +122,16 @@ function endpointUrl(path: string, basePath: string, profile?: null | string): U
   return url
 }
 
+function authenticatedEndpointUrl(bootstrap: BrowserBootstrap, path: string, profile?: null | string): URL {
+  const url = endpointUrl(path, bootstrap.basePath, profile)
+
+  // Downloads and media elements cannot set the session header. Gated hosts
+  // use their same-origin cookie; loopback hosts use the injected token.
+  if (bootstrap.token) {url.searchParams.set('token', bootstrap.token)}
+
+  return url
+}
+
 function websocketUrl(
   basePath: string,
   path: string,
@@ -941,6 +951,15 @@ export function installBrowserDesktopBridge(): boolean {
 
       return getGatewayWsUrl(payload.profile)
     },
+    getGatewayFileStreamUrl: async payload => {
+      requireBrowserConnection(payload.connectionId)
+
+      return authenticatedEndpointUrl(
+        bootstrap,
+        queryPath('/api/files/stream', { path: payload.path }),
+        payload.profile ?? browserProfile()
+      ).href
+    },
     getRemoteDisplayReason: async () => 'Browser-hosted Desktop uses this server as its backend',
     getVersion: async () => ({
       appVersion: 'browser-hosted',
@@ -1089,6 +1108,20 @@ export function installBrowserDesktopBridge(): boolean {
       return ''
     },
     saveImageBuffer: saveBuffer,
+    saveGatewayFile: async payload => {
+      requireBrowserConnection(payload.connectionId)
+      const path = queryPath('/api/files/download', { path: payload.path })
+      const profile = payload.profile ?? browserProfile()
+
+      // Validate before handing the transfer to the browser so missing or
+      // denied files surface in the chat without navigating away. HEAD keeps
+      // large downloads out of renderer memory.
+      await api({ method: 'HEAD', path, profile })
+
+      return {
+        saved: await downloadUrl(authenticatedEndpointUrl(bootstrap, path, profile).href, payload.suggestedName)
+      }
+    },
     saveImageFromUrl: (url: string) => downloadUrl(url),
     sanitizeWorkspaceCwd: async (cwd?: null | string) => ({ cwd: cwd || '', sanitized: false }),
     selectPaths: options => selectBrowserFiles(bootstrap, options, browserProfile()),

@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { $connection } from '@/store/session'
 
 import { installBrowserDesktopBridge } from './browser-desktop-bridge'
+import { downloadGatewayMediaFile, resolveMediaPlaybackSrc } from './media'
 
 type MutableWindow = Window & {
   __HERMES_AUTH_REQUIRED__?: boolean
@@ -434,6 +435,78 @@ describe('browser-hosted Desktop bridge', () => {
     expect(requestUrl.searchParams.get('path')).toBe('/tmp/example.txt')
     expect(requestUrl.searchParams.get('profile')).toBe('active-files')
     expect(new Headers(init.headers).get('X-Hermes-Session-Token')).toBe('served-token')
+  })
+
+  it.each(['token', 'cookie'])('downloads browser files with %s auth on the original profile', async auth => {
+    const win = mutableWindow()
+    const token = auth === 'token' ? 'served / token' : ''
+    win.__HERMES_SESSION_TOKEN__ = token
+    win.__HERMES_AUTH_REQUIRED__ = auth === 'cookie'
+    win.__HERMES_BASE_PATH__ = '/hermes'
+    const fetchMock = vi.fn().mockResolvedValue(new Response(null, { status: 200 }))
+    vi.stubGlobal('fetch', fetchMock)
+    const downloads: HTMLAnchorElement[] = []
+    vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(function (this: HTMLAnchorElement) {
+      downloads.push(this)
+    })
+
+    expect(installBrowserDesktopBridge()).toBe(true)
+    $connection.set(await win.hermesDesktop!.getConnectionFor!({ connectionId: 'local', profile: 'research' }))
+    const pending = downloadGatewayMediaFile('file:///srv/reports/a%20b.pdf')
+    $connection.set({ mode: 'remote', profile: 'switched-profile' } as never)
+    await expect(pending).resolves.toMatchObject({ saved: true })
+
+    const [requestUrl, init] = fetchMock.mock.calls[0] as [URL, RequestInit]
+    expect(requestUrl.pathname).toBe('/hermes/api/files/download')
+    expect(requestUrl.searchParams.get('path')).toBe('/srv/reports/a b.pdf')
+    expect(requestUrl.searchParams.get('profile')).toBe('research')
+    expect(init.method).toBe('HEAD')
+    expect(init.credentials).toBe('same-origin')
+    expect(new Headers(init.headers).get('X-Hermes-Session-Token')).toBe(token || null)
+    expect(downloads).toHaveLength(1)
+    const url = new URL(downloads[0].href)
+    expect(url.origin).toBe(window.location.origin)
+    expect(url.pathname).toBe(requestUrl.pathname)
+    expect(url.searchParams.get('path')).toBe(requestUrl.searchParams.get('path'))
+    expect(url.searchParams.get('profile')).toBe('research')
+    expect(url.searchParams.get('token')).toBe(token || null)
+    expect(downloads[0].download).toBe('a b.pdf')
+    expect(downloads[0].isConnected).toBe(false)
+
+    fetchMock.mockResolvedValue(new Response(null, { status: 404 }))
+    await expect(downloadGatewayMediaFile('/srv/missing.pdf')).rejects.toThrow('404')
+    await expect(win.hermesDesktop!.saveGatewayFile!({
+      connectionId: 'another-host', path: '/srv/reports/a b.pdf'
+    })).rejects.toThrow('No connection with id "another-host"')
+    expect(downloads).toHaveLength(1)
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+  })
+
+  it.each(['token', 'cookie'])('streams browser audio/video over HTTP with %s auth', async auth => {
+    const win = mutableWindow()
+    const token = auth === 'token' ? 'served / token' : ''
+    win.__HERMES_SESSION_TOKEN__ = token
+    win.__HERMES_AUTH_REQUIRED__ = auth === 'cookie'
+    win.__HERMES_BASE_PATH__ = '/hermes'
+    const fetchMock = vi.fn()
+    vi.stubGlobal('fetch', fetchMock)
+
+    expect(installBrowserDesktopBridge()).toBe(true)
+    $connection.set(await win.hermesDesktop!.getConnectionFor!({ connectionId: 'local', profile: 'research' }))
+
+    for (const path of ['/srv/a b.mp4', '/srv/voice.m4a']) {
+      const url = new URL(await resolveMediaPlaybackSrc(`file://${encodeURI(path)}`))
+      expect(url.origin).toBe(window.location.origin)
+      expect(url.pathname).toBe('/hermes/api/files/stream')
+      expect(url.searchParams.get('path')).toBe(path)
+      expect(url.searchParams.get('profile')).toBe('research')
+      expect(url.searchParams.get('token')).toBe(token || null)
+    }
+
+    await expect(resolveMediaPlaybackSrc('https://cdn.example.com/video.mp4')).resolves.toBe(
+      'https://cdn.example.com/video.mp4'
+    )
+    expect(fetchMock).not.toHaveBeenCalled()
   })
 
   it('persists browser image bytes through the existing chat upload API', async () => {
