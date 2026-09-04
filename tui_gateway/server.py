@@ -82,10 +82,6 @@ from tui_gateway.render import make_stream_renderer, render_diff, render_message
 
 _sessions: dict[str, dict] = {}
 _profile_lifecycle = ProfileLifecycleFence()
-# Compatibility aliases for tests and integrations that clear/inspect the
-# process-local fence between isolated gateway runs.
-_retired_profile_homes = _profile_lifecycle.retired_homes
-_retired_profile_incarnations = _profile_lifecycle.retired_incarnations
 _methods: dict[str, callable] = {}
 _pending: dict[str, tuple[str, threading.Event]] = {}
 _pending_prompt_payloads: dict[str, tuple[str, dict]] = {}
@@ -496,7 +492,7 @@ def _profile_home(profile: str | None) -> Path | None:
             raise FileNotFoundError(f"Profile '{canon}' is missing or being deleted.")
         return None
     with _sessions_lock:
-        if _profile_home_key(home) in _retired_profile_homes:
+        if _profile_lifecycle.key(home) in _profile_lifecycle.retired_homes:
             raise FileNotFoundError(f"Profile '{canon}' is missing or being deleted.")
     if profiles_mod.profile_home_is_tombstoned(home):
         raise FileNotFoundError(f"Profile '{canon}' is missing or being deleted.")

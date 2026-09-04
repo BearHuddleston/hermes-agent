@@ -367,18 +367,8 @@ async def upload_chat_image(payload: ChatImageUpload, profile: Optional[str] = N
 
                 completed = False
                 try:
-                    try:
+                    with _io_errors("Image directory is not writable", "Could not write image"):
                         target.write_bytes(data)
-                    except PermissionError:
-                        raise HTTPException(
-                            status_code=403,
-                            detail="Image directory is not writable",
-                        )
-                    except OSError as exc:
-                        raise HTTPException(
-                            status_code=500,
-                            detail=f"Could not write image: {exc}",
-                        ) from exc
                     if named_profile_home_is_unavailable(home) or not target.is_file():
                         raise HTTPException(
                             status_code=404,

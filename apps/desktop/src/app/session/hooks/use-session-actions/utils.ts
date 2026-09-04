@@ -1116,12 +1116,12 @@ function transcriptAnchorMatches(a: ChatMessage, b: ChatMessage): boolean {
     return false
   }
 
-  const aText = normalizedMessageText(a)
-  const bText = normalizedMessageText(b)
-
   if (a.rowId !== undefined && b.rowId !== undefined) {
     return a.rowId === b.rowId
   }
+
+  const aText = normalizedMessageText(a)
+  const bText = normalizedMessageText(b)
 
   if (a.timestamp !== undefined && b.timestamp !== undefined) {
     return a.timestamp === b.timestamp && aText === bText

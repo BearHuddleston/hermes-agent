@@ -302,8 +302,15 @@ def test_windows_browser_file_upload_cannot_publish_into_recreated_profile(
     )
 
 
+@pytest.mark.parametrize(
+    ("write_error", "expected_status", "expected_detail"),
+    [
+        (PermissionError("image write denied"), 403, "Image directory is not writable"),
+        (OSError("image write failed"), 500, "Could not write image: image write failed"),
+    ],
+)
 def test_browser_image_upload_cleanup_failure_does_not_mask_write_status(
-    tmp_path: Path, monkeypatch
+    tmp_path: Path, monkeypatch, write_error, expected_status, expected_detail
 ):
     image_dir = tmp_path / "hermes-home" / "images"
     real_write_bytes = Path.write_bytes
@@ -311,7 +318,7 @@ def test_browser_image_upload_cleanup_failure_does_not_mask_write_status(
 
     def fail_image_write(path: Path, data: bytes):
         if path.parent == image_dir:
-            raise PermissionError("image write denied")
+            raise write_error
         return real_write_bytes(path, data)
 
     def fail_image_cleanup(path: Path, *args, **kwargs):
@@ -332,8 +339,8 @@ def test_browser_image_upload_cleanup_failure_does_not_mask_write_status(
             headers={_SESSION_HEADER: "webapp-test-token"},
         )
 
-    assert response.status_code == 403
-    assert response.json()["detail"] == "Image directory is not writable"
+    assert response.status_code == expected_status
+    assert response.json()["detail"] == expected_detail
 
 
 def _assert_browser_image_upload_cannot_publish_into_recreated_profile(

@@ -361,10 +361,6 @@ def _teardown_popped_session(
 _PROFILE_INCARNATION_UNSET = object()
 
 
-def _profile_home_key(profile_home: Path | str) -> str:
-    return _profile_lifecycle.key(profile_home)
-
-
 def _profile_home_rejected(
     profile_home: Path | str | None,
     profile_incarnation: str | None | object = _PROFILE_INCARNATION_UNSET,

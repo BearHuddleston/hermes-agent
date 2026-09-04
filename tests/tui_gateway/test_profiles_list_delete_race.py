@@ -31,8 +31,8 @@ def home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     monkeypatch.setattr(Path, "home", classmethod(lambda cls: fake_home))
     monkeypatch.setattr(profiles, "_get_wrapper_dir", lambda: fake_home / ".local" / "bin")
     with srv._sessions_lock:
-        srv._retired_profile_homes.clear()
-        srv._retired_profile_incarnations.clear()
+        srv._profile_lifecycle.retired_homes.clear()
+        srv._profile_lifecycle.retired_incarnations.clear()
     return hermes_home
 
 

@@ -713,15 +713,7 @@ def _(rid, params: dict) -> dict:
     except FileNotFoundError:
         return _err(rid, 4041, "profile incarnation changed during clipboard paste")
 
-    return _ok(
-        rid,
-        {
-            "attached": True,
-            "path": str(img_path),
-            "count": len(session["attached_images"]),
-            **_image_meta(img_path),
-        },
-    )
+    return _ok(rid, _attached_image_result(session, img_path))
 
 
 @method("image.attach")
