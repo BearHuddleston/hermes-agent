@@ -174,6 +174,38 @@ describe('PreviewPane console state', () => {
     })
   })
 
+  it('keeps the original URL available outside an embedded browser preview after loading', () => {
+    globalThis.document.documentElement.dataset.hermesDesktopHost = 'browser'
+    const openPreviewInBrowser = vi.fn(async () => undefined)
+    vi.stubGlobal('hermesDesktop', { openPreviewInBrowser })
+
+    const target = {
+      kind: 'url' as const,
+      label: 'Preview',
+      source: 'https://example.com/original',
+      url: 'https://example.com/original'
+    }
+
+    const rendered = render(<PreviewPane embedded target={target} />)
+
+    // Browsers also fire load when framing is denied. Recovery must stay
+    // available without guessing whether the frame loaded successfully.
+    fireEvent.load(rendered.container.querySelector('iframe')!)
+    expect(openPreviewInBrowser).not.toHaveBeenCalled()
+
+    fireEvent.click(rendered.getByRole('button', { name: 'Open in browser' }))
+    expect(openPreviewInBrowser).toHaveBeenCalledExactlyOnceWith(target.url)
+
+    const nextTarget = { ...target, source: 'https://example.org/next', url: 'https://example.org/next' }
+    rendered.rerender(<PreviewPane embedded target={nextTarget} />)
+    fireEvent.load(rendered.container.querySelector('iframe')!)
+    expect(openPreviewInBrowser).toHaveBeenCalledTimes(1)
+
+    fireEvent.click(rendered.getByRole('button', { name: 'Open in browser' }))
+    expect(openPreviewInBrowser).toHaveBeenCalledTimes(2)
+    expect(openPreviewInBrowser).toHaveBeenLastCalledWith(nextTarget.url)
+  })
+
   // The bar is chrome for a LIVE page. A file peek, an artifact, and remote
   // HTML in a sandboxed iframe have no webview to navigate.
   it('shows the browser bar only for a live webview preview', async () => {

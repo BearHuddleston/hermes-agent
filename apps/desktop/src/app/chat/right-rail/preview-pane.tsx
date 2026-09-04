@@ -9,10 +9,12 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { requestComposerAttachImages, requestComposerFocus, requestComposerInsert } from '@/app/chat/composer/focus'
 import { openGuestContextMenu } from '@/app/context-menu/store'
 import { PanelEmpty } from '@/app/overlays/panel'
+import { Button } from '@/components/ui/button'
 import { Tip } from '@/components/ui/tooltip'
 import { type Translations, useI18n } from '@/i18n'
 import { isBrowserHostedDesktop, isDesktopFsRemoteMode } from '@/lib/desktop-fs'
 import { guardGuestPointers } from '@/lib/guest-pointer-guard'
+import { ExternalLink } from '@/lib/icons'
 import { openPreviewTargetInBrowser, remoteHtmlPreviewDocument } from '@/lib/local-preview'
 import { isRemoteGateway } from '@/lib/media'
 import {
@@ -1362,6 +1364,27 @@ export function PreviewPane({ embedded = false, onRestartServer, reloadRequest =
                 </a>
               </Tip>
             </div>
+          </div>
+        )}
+
+        {/* Framing denials can still fire load, and cross-origin navigation
+            is private to the frame. Always offer the original URL. */}
+        {usesBrowserIframe && !isBlankPage && (
+          <div className="pointer-events-auto flex flex-wrap items-center gap-x-3 gap-y-1 px-3 py-2 text-xs text-(--ui-text-secondary)">
+            <p className="min-w-0 flex-1">{copy.embeddedPreviewHint}</p>
+            <Tip label={copy.openTarget(target.url)}>
+              <Button
+                onClick={() =>
+                  void openPreviewTargetInBrowser(target).catch(error => notifyError(error, t.preview.unavailable))
+                }
+                size="xs"
+                type="button"
+                variant="secondary"
+              >
+                <ExternalLink />
+                {t.preview.openInBrowser}
+              </Button>
+            </Tip>
           </div>
         )}
 
