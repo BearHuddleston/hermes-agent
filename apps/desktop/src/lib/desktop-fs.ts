@@ -5,6 +5,7 @@ import type {
   HermesReadFileTextResult,
   HermesSelectPathsOptions
 } from '@/global'
+import { isBrowserHostedDesktop } from '@/lib/platform'
 import { $connection } from '@/store/session'
 
 export interface DesktopFsRemotePicker {
@@ -39,12 +40,6 @@ function connectionCacheKey(connection: HermesConnection | null) {
 
 export function desktopFsCacheKey(connection: HermesConnection | null = $connection.get()) {
   return connectionCacheKey(connection)
-}
-
-export function isBrowserHostedDesktop() {
-  return (
-    typeof document !== 'undefined' && document.documentElement.dataset.hermesDesktopHost === 'browser'
-  )
 }
 
 export function isDesktopFsRemoteMode() {

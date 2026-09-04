@@ -8,7 +8,6 @@ import {
   desktopFileDiff,
   desktopFsCacheKey,
   desktopGitRoot,
-  isBrowserHostedDesktop,
   readDesktopDir,
   readDesktopFileDataUrl,
   readDesktopFileDataUrlLocalFirst,
@@ -16,6 +15,7 @@ import {
   selectDesktopPaths,
   setDesktopFsRemotePicker
 } from './desktop-fs'
+import { isBrowserHostedDesktop } from './platform'
 
 const readDir = vi.fn(async () => ({ entries: [{ name: 'local', path: '/local', isDirectory: true }] }))
 const readFileText = vi.fn(async () => ({ path: '/local/file.txt', text: 'local', byteSize: 5 }))

@@ -73,9 +73,11 @@ tab continues to use the Hermes TUI mode on that same endpoint. Host-shell mode
 is available on loopback and authenticated remote Webapp binds, and is refused
 for any unauthenticated non-loopback bind. Native-only affordances—HUD/global shortcuts,
 always-on-top overlays, OS-window inspection, external-terminal launch, and the
-native updater—remain available only in Electron. URL previews use a
-capability-minimal sandboxed iframe in Webapp; Electron-only DevTools and
-trusted-input preview automation are not exposed through that iframe.
+native updater—remain available only in Electron. Website links open in a
+separate browser tab by default in Webapp. Explicit URL previews use a
+capability-minimal sandboxed iframe, with an **Open in browser** action for
+sites that reject embedding. Electron-only DevTools and trusted-input preview
+automation are not exposed through that iframe.
 
 Useful build/lifecycle flags:
 

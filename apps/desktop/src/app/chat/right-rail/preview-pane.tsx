@@ -12,11 +12,12 @@ import { PanelEmpty } from '@/app/overlays/panel'
 import { Button } from '@/components/ui/button'
 import { Tip } from '@/components/ui/tooltip'
 import { type Translations, useI18n } from '@/i18n'
-import { isBrowserHostedDesktop, isDesktopFsRemoteMode } from '@/lib/desktop-fs'
+import { isDesktopFsRemoteMode } from '@/lib/desktop-fs'
 import { guardGuestPointers } from '@/lib/guest-pointer-guard'
 import { ExternalLink } from '@/lib/icons'
 import { openPreviewTargetInBrowser, remoteHtmlPreviewDocument } from '@/lib/local-preview'
 import { isRemoteGateway } from '@/lib/media'
+import { isBrowserHostedDesktop } from '@/lib/platform'
 import {
   addAnnotatePin,
   beginAnnotateMode,
