@@ -2551,8 +2551,9 @@ def _claim_or_reuse_live(sid: str, session_key: str, record: dict, lease) -> tup
         if live is not None:
             if lease is not None:
                 lease.release()
-            # The winner is being reattached: a pending ws-orphan reap must not fire against the reclaimed client.
-            _cancel_ws_orphan_reap(live[0])
+            # An already-committed interrupt must retain its settlement timer.
+            if not live[1].get("_client_gone_interrupt_requested"):
+                _cancel_ws_orphan_reap(live[0])
             return live
         with _sessions_lock:
             if _profile_home_rejected(

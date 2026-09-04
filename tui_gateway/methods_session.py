@@ -531,16 +531,6 @@ def _resume_live_unpersisted(ctx: _Resume, live_sid: str, live: dict) -> dict:
     sentinel-parked the record) or it fires against this client."""
     if ctx.owns_db:
         _release_db(ctx.db)
-    live["last_active"] = time.time()
-    if (transport := current_transport()) is not None:
-        # This resume reattaches the live record. A lazy session (no state.db row yet — every fresh Bot
-        # Chat) that was sentinel-parked by a WS drop MUST be rebound here, or it keeps the drop sentinel
-        # and the armed orphan-reap Timer fires against a client that is attached right now — the
-        # unpersisted sibling of the storm-killer paths (#91276).
-        with live.setdefault("history_lock", threading.Lock()):
-            live["transport"] = transport
-            live.setdefault("viewers", {})[transport] = time.time()
-    _cancel_ws_orphan_reap(live_sid)
     history = live.get("history") or []
     return _ok(ctx.rid, _attach_todo_state({
         "session_id": live_sid, "stored_session_id": str(live.get("session_key") or ""),
@@ -591,8 +581,23 @@ def _resume_locate(ctx: _Resume) -> dict | None:
         # with empty history — the live mirror streams the turn and the row exists by upgrade time.
         ctx.found = {}
         return None
-    live_sid = _find_live_unpersisted(ctx.target, ctx.profile_home, ctx.profile_incarnation)
-    if (live := _sessions.get(live_sid) if live_sid else None) is not None:
+    with _session_resume_lock:
+        live_sid = _find_live_unpersisted(ctx.target, ctx.profile_home, ctx.profile_incarnation)
+        live = _sessions.get(live_sid) if live_sid else None
+        if live is not None:
+            if live.get("_client_gone_interrupt_requested"):
+                return _err(ctx.rid, 4009, "session disconnect interrupt settling")
+            live["last_active"] = time.time()
+            if (transport := current_transport()) is not None:
+                # This resume reattaches the live record. A lazy session (no state.db row yet — every fresh Bot
+                # Chat) that was sentinel-parked by a WS drop MUST be rebound here, or it keeps the drop sentinel
+                # and the armed orphan-reap Timer fires against a client that is attached right now — the
+                # unpersisted sibling of the storm-killer paths (#91276).
+                with live.setdefault("history_lock", threading.Lock()):
+                    live["transport"] = transport
+                    live.setdefault("viewers", {})[transport] = time.time()
+            _cancel_ws_orphan_reap(live_sid)
+    if live is not None:
         return _resume_live_unpersisted(ctx, live_sid, live)
     if ctx.owns_db:
         _resume_adopt_stranded(ctx)
@@ -901,12 +906,34 @@ def _(rid, params: dict) -> dict:
     return _ok(rid, {"sessions": rows})
 
 
-@_session_method("session.activate")
-def _(rid, params: dict, session: dict) -> dict:
-    """Attach the frontend to a live TUI session without closing the previously focused one."""
-    return _ok(rid, _live_session_payload(
-        str(params.get("session_id") or ""), session, touch=True, transport=current_transport() or _stdio_transport,
-        omit_messages=is_truthy_value(params.get("omit_messages", False))))
+@method("session.activate")
+def _(rid, params: dict) -> dict:
+    """Attach the frontend to an already-live TUI session.
+
+    This intentionally does not close the previously focused session; it merely
+    returns enough state for Ink to redraw around another live session id.
+    """
+    sid = str(params.get("session_id") or "")
+    # Match session.resume's ownership boundary: once the disconnect reaper
+    # claims an interrupt, activation cannot revive the settling record.
+    with _session_resume_lock:
+        session, err = _sess_nowait({"session_id": sid}, rid)
+        if err:
+            return err
+        assert session is not None
+        if session.get("_client_gone_interrupt_requested"):
+            return _err(rid, 4009, "session disconnect interrupt settling")
+
+        return _ok(
+            rid,
+            _live_session_payload(
+                sid,
+                session,
+                touch=True,
+                transport=current_transport() or _stdio_transport,
+                omit_messages=is_truthy_value(params.get("omit_messages", False)),
+            ),
+        )
 
 
 @method("session.delete")
