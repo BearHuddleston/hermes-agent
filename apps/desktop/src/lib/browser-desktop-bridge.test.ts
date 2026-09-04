@@ -185,6 +185,25 @@ describe('browser-hosted Desktop bridge', () => {
     expect(win.hermesDesktop?.quickEntry).toBeUndefined()
   })
 
+  it.each(['getPoolLimits', 'setPoolLimits'])(
+    'rejects native backend pool operations through %s without a server request',
+    async method => {
+      const win = mutableWindow()
+      win.__HERMES_SESSION_TOKEN__ = 'served-token'
+      const fetchMock = vi.fn()
+      vi.stubGlobal('fetch', fetchMock)
+
+      expect(installBrowserDesktopBridge()).toBe(true)
+      const operation = Reflect.get(win.hermesDesktop!, method)
+      expect(typeof operation).toBe('function')
+
+      await expect(operation({ maxBackends: 5 })).rejects.toThrow(
+        'Desktop backend pool sizing is not available in the browser-hosted Desktop'
+      )
+      expect(fetchMock).not.toHaveBeenCalled()
+    }
+  )
+
   it('keeps clipboard writes on the browser-native method captured before renderer shims', async () => {
     const win = mutableWindow()
     win.__HERMES_SESSION_TOKEN__ = 'served-token'

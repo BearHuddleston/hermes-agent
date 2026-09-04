@@ -854,7 +854,19 @@ export function installBrowserDesktopBridge(): boolean {
     return [...new Set((result.profiles || []).map(profile => String(profile.name || '').trim()).filter(Boolean))]
   }
 
+  // Electron owns the pool; a browser host must not report a successful native
+  // settings write. Keep this separate for older preload contracts without it.
+  const nativePoolLimits = {
+    getPoolLimits: async (): Promise<never> => {
+      throw browserUnsupported('Desktop backend pool sizing')
+    },
+    setPoolLimits: async (): Promise<never> => {
+      throw browserUnsupported('Desktop backend pool sizing')
+    }
+  }
+
   const bridge: Window['hermesDesktop'] = {
+    ...nativePoolLimits,
     api,
     applyConnectionConfig: async () => {
       throw browserUnsupported('Gateway reconfiguration')
