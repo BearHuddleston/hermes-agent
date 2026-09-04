@@ -9,7 +9,7 @@ from types import SimpleNamespace
 import pytest
 
 from hermes_cli import main as cli_main
-from hermes_cli import webapp
+from hermes_cli import dashboard_procs, main_dashboard, main_desktop, main_web_build, webapp
 
 
 def _args(**overrides):
@@ -64,10 +64,10 @@ def test_desktop_content_hash_tracks_shared_source(tmp_path: Path):
     desktop_source.write_text("desktop", encoding="utf-8")
     shared_source.write_text("shared-v1", encoding="utf-8")
 
-    before = cli_main._compute_desktop_content_hash(tmp_path)
+    before = main_desktop._compute_desktop_content_hash(tmp_path)
     shared_source.write_text("shared-v2", encoding="utf-8")
 
-    assert cli_main._compute_desktop_content_hash(tmp_path) != before
+    assert main_desktop._compute_desktop_content_hash(tmp_path) != before
 
 
 def _assert_build_lock_excludes_second_open(tmp_path: Path):
@@ -172,7 +172,8 @@ def test_browser_build_uses_locked_closure_and_never_replaces_native_dist(
         _run_npm_install_deterministic=install,
         _run_with_idle_timeout=build,
     )
-    monkeypatch.setattr(webapp, "_main_module", lambda: fake_main)
+    for name, implementation in vars(fake_main).items():
+        monkeypatch.setattr(webapp, name, implementation)
     monkeypatch.setattr(webapp, "_stamp_path", lambda: stamp)
     monkeypatch.setattr(
         "hermes_constants.with_hermes_node_path", lambda: {"PATH": "/node"}
@@ -243,7 +244,7 @@ def test_webapp_runs_through_the_shared_dashboard_server(tmp_path: Path, monkeyp
 def test_webapp_status_is_scoped_and_does_not_build(monkeypatch):
     reported = []
     monkeypatch.setattr(
-        cli_main,
+        main_dashboard,
         "_report_dashboard_status",
         lambda **kwargs: reported.append(kwargs) or 0,
     )
@@ -272,12 +273,12 @@ def test_webapp_stop_never_targets_desktop_serve_backend(monkeypatch):
     )
     killed = []
     monkeypatch.setattr(
-        cli_main,
+        dashboard_procs,
         "_scan_dashboard_processes",
         lambda: next(scans),
     )
     monkeypatch.setattr(
-        cli_main,
+        dashboard_procs,
         "_kill_stale_dashboard_processes",
         lambda **kwargs: killed.append(kwargs) or {"killed": [111]},
     )
@@ -322,22 +323,22 @@ def test_webapp_process_identity_uses_the_existing_web_server_lifecycle(monkeypa
         "--port",
         "9443",
     )
-    assert cli_main._parse_dashboard_runtime(
+    assert main_dashboard._parse_dashboard_runtime(
         "python -m hermes_cli.main webapp --host 0.0.0.0 --port 9443"
     ) == ("webapp", "0.0.0.0", 9443)
-    assert cli_main._parse_dashboard_runtime(
+    assert main_dashboard._parse_dashboard_runtime(
         "python -m hermes_cli.main -p default webapp --port 9119"
     ) == ("webapp", "127.0.0.1", 9119)
-    assert cli_main._parse_dashboard_runtime(
+    assert main_dashboard._parse_dashboard_runtime(
         "python hermes_cli/main.py -p coder webapp --port 9120"
     ) == ("webapp", "127.0.0.1", 9120)
-    assert cli_main._parse_dashboard_runtime(
+    assert main_dashboard._parse_dashboard_runtime(
         "python nothermes_cli/main.py webapp --port 9121"
     ) is None
-    assert cli_main._parse_dashboard_runtime(
+    assert main_dashboard._parse_dashboard_runtime(
         "python /tmp/myhermes_cli/main.py webapp --port 9122"
     ) is None
-    assert cli_main._parse_dashboard_runtime(
+    assert main_dashboard._parse_dashboard_runtime(
         "python -m nothermes_cli.main webapp --port 9123"
     ) is None
     assert _is_dashboard_lifecycle_probe(
@@ -412,10 +413,10 @@ def test_dashboard_and_webapp_builds_enter_the_same_workspace_lock(tmp_path: Pat
 
     monkeypatch.setattr(webapp, "_exclusive_build_lock", record_lock)
     monkeypatch.setattr(webapp, "_try_file_lock", lambda _handle: False)
-    monkeypatch.setattr(cli_main, "_do_build_web_ui", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(main_web_build, "_do_build_web_ui", lambda *_args, **_kwargs: True)
 
     assert webapp.prepare_webapp_renderer(tmp_path, skip_build=True) == dist
-    assert cli_main._build_web_ui(tmp_path / "web") is True
+    assert main_web_build._build_web_ui(tmp_path / "web") is True
     assert lock_paths == [
         tmp_path / ".web_ui_build.lock",
         tmp_path / ".web_ui_build.lock",
@@ -431,12 +432,12 @@ def test_dashboard_serves_existing_dist_while_shared_workspace_lock_is_busy(
     dashboard_index.write_text("existing", encoding="utf-8")
     monkeypatch.setattr(webapp, "_try_file_lock", lambda _handle: False)
     monkeypatch.setattr(
-        cli_main,
+        main_web_build,
         "_do_build_web_ui",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("must not build")),
     )
 
-    assert cli_main._build_web_ui(tmp_path / "web") is True
+    assert main_web_build._build_web_ui(tmp_path / "web") is True
 
 
 def test_webapp_help_describes_its_scoped_lifecycle(capsys):

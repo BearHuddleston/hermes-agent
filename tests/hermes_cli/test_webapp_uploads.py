@@ -11,6 +11,10 @@ import tempfile
 import threading
 
 import pytest
+
+from hermes_cli import profile_lifecycle
+from hermes_cli.web_routers import files as image_routes
+from hermes_cli import web_server_profiles
 from fastapi import HTTPException, UploadFile
 from fastapi.testclient import TestClient
 
@@ -357,7 +361,7 @@ def _assert_browser_image_upload_cannot_publish_into_recreated_profile(
             yield leased_home
 
     monkeypatch.setattr(
-        web_server,
+        image_routes,
         "profile_incarnation_lease",
         pause_before_publish,
         raising=False,
@@ -444,7 +448,7 @@ def test_browser_image_upload_never_creates_a_missing_profile_home(
     def missing_scope(_profile):
         yield profile_home
 
-    monkeypatch.setattr(web_server, "_profile_scope", missing_scope)
+    monkeypatch.setattr(web_server_profiles, "_profile_scope", missing_scope)
     with _client(tmp_path, monkeypatch) as client:
         response = client.post(
             "/api/chat/image-upload?profile=worker",
@@ -465,14 +469,14 @@ def test_browser_uploads_reject_tombstone_before_profile_directory_removal(
     profile_home = tmp_path / "hermes-home" / "profiles" / "worker"
     profile_home.mkdir(parents=True)
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes-home"))
-    profiles._mark_profile_deleting(profile_home)
+    profile_lifecycle.mark_profile_deleting(profile_home)
 
     @contextmanager
     def deleting_scope(_profile):
         yield profile_home
 
     monkeypatch.setattr(uploads, "_profile_scope", deleting_scope)
-    monkeypatch.setattr(web_server, "_profile_scope", deleting_scope)
+    monkeypatch.setattr(web_server_profiles, "_profile_scope", deleting_scope)
     with _client(tmp_path, monkeypatch) as client:
         file_response = client.post(
             "/api/chat/file-upload?profile=worker",
@@ -509,7 +513,7 @@ def test_browser_file_upload_does_not_report_a_path_after_tombstone_wins(
 
     def tombstone_after_flush(fd):
         real_fsync(fd)
-        profiles._mark_profile_deleting(profile_home)
+        profile_lifecycle.mark_profile_deleting(profile_home)
 
     monkeypatch.setattr(uploads, "_profile_scope", profile_scope)
     monkeypatch.setattr(uploads.os, "fsync", tombstone_after_flush)
@@ -543,11 +547,11 @@ def test_browser_image_upload_does_not_report_a_path_after_tombstone_wins(
         nonlocal checks
         checks += 1
         if checks >= 3:
-            profiles._mark_profile_deleting(Path(home))
+            profile_lifecycle.mark_profile_deleting(Path(home))
             return True
         return False
 
-    monkeypatch.setattr(web_server, "_profile_scope", profile_scope)
+    monkeypatch.setattr(web_server_profiles, "_profile_scope", profile_scope)
     monkeypatch.setattr(
         hermes_constants,
         "named_profile_home_is_unavailable",

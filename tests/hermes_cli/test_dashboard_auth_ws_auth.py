@@ -304,15 +304,15 @@ class TestWsAuthOkGated:
             "/api/audio/speak-stream",
         ):
             ws = _fake_ws(query={"internal": credential}, path=path)
-            assert web_server._ws_auth_reason(ws) == (
+            assert _web_server_chat._ws_auth_reason(ws) == (
                 "internal_not_allowed",
                 "internal",
             )
 
         gateway = _fake_ws(query={"internal": credential}, path="/api/ws")
         publisher = _fake_ws(query={"internal": credential}, path="/api/pub")
-        assert web_server._ws_auth_ok(gateway, allow_internal=True) is True
-        assert web_server._ws_auth_ok(publisher, allow_internal=True) is True
+        assert _web_server_chat._ws_auth_ok(gateway, allow_internal=True) is True
+        assert _web_server_chat._ws_auth_ok(publisher, allow_internal=True) is True
 
     def test_rejection_audit_logs(self, gated_app, tmp_path, monkeypatch):
         # Point the audit log at a tmp dir so we can read what got written.
@@ -519,4 +519,3 @@ class TestGatewayWsUrl:
         gw_cred = gw.split("internal=")[1].split("&")[0]
         sc_cred = sc.split("internal=")[1].split("&")[0]
         assert gw_cred == sc_cred
-

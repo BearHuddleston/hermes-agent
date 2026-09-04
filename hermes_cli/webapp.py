@@ -16,6 +16,11 @@ import secrets
 import shutil
 import time
 
+from hermes_cli.main_desktop import _compute_desktop_content_hash
+from hermes_cli.main_install_repair import _resolve_node_runtime_npm
+from hermes_cli.main_tui_launch import _npm_lifecycle_env
+from hermes_cli.main_web_build import _run_npm_install_deterministic, _run_with_idle_timeout
+
 
 _DIST_NAME = "dist-webapp"
 _STAMP_NAME = "desktop-webapp-build-stamp.json"
@@ -27,13 +32,6 @@ _LOCK_WAIT_SECONDS = 30 * 60
 
 class WebappBuildError(RuntimeError):
     """The browser-hosted Desktop renderer could not be prepared."""
-
-
-def _main_module():
-    """Resolve main lazily so this leaf module never creates an import cycle."""
-    from hermes_cli import main
-
-    return main
 
 
 def webapp_dist_dir(project_root: Path) -> Path:
@@ -58,7 +56,7 @@ def _build_needed(project_root: Path, *, force: bool = False) -> bool:
         return True
 
     saved_hash = str(payload.get("contentHash") or "")
-    return not saved_hash or saved_hash != _main_module()._compute_desktop_content_hash(
+    return not saved_hash or saved_hash != _compute_desktop_content_hash(
         project_root
     )
 
@@ -67,7 +65,7 @@ def _write_stamp(project_root: Path) -> None:
     stamp = _stamp_path()
     payload = {
         "builtAt": datetime.now(timezone.utc).isoformat(),
-        "contentHash": _main_module()._compute_desktop_content_hash(project_root),
+        "contentHash": _compute_desktop_content_hash(project_root),
         "surface": "desktop-webapp",
     }
     stamp.parent.mkdir(parents=True, exist_ok=True)
@@ -203,8 +201,7 @@ def _do_build(project_root: Path, *, force: bool) -> Path:
     if not (desktop_dir / "package.json").is_file():
         raise WebappBuildError(f"Desktop workspace not found at {desktop_dir}")
 
-    main = _main_module()
-    npm = main._resolve_node_runtime_npm()
+    npm = _resolve_node_runtime_npm()
     if not npm:
         raise WebappBuildError(
             "Hermes Webapp needs Node.js/npm to build its Desktop renderer"
@@ -212,11 +209,11 @@ def _do_build(project_root: Path, *, force: bool) -> Path:
 
     from hermes_constants import with_hermes_node_path
 
-    install_env = main._npm_lifecycle_env(with_hermes_node_path())
+    install_env = _npm_lifecycle_env(with_hermes_node_path())
     install_env["ELECTRON_SKIP_BINARY_DOWNLOAD"] = "1"
     install_env["npm_config_ignore_scripts"] = "true"
     print("→ Installing the locked browser-renderer dependency closure...")
-    installed = main._run_npm_install_deterministic(
+    installed = _run_npm_install_deterministic(
         npm,
         project_root,
         extra_args=_workspace_install_args(),
@@ -233,7 +230,7 @@ def _do_build(project_root: Path, *, force: bool) -> Path:
     print("→ Building the Hermes Desktop renderer for the browser...")
     staging = desktop_dir / f".dist-webapp-build-{os.getpid()}-{secrets.token_hex(4)}"
     try:
-        built = main._run_with_idle_timeout(
+        built = _run_with_idle_timeout(
             [
                 npm,
                 "run",

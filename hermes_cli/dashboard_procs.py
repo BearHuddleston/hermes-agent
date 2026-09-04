@@ -170,7 +170,7 @@ def _profile_flag_value(argv: list[str]) -> str | None:
 
 
 def _is_ephemeral_port_zero_backend(argv: list[str]) -> bool:
-    """True for Desktop-style ``serve|dashboard --port 0`` backends — replaying them after
+    """True for Desktop-style ``serve|dashboard|webapp --port 0`` backends — replaying them after
     ``hermes update`` multiplies listening backends because ``--port 0`` binds a fresh port.
 
     See #78821.
@@ -412,7 +412,7 @@ def _kill_stale_dashboard_processes(
     else:
         unrecovered = list(killed)
         if killed:
-            print("  Restart the dashboard when you're ready:\n    hermes dashboard --port <port>")
+            print("  Restart the browser surface or backend when you're ready:\n    hermes dashboard|webapp|serve --port <port>")
     return {"matched": list(pids), "killed": list(killed), "failed": list(failed),
             "unrecovered": list(unrecovered)}
 

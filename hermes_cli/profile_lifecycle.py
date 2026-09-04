@@ -140,20 +140,12 @@ def serialized_profile_mutation(func):
     return wrapped
 
 
-# Compatibility name retained for callers that imported the former owner.
-_serialized_profile_mutation = serialized_profile_mutation
-
-
 def profile_deletion_marker(profile_dir: Path | str) -> Path:
     """Return the durable tombstone path for a named profile home."""
     marker = profile_deletion_marker_path(Path(profile_dir))
     if marker is None:
         raise ValueError(f"Not a named profile home: {profile_dir}")
     return marker
-
-
-# Compatibility name retained for the profile CLI's existing call sites.
-_profile_deletion_marker = profile_deletion_marker
 
 
 def mark_profile_deleting(
@@ -191,9 +183,6 @@ def mark_profile_deleting(
     return marker
 
 
-_mark_profile_deleting = mark_profile_deleting
-
-
 def clear_profile_deletion_marker(profile_dir: Path | str) -> None:
     """Remove a named profile's durable tombstone after publication/rollback."""
     marker = profile_deletion_marker(profile_dir)
@@ -202,9 +191,6 @@ def clear_profile_deletion_marker(profile_dir: Path | str) -> None:
         marker.parent.rmdir()
     except OSError:
         pass
-
-
-_clear_profile_deletion_marker = clear_profile_deletion_marker
 
 
 def profile_home_is_tombstoned(profile_dir: Path | str) -> bool:
@@ -254,9 +240,6 @@ def retire_in_process_profile_resources(
     return retired
 
 
-_retire_in_process_profile_resources = retire_in_process_profile_resources
-
-
 def allow_in_process_profile_resources(
     profile_dir: Path | str,
     profile_incarnation: str | None = None,
@@ -275,9 +258,6 @@ def allow_in_process_profile_resources(
             logger.debug("Failed to admit recreated profile home", exc_info=True)
 
 
-_allow_in_process_profile_resources = allow_in_process_profile_resources
-
-
 def wait_for_profile_state_db_release(profile_dir: Path | str) -> bool:
     """Wait briefly for tracked in-process state.db handles to close."""
     from hermes_cli.sqlite_safe_read import has_live_connection
@@ -289,9 +269,6 @@ def wait_for_profile_state_db_release(profile_dir: Path | str) -> bool:
             return False
         time.sleep(0.05)
     return True
-
-
-_wait_for_profile_state_db_release = wait_for_profile_state_db_release
 
 
 def external_profile_file_holders(profile_dir: Path | str) -> list[int]:
@@ -345,9 +322,6 @@ def external_profile_file_holders(profile_dir: Path | str) -> list[int]:
     return holders
 
 
-_external_profile_file_holders = external_profile_file_holders
-
-
 def wait_for_external_profile_file_release(profile_dir: Path | str) -> list[int]:
     """Return remaining external holders after a bounded release grace."""
     deadline = time.monotonic() + _PROFILE_DB_RELEASE_TIMEOUT_SECONDS
@@ -356,9 +330,6 @@ def wait_for_external_profile_file_release(profile_dir: Path | str) -> list[int]
         if not holders or time.monotonic() >= deadline:
             return holders
         time.sleep(0.05)
-
-
-_wait_for_external_profile_file_release = wait_for_external_profile_file_release
 
 
 def publish_profile_generation(

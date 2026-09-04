@@ -61,9 +61,9 @@ class TestDashboardStatus:
 
     def test_status_reports_webapp_with_os_assigned_port(self, capsys):
         processes = [(12347, "python -m hermes_cli.main webapp --port 0")]
-        with patch("hermes_cli.main._scan_dashboard_processes", return_value=processes), \
+        with patch("hermes_cli.dashboard_procs._scan_dashboard_processes", return_value=processes), \
              patch("gateway.status._pid_exists", return_value=True), \
-             patch("hermes_cli.main._dashboard_listening", side_effect=AssertionError("no fixed port")), \
+             patch("hermes_cli.main_dashboard._dashboard_listening", side_effect=AssertionError("no fixed port")), \
              pytest.raises(SystemExit) as exc:
             cmd_dashboard(_ns(status=True))
 

@@ -28,7 +28,6 @@ from hermes_cli.profile_lifecycle import (
     move_profile_generation,
     profile_deletion_marker,
     profile_home_is_tombstoned,
-    profile_lifecycle_lease,
     serialized_profile_mutation,
     verify_profile_resources_released,
 )
@@ -136,6 +135,7 @@ _HERMES_SUBCOMMANDS = frozenset({
     "chat", "model", "gateway", "setup", "whatsapp", "login", "logout",
     "status", "cron", "doctor", "dump", "config", "pairing", "skills", "tools",
     "mcp", "sessions", "insights", "version", "update", "uninstall", "profile", "plugins", "honcho", "acp",
+    "dashboard", "serve", "webapp",
 })
 
 
@@ -1910,7 +1910,7 @@ def resolve_profile_env(profile_name: str) -> str:
     if canon == "default":
         return str(root)
     profile_dir = root / "profiles" / canon
-    if not profile_dir.is_dir() or named_profile_is_deleted(profile_dir):
+    if not profile_dir.is_dir() or profile_home_is_tombstoned(profile_dir):
         raise _missing_profile_error(canon)
     return str(profile_dir)
 

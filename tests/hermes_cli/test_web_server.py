@@ -34,6 +34,7 @@ import hermes_cli.web_server_lifecycle as _web_server_lifecycle
 import hermes_cli.web_server_memory as _web_server_memory
 import hermes_cli.web_server_messaging as _web_server_messaging
 import hermes_cli.web_server_sessions as _web_server_sessions
+import hermes_cli.web_server_profiles as _web_server_profiles
 
 
 # ---------------------------------------------------------------------------
@@ -3537,8 +3538,8 @@ class TestStatusInstallId:
         import hermes_cli.web_server as ws
 
         monkeypatch.setattr(ws.app.state, "ui_surface", "webapp", raising=False)
-        monkeypatch.setattr(ws, "get_running_pid_cached", lambda: None)
-        monkeypatch.setattr(ws, "read_runtime_status", lambda: None)
+        monkeypatch.setattr(_gw_status, "get_running_pid_cached", lambda: None)
+        monkeypatch.setattr(_gw_status, "read_runtime_status", lambda: None)
 
         response = self.client.get("/api/status")
 
@@ -4538,7 +4539,7 @@ class TestPtyWebSocket:
             raise AssertionError("browser terminal must not launch Hermes TUI")
 
         monkeypatch.setattr(
-            self.ws_module,
+            _web_server_chat,
             "_resolve_host_terminal_argv",
             lambda profile=None, requested_cwd=None: (
                 ["/bin/cat"],
@@ -4549,7 +4550,7 @@ class TestPtyWebSocket:
             raising=False,
         )
         monkeypatch.setattr(
-            self.ws_module,
+            _web_server_chat,
             "_resolve_chat_argv_async",
             fail_chat_resolution,
         )
@@ -4643,14 +4644,14 @@ class TestPtyWebSocket:
         monkeypatch.setattr(app.state, "ui_surface", "dashboard", raising=False)
         monkeypatch.setattr(app.state, "bound_host", "127.0.0.1", raising=False)
         monkeypatch.setattr(app.state, "auth_required", False, raising=False)
-        assert self.ws_module._host_terminal_request_allowed() is False
+        assert _web_server_chat._host_terminal_request_allowed() is False
 
         app.state.ui_surface = "webapp"
         app.state.bound_host = "0.0.0.0"
-        assert self.ws_module._host_terminal_request_allowed() is False
+        assert _web_server_chat._host_terminal_request_allowed() is False
 
         app.state.auth_required = True
-        assert self.ws_module._host_terminal_request_allowed() is True
+        assert _web_server_chat._host_terminal_request_allowed() is True
     def test_tui_python_command_uses_child_path(self, tmp_path):
         """Bare Python commands are resolved from the TUI child's PATH."""
         import hermes_cli.main as main_mod
@@ -4823,9 +4824,7 @@ class TestPtyWebSocket:
 
 
 def _assert_host_terminal_resolver_uses_real_host(tmp_path):
-    import hermes_cli.web_server as ws
-
-    argv, cwd, env, shell_name = getattr(ws, "_resolve_host_terminal_argv")(
+    argv, cwd, env, shell_name = _web_server_chat._resolve_host_terminal_argv(
         requested_cwd=str(tmp_path)
     )
 
@@ -4841,8 +4840,6 @@ def _assert_host_terminal_resolver_uses_real_host(tmp_path):
 def test_host_terminal_resolver_applies_selected_profile_home_and_config(
     tmp_path, monkeypatch
 ):
-    import hermes_cli.web_server as ws
-
     real_home = tmp_path / "real-home"
     current = tmp_path / "profiles" / "current"
     target = tmp_path / "profiles" / "target"
@@ -4857,9 +4854,9 @@ def test_host_terminal_resolver_applies_selected_profile_home_and_config(
     monkeypatch.setenv("HERMES_REAL_HOME", str(real_home))
     monkeypatch.setenv("TERMINAL_HOME_MODE", "profile")
     monkeypatch.setenv("OPENAI_API_KEY", "current-profile-secret")
-    monkeypatch.setattr(ws, "_resolve_profile_dir", lambda _name: target)
+    monkeypatch.setattr(_web_server_profiles, "_resolve_profile_dir", lambda _name: target)
 
-    _argv, _cwd, env, _shell_name = getattr(ws, "_resolve_host_terminal_argv")(
+    _argv, _cwd, env, _shell_name = _web_server_chat._resolve_host_terminal_argv(
         profile="target"
     )
 
@@ -4873,8 +4870,8 @@ def test_host_terminal_resolver_applies_selected_profile_home_and_config(
 def test_host_terminal_resolver_uses_real_linux_shell(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_DESKTOP_SHELL", "/bin/sh")
     _assert_host_terminal_resolver_uses_real_host(tmp_path)
-    import hermes_cli.web_server as ws
-    argv, shell_name = ws._host_shell_spec()
+    from hermes_cli import web_host_terminal
+    argv, shell_name = web_host_terminal.shell_spec()
     assert argv == ["/bin/sh", "-i"]
     assert shell_name == "sh"
 
@@ -4883,8 +4880,8 @@ def test_host_terminal_resolver_uses_real_linux_shell(tmp_path, monkeypatch):
 def test_host_terminal_resolver_uses_real_macos_shell(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_DESKTOP_SHELL", "/bin/sh")
     _assert_host_terminal_resolver_uses_real_host(tmp_path)
-    import hermes_cli.web_server as ws
-    argv, shell_name = ws._host_shell_spec()
+    from hermes_cli import web_host_terminal
+    argv, shell_name = web_host_terminal.shell_spec()
     assert argv == ["/bin/sh", "-i"]
     assert shell_name == "sh"
 
@@ -4893,8 +4890,8 @@ def test_host_terminal_resolver_uses_real_macos_shell(tmp_path, monkeypatch):
 def test_host_terminal_resolver_uses_real_windows_shell(tmp_path, monkeypatch):
     monkeypatch.delenv("HERMES_DESKTOP_SHELL", raising=False)
     _assert_host_terminal_resolver_uses_real_host(tmp_path)
-    import hermes_cli.web_server as ws
-    argv, shell_name = ws._host_shell_spec()
+    from hermes_cli import web_host_terminal
+    argv, shell_name = web_host_terminal.shell_spec()
     assert shell_name.startswith(("pwsh", "powershell", "cmd"))
     assert argv[1:] == ([] if shell_name.startswith("cmd") else ["-NoLogo"])
 
