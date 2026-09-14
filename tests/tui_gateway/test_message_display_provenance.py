@@ -91,7 +91,9 @@ def test_db_rest_and_rpc_keep_canonical_provenance_without_changing_history(
         response = client.get(f"/api/sessions/{key}/messages")
         assert response.status_code == 200
         rest_rows = response.json()["messages"]
-        rpc = server._methods["session.history"]("provenance", {"session_id": key})
+        rpc = server.handle_request({
+            "id": "provenance", "method": "session.history", "params": {"session_id": key},
+        })
         assert "error" not in rpc
         rpc_rows = rpc["result"]["messages"]
 
@@ -138,6 +140,7 @@ def test_db_rest_and_rpc_keep_canonical_provenance_without_changing_history(
 def test_inflight_uses_history_provenance_and_keeps_original_user_text(index):
     from agent.compaction_display import project_compaction_message_for_display
     from tui_gateway import server
+    from tui_gateway.contracts.sessions import InflightTurn
 
     message = _examples()[index]
     original = copy.deepcopy(message)
@@ -152,6 +155,7 @@ def test_inflight_uses_history_provenance_and_keeps_original_user_text(index):
     assert snapshot["user"] == message["content"]
     assert snapshot["user_originated"] is (display is not None and display["user_originated"])
     assert snapshot["assistant"] == "partial answer"
+    assert InflightTurn.model_validate(snapshot).model_dump(exclude_unset=True) == snapshot
     assert message == original
     if display is None:
         assert snapshot["display_kind"] == "hidden"

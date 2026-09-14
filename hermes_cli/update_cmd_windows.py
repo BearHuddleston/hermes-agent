@@ -444,6 +444,15 @@ def _pause_manual_web_servers(matches: list[tuple[int, str, str]]) -> dict | Non
     return token
 
 
+def _is_backend_argv(argv_low: str) -> bool:
+    """Whether an argv is a DESKTOP backend — feeds ``taskkill /T`` via ``_orphaned_desktop_backend_pids``.
+
+    Same predicate as ``_looks_like_desktop_control_plane``: ``-m hermes_cli.main`` entry shape (the
+    Desktop's only spawn shape, ``apps/desktop/electron/main.ts``) AND the canonical holder classifier says
+    ``serve``/``dashboard``. A user-launched ``hermes.exe serve`` / ``hermes dashboard`` is NOT the
+    Desktop's: the guard refuses on it, never reaps it.
+    """
+    return _looks_like_desktop_control_plane(argv_low)
 
 
 def _live_argv_low(psutil, pid, cmdline: str) -> str | None:
@@ -487,7 +496,7 @@ def _orphaned_desktop_backend_pids(matches: list[tuple[int, str, str]]) -> list[
         low = _live_argv_low(psutil, pid, cmdline)
         if low is None:
             continue  # exited between scan and classification — nothing to reap
-        if not _looks_like_desktop_control_plane(low):
+        if not _is_backend_argv(low):
             remaining.append(int(pid))
             continue
         try:
@@ -564,7 +573,7 @@ def _handoff_reapable_backend_pids(matches: list[tuple[int, str, str]]) -> list[
         low = _live_argv_low(psutil, pid, cmdline)
         if low is None:
             continue  # exited — nothing to reap
-        if not _looks_like_desktop_control_plane(low):
+        if not _is_backend_argv(low):
             return None  # unexpected non-backend holder: refuse the whole set
         roots.append(int(pid))
     return roots or None

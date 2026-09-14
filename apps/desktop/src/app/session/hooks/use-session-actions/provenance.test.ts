@@ -3,13 +3,13 @@ import { readFileSync } from 'node:fs'
 import { describe, expect, it } from 'vitest'
 
 import { type ChatMessage, chatMessageText, toChatMessages } from '@/lib/chat-messages'
-import type { SessionMessage, SessionResumeResponse } from '@/types/hermes'
+import type { SessionMessage, SessionResumeResult } from '@/types/hermes'
 
 import { appendLiveSessionProjection, chatMessagesEquivalent, overlayConcurrentMessageChanges, preserveLocalPendingTurnMessages } from './utils'
 
 const snapshot = (
   user: string, userOriginated: boolean, startedAt = 10
-): Pick<SessionResumeResponse, 'session_id' | 'turn_started_at' | 'inflight'> => ({
+): Pick<SessionResumeResult, 'session_id' | 'turn_started_at' | 'inflight'> => ({
   session_id: 'runtime',
   turn_started_at: startedAt,
   inflight: { user, user_originated: userOriginated, assistant: 'partial answer', streaming: true }
