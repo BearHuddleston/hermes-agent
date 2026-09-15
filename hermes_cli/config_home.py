@@ -32,7 +32,21 @@ def _home_directory_path(home: Path) -> Path:
     return home
 
 
-def _ensure_directory(path: Path, *, create: bool, secure: bool, parents: bool = True) -> None:
+def _operator_owned_links(links: list[Path], home: Path) -> list[Path]:
+    """Keep only the links that make the operator the owner of the home's permissions.
+
+    That boundary is the home itself and anything under it. A link *above* the home
+    (macOS ``/tmp`` -> ``/private/tmp``, ``/var`` -> ``/private/var``, or any aliased parent
+    the user happens to live in) says nothing about who owns :data:`home`, and treating it as
+    an operator-owned link left a fresh home and its ``cron``/``sessions``/``logs``/``memories``
+    subdirectories at the default ``0o755`` instead of ``0o700``.
+    """
+    return [link for link in links if link == home or home in link.parents]
+
+
+def _ensure_directory(
+    path: Path, *, create: bool, secure: bool, home: Path, parents: bool = True,
+) -> None:
     from hermes_cli.config import _secure_dir
 
     detail = ""
@@ -48,7 +62,7 @@ def _ensure_directory(path: Path, *, create: bool, secure: bool, parents: bool =
         elif not path.is_dir():
             raise FileNotFoundError(f"Required directory does not exist: {path}")
         # The operator owns permissions beyond a link, including logs/curator.
-        if secure and not links:
+        if secure and not _operator_owned_links(links, home):
             _secure_dir(path)
     except OSError as exc:
         raise HomeInitializationError(
@@ -78,20 +92,23 @@ def initialize_home(
     managed = is_managed()
     old_umask = os.umask(0o007) if managed else None
     try:
-        _ensure_directory(directory_home, create=not managed and not named_profile, secure=not managed)
+        _ensure_directory(
+            directory_home, create=not managed and not named_profile,
+            secure=not managed, home=directory_home,
+        )
         required = ("cron", "sessions", "logs", "memories") if managed else subdirs
         for subdir in required:
             if named_profile and named_profile_home_is_unavailable(home):
                 raise FileNotFoundError(f"Named profile home is missing or being deleted: {home}")
             # A stale initializer must not recreate a deleted profile's parents.
             _ensure_directory(
-                directory_home / subdir, create=not managed, secure=not managed, parents=not named_profile,
+                directory_home / subdir, create=not managed, secure=not managed, home=directory_home, parents=not named_profile,
             )
         if managed:
             if named_profile and named_profile_home_is_unavailable(home):
                 raise FileNotFoundError(f"Named profile home is missing or being deleted: {home}")
             _ensure_directory(
-                directory_home / "logs" / "curator", create=True, secure=False, parents=not named_profile,
+                directory_home / "logs" / "curator", create=True, secure=False, home=directory_home, parents=not named_profile,
             )
         try:
             _ensure_default_soul_md(directory_home)

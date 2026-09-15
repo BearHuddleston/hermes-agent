@@ -267,6 +267,14 @@ command_allowlist:
 
 These patterns are loaded at startup and silently approved in all future sessions.
 
+Entries can be exact command text, a shell-style glob (`podman *`), or a
+dangerous-pattern rule key such as `script execution via heredoc` (the key shown
+in the approval prompt). Rule keys are honored on every surface, including
+unattended ones: a cron job, `hermes chat -q` run or webhook session under
+`cron_mode`/`single_query_mode`/`unattended_mode: deny` still runs a command whose
+detected rule key is in `command_allowlist`, while Tirith content-security
+findings on the same command continue to block it.
+
 The setting must be a list of strings. Legacy installs that stored a list as a
 quoted YAML/JSON string recover that list at load time and log a warning to
 re-save it with `hermes config edit`. Other malformed values are ignored with

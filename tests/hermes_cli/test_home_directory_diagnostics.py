@@ -1,5 +1,6 @@
 """Home initialization must respect operator-owned links and diagnose storage."""
 import shutil
+import stat
 from pathlib import Path
 
 import pytest
@@ -101,12 +102,13 @@ def test_named_home_link_modes_survive_resolution_and_recreation(
     if with_marker:
         profile_incarnation.write_fresh_profile_incarnation(target)
 
+    expected_mode = 0o750 if linked == "home" else 0o700
     config.ensure_hermes_home()
-    assert all(path.stat().st_mode & 0o777 == 0o750 for path in owned_paths)
+    assert all(path.stat().st_mode & 0o777 == expected_mode for path in owned_paths)
     # Plugin discovery binds this same home by its resolved spelling.
     monkeypatch.setenv("HERMES_HOME", str(home.resolve()))
     config.ensure_hermes_home()
-    assert all(path.stat().st_mode & 0o777 == 0o750 for path in owned_paths)
+    assert all(path.stat().st_mode & 0o777 == expected_mode for path in owned_paths)
 
     shutil.rmtree(target)
     target.mkdir(mode=0o750)
@@ -115,7 +117,7 @@ def test_named_home_link_modes_survive_resolution_and_recreation(
     config.ensure_hermes_home()
 
     assert link.is_symlink() and home.resolve() == target
-    assert target.stat().st_mode & 0o777 == 0o750
+    assert target.stat().st_mode & 0o777 == expected_mode
     assert all((target / subdir).is_dir() for subdir in config._HERMES_HOME_SUBDIRS)
     assert (target / "SOUL.md").is_file()
     if not with_marker:
@@ -194,3 +196,65 @@ def test_named_profile_disappearance_during_initialization_never_recreates_home(
 
     assert not home.exists()
     assert str(home) not in config._HERMES_HOME_ENSURED
+
+
+@pytest.mark.linux_only
+@pytest.mark.parametrize("existing", (False, True))
+def test_symlinked_parent_above_home_is_not_an_operator_home_link(
+    tmp_path, monkeypatch, existing
+):
+    """A link above HERMES_HOME is not an operator-owned home link.
+
+    macOS aliases ``/tmp`` -> ``/private/tmp`` and ``/var`` -> ``/private/var``, so a home
+    under the default temp root arrives with a symlinked parent; the same happens for any
+    user whose own directory is aliased. The home and its subdirectories are still ours to
+    secure: they must end up 0o700, both when created fresh and when a previous run left them
+    at the 0o755 default.
+    """
+    real_root = tmp_path / "real"
+    real_root.mkdir()
+    alias = tmp_path / "alias"
+    alias.symlink_to(real_root, target_is_directory=True)
+    home = alias / "hermes"
+    if existing:
+        home.mkdir(parents=True, mode=0o755)
+        for name in config._HERMES_HOME_SUBDIRS:
+            (home / name).mkdir(mode=0o755)
+        assert stat.S_IMODE(home.stat().st_mode) == 0o755
+
+    monkeypatch.setattr(config, "get_hermes_home", lambda: home)
+    monkeypatch.setattr(config, "is_managed", lambda: False)
+    config._HERMES_HOME_ENSURED.pop(str(home), None)
+    config._HERMES_HOME_ENSURED.pop(str(home.resolve()), None)
+
+    config.ensure_hermes_home()
+
+    assert stat.S_IMODE(home.stat().st_mode) == 0o700
+    for name in config._HERMES_HOME_SUBDIRS:
+        mode = stat.S_IMODE((home / name).stat().st_mode)
+        assert mode == 0o700, f"{name} should be 0700, got 0o{mode:o}"
+
+
+@pytest.mark.linux_only
+def test_aliased_parent_still_leaves_an_operator_home_link_alone(tmp_path, monkeypatch):
+    """An operator-owned link at the home boundary keeps owning the mode, aliased parent or not."""
+    real_root = tmp_path / "real"
+    real_root.mkdir()
+    alias = tmp_path / "alias"
+    alias.symlink_to(real_root, target_is_directory=True)
+    shared = real_root / "shared"
+    shared.mkdir(mode=0o750)
+    (shared / "curator").mkdir(mode=0o750)
+    home = alias / "hermes"
+    home.symlink_to(shared, target_is_directory=True)
+
+    monkeypatch.setattr(config, "get_hermes_home", lambda: home)
+    monkeypatch.setattr(config, "is_managed", lambda: False)
+    config._HERMES_HOME_ENSURED.pop(str(home), None)
+    config._HERMES_HOME_ENSURED.pop(str(home.resolve()), None)
+
+    config.ensure_hermes_home()
+
+    assert home.is_symlink() and home.readlink() == shared
+    assert stat.S_IMODE(shared.stat().st_mode) == 0o750
+    assert stat.S_IMODE((shared / "curator").stat().st_mode) == 0o750
