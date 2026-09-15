@@ -233,12 +233,9 @@ def _is_delegated_child_cli_mutation(args: argparse.Namespace) -> bool:
             return False
     elif action not in _DELEGATED_CHILD_DENIED_ACTIONS:
         return False
-    try:
-        from agent.delegation_context import is_delegated_child_process_context
+    from agent.delegation_context import kanban_path_is_fenced
 
-        return is_delegated_child_process_context()
-    except Exception:
-        return bool(os.environ.get("HERMES_DELEGATED_CHILD_CONTEXT"))
+    return kanban_path_is_fenced(kb.kanban_home()) or kanban_path_is_fenced(kb.kanban_db_path())
 
 
 def _joined_words(words) -> Optional[str]:
@@ -919,7 +916,9 @@ def _cmd_block(args: argparse.Namespace) -> int:
             if where == "todo":
                 return f"{tid} → todo (dependency wait){suffix}"
             if where == "triage":
-                return f"{tid} → triage (unblock loop detected — needs a human decision){suffix}"
+                # Only a typed owner-input block carries a question for a human.
+                verdict = "needs a human decision" if kind == "needs_input" else "orchestration attention needed"
+                return f"{tid} → triage (unblock loop detected — {verdict}){suffix}"
             return f"Blocked {tid}{suffix}"
 
         op = _commented(conn, reason, author, "BLOCKED", lambda tid: kb.block_task(

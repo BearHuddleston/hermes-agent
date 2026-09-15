@@ -654,10 +654,16 @@ class CLIInfoMixin:
             except Exception:
                 details = {"skills": [], "toolsets": []}
 
+        from agent.context_file_sources import context_file_sources_for_agent, render_context_file_lines
+        try:
+            file_lines = render_context_file_lines(context_file_sources_for_agent(self.agent))
+        except Exception:
+            file_lines = []
+
         print()
         print(f"  🧠 Context Usage — {payload.get('model') or self.model}")
         print()
-        for line in render_context_breakdown_lines(payload, details=details, grid=True):
+        for line in render_context_breakdown_lines(payload, details=details, grid=True) + ([""] + file_lines if file_lines else []):
             print(f"  {line}")
         print()
 

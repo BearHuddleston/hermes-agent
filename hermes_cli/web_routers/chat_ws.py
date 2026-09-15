@@ -18,6 +18,7 @@ from fastapi import APIRouter, FastAPI, HTTPException, WebSocket, WebSocketDisco
 from agent.interrupt_scope import InterruptScope, bind_interrupt_scope
 from hermes_cli.pty_session import RegistryFull
 from hermes_cli.web_deps import LateState, late
+from hermes_cli.web_routers.chat_ws_errors import chat_start_failure_message
 from hermes_cli.web_server_chat import (
     _build_sidecar_url, _close_stalled_pty_input, _get_console_executor, _legacy_pump, _ws_auth_ok,
     _ws_request_is_allowed,
@@ -416,8 +417,11 @@ async def console_ws(ws: WebSocket) -> None:
                 pass
 
 
-async def _pty_fail(ws: WebSocket, text: str) -> None:
-    await ws.send_text(f"\r\n\x1b[31m{text}\x1b[0m\r\n")
+async def _pty_fail(ws: WebSocket, exc: BaseException, *, surface: str = "Chat") -> None:
+    """Tell the user why chat could not start, then close 1011 so the SPA renders
+    "Start new session". The raw exception goes to the server log only."""
+    _log.warning("pty start failed: %s: %s", type(exc).__name__, exc)
+    await ws.send_text(f"\r\n\x1b[31m{chat_start_failure_message(exc, surface=surface)}\x1b[0m\r\n")
     await ws.close(code=1011)
 
 
@@ -445,7 +449,7 @@ async def pty_ws(ws: WebSocket) -> None:
 
     # Native Windows can't import the POSIX PTY bridge: say so and close cleanly.
     if not _PTY_BRIDGE_AVAILABLE:
-        await _pty_fail(ws, f"{label} unavailable: pseudo-terminal support is not installed on this host.")
+        await _pty_fail(ws, PtyUnavailableError("Pseudo-terminal support is not installed on this host."), surface=label)
         return
 
     profile = ws.query_params.get("profile") or None
@@ -458,7 +462,7 @@ async def pty_ws(ws: WebSocket) -> None:
                 _resolve_host_terminal_argv, profile=profile,
                 requested_cwd=ws.query_params.get("cwd") or None)
         except HTTPException as exc:
-            await _pty_fail(ws, f"Terminal unavailable: {exc.detail}")
+            await _pty_fail(ws, exc, surface=label)
             return
     else:
         raw_resume = ws.query_params.get("resume") or None
@@ -491,10 +495,10 @@ async def pty_ws(ws: WebSocket) -> None:
         try:
             argv, cwd, env = await _resolve_chat_argv_async(**resolve_kwargs)
         except HTTPException as exc:  # unknown/invalid profile
-            await _pty_fail(ws, f"Chat unavailable: {exc.detail}")
+            await _pty_fail(ws, exc)
             return
         except SystemExit as exc:  # _make_tui_argv sys.exit(1)s when node/npm is missing
-            await _pty_fail(ws, f"{label} unavailable: {exc}")
+            await _pty_fail(ws, exc)
             return
 
     attach_token = None if host_terminal else (ws.query_params.get("attach") or None)
@@ -518,10 +522,10 @@ async def pty_ws(ws: WebSocket) -> None:
         try:
             bridge = _spawn()
         except PtyUnavailableError as exc:
-            await _pty_fail(ws, f"{label} unavailable: {exc}")
+            await _pty_fail(ws, exc, surface=label)
             return
         except (FileNotFoundError, OSError) as exc:
-            await _pty_fail(ws, f"{label} failed to start: {exc}")
+            await _pty_fail(ws, exc, surface=label)
             return
         if host_terminal:
             try:
@@ -537,7 +541,7 @@ async def pty_ws(ws: WebSocket) -> None:
     try:
         session, _created = await PTY_REGISTRY.attach_or_spawn(attach_token, spawn=_spawn)
     except (PtyUnavailableError, FileNotFoundError, OSError, RegistryFull) as exc:
-        await _pty_fail(ws, f"{label} unavailable: {exc}")
+        await _pty_fail(ws, exc, surface=label)
         return
 
     # A fresh xterm can't rebuild the TUI from an arbitrary tail of alternate-

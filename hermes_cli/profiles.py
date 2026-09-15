@@ -86,6 +86,27 @@ _PLACEHOLDER_ENV = (
 )
 
 
+def _non_exportable_entries(directory: str, contents: list) -> set:
+    """Entries under *directory* that must never be copied out of a profile: bytecode caches,
+    ``*.sock``/``*.tmp`` names, and anything that is not a regular file, directory, or symlink.
+    :func:`shutil.copytree` cannot copy special files, so a single live Unix socket without a
+    ``.sock`` name (or a FIFO, or a device node) would abort the whole export or clone with
+    ``[Errno 6] No such device or address``. Symlinks survive — copytree recreates them."""
+    ignored: set = set()
+    for entry in contents:
+        if entry == "__pycache__" or entry.endswith((".sock", ".tmp", ".pyc", ".pyo")):
+            ignored.add(entry)
+            continue
+        try:
+            mode = os.lstat(os.path.join(directory, entry)).st_mode
+        except OSError:
+            ignored.add(entry)  # vanished mid-walk — copytree would fail on it anyway
+            continue
+        if not (stat.S_ISREG(mode) or stat.S_ISDIR(mode) or stat.S_ISLNK(mode)):
+            ignored.add(entry)
+    return ignored
+
+
 def _clone_all_copytree_ignore(source_dir: Path):
     """copytree ignore for --clone-all: history artifacts for any source, infrastructure
     only when the source is the default profile (see the two exclude sets above)."""
@@ -94,19 +115,17 @@ def _clone_all_copytree_ignore(source_dir: Path):
     if source_resolved == _get_default_hermes_home().resolve():
         root_exclude |= _CLONE_ALL_DEFAULT_EXCLUDE_ROOT
 
-    def _ignore(directory: str, names: List[str]) -> List[str]:
+    def _ignore(directory: str, names: List[str]) -> set:
         try:
             at_root = Path(directory).resolve() == source_resolved
         except (OSError, ValueError):
             # resolve() can fail on odd FS layouts (broken symlinks, missing parents).
             # Fail open — better to over-copy than silently drop user data.
             at_root = False
-        return [
-            entry for entry in names
-            if entry == "__pycache__"
-            or entry.endswith((".pyc", ".pyo", ".sock", ".tmp"))
-            or (at_root and entry in root_exclude)
-        ]
+        ignored = _non_exportable_entries(directory, names)
+        if at_root:
+            ignored.update(root_exclude & set(names))
+        return ignored
 
     return _ignore
 
@@ -182,6 +201,38 @@ def _missing_profile_error(canon: str) -> FileNotFoundError:
     return FileNotFoundError(f"Profile '{canon}' does not exist. Create it with: hermes profile create {canon}")
 
 
+def _unknown_profile_error(canon: str) -> FileNotFoundError:
+    """For delete/rename/export of a name that matches no profile (likely a typo)."""
+    return FileNotFoundError(f"No profile named '{canon}'. See your profiles with: hermes profile list")
+
+
+def _profile_exists_error(canon: str) -> FileExistsError:
+    return FileExistsError(
+        f"A profile named '{canon}' already exists. Switch to it with `hermes profile use {canon}`, "
+        "see all profiles with `hermes profile list`, or choose a different name."
+    )
+
+
+_PROFILE_NAME_RULE = (
+    "Use lowercase letters, numbers, '-' or '_', starting with a letter or number, "
+    "up to 64 characters"
+)
+
+
+def _suggest_profile_name(name: str) -> str:
+    """Best-effort valid id derived from *name* (``'My Work'`` -> ``'my-work'``); ``my-work`` if nothing usable."""
+    candidate = re.sub(r"[^a-z0-9_-]+", "-", name.strip().lower()).strip("-_")[:64]
+    return candidate if _PROFILE_ID_RE.match(candidate) else "my-work"
+
+
+def _invalid_profile_name_error(name: str) -> ValueError:
+    suggestion = _suggest_profile_name(name)
+    return ValueError(
+        f"{name!r} is not a valid profile name. {_PROFILE_NAME_RULE} (for example: {suggestion}). "
+        f"Then run `hermes profile create {suggestion}`."
+    )
+
+
 # Validation
 
 def normalize_profile_name(name: str) -> str:
@@ -212,7 +263,7 @@ def validate_profile_name(name: str) -> None:
     if name == "default":
         return  # special alias for ~/.hermes
     if not _PROFILE_ID_RE.match(name):
-        raise ValueError(f"Invalid profile name {name!r}. Must match [a-z0-9][a-z0-9_-]{{0,63}}")
+        raise _invalid_profile_name_error(name)
     if name in _RESERVED_NAMES:
         raise ValueError(
             f"Profile name {name!r} is reserved — it collides with either "
@@ -225,7 +276,7 @@ def validate_alias_name(name: str) -> None:
     """Raise ``ValueError`` unless *name* is a safe wrapper filename: it is used verbatim
     under ``~/.local/bin``, so ``../../.bashrc`` must never escape the wrapper dir."""
     if not _PROFILE_ID_RE.match(name):
-        raise ValueError(f"Invalid alias name {name!r}. Must match [a-z0-9][a-z0-9_-]{{0,63}}")
+        raise ValueError(f"Invalid alias name {name!r}. {_PROFILE_NAME_RULE}.")
 
 
 def _canon_valid(name: str) -> str:
@@ -240,7 +291,7 @@ def _existing_profile_dir(name: str) -> Tuple[str, Path]:
     canon = _canon_valid(name)
     profile_dir = get_profile_dir(canon)
     if not profile_dir.is_dir():
-        raise FileNotFoundError(f"Profile '{canon}' does not exist.")
+        raise _unknown_profile_error(canon)
     return canon, profile_dir
 
 
@@ -255,7 +306,7 @@ def get_profile_dir(name: str) -> Path:
     # regex only, not _RESERVED_NAMES: a pre-reserved-list dir like
     # profiles/hermes may still exist and must keep resolving.
     if not _PROFILE_ID_RE.match(canon):
-        raise ValueError(f"Invalid profile name {canon!r}. Must match [a-z0-9][a-z0-9_-]{{0,63}}")
+        raise _invalid_profile_name_error(canon)
     return _get_profiles_root() / canon
 
 
@@ -824,10 +875,16 @@ def _clone_all_into(source_dir: Path, profile_dir: Path, canon: str) -> None:
         )
 
 
-def _bootstrap_profile_dir(profile_dir: Path, source_dir: Optional[Path]) -> None:
+def _bootstrap_profile_dir(profile_dir: Path, source_dir: Optional[Path],
+                           sync_imports: bool = False) -> None:
     """Fresh layout: bootstrap dirs, then either seed a model block (no source) or clone
     config files, installed skills (the dashboard's "clone from default" must keep bundled
-    AND user-installed skills), and memory/identity files from *source_dir*."""
+    AND user-installed skills), and memory/identity files from *source_dir*.
+
+    ``sync_imports`` also copies the source's ``import-sync.json`` (the ``hermes import-agent``
+    manifest) so the clone stays registered against the same external Claude Code / Codex trees
+    and ``hermes -p <clone> import-agent --sync`` keeps pulling from them. The link is to the
+    external tree, never to the source profile: both profiles stay independent islands."""
     profile_dir.mkdir(parents=True, exist_ok=True)
     for subdir in _PROFILE_DIRS:
         (profile_dir / subdir).mkdir(parents=True, exist_ok=True)
@@ -838,9 +895,15 @@ def _bootstrap_profile_dir(profile_dir: Path, source_dir: Optional[Path]) -> Non
         _clone_file(source_dir, profile_dir, relpath)
     source_skills = source_dir / "skills"
     if source_skills.is_dir():
-        shutil.copytree(source_skills, profile_dir / "skills", symlinks=True, dirs_exist_ok=True)
+        shutil.copytree(
+            source_skills, profile_dir / "skills", symlinks=True, dirs_exist_ok=True,
+            ignore=_non_exportable_entries,
+        )
     for relpath in _CLONE_SUBDIR_FILES:
         _clone_file(source_dir, profile_dir, relpath)
+    if sync_imports:
+        from hermes_cli.agent_import_sync import SYNC_MANIFEST_NAME  # lazy: keeps yaml/utils off the hot startup path
+        _clone_file(source_dir, profile_dir, SYNC_MANIFEST_NAME)
 
 
 def _prepare_profile_creation_target(canon: str, profile_dir: Path) -> None:
@@ -849,16 +912,16 @@ def _prepare_profile_creation_target(canon: str, profile_dir: Path) -> None:
         # Empty shells left by post-delete mkdir may be replaced. Identity
         # files mean the leftover is not a shell — fail closed, no rmtree.
         if (profile_dir / "config.yaml").exists() or (profile_dir / ".env").exists():
-            raise FileExistsError(f"Profile '{canon}' already exists at {profile_dir}")
+            raise _profile_exists_error(canon)
         shutil.rmtree(profile_dir)
     if profile_dir.exists():
-        raise FileExistsError(f"Profile '{canon}' already exists at {profile_dir}")
+        raise _profile_exists_error(canon)
 
 
 def _initialize_profile(
     name: str, clone_from: Optional[str] = None, clone_all: bool = False, clone_config: bool = False,
     no_alias: bool = False, no_skills: bool = False, description: Optional[str] = None,
-    clone_channels: bool = False,
+    clone_channels: bool = False, sync_imports: bool = False,
     *, _target_dir: Path,
 ) -> Path:
     """Initialize a staged profile directory before publication.
@@ -870,12 +933,17 @@ def _initialize_profile(
     makes two gateways fight over one bot (``hermes_cli.profile_channels``; callers list what
     was left behind with ``channel_platforms_configured(source_dir)``).
     ``no_skills`` creates an empty profile and writes a marker so ``hermes update`` skips
-    re-seeding its skills; it is mutually exclusive with the clone options, which copy skills."""
+    re-seeding its skills; it is mutually exclusive with the clone options, which copy skills.
+    ``sync_imports`` (``--clone`` only; ``--clone-all`` copies the file anyway) also copies the
+    ``import-agent`` sync manifest so the clone can keep pulling the same external agent trees."""
     if no_skills and (clone_from is not None or clone_config or clone_all):
         raise ValueError(
             "--no-skills is mutually exclusive with --clone / --clone-from / --clone-all "
             "(cloning explicitly copies skills from the source profile)."
         )
+    if sync_imports and not (clone_config or clone_all):
+        raise ValueError("--sync-imports requires --clone or --clone-from (there is no import "
+                         "manifest to carry over without a source profile).")
     cloning = clone_from is not None or clone_all or clone_config
     if clone_channels and not cloning:
         raise ValueError("--clone-channels only applies to a clone (--clone, --clone-from or --clone-all).")
@@ -884,7 +952,7 @@ def _initialize_profile(
         raise ValueError("Cannot create a profile named 'default' — it is the built-in profile (~/.hermes).")
     profile_dir = _target_dir
     if profile_dir.exists():
-        raise FileExistsError(f"Profile '{canon}' already exists at {profile_dir}")
+        raise _profile_exists_error(canon)
     source_dir = _resolve_clone_source(clone_from) if cloning else None
     if source_dir is not None and clone_channels:
         from hermes_cli.profile_channels import clone_channels_refusal
@@ -894,7 +962,7 @@ def _initialize_profile(
     if clone_all and source_dir:
         _clone_all_into(source_dir, profile_dir, canon)
     else:
-        _bootstrap_profile_dir(profile_dir, source_dir)
+        _bootstrap_profile_dir(profile_dir, source_dir, sync_imports=sync_imports)
     if source_dir is not None and not clone_channels:
         from hermes_cli.profile_channels import strip_channel_settings
         stripped = strip_channel_settings(profile_dir, include_state=clone_all, source_dir=source_dir)
@@ -950,6 +1018,7 @@ def create_profile(
     no_skills: bool = False,
     description: Optional[str] = None,
     clone_channels: bool = False,
+    sync_imports: bool = False,
 ) -> Path:
     """Build a named profile behind a tombstone, then publish it atomically."""
     canon = normalize_profile_name(name)
@@ -967,6 +1036,7 @@ def create_profile(
             no_skills=no_skills,
             description=description,
             clone_channels=clone_channels,
+            sync_imports=sync_imports,
             _target_dir=staging_dir,
         )
 
@@ -1389,6 +1459,11 @@ def _delete_profile_confirmed(
     # release its handles before we remove the directory.
     _notify_multiplexer(canon)
 
+    # The main serve process survives; release this profile's transports and probe logs.
+    from hermes_constants import hermes_home_key
+    from tools.mcp_tool_lifecycle import shutdown_mcp_servers
+    shutdown_mcp_servers(scope=hermes_home_key(profile_dir))
+
     with contextlib.suppress(Exception):
         from hermes_state_registry import close_all_under as _close_session_dbs_under
         _closed = _close_session_dbs_under(profile_dir)
@@ -1696,17 +1771,14 @@ def _default_export_ignore(root_dir: Path):
     survive. Everything else (such as an unrelated ``x11-dev/`` directory in a Docker deployment where
     HERMES_HOME equals the cwd) is excluded. Blacklisting was tried first and proved unable to anticipate
     every non-Hermes file the user may have lying alongside HERMES_HOME (#58394). * **Universal exclusions
-    at any depth** — ``__pycache__``, sockets, temp files; plus npm lockfiles, which may appear at the root.
+    at any depth** — ``__pycache__``, sockets and other special files, temp files
+    (:func:`_non_exportable_entries`); plus npm lockfiles, which may appear at the root.
     """
 
     def _ignore(directory: str, contents: list) -> set:
         # Universal exclusions (any depth) plus npm lockfiles that can appear at root.
-        ignored: set = {
-            entry for entry in contents
-            if entry == "__pycache__"
-            or entry.endswith((".sock", ".tmp"))
-            or entry in {"package.json", "package-lock.json"}
-        }
+        ignored = _non_exportable_entries(directory, contents)
+        ignored.update({"package.json", "package-lock.json"} & set(contents))
         if Path(directory) == root_dir:
             ignored.update(entry for entry in contents if entry not in _DEFAULT_EXPORT_INCLUDE_ROOT)
         return ignored
@@ -1773,7 +1845,9 @@ def export_profile(name: str, output_path: str, extra_files: Optional[Dict[str, 
     # copy under a temp dir named after the canonical id: root allow-list for default,
     # credential exclusion for named profiles.
     def _ignore_credentials(directory: str, contents: list) -> set:
-        return _EXPORT_CREDENTIAL_FILES & set(contents)
+        ignored = _non_exportable_entries(directory, contents)
+        ignored.update(_EXPORT_CREDENTIAL_FILES & set(contents))
+        return ignored
 
     ignore = _default_export_ignore(profile_dir) if canon == "default" else _ignore_credentials
     with tempfile.TemporaryDirectory() as tmpdir:
@@ -1796,6 +1870,8 @@ def _import_profile_into_home(
 ) -> Path:
     import tempfile
 
+    if profile_dir.exists():
+        raise _profile_exists_error(canon)
     _get_profiles_root().mkdir(parents=True, exist_ok=True)
 
     def build_and_move() -> str:
@@ -1922,11 +1998,11 @@ def rename_profile(old_name: str, new_name: str) -> Path:
     old_dir = get_profile_dir(old_canon)
     new_dir = get_profile_dir(new_canon)
     if not old_dir.is_dir():
-        raise FileNotFoundError(f"Profile '{old_canon}' does not exist.")
+        raise _unknown_profile_error(old_canon)
     if profile_home_is_tombstoned(old_dir):
         raise RuntimeError(f"Profile '{old_canon}' is being deleted and cannot be renamed.")
     if new_dir.exists():
-        raise FileExistsError(f"Profile '{new_canon}' already exists.")
+        raise _profile_exists_error(new_canon)
     profile_incarnation = ensure_profile_incarnation(old_dir)
 
     # 1. Stop gateway if running
@@ -1942,6 +2018,11 @@ def rename_profile(old_name: str, new_name: str) -> Path:
         print(f"✓ Retired {retired} in-process profile resource(s)")
     if live_mux:
         _notify_multiplexer(old_canon)
+
+    # Cached MCP stderr handles otherwise keep the old home open on Windows.
+    from hermes_constants import hermes_home_key
+    from tools.mcp_tool_lifecycle import shutdown_mcp_servers
+    shutdown_mcp_servers(scope=hermes_home_key(old_dir))
 
     try:
         verify_profile_resources_released(

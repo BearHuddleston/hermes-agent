@@ -61,6 +61,7 @@ except ImportError:
     TrustState = type("_TrustStateStub", (), {"UNVERIFIED": 0, "VERIFIED": 1})  # type: ignore[misc,assignment]
 
 from gateway.config import Platform, PlatformConfig
+from gateway.platforms.base_exec_approval import EA_HEADER_TEXT
 from gateway.platforms.base import (
     gateway_trust_env, BasePlatformAdapter, ExecApprovalPrompt,
     SendResult, resolve_proxy_url, proxy_kwargs_for_aiohttp, _ssrf_redirect_guard,
@@ -195,6 +196,36 @@ def _strip_reply_fallback(body: str) -> str:
                 continue
         stripped.append(line)
     return "\n".join(stripped) if stripped else body
+
+
+# Auth errcodes that genuinely require re-authentication (never retried).
+_MATRIX_PERMANENT_ERRCODES = frozenset({
+    "m_unknown_token",
+    "m_missing_token",
+    "m_forbidden",
+})
+
+
+def _is_permanent_matrix_auth_error(exc: BaseException) -> bool:
+    """Return True only for genuine auth failures that must stop the sync loop.
+
+    A transient homeserver outage surfaces as a 5xx whose body may be an HTML
+    error page (Umbrel's app-proxy returns one). Naive substring checks like
+    ``"403" in str(exc)`` false-positive on digits embedded in that HTML (an SVG
+    path coordinate such as ``1403.2`` contains ``403``) or in the ``since`` token
+    echoed by a timeout message, which stopped the sync loop permanently on a
+    passing blip. mautrix raises ``MatrixRequestError`` with ``errcode`` and
+    ``http_status`` for every non-2xx, so classify on those alone; anything
+    without a structured auth signal (timeouts, dropped connections, 5xx) is
+    retried. Deliberately not ``.status``/``.status_code``/``.code``: those
+    belong to unrelated exception shapes (aiohttp responses, OS errno) and can
+    misclassify on a coincidental integer.
+    """
+    errcode = getattr(exc, "errcode", None)
+    if isinstance(errcode, str) and errcode.strip().lower() in _MATRIX_PERMANENT_ERRCODES:
+        return True
+    status = getattr(exc, "http_status", None)
+    return isinstance(status, int) and status in (401, 403)
 
 
 class _MatrixHtmlSanitizer(HTMLParser):
@@ -1552,7 +1583,7 @@ class MatrixAdapter(BasePlatformAdapter):
 
     # Template attrs for the shared _format_exec_approval core (header + fence + reason only;
     # the smart-deny/scope wording lives in the reaction legend below).
-    _EA_HEADER = "⚠️ **Dangerous command requires approval**\n"
+    _EA_HEADER = f"⚠️ **{EA_HEADER_TEXT}**\n"
     _EA_CMD_BUDGET = 2000
 
     async def _send_reaction_prompt(
@@ -1761,13 +1792,9 @@ class MatrixAdapter(BasePlatformAdapter):
         next_batch = await client.sync_store.get_next_batch()  # resume from the initial sync
         while not self._closing:
             try:
-                # 45s outer cap guards TCP-level hangs the 30s long-poll timeout can't catch.
+                # 45s outer cap guards TCP-level hangs the 30s long-poll timeout cannot catch.
+                # mautrix raises on every non-2xx, so a non-dict here is never an error object.
                 sync_data = await asyncio.wait_for(client.sync(since=next_batch, timeout=30000), timeout=45.0)
-                # Auth failures (M_UNKNOWN_TOKEN) arrive as SyncError objects, not exceptions.
-                _sync_msg = getattr(sync_data, "message", None)
-                if isinstance(_sync_msg, str) and "unknown_token" in _sync_msg.lower():
-                    logger.error("Matrix: permanent auth error from sync: %s — stopping", _sync_msg)
-                    return
                 if isinstance(sync_data, dict):
                     next_batch = await self._absorb_sync(client, sync_data) or next_batch
                     await asyncio.sleep(0)  # let fresh invite joins start before the next sync
@@ -1776,8 +1803,9 @@ class MatrixAdapter(BasePlatformAdapter):
             except Exception as exc:
                 if self._closing:
                     return
-                if any(k in str(exc).lower() for k in ("401", "403", "unauthorized", "forbidden")):
-                    logger.error("Matrix: permanent auth error: %s — stopping sync", exc)
+                # Detect permanent auth/permission failures. Transient 5xx outages must retry.
+                if _is_permanent_matrix_auth_error(exc):
+                    logger.error("Matrix: permanent auth error, stopping sync: %s", exc)
                     return
                 logger.warning("Matrix: sync error: %s — retrying in 5s", exc)
                 await asyncio.sleep(5)

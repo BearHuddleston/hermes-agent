@@ -50,18 +50,36 @@ class InvalidUserConfigError(RuntimeError):
 
 
 _PARSE_FAILURE_FALLBACK_MSG = {
-    "last-known-good": (
-        "Keeping the previously loaded config for this process — "
-        "edits to config.yaml are being IGNORED until the YAML is fixed."),
-    "last-known-good-backup": (
-        "Loading the LAST KNOWN GOOD copy from backups/config/ instead — edits to config.yaml "
-        "since that copy are being IGNORED until the YAML is fixed."),
-    "refuse-write": (
-        "REFUSING to write config.yaml so the existing file is preserved. "
-        "Fix the YAML (hermes config edit) and retry.")}
+    "last-known-good": "Hermes is running on the settings it loaded before the edit until it is fixed, so recent changes are not applied.",
+    "last-known-good-backup": "Hermes is running on your last good settings until it is fixed, so recent changes are not applied.",
+    "refuse-write": "Nothing was written, so the existing file is preserved."}
 _PARSE_FAILURE_DEFAULTS_MSG = (
-    "Falling back to default config — every user override (auxiliary providers, fallback chain, "
-    "model settings) is being IGNORED. Fix the YAML and restart.")
+    "Hermes is running on default settings until it is fixed, so none of your saved settings are applied.")
+_PARSE_FAILURE_REPAIR_MSG = "Open it with `hermes config edit`, fix {where}, then run `hermes config check`."
+
+
+def _yaml_error_location(exc: Exception) -> str:
+    """``"line 12"`` from a PyYAML problem mark (1-based), else ``""``."""
+    mark = getattr(exc, "problem_mark", None) or getattr(exc, "context_mark", None)
+    line = getattr(mark, "line", None)
+    return f"line {line + 1}" if isinstance(line, int) else ""
+
+
+def _yaml_error_details(exc: Exception) -> str:
+    """Single-line ``Details:`` text: the PyYAML problem, or the exception's first line."""
+    problem = getattr(exc, "problem", None)
+    text = f"{problem}" if problem else str(exc).strip()
+    return " ".join(text.split())
+
+
+def format_config_parse_failure(config_path: Path, exc: Exception, *, fallback: str = "defaults") -> str:
+    """User copy for an unparseable config.yaml: what happened, what Hermes is doing, how to fix.
+    Only the problem line/column is printed; the raw PyYAML text goes to a ``Details:`` line."""
+    where = _yaml_error_location(exc)
+    at = f" at {where}" if where else ""
+    fallback_msg = _PARSE_FAILURE_FALLBACK_MSG.get(fallback, _PARSE_FAILURE_DEFAULTS_MSG)
+    repair = _PARSE_FAILURE_REPAIR_MSG.format(where=where or "the problem")
+    return f"Your settings file ({config_path}) has a formatting error{at}. {fallback_msg} {repair}"
 
 
 def _warn_config_parse_failure(
@@ -84,13 +102,12 @@ def _warn_config_parse_failure(
     _CONFIG_PARSE_WARNED.add(key)
     from hermes_cli.config_backups import backup_config
     backup_path = backup_config(config_path, "corrupt")
-    msg = f"Failed to parse {config_path}: {exc}. " + _PARSE_FAILURE_FALLBACK_MSG.get(
-        fallback, _PARSE_FAILURE_DEFAULTS_MSG)
+    msg = format_config_parse_failure(config_path, exc, fallback=fallback)
     if backup_path is not None:
-        msg += f" A copy of the corrupted file was saved to {backup_path}."
-    logger.warning(msg)
+        msg += f" A copy of the broken file was saved to {backup_path}."
+    logger.warning("%s Details: %s", msg, _yaml_error_details(exc))
     try:
-        sys.stderr.write(f"⚠️  hermes config: {msg}\n")
+        sys.stderr.write(f"⚠️  hermes config: {msg}\n    Details: {_yaml_error_details(exc)}\n")
         sys.stderr.flush()
     except Exception:
         pass
@@ -495,12 +512,14 @@ def require_parseable_user_config(*, ignore_user_config: bool = False) -> None:
 
     from hermes_cli.config_backups import backup_config
     backup_path = backup_config(config_path, "corrupt")
+    where = _yaml_error_location(parse_error)
     message = (
-        f"Refusing non-interactive startup because {config_path} is invalid: "
-        f"{parse_error}. Repair the file or pass --ignore-user-config to "
-        "intentionally run with built-in defaults.")
+        f"Hermes stopped because your settings file ({config_path}) has a formatting error"
+        f"{f' at {where}' if where else ''}. Fix it with `hermes config edit` and check with "
+        "`hermes config check`, or add --ignore-user-config to run once with default settings.")
     if backup_path is not None:
-        message += f" A copy was saved to {backup_path}."
+        message += f" A copy of the broken file is at {backup_path}."
+    message += f" Details: {_yaml_error_details(parse_error)}"
     logger.error(message)
     raise InvalidUserConfigError(message) from parse_error
 
@@ -852,6 +871,13 @@ def clear_model_endpoint_credentials(
     if clear_api_key:
         model_cfg.pop("api_key", None)
         model_cfg.pop("api", None)
+        # key_env is a first-class credential POINTER (runtime_provider and
+        # auxiliary_client resolve it), written by custom-endpoint activation.
+        # Leaving it behind on a provider switch routes the NEW provider's
+        # requests to the OLD endpoint's env var — same staleness class as an
+        # inline api_key, so it clears under the same flag.
+        model_cfg.pop("key_env", None)
+        model_cfg.pop("api_key_env", None)
     if clear_api_mode:
         model_cfg.pop("api_mode", None)
     if clear_base_url:
@@ -1076,7 +1102,7 @@ _EXTRA_KNOWN_ROOT_KEYS = {
     "group_sessions_per_user", "thread_sessions_per_user",
     "stt_echo_transcripts", "reset_triggers", "always_log_local", "filter_silence_narration",
     "multiplex_profiles", "profile_routes", "platforms", "require_mention",
-    "unauthorized_dm_behavior", "signal",
+    "unauthorized_dm_behavior", "signal", "allow_all_users",
     "timeouts",          # unified timeout resolution section (agent/deadline.py)
 }
 _KNOWN_ROOT_KEYS = frozenset(DEFAULT_CONFIG.keys()) | _EXTRA_KNOWN_ROOT_KEYS
@@ -1951,11 +1977,23 @@ def read_raw_config_readonly() -> Dict[str, Any]:
 
 
 def _refuse_overwrite(config_path: Path, reason: str, exc: Exception, fix: str) -> RuntimeError:
-    return RuntimeError(f"Refusing to overwrite {config_path}: existing config.yaml {reason} ({exc}). {fix}")
+    """Error for a write that must not replace an existing config.yaml. Plain lead + ``Details:``."""
+    where = _yaml_error_location(exc)
+    at = f" ({where})" if where else ""
+    return RuntimeError(
+        f"Your settings file ({config_path}) {reason}{at}, so this change was not saved. {fix} "
+        f"Details: {_yaml_error_details(exc)}")
+
+
+def _backups_dir_display() -> str:
+    from hermes_constants import display_hermes_home
+    return f"{display_hermes_home()}/backups/config/"
 
 
 _FIX_PERMS = "Fix the file permissions or move it aside first."
-_FIX_YAML = "Fix the file or restore a copy from backups/config/ first."
+_FIX_YAML = (
+    "Fix it with `hermes config edit` and check with `hermes config check`, or copy the newest good "
+    "file from {backups} over config.yaml.")
 
 
 def require_readable_config_before_write(config_path: Optional[Path] = None) -> Dict[str, Any]:
@@ -1980,16 +2018,16 @@ def require_readable_config_before_write(config_path: Optional[Path] = None) -> 
         raise _refuse_overwrite(config_path, "cannot be read", exc, _FIX_PERMS) from exc
     except Exception as exc:
         _warn_config_parse_failure(config_path, exc, fallback="refuse-write")
-        raise _refuse_overwrite(config_path, "is not valid YAML", exc, _FIX_YAML) from exc
+        raise _refuse_overwrite(
+            config_path, "has a formatting error", exc, _FIX_YAML.format(backups=_backups_dir_display())) from exc
     if loaded is None:
         return {}
     if not isinstance(loaded, dict):
         exc = TypeError(f"top-level YAML must be a mapping, got {type(loaded).__name__}")
         _warn_config_parse_failure(config_path, exc, fallback="refuse-write")
-        raise RuntimeError(
-            f"Refusing to overwrite {config_path}: top-level YAML must be a mapping, got "
-            f"{type(loaded).__name__}. Fix the file or restore a copy from backups/config/ first."
-        ) from exc
+        raise _refuse_overwrite(
+            config_path, f"must start with settings names, but its top level is a {type(loaded).__name__}",
+            exc, _FIX_YAML.format(backups=_backups_dir_display())) from exc
     return loaded
 
 
@@ -2739,10 +2777,27 @@ def redact_key(key: str) -> str:
 
 # Key names (case-insensitive, exact match) whose VALUE is a credential and must be masked
 # before printing any config dict. Exact-match so ``token_count`` / ``secret_santa`` stay visible.
+# Bare ``auth`` is deliberately absent: ``mcp_servers.<s>.auth: oauth`` is a documented mode enum.
 _SECRET_CONFIG_KEYS = frozenset({
     "api_key", "apikey", "key", "token", "access_token", "refresh_token", "id_token",
-    "secret", "client_secret", "password", "passwd", "auth", "authorization",
+    "secret", "client_secret", "password", "passwd", "authorization",
     "private_key", "bearer", "jwt"})
+# Env-map shapes (``mcp_servers.<s>.env.FOO_API_KEY``, ``FAL_KEY``, ``AWS_SECRET_ACCESS_KEY``) and
+# the suffixes ``_is_env_config_key`` routes to .env. Suffix-only so ``token_count`` stays visible.
+_SECRET_CONFIG_KEY_SUFFIXES = ("_api_key", "_token", "_secret", "_password", "_key", "_access_key")
+# .env-routed keys are credentials by default; these suffixes name the non-secret exceptions
+# (``TERMINAL_SSH_HOST``, ``TOOL_GATEWAY_URL``, ``BROWSERBASE_PROJECT_ID``).
+_NON_SECRET_KEY_SUFFIXES = ("_url", "_host", "_user", "_id", "_domain", "_scheme")
+_ENV_PLACEHOLDER_RE = re.compile(r"^\$\{[A-Za-z_][A-Za-z0-9_]*\}$")
+
+
+def _is_secret_config_key(key: str) -> bool:
+    """Whether the LAST segment of a config key names a credential value. Header names
+    (``mcp_servers.<s>.headers.X-API-Key``) are folded to snake_case before matching."""
+    leaf = key.rsplit(".", 1)[-1].lower().replace("-", "_")
+    if _is_env_config_key(key):
+        return not leaf.endswith(_NON_SECRET_KEY_SUFFIXES)
+    return leaf in _SECRET_CONFIG_KEYS or leaf.endswith(_SECRET_CONFIG_KEY_SUFFIXES)
 
 
 def redact_config_value(value: Any, _depth: int = 0) -> Any:
@@ -2755,7 +2810,8 @@ def redact_config_value(value: Any, _depth: int = 0) -> Any:
     if isinstance(value, dict):
         return {
             k: mask_secret(v)
-            if isinstance(k, str) and k.lower() in _SECRET_CONFIG_KEYS and isinstance(v, str) and v
+            if isinstance(k, str) and _is_secret_config_key(k) and isinstance(v, str) and v
+            and not _ENV_PLACEHOLDER_RE.match(v)
             else redact_config_value(v, _depth + 1)
             for k, v in value.items()}
     if isinstance(value, list):
@@ -3511,7 +3567,7 @@ def set_config_value(key: str, value: str, force: bool = False):
     # Mask the echoed value when the (possibly nested) key is credential-shaped, e.g.
     # ``model.api_key`` (lowercase, so it misses the .env routing above).
     _display_value = value
-    if key.rsplit(".", 1)[-1].lower() in _SECRET_CONFIG_KEYS and isinstance(value, str) and value:
+    if _is_secret_config_key(key) and isinstance(value, str) and value:
         from agent.redact import mask_secret
         _display_value = mask_secret(value)
     print(f"✓ Set {key} = {_display_value} in {config_path}")
@@ -3523,8 +3579,10 @@ def set_config_value(key: str, value: str, force: bool = False):
         _print_unknown_key_notice(key, suggestion)
 
 
-def get_config_value(key: str, *, as_json: bool = False):
-    """Print a resolved configuration value."""
+def get_config_value(key: str, *, as_json: bool = False, raw: bool = False):
+    """Print a resolved configuration value. Credentials are masked unless ``--raw`` or
+    ``security.redact_secrets: false``: ``print`` bypasses the log redactor, and the agent runs
+    this command from sessions whose transcripts persist (#84106, #110758)."""
     if _is_env_config_key(key):
         env_value = get_env_value(key.upper())
         value = _MISSING if env_value is None else env_value
@@ -3536,6 +3594,14 @@ def get_config_value(key: str, *, as_json: bool = False):
 
     if value is _MISSING:
         _exit_invalid(f"Config key not set: {key}")
+
+    from agent.redact import _redact_enabled, mask_secret
+    if not raw and _redact_enabled():
+        if isinstance(value, str):
+            if _is_secret_config_key(key) and not _ENV_PLACEHOLDER_RE.match(value):
+                value = mask_secret(value)
+        else:
+            value = redact_config_value(value)
 
     print(_format_config_get_value(value, as_json=as_json))
 
@@ -3600,7 +3666,7 @@ def _run_write_command(fn, *args) -> None:
         _exit_invalid(f"✗ {exc}")
 
 
-_USAGE_GET = ("Usage: hermes config get <key> [--json]", [
+_USAGE_GET = ("Usage: hermes config get <key> [--json] [--raw]", [
     "hermes config get model", "hermes config get terminal.backend",
     "hermes config get skills.config --json"], None)
 _USAGE_SET = ("Usage: hermes config set [--force] <key> <value>", [
@@ -3617,7 +3683,7 @@ def _cmd_config_get(args):
     key = getattr(args, 'key', None)
     if not key:
         _usage_exit(*_USAGE_GET)
-    get_config_value(key, as_json=getattr(args, 'json', False))
+    get_config_value(key, as_json=getattr(args, 'json', False), raw=bool(getattr(args, 'raw', False)))
 
 
 def _cmd_config_set(args):
