@@ -497,6 +497,12 @@ export const zhHant = defineLocale({
       terminalFontPlaceholder: 'MesloLGS NF 或 CSS 字型堆疊',
       terminalFontPreview: '字形預覽',
       terminalFontReset: '使用預設字型',
+      chatFontTitle: '聊天字型',
+      chatFontDesc: '為聊天與應用程式介面選擇已安裝的字型，適合 OpenDyslexic 等易讀字型；留空則使用主題字型。',
+      chatFontPlaceholder: 'OpenDyslexic 或 CSS 字型堆疊',
+      chatFontPreview: '預覽',
+      chatFontSample: '敏捷的棕色狐狸跳過懶狗。0123456789',
+      chatFontReset: '使用主題字型',
       translucencyTitle: '視窗透明',
       translucencyDesc: '讓整個視窗（包括文字）透出桌面。',
       translucencyGlassDesc: '霧面玻璃：桌面以柔和模糊透出，文字保持清晰。',
@@ -1231,8 +1237,7 @@ export const zhHant = defineLocale({
       updateAction: '更新引擎',
       updating: '正在更新引擎…',
       upToDateTitle: '引擎已是最新',
-      upToDateDetail: (tag, backend) => `正在執行 llama.cpp ${tag}（${backend}）——Hermes 提供的最新組建。`,
-      updateToast: next => `本地引擎有新組建（${next}）。可在 設定 → 本地模型 中更新。`,
+      upToDateDetail: (tag, backend) => `正在執行 llama.cpp ${tag}（${backend}）——已設定的組建。`,
       activeDetail: '新對話使用此模型——傳送首條訊息時載入',
       activeNotLoaded: '首條訊息時載入',
       loadedPill: '已載入',
@@ -3556,6 +3561,11 @@ export const zhHant = defineLocale({
       'composer-mentions': {
         title: '附件與指令',
         text: '輸入 @ 把檔案帶入對話，輸入 / 執行指令。'
+      },
+      'local-runtime-update': {
+        title: '本機引擎有可用更新',
+        text: '更新執行本機模型的引擎。進行中的本機請求可能會中斷。',
+        action: '立即更新'
       },
       'local-setup': {
         title: '這台電腦可以本地執行模型',

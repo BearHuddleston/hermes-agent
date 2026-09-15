@@ -783,7 +783,7 @@ type LiveSessionProjection = Pick<
   [safelyUnpersistedInflightUser]?: true
 }
 
-type ReconciledSessionResumeResponse = SessionResumeResult & {
+type ReconciledSessionResumeResult = SessionResumeResult & {
   [safelyPersistedInflightUser]?: true
   [safelyUnpersistedInflightUser]?: true
 }
@@ -1164,7 +1164,7 @@ export function dedupeInflightUserAgainstTranscript(
   runtimeMessages: ChatMessage[],
   projection: SessionResumeResult,
   localMessages: ChatMessage[] = []
-): ReconciledSessionResumeResponse {
+): ReconciledSessionResumeResult {
   const inflightUser = projection.inflight?.user?.replace(/\s+/g, ' ').trim() ?? ''
 
   const hasAuthoritativeTurnBoundary =
