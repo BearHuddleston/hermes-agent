@@ -146,6 +146,17 @@ export const CatalogBrowser = memo(function CatalogBrowser({
   const details = selected ? (
     <>
       <header className="space-y-3">
+        {selected.imageUrl && (
+          <img
+            alt=""
+            className="block aspect-[2/1] w-full rounded-md border border-(--ui-border) object-cover"
+            decoding="async"
+            loading="lazy"
+            onError={e => { e.currentTarget.style.display = 'none' }}
+            referrerPolicy="no-referrer"
+            src={selected.imageUrl}
+          />
+        )}
         <div className="flex items-start gap-3">
           <Codicon className="mt-1 shrink-0 text-(--ui-text-tertiary)" name={kind === 'plugins' ? 'extensions' : 'book'} size="1.5rem" />
           <div className="min-w-0">

@@ -868,14 +868,13 @@ def _clone_all_into(source_dir: Path, profile_dir: Path, canon: str) -> None:
         (profile_dir / stale).unlink(missing_ok=True)
     # auth.json / .anthropic_oauth.json copied verbatim fork single-use OAuth grants
     # (Anthropic / Codex / xAI): one credential with two owners, and the first profile to
-    # refresh revokes the pair for every sibling. Drop the copies; the clone reads the root
-    # grant through the credential-pool fallback.
+    # refresh revokes the pair for every sibling. Drop the copies; the clone signs in itself.
     from hermes_cli.auth import strip_cloned_single_use_oauth_grants
     stripped = strip_cloned_single_use_oauth_grants(profile_dir)
     if any(stripped.values()):
         logger.info(
             "profile %s: dropped cloned single-use OAuth grants %s "
-            "(inherits the root grant instead)", canon, stripped,
+            "(run `hermes -p %s auth add <provider>` to sign in)", canon, stripped, canon,
         )
 
 
@@ -1060,6 +1059,15 @@ def create_profile(
 def _notify_multiplexer(canon: str) -> None:
     from hermes_cli.gateway_multiplex_served import notify_multiplexer_profiles_changed
     notify_multiplexer_profiles_changed(canon)
+
+
+def _purge_identity(canon: str) -> bool:
+    """Settle a deleted profile's durable identity (``profile_identity.purge_profile_identity``).
+
+    False means the filesystem delete happened but the identity settlement did not — the caller
+    reports that as a pending settlement rather than a clean success."""
+    from hermes_cli.profile_identity import purge_profile_identity
+    return purge_profile_identity(canon)
 
 
 def _live_default_multiplexer() -> bool:
@@ -1369,6 +1377,25 @@ def _profile_delete_confirmation_identity(profile_dir: Path) -> tuple[int, int, 
     return _profile_directory_identity(profile_dir)
 
 
+class ProfileIdentitySettlementPending(RuntimeError):
+    """The profile's directory was deleted, but its durable session/routing identity was not
+    settled (``hermes_cli.profile_identity.purge_profile_identity`` returned False).
+
+    Subclasses ``RuntimeError`` so delete-failure handling that treats the error as fatal (the
+    CLI's ``hermes profile delete``) keeps working unchanged; surfaces that can report a partial
+    success (the dashboard's ``DELETE /api/profiles/{name}``) catch this type — it carries the
+    profile, its now-removed path, and the retry command — instead of matching on the message.
+    """
+
+    def __init__(self, profile: str, path: Path):
+        self.profile = profile
+        self.path = path
+        self.retry_command = f"hermes profile purge-identity {profile}"
+        super().__init__(
+            f"Profile '{profile}' was deleted, but its session/routing identity settlement is "
+            f"still pending — run: {self.retry_command}")
+
+
 def delete_profile(name: str, yes: bool = False) -> Path:
     """Delete a profile, its wrapper script, and its gateway service (service disabled first
     to prevent auto-restart, gateway stopped if running)."""
@@ -1474,6 +1501,15 @@ def _delete_profile_confirmed(
         if _closed:
             print(f"✓ Released {_closed} session database connection(s) held by this process")
 
+    # The Desktop serve process routes its agent/errors logs for every profile through one
+    # QueueListener. On Windows those ConcurrentRotatingFileHandler instances retain their
+    # ``.__*.lock`` files until explicitly closed, so rmtree otherwise fails with WinError 32.
+    with contextlib.suppress(Exception):
+        from hermes_logging import release_profile_log_handlers
+        _released_logs = release_profile_log_handlers(profile_dir)
+        if _released_logs:
+            print(f"✓ Released {_released_logs} profile log handler(s) held by this process")
+
     verify_profile_resources_released(
         profile_dir,
         profile_incarnation,
@@ -1502,7 +1538,15 @@ def _delete_profile_confirmed(
     if remove_error is not None:
         raise RuntimeError(f"Could not remove profile directory {profile_dir}: {remove_error}") from remove_error
 
+    # A refused retirement restores the profile; preserve its routing until removal succeeds.
+    identity_settled = _purge_identity(canon)
     print(f"\nProfile '{canon}' deleted.")
+    if not identity_settled:
+        # Filesystem work and runtime teardown are done; the durable identity is not. Report the
+        # partial settlement as a typed failure (still a RuntimeError for the CLI's handler)
+        # instead of a clean success; the type carries the path and the retry for surfaces that
+        # can report a partial success.
+        raise ProfileIdentitySettlementPending(canon, profile_dir)
     return profile_dir
 
 

@@ -1388,6 +1388,7 @@ def _plugin_rows() -> list[dict]:
     cat = _tools_mod("hermes_cli.plugins_cmd_catalog")
     enabled, disabled = pc._get_enabled_set(), pc._get_disabled_set()
     pins = cat.catalog_pins()  # powers the desktop's "Update to <pin>" affordance
+    versions = cat.catalog_versions()
     ref_pins = pc._read_install_metadata()  # ``--ref`` installs: pinned_sha so the desktop can show the pin
     out = []
     for name, version, desc, source, _dir, key in sorted(pc._discover_all_plugins()):
@@ -1405,7 +1406,7 @@ def _plugin_rows() -> list[dict]:
             "source": source, "status": status, "portable": pc._is_portable_plugin_dir(_dir),
             "install_dir": str(_dir_path) if _dir_path else "",
             "has_desktop_half": bool(_dir_path and (_dir_path / "desktop" / "plugin.js").is_file()),
-            **cat.catalog_row_fields(_dir, pins),
+            **cat.catalog_row_fields(_dir, pins, versions),
             **({"pinned_sha": sha} if (sha := pc.pinned_revision(name, ref_pins)) else {})})
     return out
 
