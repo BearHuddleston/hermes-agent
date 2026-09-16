@@ -1642,7 +1642,15 @@ export interface McpCatalogEntry {
   /** Composer-suggestion triggers (present when the manifest declares a
    *  `suggest` block; null/absent on entries without one and on older
    *  backends that predate the field). */
-  suggest?: { keywords: string[]; hosts: string[] } | null
+  suggest?: {
+    keywords: string[]
+    hosts: string[]
+    applications?: string[]
+    examples?: string[]
+    requires_app?: boolean
+  } | null
+  /** Observed on this entry's backend host, not proof that its MCP is usable. */
+  detected_apps?: string[]
   needs_install: boolean
   installed: boolean
   enabled: boolean
@@ -1651,6 +1659,7 @@ export interface McpCatalogEntry {
 export interface McpCatalogResponse {
   entries: McpCatalogEntry[]
   diagnostics: { name: string; kind: string; message: string }[]
+  discovery?: { scope: 'backend'; status: 'ok' | 'unavailable'; platform: string }
 }
 
 /** `GET /api/memory` — active provider + built-in memory file sizes. */
