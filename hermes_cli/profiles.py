@@ -31,7 +31,7 @@ from hermes_cli.profile_lifecycle import (
     serialized_profile_mutation,
     verify_profile_resources_released,
 )
-from hermes_constants import named_profile_is_deleted
+from hermes_constants import LOCAL_RUNTIME_ROOT_DIRS, named_profile_is_deleted
 
 logger = logging.getLogger(__name__)
 
@@ -54,12 +54,16 @@ _CLONE_ALL_STRIP: list[str] = ["gateway.pid", "gateway_state.json", "processes.j
 
 # Infrastructure excluded from --clone-all ONLY when the source is the default profile
 # (``~/.hermes``): git checkout (+ ~3 GB venv), worktrees, sibling profiles, shared bins,
-# npm packages. Named profiles never hold these at root, so the gate avoids silently
-# dropping user data from a named-profile source. Export uses a root allow-list instead
-# (``_DEFAULT_EXPORT_INCLUDE_ROOT``): an archive is a portable snapshot, a clone must run.
+# npm packages, and the managed local-models trees — GGUF weights (tens of GB), the
+# llama.cpp runtime binaries and the managed Node install, all re-downloadable on demand
+# and resolved from the default root only. Named profiles never hold these at root, so the
+# gate avoids silently dropping user data from a named-profile source. Export uses a root
+# allow-list instead (``_DEFAULT_EXPORT_INCLUDE_ROOT``): an archive is a portable snapshot,
+# a clone must run. The runtime trio is ``LOCAL_RUNTIME_ROOT_DIRS``, shared with
+# ``hermes_cli.backup._EXCLUDED_ROOT_DIRS`` so the two lists cannot drift.
 _CLONE_ALL_DEFAULT_EXCLUDE_ROOT: frozenset[str] = frozenset({
     "hermes-agent", ".worktrees", "profiles", "bin", "node_modules",
-})
+}) | LOCAL_RUNTIME_ROOT_DIRS
 
 # Per-profile history excluded from --clone-all for ANY source: SQLite session store
 # (+wal/shm, can reach many GB), session dirs, `hermes backup` archives, quick-backup
@@ -1925,7 +1929,7 @@ def _atomic_write_json(path: Path, data: dict) -> bool:
     """Atomic rewrite of a third-party JSON config; False on OSError (nothing partially written)."""
     from utils import atomic_json_write
     try:
-        atomic_json_write(path, data)
+        atomic_json_write(path, data, create_parent=False)
         return True
     except OSError:
         return False
@@ -2042,6 +2046,9 @@ def rename_profile(old_name: str, new_name: str) -> Path:
         # selection update, so set_active_profile can resolve the new name.
         if new_dir.is_dir() and not profile_home_is_tombstoned(new_dir):
             _retarget_active_profile(old_canon, new_canon, f"✓ Active profile updated: {new_canon}")
+            # Migrate identity after the new generation admits DB access, before hot-serving it.
+            from hermes_cli.profile_identity import _migrate_profile_identity
+            _migrate_profile_identity(old_canon, new_canon, live_mux)
             if live_mux:
                 _notify_multiplexer(new_canon)
         elif live_mux and not profile_home_is_tombstoned(old_dir):

@@ -134,7 +134,7 @@ def test_eager_resume_post_build_recheck_skips_stale_profile_incarnation(
         return built
 
     monkeypatch.setattr(server, "_capture_profile_incarnation", lambda _home: current_incarnation)
-    monkeypatch.setattr(server, "_set_session_context", lambda _target: [])
+    monkeypatch.setattr(server, "_set_session_context", lambda _target, *, cwd=None: [])
     monkeypatch.setattr(server, "_clear_session_context", lambda _tokens: None)
     monkeypatch.setattr(server, "_stored_session_runtime_overrides", lambda _found: {})
     monkeypatch.setattr(server, "_make_agent", _make_agent)

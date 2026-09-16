@@ -428,14 +428,58 @@ def _run_pending_fleet_restart() -> bool:
         return False
 
 
-def _apply_pending_fleet_restart_catchup() -> None:
+def _defer_fleet_restart_after_update(*, update_complete: bool, resume_incomplete: bool = False) -> None:
+    """Record a deliberately deferred fleet restart and return/exit on outcome.
+
+    ``hermes update --no-gateway-restart`` (cron running inside the gateway's
+    own cgroup) updated code and dependencies but must not restart the fleet:
+    the SIGUSR1 drain + systemd restart would kill the updater itself. The
+    ``fleet_restart_pending`` marker written before the pull is KEPT so the
+    next normal update (or ``hermes gateway restart``) catches up.
+
+    Outcome contract (same success/partial meaning as the normal path):
+    a STALE fleet caused only by this deliberate deferral is expected and
+    does NOT make the update partial — exit 0, receipt "success". The receipt
+    is "partial" (and the process exits 1, marker kept) when the update
+    itself did not complete (``update_complete`` False) or the Windows
+    pause/resume reconciliation reported incomplete.
+
+    The live interpreter still serves pre-update code here, so callers must
+    also skip stale-module purge/reload work: mutating this process's
+    sys.modules graph mid-flight risks breaking the serving gateway.
+    """
+    print()
+    print("→ Gateway restart skipped (--no-gateway-restart).")
+    print("  Code and dependencies are updated; gateways still serve pre-update code.")
+    print("  Restart them separately: `hermes gateway restart` or a daily-restart cron.")
+    print("  (fleet restart deferred — marker kept for catch-up)")
+    with suppress(Exception):
+        from hermes_cli.update_receipt import record_skip
+        record_skip("gateway_restart", "--no-gateway-restart: deferred, marker kept")
+    partial = (not update_complete) or resume_incomplete
+    with suppress(Exception):
+        from hermes_cli.update_receipt import finalize_update_receipt
+        finalize_update_receipt("partial" if partial else "success")
+    if partial:
+        sys.exit(1)
+
+
+def _apply_pending_fleet_restart_catchup(*, defer: bool = False) -> None:
     """On an already-up-to-date ``hermes update``, finish a skipped restart.
 
     No-op when nothing is pending; exits 1 on incomplete catch-up so automation
-    does not treat the fleet as healthy.
+    does not treat the fleet as healthy. ``defer`` (``--no-gateway-restart``) keeps
+    the marker and warns instead: running the restart from inside the gateway's own
+    cgroup would kill the caller.
     """
     from hermes_cli.update_cmd import _run_pending_fleet_restart
     if not _pending_fleet_restart_needed():
+        return
+    if defer:
+        print()
+        _warn_pending_fleet_restart()
+        print("  (fleet restart deferred — --no-gateway-restart; marker kept)")
+        print("  Restart separately: `hermes gateway restart` or next non-cron update.")
         return
     print()
     _warn_pending_fleet_restart()
@@ -1208,6 +1252,7 @@ def _recover_after_restart_phase_abort(
     e, _pre_update_plan, out: _GatewayRestartOutcome, *, gateway_mode, restarted_scoped_units
 ) -> None:
     """Phase-abort recovery: fresh-child restart + fail-closed verdict; updates ``out`` in place."""
+    from hermes_cli.update_abort_recovery import _owed_stale_serve_rows
     from hermes_cli.update_cmd import (
         _abort_recovery_is_complete, _recover_gateway_restart_after_abort, _surviving_pre_update_serve_runtimes,
         _warn_stale_serve_runtimes, _write_gateway_update_exit_code,
@@ -1261,11 +1306,13 @@ def _recover_after_restart_phase_abort(
         stale_runtime_rows=_stale_runtime_rows,
     ):
         # Fresh child is terminal; the fleet-version matrix stays the authoritative
-        # read-back before success is declared.
+        # read-back before success is declared. Desktop-owned survivors (the only rows
+        # that can remain here) are named, not owed. See #111494.
         out.incomplete = False
+        _warn_stale_serve_runtimes(_stale_runtime_rows)
     elif (
         _restart_phase_failure_is_incomplete(_surviving, out.pre_restart_gateway_pids)
-        or _stale_runtime_rows
+        or _owed_stale_serve_rows(_stale_runtime_rows)
         or _serve_units_failed
     ):
         out.incomplete = True

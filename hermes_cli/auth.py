@@ -579,6 +579,7 @@ def _kernel_lock(lock_file: Any, acquire: bool) -> None:
 def _ensure_auth_write_parent(path: Path) -> None:
     """Prepare an auth/config parent without recreating a named profile home."""
     from hermes_constants import (
+        mkdir_under_hermes_home,
         named_profile_home_is_unavailable,
         profile_deletion_marker_path,
     )
@@ -587,13 +588,13 @@ def _ensure_auth_write_parent(path: Path) -> None:
     parent = path.parent
     marker = profile_deletion_marker_path(home)
     if marker is None:
-        parent.mkdir(parents=True, exist_ok=True)
+        mkdir_under_hermes_home(parent)
         return
     try:
         parent.relative_to(home)
     except ValueError:
         # Explicit global/shared stores are outside the active named home.
-        parent.mkdir(parents=True, exist_ok=True)
+        mkdir_under_hermes_home(parent)
         return
     if named_profile_home_is_unavailable(home):
         raise FileNotFoundError(f"Named profile home is missing or being deleted: {home}")
