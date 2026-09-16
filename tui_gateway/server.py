@@ -26,7 +26,7 @@ from hermes_constants import (
     get_hermes_home, get_hermes_home_override, profile_name_for_home,
     reset_hermes_home_override, set_hermes_home_override)
 from hermes_cli.env_loader import load_hermes_dotenv
-from utils import is_truthy_value
+from utils import file_signature, is_truthy_value
 from hermes_state_ids import new_session_id
 from tools.environments.local import hermes_subprocess_env
 from agent.replay_cleanup import canonicalize_replay_history
@@ -99,7 +99,7 @@ _cfg_lock = threading.Lock()
 _profile_ui_meta_lock = threading.Lock()
 _sessions_lock = threading.RLock()  # reentrant: _close_session_by_id may run under callers that already hold it
 _cfg_cache: dict | None = None
-_cfg_mtime: float | None = None
+_cfg_sig: tuple | None = None
 _cfg_path = None
 _session_resume_lock = threading.Lock()
 _SLASH_WORKER_TIMEOUT_S = max(5.0, env_float("HERMES_TUI_SLASH_TIMEOUT_S", 45.0))
@@ -170,7 +170,7 @@ _LONG_HANDLERS = frozenset({
     "profiles.list", "profiles.set_asset", "bot_relay.roster.sync", "bot_relay.outbox.drain",
     "bot_relay.deliver", "bot_relay.reply", "image.generate", "projects.discover_repos",
     "projects.record_repos", "projects.for_cwd", "projects.tree", "projects.project_sessions",
-    "setup.runtime_check", "setup.status", "voice.toggle", "voice.record", "voice.tts", "wake.start",
+    "setup.runtime_check", "setup.status", "free_tier.provision", "voice.toggle", "voice.record", "voice.tts", "wake.start",
     "wake.status", "session.active_list", "session.branch", "session.compress", "session.list",
     "session.resume", "session.workspace.move", "shell.exec", "skills.manage", "slash.exec",
     "command.dispatch",  # /goal draft invokes the auxiliary model; never block the RPC reader
@@ -1299,17 +1299,17 @@ def _load_cfg_raw() -> dict:
     read→mutate→``_save_cfg`` round-trips and raw inspection (defaults / managed overlay / ``${VAR}``
     expansion applied here would be persisted on the next save). Behavioral reads use :func:`_load_cfg`.
     Cache keyed on the resolved path so profiles don't clobber."""
-    global _cfg_cache, _cfg_mtime, _cfg_path
+    global _cfg_cache, _cfg_sig, _cfg_path
     with contextlib.suppress(Exception):
         p = _active_config_path()
-        mtime = p.stat().st_mtime if p.exists() else None
+        sig = file_signature(p.stat()) if p.exists() else None
         with _cfg_lock:
-            if _cfg_cache is not None and _cfg_mtime == mtime and _cfg_path == p:
+            if _cfg_cache is not None and _cfg_sig == sig and _cfg_path == p:
                 return copy.deepcopy(_cfg_cache)
         from hermes_cli.config import read_user_config_raw
         data = read_user_config_raw(p) if p.exists() else {}
         with _cfg_lock:  # cache the RAW config: _save_cfg writes _cfg_cache back to disk
-            _cfg_cache, _cfg_mtime, _cfg_path = copy.deepcopy(data), mtime, p
+            _cfg_cache, _cfg_sig, _cfg_path = copy.deepcopy(data), sig, p
         return data
     return {}
 
@@ -1326,7 +1326,7 @@ def _load_cfg() -> dict:
 
 
 def _save_cfg(cfg: dict):
-    global _cfg_cache, _cfg_mtime, _cfg_path
+    global _cfg_cache, _cfg_sig, _cfg_path
     from utils import atomic_roundtrip_yaml_save
     path = _active_config_path()
     # Comment-, ordering- and Unicode-preserving write (a plain safe_dump clobbered hand-written configs);
@@ -1335,9 +1335,9 @@ def _save_cfg(cfg: dict):
     with _cfg_lock:
         _cfg_cache, _cfg_path = copy.deepcopy(cfg), path
         try:
-            _cfg_mtime = path.stat().st_mtime
+            _cfg_sig = file_signature(path.stat())
         except Exception:
-            _cfg_mtime = None
+            _cfg_sig = None
 
 
 def _session_for_key(session_key: str) -> dict | None:
@@ -2689,10 +2689,14 @@ def _schedule_agent_build(sid: str, delay: float = 0.05) -> None:
     timer.start()
 
 
-def _load_resume_transcript(db, stored_id: str) -> tuple[list, list, list]:
+def _load_resume_transcript(db, stored_id: str, *, model_history_only: bool = False) -> tuple[list, list, list]:
     """(raw_history, display_history, ancestor_prefix) for a cold resume. The full lineage is materialized
     only while it fits sessions.max_resume_messages (the transcript is REST-paginated), else the tip alone."""
     from hermes_state import SessionResumeTooLargeError
+    if model_history_only:
+        raw_history = db.get_messages_as_conversation(
+            stored_id, repair_alternation=True, include_row_ids=True)
+        return raw_history, [], []
     prefix_fits = True
     guard = getattr(db, "assert_resume_safe", None)
     if callable(guard):
@@ -2711,7 +2715,8 @@ def _load_resume_transcript(db, stored_id: str) -> tuple[list, list, list]:
     return raw_history, raw_history, []
 
 
-def _schedule_resume_hydration(sid: str, stored_id: str, db, *, close_db: bool = False) -> None:
+def _schedule_resume_hydration(sid: str, stored_id: str, db, *, close_db: bool = False,
+                               model_history_only: bool = False) -> None:
     """Load a cold resume's transcript off the JSON-RPC response path."""
 
     def _run() -> None:
@@ -2721,22 +2726,24 @@ def _schedule_resume_hydration(sid: str, stored_id: str, db, *, close_db: bool =
                 return
             _emit("session.resume_progress", sid, {"phase": "history", "status": "loading"})
             db.reopen_session(stored_id)
-            raw_history, display_history, prefix = _load_resume_transcript(db, stored_id)
+            raw_history, display_history, prefix = _load_resume_transcript(
+                db, stored_id, model_history_only=model_history_only)
             # Display keeps the full transcript; the model-fed history uses the
             # same canonicalization as gateway resume and the send path.
             history = canonicalize_replay_history(raw_history)
             if _sessions.get(sid) is not session:
                 return
             with session["history_lock"]:
-                session.update(history=history, display_history_prefix=prefix, resume_hydrating=False,
-                               resume_message_count=len(display_history))
+                session.update(history=history, display_history_prefix=prefix, resume_hydrating=False)
+                if not model_history_only:
+                    session["resume_message_count"] = len(display_history)
             # Deferred resumes answered before the transcript existed; cache the derived todo snapshot now.
             todo_state = _todo_state_from_history(history)
             if todo_state is not None and session.get("todo_state") is None:
                 session["todo_state"] = todo_state
             session["resume_history_ready"].set()
             _emit("session.resume_progress", sid,
-                  {"message_count": len(display_history), "phase": "history", "status": "complete"})
+                  {"message_count": session["resume_message_count"], "phase": "history", "status": "complete"})
             _maybe_schedule_auto_continue(sid, session, stored_id)
             _start_agent_build(sid, session)
         except Exception as exc:

@@ -410,6 +410,7 @@ export const en: Translations = {
       'view.toggleReview': 'Toggle review pane',
       'view.toggleStatusbar': 'Toggle status bar',
       'view.toggleTabStrip': 'Toggle tabs',
+      'view.toggleProfileRail': 'Toggle profile rail',
       'view.showFiles': 'Show file browser',
       'view.showBrowser': 'Open browser',
       'view.toggleHud': 'Toggle HUD mode',
@@ -735,7 +736,7 @@ export const en: Translations = {
       sessionDensityComfortable: 'Comfortable',
       sessionDensityDetailed: 'Detailed',
       tabStripTitle: 'Tab Strip',
-      tabStripDesc: 'Show tabs above a zone. Auto hides them when a zone holds a single pane.',
+      tabStripDesc: 'Show tabs above a zone. Auto hides them for a single pane unless another chat or tile zone is open.',
       tabStripAuto: 'Auto',
       tabStripAlways: 'Always',
       tabStripNever: 'Never',
@@ -2681,6 +2682,7 @@ export const en: Translations = {
       reorder: 'Reorder group',
       actions: 'Group actions'
     },
+    profileRail: 'Profile rail',
     nav: {
       'new-session': 'New session',
       skills: 'Capabilities',
@@ -3477,15 +3479,39 @@ export const en: Translations = {
     notNow: 'Not now',
     tryAgain: 'Try again',
     startAgain: 'Start again',
-    didNotComplete: 'Sign-in did not complete',
-    rejectedBody: 'Sign-in was rejected in the browser. You are still on the free tier.',
-    supersededBody: 'A newer sign-in code replaced this one.',
-    timedOutHeading: 'Sign-in timed out',
-    timedOutBody: 'The code was not used in time. You are still on the free tier.',
-    retiredBody: 'This free-tier identity was already used or expired; a new one is set up on the next start.',
-    errorBody: 'Sign-in did not complete; run it again.',
+    didNotComplete: "Sign-in didn't finish",
+    rejectedBody: "No problem, you're still on the free Nous service. Sign in whenever you're ready.",
+    supersededBody: 'A newer sign-in code replaced this one. Use the newest one, or start again.',
+    timedOutHeading: 'That sign-in link has expired',
+    timedOutBody: "Start again whenever you're ready. You're still on the free Nous service.",
+    retiredBody:
+      'Your session ended before the sign-in finished. Hermes will start a new one; then sign in again whenever you\'re ready.',
+    errorBody: "Sign-in didn't finish. Try again whenever you're ready.",
+    busyHeading: 'Almost there',
+    busyBody: wait =>
+      `Hermes couldn't finish signing you in because the Nous service is busy. Try again in ${wait}. Your session is still here in the meantime.`,
+    unreachableBody:
+      "Hermes couldn't reach the Nous service to finish signing you in. Check your internet connection and try again. Your session is still here.",
     alreadySignedInHeading: 'Already signed in.',
-    alreadySignedInBody: 'This Hermes is already signed in to a Nous account.'
+    alreadySignedInBody: 'This Hermes is already signed in to a Nous account.',
+    setupFailed: {
+      gateClosed:
+        "This version of Hermes can't start without a Nous account. Sign in or create one, it's free and only takes a minute.",
+      paused:
+        'Using Hermes without signing in is paused for a moment. Hermes will keep checking. Signing in is free and gets you going right now.',
+      rateLimited: wait =>
+        `Lots of people are getting started right now, so Hermes will try again in ${wait}. Signing in is free and skips the wait.`,
+      unreachable:
+        "Hermes couldn't reach the Nous service. Check your internet connection, then tap Try again. Or connect another provider for now.",
+      serverError: 'The Nous service had a hiccup. Tap Try again in a moment, or connect another provider for now.',
+      powRequired:
+        "The Nous server asked for a proof of work, but that isn't implemented in your Agent yet. Sign in or create a free Nous account to continue.",
+      locked: "This session can't continue without signing in. Sign in or create a free Nous account to keep going.",
+      generic: "Hermes couldn't set up free access without signing in. Signing in is free, or connect another provider.",
+      signInBelow: 'Signing in is free. Pick Nous below.',
+      tryAgain: 'Try again',
+      retrying: 'Trying again…'
+    }
   },
 
   modelPicker: {
@@ -4029,6 +4055,36 @@ export const en: Translations = {
         disk_full: {
           title: 'Disk full',
           body: 'Your disk is full, so Hermes could not save this conversation. Free some space, then retry.'
+        },
+        // Nous free tier. The body is normally the backend's own sentence (it names the wait
+        // and the way forward); these bodies stand in for an older backend that sent none.
+        free_tier_disabled: {
+          title: 'Using Hermes without signing in is switched off right now',
+          body: "Sign in with a Nous account to keep chatting, it's free."
+        },
+        free_tier_rate_limited: {
+          title: "You've used up the allowance for chatting without signing in",
+          body: "It refreshes shortly. Sign in with a Nous account for a bigger allowance, it's free."
+        },
+        free_tier_at_capacity: {
+          title: 'Chatting without signing in is really busy right now',
+          body: "Sign in to skip the queue, it's free, or try again in a little while."
+        },
+        free_tier_model_not_free: {
+          title: "That model isn't available without signing in",
+          body: "Hermes uses the free model for now. Sign in with a Nous account for more models, it's free."
+        },
+        free_tier_route: {
+          title: "Hermes couldn't reach the free model on this route",
+          body: "Sign in with a Nous account, it's free, or check the NOUS_INFERENCE_BASE_URL setting."
+        },
+        free_tier_outage: {
+          title: 'The free model is having trouble responding right now',
+          body: 'Try sending your message again in a minute.'
+        },
+        free_tier_refused: {
+          title: "Hermes couldn't send that without signing in",
+          body: 'Signing in with a Nous account is free.'
         }
       },
       errorAuthKinds: {
@@ -4053,6 +4109,7 @@ export const en: Translations = {
       errorOpenHermesFolderFailed: 'Could not open the Hermes folder',
       errorUpdateApiKey: 'Update API key',
       errorSignInAgain: provider => `Sign in to ${provider} again`,
+      errorSignInFreeTier: 'Sign in with a Nous account',
       errorOauthExpired: provider =>
         `Your ${provider} sign-in has expired or was revoked. Sign in again to keep chatting.`,
       errorOpenLogs: 'Open logs',
