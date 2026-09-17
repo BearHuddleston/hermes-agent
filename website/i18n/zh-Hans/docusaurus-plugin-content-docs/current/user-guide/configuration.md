@@ -1574,6 +1574,8 @@ timezone: "America/New_York"   # IANA 时区（默认："" = 服务器本地时�
 
 支持的值：任何 IANA 时区标识符（例如 `America/New_York`、`Europe/London`、`Asia/Kolkata`、`UTC`）。留空或省略以使用服务器本地时间。
 
+代理时钟、cron 调度和时间相关工具在所有操作系统上都遵循此时区。通过 `execute_code` 运行的代码在 Linux 和 macOS 上也会以 `TZ` 的形式继承它；在 Windows 上这些子进程保留操作系统配置的时区（Windows C 运行时只解析 POSIX 形式的 `TZ` 字符串，IANA 名称会产生错误的 UTC 偏移量），因此若子脚本必须以此时区显示本地时间，请直接设置 Windows 系统时区。
+
 ## Discord
 
 为消息 gateway 配置 Discord 特定行为：

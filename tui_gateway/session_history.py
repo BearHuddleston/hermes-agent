@@ -268,21 +268,23 @@ def _inflight_text(value: Any) -> str:
 
 def _start_inflight_turn(
     session: dict, text: Any, *, display_kind: str | None = None,
+    display_metadata: dict | None = None,
 ) -> None:
     now = time.time()
     display = project_compaction_message_for_display({
         "role": "user", "content": text, "display_kind": display_kind,
+        "display_metadata": display_metadata,
     })
-    session["inflight_turn"] = {
-        "assistant": "",
-        "started_at": now,
-        "streaming": True,
-        "updated_at": now,
+    turn = {
+        "assistant": "", "started_at": now, "streaming": True, "updated_at": now,
         "user": _inflight_text(text),
         "user_originated": display is not None and display["user_originated"],
         **({"display_kind": display_kind} if display_kind else {}),
         **({"display_kind": "hidden"} if display is None else {}),
     }
+    if isinstance(display_metadata, dict):
+        turn["display_metadata"] = dict(display_metadata)
+    session["inflight_turn"] = turn
 
 
 def _append_inflight_delta(session: dict, delta: Any) -> None:

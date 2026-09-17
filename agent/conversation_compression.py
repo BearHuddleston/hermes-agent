@@ -1027,6 +1027,7 @@ def run_compress_context_with_progress_timeout(
     on_commit_overrun: Optional[Callable[[float, float], None]] = None,
     fence: Optional[CompressionCommitFence] = None, telemetry_agent: Any = None, stall_fallback: bool = True,
     new_fence: Optional[Callable[[], CompressionCommitFence]] = None,
+    fallback_worker: Optional[Callable[[CompressionCommitFence], Tuple[list, str]]] = None,
 ) -> Tuple[list, str]:
     """Run ``worker(fence)`` under a sync progress-aware (idle + ceiling) timeout.
     Budgets bound the PRE-commit phase only: an admitted commit always completes (overrun logged, surfaced
@@ -1139,7 +1140,7 @@ def run_compress_context_with_progress_timeout(
         # the summary-failure cooldown, which would no-op the retry's summary call.
         if stall_fallback:
             recovered = _retry_compression_on_fallback_chain(
-                worker=worker, messages=messages, system_prompt_fallback=system_prompt_fallback,
+                worker=fallback_worker or worker, messages=messages, system_prompt_fallback=system_prompt_fallback,
                 idle_timeout_seconds=idle, total_ceiling_seconds=ceiling, on_commit_overrun=on_commit_overrun,
                 on_timeout_cause=on_timeout_cause, telemetry_agent=telemetry_agent, new_fence=new_fence,
             )
@@ -2862,11 +2863,15 @@ def _rebuild_system_prompt_at_boundary(agent: Any, system_message: str) -> str:
     else:
         new_system_prompt = agent._cached_system_prompt = rebuilt_system_prompt
         if cached_system_prompt is not None:
-            logger.info(
+            # The rebuild itself stays mandatory; only the first drift per session is INFO — a long session
+            # compacting many times logged this on every compact (19x/day in #112420).
+            log = logger.debug if getattr(agent, "_compaction_prompt_drift_logged", False) is True else logger.info
+            log(
                 "Compaction rebuilt a drifted system prompt (session=%s, %d -> %d chars): builder output changed "
                 "since the stored snapshot (update, config change, or memory/skills growth)",
                 agent.session_id or "none", len(cached_system_prompt), len(new_system_prompt),
             )
+            agent._compaction_prompt_drift_logged = True
     return new_system_prompt
 
 

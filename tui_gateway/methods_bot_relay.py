@@ -113,7 +113,8 @@ def _(rid, params: dict, _root=_relay_root, _run=_run_delivery) -> dict:
             return _ok(rid, {"reply": reply})
 
         def _detail(p) -> str:
-            return (p.stderr or p.stdout or "").strip()[-500:]
+            from tools.bot_failure_reasons import turn_failure_text
+            return turn_failure_text(p.stdout, p.stderr)
 
         turn_env = delivery_env(author, live_home)
 
@@ -137,14 +138,16 @@ def _(rid, params: dict, _root=_relay_root, _run=_run_delivery) -> dict:
                     from tools.bot_failure_reasons import (
                         RETRY_NONE, classify_agent_error, retry_action)
                     if retry_action(classify_agent_error(_detail(proc))) != RETRY_NONE:
-                        proc = _run(resolved, tmp, turn_env)
+                        # The failed attempt already persisted the DM; the re-run resumes that row.
+                        from tools.bot_relay import retry_turn_env
+                        proc = _run(resolved, tmp, retry_turn_env(turn_env))
         finally:
             with contextlib.suppress(OSError):
                 os.unlink(tmp)
         if proc.returncode != 0:
             from tools.bot_failure_reasons import classify_agent_error
             detail = _detail(proc)
-            return _err(rid, 5092, f"delivery turn failed: {detail or proc.returncode}",
+            return _err(rid, 5092, f"delivery turn failed: {detail[-500:] or proc.returncode}",
                         data={"reason": classify_agent_error(detail)})
         # Use the same canonical whole-response predicate as live Bot Chat
         # completion.  A marker remains a successful turn, but is never sent

@@ -2651,13 +2651,17 @@ def cached_fetch_api_models(
     cache = _load_provider_models_cache()
     entry = cache.get(cache_key)
     now = time.time()
-    valid = not force_refresh and _cache_entry_valid(entry, fp, allow_empty=isinstance(entry, dict) and entry.get("native_catalog") is True)
+    native_row = isinstance(entry, dict) and entry.get("native_catalog") is True
+    valid = not force_refresh and _cache_entry_valid(entry, fp, allow_empty=native_row)
 
     if valid:
         age = now - entry["at"]
         if age < ttl_seconds:
             return _catalog(entry)
-        if age < _PROVIDER_MODELS_STALE_SERVE_MAX:
+        # An empty native catalog is authoritative only inside the TTL (as in
+        # cached_provider_model_ids): never stale-serve it, or an Ollama that was model-less at
+        # first open keeps an empty row for the whole stale window after models are pulled.
+        if entry["models"] and age < _PROVIDER_MODELS_STALE_SERVE_MAX:
             # Stale-while-revalidate: serve now, refresh off-thread for the next open. cache_only
             # opens (GUI pickers that must not block on a stopped local server) take the same
             # non-blocking refresh: without it a locally loaded model stayed invisible for the
@@ -2677,8 +2681,9 @@ def cached_fetch_api_models(
         stored = _entry(live, now)
         _store_cache_entry(cache_key, stored, cache)
         return _catalog(stored)
-    # Live returned nothing (offline, timeout, auth hiccup): a stale same-fingerprint entry beats it.
-    if _cache_entry_valid(entry, fp, allow_empty=isinstance(entry, dict) and entry.get("native_catalog") is True):
+    # Live returned nothing (offline, timeout, auth hiccup): a stale same-fingerprint entry beats it
+    # (non-empty only: an empty native row is not worth resurrecting over the generic fallback).
+    if _cache_entry_valid(entry, fp):
         return _catalog(entry)
     return live
 

@@ -407,9 +407,6 @@ describe('browser-hosted Desktop bridge', () => {
 
     const requestCount = fetchMock.mock.calls.length
     await expect(git.scanRepos(['/srv'])).resolves.toEqual([])
-    await expect(
-      git.review.fetchPrComment('/srv/my repo', 'https://github.com/example/repo/pull/1')
-    ).resolves.toBeNull()
     expect(fetchMock).toHaveBeenCalledTimes(requestCount)
   })
 

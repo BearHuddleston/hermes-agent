@@ -12722,6 +12722,19 @@
             "default": null,
             "title": "Display Kind"
           },
+          "display_metadata": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Display Metadata"
+          },
           "corrections": {
             "anyOf": [
               {

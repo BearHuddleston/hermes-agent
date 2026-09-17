@@ -68,10 +68,13 @@ def defer(key: str, job: dict, content: str, profile: str, home: Path) -> dict:
 
 def drain(root: Path | None = None) -> None:
     """Serialize drains across processes without holding the producer lock."""
+    from hermes_cli.backend_retirement import retirement
+
     root = root if root is not None else _root()
-    if root.is_dir():
-        with _FileLock(root / ".drain.lock"):
-            _drain(root)
+    with retirement.work() as admitted:
+        if admitted and root.is_dir():
+            with _FileLock(root / ".drain.lock"):
+                _drain(root)
 
 
 def _drain(root: Path) -> None:
@@ -118,17 +121,27 @@ def drain_in_background() -> None:
     root = home / "cron" / "bot_chat_pending"
     if not root.is_dir():
         return
+    from hermes_cli.backend_retirement import retirement
+
     with _running_lock:
-        if home in _running:
+        if home in _running or not retirement.acquire():
             return
         _running.add(home)
+
+    def release():
+        with _running_lock:
+            _running.discard(home)
+        retirement.release()
 
     def run():
         try:
             drain(root)
         finally:
-            with _running_lock:
-                _running.discard(home)
+            release()
 
-    threading.Thread(target=contextvars.copy_context().run, args=(run,), daemon=True,
-                     name="cron-bot-chat-drain").start()
+    try:
+        threading.Thread(target=contextvars.copy_context().run, args=(run,), daemon=True,
+                         name="cron-bot-chat-drain").start()
+    except BaseException:
+        release()
+        raise

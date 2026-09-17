@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
 import { textWithoutReferenceLines, WIRE_REFERENCE_KINDS } from '@/components/assistant-ui/reference-kinds'
-import { type ChatMessage, type ChatMessagePart, chatMessageText } from '@/lib/chat-messages'
+import { type ChatMessage, type ChatMessagePart, chatMessageText, toChatMessages } from '@/lib/chat-messages'
 import { $approvalModes, approvalModeForProfile } from '@/store/approval-mode'
 import { $desktopOnboarding, consumePendingCredentialWarning } from '@/store/onboarding'
 import { $activeGatewayProfile } from '@/store/profile'
@@ -1264,6 +1264,75 @@ describe('preserveLocalPendingTurnMessages', () => {
 })
 
 describe('appendLiveSessionProjection', () => {
+  // A synthetic starting prompt keeps the display typing its persisted row
+  // will get: on reconnect it renders as the same timeline event as history,
+  // never as a user bubble; a real user quoting the marker text stays a user
+  // bubble because the gateway typed nothing (#112144).
+  it('renders a typed synthetic in-flight prompt as its timeline event, not a user bubble', () => {
+    const typed = appendLiveSessionProjection([], {
+      session_id: 'runtime-1',
+      inflight: {
+        user: '[IMPORTANT: Background process finished] fixture',
+        display_kind: 'process_complete',
+        display_metadata: { display_text: 'Background Process Finished: fixture' },
+        assistant: '',
+        streaming: true
+      }
+    })
+
+    const inflightRow = (message: ChatMessage) => message.id === 'user-inflight-runtime-1'
+
+    expect(typed.filter(inflightRow).map(message => [message.role, chatMessageText(message)])).toEqual([
+      ['system', 'Background Process Finished: fixture']
+    ])
+
+    const quoted = appendLiveSessionProjection([], {
+      session_id: 'runtime-1',
+      inflight: { user: '[IMPORTANT: Background process finished] fixture', assistant: '', streaming: true }
+    })
+
+    expect(quoted.filter(inflightRow).map(message => [message.role, chatMessageText(message)])).toEqual([
+      ['user', '[IMPORTANT: Background process finished] fixture']
+    ])
+  })
+
+  it('keeps runtime provenance and metadata when reconciling a persisted synthetic notice', () => {
+    const inflight = {
+      user: '[IMPORTANT: Background process finished] fixture',
+      user_originated: false,
+      display_kind: 'process_complete' as const,
+      display_metadata: { display_text: 'Finished syncing the workspace' },
+      assistant: 'The workspace is ready.',
+      streaming: true
+    }
+
+    const projection = { session_id: 'runtime-1', turn_started_at: 20, inflight }
+    const live = appendLiveSessionProjection([], projection)
+
+    expect(live.map(message => [message.role, chatMessageText(message)])).toEqual([
+      ['system', inflight.display_metadata.display_text],
+      ['assistant', inflight.assistant]
+    ])
+    expect(live.every(message => message.runtimeTurnStartedAt === projection.turn_started_at)).toBe(true)
+
+    const persisted = toChatMessages([{ role: 'user', content: inflight.user, timestamp: 21, ...inflight }])
+    const hydrated = appendLiveSessionProjection(persisted, projection)
+
+    expect(hydrated.map(message => [message.role, chatMessageText(message)])).toEqual(
+      live.map(message => [message.role, chatMessageText(message)])
+    )
+    expect(hydrated[0].id).toBe(persisted[0].id)
+    expect(hydrated[0].runtimeTurnStartedAt).toBe(projection.turn_started_at)
+  })
+
+  it('omits a hidden synthetic in-flight prompt but keeps its streaming reply', () => {
+    const restored = appendLiveSessionProjection([], {
+      session_id: 'runtime-1',
+      inflight: { user: 'scaffolding the model must see', display_kind: 'hidden', assistant: 'On it.', streaming: true }
+    })
+
+    expect(restored.map(message => [message.role, chatMessageText(message)])).toEqual([['assistant', 'On it.']])
+  })
   // Corrections typed while a turn ran are their own user bubbles on the same
   // turn, ordered by ARRIVAL. Without boundary offsets (older gateway) the
   // whole dump precedes them — never the old prompt → corrections → reply

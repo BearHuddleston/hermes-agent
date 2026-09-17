@@ -48,6 +48,7 @@ import { labeled, ResizableFrame } from './dialog-parts'
 import { GROUP_CHAT_MAX_MEMBERS, mintGroupRoomId, uniqueGroupChatName, updateGroupChat } from './group-chat'
 import type { GroupChatRoom } from './group-chat'
 import { GroupImageControls } from './group-chat-parts'
+import { setGroupMembership } from './group-chat-view-members'
 import {
   botGroups,
   durableGroupChatMembers,
@@ -1035,7 +1036,7 @@ export function GroupDialog({ bot, onClose }: GroupDialogProps) {
   const groups = knownGroups(meta)
 
   const setMembership = (group: string, enabled: boolean) => {
-    void saveBotMeta(bot, groupMembershipPatch(botRosterMeta(bot, meta), group, enabled))
+    void setGroupMembership(bot, group, enabled)
     host.notify({
       kind: 'info',
       message: enabled
@@ -1101,10 +1102,12 @@ export function GroupDialog({ bot, onClose }: GroupDialogProps) {
           <Button
             className="justify-self-start"
             onClick={() =>
-              void saveBotMeta(bot, {
-                groups: [],
-                group: null
-              })
+              void (async () => {
+                // Sequential: each toggle patches groups[] from the current meta.
+                for (const group of current) {
+                  await setGroupMembership(bot, group, false)
+                }
+              })()
             }
             size="sm"
             variant="ghost"

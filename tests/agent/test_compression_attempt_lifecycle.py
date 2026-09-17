@@ -229,6 +229,27 @@ class TestDurableAttemptBackoff:
         assert compressor.should_compress_info(500_000)[0] is True
 
 
+    def test_stall_backoff_is_never_shorter_than_the_idle_window(self, tmp_path: Path, monkeypatch):
+        """The ladder's first rung (60s) undercut a 120s idle stall window, so the next oversized turn
+        re-entered the same silent route ~1 min after burning the whole window (#112420). The recorded
+        cooldown must cover at least one idle window; a window below the rung leaves the ladder as is."""
+        import agent.conversation_compression as cc
+
+        db, agent = _build_agent(tmp_path, "BACKOFF_FLOOR")
+        compressor = agent.context_compressor
+        monkeypatch.setattr(cc, "resolve_context_compression_timeouts", lambda compression_cfg=None: (120.0, 600.0))
+        compressor.record_timeout_failure("stall", failure_kind="stalled")
+        assert compressor._summary_failure_cooldown_until - time.monotonic() >= 119.0
+        durable = db.get_compression_failure_cooldown("BACKOFF_FLOOR")
+        assert durable is not None and durable["remaining_seconds"] >= 119.0
+
+        compressor._clear_compression_failure_cooldown()
+        monkeypatch.setattr(cc, "resolve_context_compression_timeouts", lambda compression_cfg=None: (0.05, 1.0))
+        compressor.record_timeout_failure("stall", failure_kind="stalled")
+        remaining = compressor._summary_failure_cooldown_until - time.monotonic()
+        assert 55.0 <= remaining <= 60.0
+
+
 class TestSupersessionDiscardsLateResults:
     def test_superseded_attempt_candidate_never_commits(self, tmp_path: Path):
         db, agent = _build_agent(tmp_path, "SUPERSEDE")

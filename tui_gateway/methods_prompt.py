@@ -527,7 +527,9 @@ def _lock_in_submit_turn(
     """Under ``history_lock``: refuse watch-child races / malformed truncation, apply the
     cut, mark the turn running + in flight.  Returns ``(err, survivor_fields)``."""
     fields = {}
-    with session["history_lock"]:
+    with _session_turn_admission(session) as admitted:
+        if not admitted:
+            return _err(rid, 5035, "backend is retiring; reconnect to continue"), fields
         # A watch session's run lives in the PARENT turn (own running flag False); typing
         # mid-run would build a second agent racing the child on the same stored session.
         if session.get("lazy") and _child_run_active(str(session.get("session_key") or "")):
@@ -1015,7 +1017,8 @@ def _spawn_side_agent(
                 cleanup()
             _clear_session_context(session_tokens)
 
-    threading.Thread(target=run, daemon=True).start()
+    if _start_session_work(run, name=f"side-agent-{task_id}") is None:
+        return _err(rid, 5035, "backend is retiring; reconnect to continue")
     return _ok(rid, {"task_id": task_id})
 
 
@@ -1058,7 +1061,7 @@ def _(rid, params: dict) -> dict:
     snapshot = list(getattr(agent, "_session_messages", None) or session.get("history") or [])
     main_runtime = {
         k: getattr(agent, k, None)
-        for k in ("model", "provider", "base_url", "api_key", "api_mode")}
+        for k in ("model", "provider", "base_url", "api_key", "api_mode", "session_id")}
 
     def body():
         from agent.side_question import answer_side_question

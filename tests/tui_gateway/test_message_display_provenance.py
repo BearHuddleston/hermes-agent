@@ -142,12 +142,16 @@ def test_inflight_uses_history_provenance_and_keeps_original_user_text(index):
     from tui_gateway import server
     from tui_gateway.contracts.sessions import InflightTurn
 
-    message = _examples()[index]
+    message = {
+        **_examples()[index],
+        "display_metadata": {"display_text": "Reconnect display label"},
+    }
     original = copy.deepcopy(message)
     display = project_compaction_message_for_display(message)
     session = {}
     server._start_inflight_turn(
         session, message["content"], display_kind=message.get("display_kind"),
+        display_metadata=message["display_metadata"],
     )
     server._append_inflight_delta(session, "partial answer")
     snapshot = server._inflight_snapshot(session)
@@ -155,7 +159,16 @@ def test_inflight_uses_history_provenance_and_keeps_original_user_text(index):
     assert snapshot["user"] == message["content"]
     assert snapshot["user_originated"] is (display is not None and display["user_originated"])
     assert snapshot["assistant"] == "partial answer"
+    assert snapshot["display_metadata"] == message["display_metadata"]
+    assert snapshot["display_metadata"] is not session["inflight_turn"]["display_metadata"]
+    assert session["inflight_turn"]["display_metadata"] is not message["display_metadata"]
     assert InflightTurn.model_validate(snapshot).model_dump(exclude_unset=True) == snapshot
+    server._fail_inflight_turn(session, "provider unavailable")
+    retained = server._inflight_snapshot(session)
+    assert retained["user_originated"] is snapshot["user_originated"]
+    assert retained["display_metadata"] == snapshot["display_metadata"]
+    assert retained["status"] == "error"
+    assert InflightTurn.model_validate(retained).model_dump(exclude_unset=True) == retained
     assert message == original
     if display is None:
         assert snapshot["display_kind"] == "hidden"

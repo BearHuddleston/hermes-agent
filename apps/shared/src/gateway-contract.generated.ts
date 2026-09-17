@@ -2534,6 +2534,7 @@ export interface InflightTurn {
   user?: string
   user_originated?: boolean | null
   display_kind?: string | null
+  display_metadata?: Record<string, unknown> | null
   corrections?: string[] | null
   correction_offsets?: number[] | null
   error?: string | null

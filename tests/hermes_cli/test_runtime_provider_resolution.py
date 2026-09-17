@@ -72,7 +72,7 @@ def test_resolve_runtime_provider_uses_credential_pool(monkeypatch):
         def has_credentials(self):
             return True
 
-        def select(self):
+        def select(self, **_kwargs):
             return _Entry()
 
     monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "openai-codex")
@@ -97,7 +97,7 @@ def test_codex_pool_honors_hermes_codex_base_url(monkeypatch):
         def has_credentials(self):
             return True
 
-        def select(self):
+        def select(self, **_kwargs):
             return _Entry()
 
     monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "openai-codex")
@@ -129,7 +129,7 @@ class TestCustomProviderPoolLoopbackNoKeyExemption:
             def has_credentials(self):
                 return True
 
-            def select(self):
+            def select(self, **_kwargs):
                 return entry
 
         return _Pool()
@@ -443,7 +443,7 @@ def test_resolve_runtime_provider_auto_uses_openrouter_pool(monkeypatch):
         def has_credentials(self):
             return True
 
-        def select(self):
+        def select(self, **_kwargs):
             return _Entry()
 
     monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "openrouter")
@@ -473,7 +473,7 @@ def test_resolve_runtime_provider_openrouter_explicit_api_key_skips_pool(monkeyp
         def has_credentials(self):
             return True
 
-        def select(self):
+        def select(self, **_kwargs):
             return _Entry()
 
     monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "openrouter")
@@ -988,7 +988,7 @@ def test_explicit_openrouter_config_mirror_bypasses_pool(monkeypatch):
         def has_credentials(self):
             return True
 
-        def select(self):
+        def select(self, **_kwargs):
             return _Entry()
 
     monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "openrouter")
@@ -1370,7 +1370,7 @@ class TestAzureAnthropicEnvVarHint:
         })
         monkeypatch.setattr(rp, "load_pool", lambda provider: None)
         called = {"resolve_anthropic_token": False}
-        def _fake_resolve():
+        def _fake_resolve(**_kwargs):
             called["resolve_anthropic_token"] = True
             return "token-from-resolver"
         monkeypatch.setattr(
@@ -1489,7 +1489,7 @@ def test_minimax_oauth_pool_forces_anthropic_messages_despite_stale_config(monke
         def has_credentials(self):
             return True
 
-        def select(self):
+        def select(self, **_kwargs):
             return _Entry()
 
     monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "minimax-oauth")
@@ -1851,7 +1851,7 @@ def test_resolve_runtime_provider_opencode_free_keyless_despite_exhausted_pool(m
         def has_credentials(self):
             return True
 
-        def select(self):
+        def select(self, **_kwargs):
             return None
 
     monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "opencode-free")

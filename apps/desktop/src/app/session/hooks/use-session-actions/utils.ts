@@ -922,15 +922,20 @@ export function appendLiveSessionProjection(messages: ChatMessage[], projection:
     ? { runtimeTurnStartedAt: turnStartedAt }
     : {}
 
-  const runtimeNotice = runtimeInflight && inflightUser
+  // Older gateways carry display typing without the provenance flag. Use the
+  // persisted-row projection for either form, including hidden rows and metadata.
+  const typedInflight = inflightUser && (runtimeInflight || projection.inflight?.display_kind)
     ? toChatMessages([{
         role: 'user',
         content: inflightUser,
         display_kind: projection.inflight?.display_kind,
-        user_originated: false,
+        display_metadata: projection.inflight?.display_metadata,
+        user_originated: projection.inflight?.user_originated,
         ...(turnStartedAt !== null ? { timestamp: turnStartedAt } : {})
-      }])[0]
-    : undefined
+      }])
+    : null
+
+  const runtimeNotice = runtimeInflight ? typedInflight?.[0] : undefined
 
   const runtimeNoticeIndex = runtimeNotice
     ? messages.findLastIndex(message =>
@@ -946,10 +951,8 @@ export function appendLiveSessionProjection(messages: ChatMessage[], projection:
     : projection[safelyPersistedInflightUser] === true || (Boolean(inflightUser) && persistedInLatestRun(inflightUser))
 
   if (inflightUser && !inflightUserAlreadyPersisted) {
-    if (runtimeInflight) {
-      if (runtimeNotice) {
-        projected.push({ ...runtimeNotice, ...runtimeBoundary, id: `user-inflight-${sessionId}` })
-      }
+    if (typedInflight) {
+      projected.push(...typedInflight.map(message => ({ ...message, ...runtimeBoundary, id: `user-inflight-${sessionId}` })))
     } else {
       projected.push({
         id: `user-inflight-${sessionId}`,

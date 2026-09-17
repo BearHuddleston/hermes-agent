@@ -968,7 +968,8 @@ class CLISessionMixin:
                     print(f"🗜️  Compressing {original_count} messages, focus: \"{request.focus_topic}\"...")
                 else:
                     print(f"🗜️  Compressing {original_count} messages...")
-                result = compress_now(self.agent, self.conversation_history, request)
+                result = compress_now(self.agent, self.conversation_history, request,
+                                      task_id=self.session_id or "default")
                 if result.status != "compressed":
                     for line in render_compress_result(result):
                         print(f"  {line}")

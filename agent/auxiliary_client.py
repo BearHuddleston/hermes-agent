@@ -2243,14 +2243,6 @@ def _describe_openrouter_unavailable(model: str = None) -> str:
 
 
 def _try_nous(vision: bool = False) -> Tuple[Optional[OpenAI], Optional[str]]:
-    # Cross-session rate guard: another session's 429 means skip Nous rather than pile onto the tapped RPH bucket.
-    with contextlib.suppress(Exception):
-        from agent.nous_rate_guard import nous_rate_limit_remaining
-        _remaining = nous_rate_limit_remaining()
-        if _remaining is not None and _remaining > 0:
-            logger.debug("Auxiliary: skipping Nous Portal (rate-limited, resets in %.0fs)", _remaining)
-            _mark_provider_unhealthy("nous", ttl=_remaining)
-            return None, None
     nous = _read_nous_auth()
     runtime = _resolve_nous_runtime_api(force_refresh=False)
     if runtime is None and not nous:
@@ -2273,6 +2265,18 @@ def _try_nous(vision: bool = False) -> Tuple[Optional[OpenAI], Optional[str]]:
         base_url = str(
             (nous or {}).get("inference_base_url") or _scoped_key_env("NOUS_INFERENCE_BASE_URL") or _NOUS_DEFAULT_BASE_URL
         ).rstrip("/")
+    with contextlib.suppress(Exception):
+        from agent.nous_rate_guard import nous_rate_limit_remaining
+        from hermes_cli.anon_auth import is_anonymous_request
+        anonymous = is_anonymous_request("nous", api_key)
+        remaining = nous_rate_limit_remaining(anonymous=anonymous)
+        if remaining is not None and remaining > 0:
+            logger.debug("Auxiliary: skipping Nous Portal (rate-limited, resets in %.0fs)", remaining)
+            # The health marker is provider-wide, so a full-length anonymous cooldown would
+            # outlive signing in mid-cooldown; bound it instead of re-resolving credentials
+            # (auth store lock, pool read) on every auxiliary call for the cooldown's duration.
+            _mark_provider_unhealthy("nous", ttl=min(remaining, 60.0) if anonymous else remaining)
+            return None, None
     lane = "vision" if vision else "text"
     # The free tier's host serves exactly one model, for every lane: asking it for the Portal's
     # recommended aux model is a guaranteed 429 ``model_not_free``. Pin the route's model instead.
@@ -2921,7 +2925,9 @@ def _try_anthropic(explicit_api_key: str = None) -> Tuple[Optional[Any], Optiona
 
 
 _MAIN_RUNTIME_FIELDS = ("provider", "model", "base_url", "api_key", "api_mode", "auth_mode")
-_MAIN_RUNTIME_CONTEXT_FIELDS = _MAIN_RUNTIME_FIELDS + ("requested_provider",)
+_MAIN_RUNTIME_CONTEXT_FIELDS = _MAIN_RUNTIME_FIELDS + (
+    "requested_provider", "session_id", "cache_scope",
+)
 
 
 def _normalize_main_runtime(main_runtime: Optional[Dict[str, Any]]) -> Dict[str, Any]:
@@ -7408,6 +7414,7 @@ def call_llm(
     prior_progress_hook = getattr(_aux_progress, "hook", None)
     try:
         with (
+            scoped_runtime_main(main_runtime),
             aux_progress_hook(
                 prior_progress_hook
                 if callable(prior_progress_hook)
@@ -7697,12 +7704,13 @@ async def async_call_llm(
     if semaphore is not None:
         await semaphore.acquire()
     try:
-        return await _async_call_llm_impl(
-            task=task, provider=provider, model=model, base_url=base_url, api_key=api_key,
-            main_runtime=main_runtime, messages=messages, temperature=temperature,
-            max_tokens=max_tokens, tools=tools, timeout=timeout, extra_body=extra_body,
-            reasoning_config=reasoning_config, route_info=route_info,
-        )
+        with scoped_runtime_main(main_runtime):
+            return await _async_call_llm_impl(
+                task=task, provider=provider, model=model, base_url=base_url, api_key=api_key,
+                main_runtime=main_runtime, messages=messages, temperature=temperature,
+                max_tokens=max_tokens, tools=tools, timeout=timeout, extra_body=extra_body,
+                reasoning_config=reasoning_config, route_info=route_info,
+            )
     finally:
         if semaphore is not None:
             semaphore.release()

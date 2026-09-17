@@ -116,6 +116,13 @@ def _print_switch_summary(cli, result, old_model, *, one_turn: bool, strict_cont
         f"Adjust your self-identification accordingly.]")
     _cprint(f"  ✓ Model switched: {_display_new}")
     _cprint(f"    Provider: {result.provider_label or result.target_provider}")
+    if result.target_provider == "moa":
+        # The preset name hides who pays: the aggregator runs every tool-loop step (#112359).
+        from hermes_cli.moa_config import normalize_moa_config
+        moa_cfg = cli.config.get("moa") if isinstance(cli.config, dict) else {}
+        agg = normalize_moa_config(moa_cfg)["presets"].get(result.new_model, {}).get("aggregator") or {}
+        if agg:
+            _cprint(f"    Acting model (billed for the run): {agg.get('provider')}:{agg.get('model')}")
 
     # Provider-aware context chain: Codex OAuth / Copilot / Nous caps win over the raw
     # models.dev entry (gpt-5.5 is 1.05M on openai but 272K on Codex OAuth).

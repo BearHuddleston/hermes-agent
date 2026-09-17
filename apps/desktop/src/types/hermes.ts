@@ -667,6 +667,12 @@ export interface SessionResumeResult {
      *  and before the output it redirected (#73793). Omitted by older
      *  gateways. */
     correction_offsets?: number[]
+    /** Display classification of a synthetic starting prompt (`process_complete`,
+     *  `async_delegation_complete`, `hidden`, …) — the same typing the persisted
+     *  row gets, so a reconnect renders the live prompt like history will
+     *  (#112144). Omitted for genuine user input and by older gateways. */
+    display_kind?: SessionMessage['display_kind']
+    display_metadata?: SessionMessage['display_metadata']
     /** Retained failed turn: the error the terminal frame carried (the frame
      *  itself may have been lost to a disconnect). */
     error?: string
@@ -679,7 +685,6 @@ export interface SessionResumeResult {
     user?: string
     /** Display-only classification of the original turn, shared with history. */
     user_originated?: boolean
-    display_kind?: SessionMessage['display_kind']
   }
   queued?: null | {
     user?: string

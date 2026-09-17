@@ -67,10 +67,6 @@ export function createGitRestBridge({ get, post }: GitRestTransport): GitBridge 
       prList: (repoPath, branches, numbers) =>
         post<HermesRepoPullRequests>('review/pr-list', { branches, numbers: numbers ?? [], path: repoPath }),
 
-      // Remote gateways have no PR-comment route yet; resolve to null so the
-      // paste degrades to a plain URL instead of throwing mid-paste.
-      fetchPrComment: async () => null,
-
       createPr: repoPath => post('review/create-pr', { path: repoPath })
     },
 
