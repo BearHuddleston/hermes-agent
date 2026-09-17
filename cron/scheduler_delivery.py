@@ -653,6 +653,40 @@ def _get_bot_chat_delivery_timeout() -> int:
         return 600
 
 
+_BOT_CHAT_STDERR_TAIL = 500
+# stdout is the model's answer; only a short tail is persisted (jobs.json / ledger).
+_BOT_CHAT_STDOUT_TAIL = 200
+_BOT_CHAT_BANNER_PREFIXES = ("Resumed session", "session_id:")
+
+
+def _format_failure_streams(result) -> str:
+    """Exit code plus labeled, redacted stderr/stdout tails for a failed delivery turn.
+
+    ``-Q`` reports the resume banner and ``session_id:`` while the response
+    rides stdout, so ``stderr or stdout`` discarded half the signal — and when
+    stderr is empty and stdout holds only the banner, the recorded error
+    carried zero diagnostics (#104056). The banner lines are dropped from the
+    stdout tail so what remains is the reason; the exit code is always named.
+    The text lands in ``last_delivery_error`` on disk, so it is scrubbed like
+    ``cron.incidents`` / ``cron.delivery_queue`` scrub their persisted errors.
+    """
+    from agent.redact import redact_sensitive_text
+
+    err = (getattr(result, "stderr", None) or "").strip()
+    out = (getattr(result, "stdout", None) or "").strip()
+    parts = [f"exit code {getattr(result, 'returncode', '?')}"]
+    if err:
+        parts.append(f"stderr: {err[-_BOT_CHAT_STDERR_TAIL:]}")
+    if out:
+        kept = "\n".join(
+            line for line in out.splitlines()
+            if line.strip() and not line.strip().lstrip("↻ ").startswith(_BOT_CHAT_BANNER_PREFIXES))
+        parts.append(
+            f"stdout: {kept[-_BOT_CHAT_STDOUT_TAIL:]}" if kept
+            else "stdout was only the resume banner")
+    return redact_sensitive_text(" | ".join(parts), force=True, redact_url_credentials=True)
+
+
 def _deliver_to_bot_chat(job: dict, content: str, profile: str, *, deferred: Optional[dict] = None) -> Optional[str]:
     """Hand output to the live Bot Chat owner, or use the legacy unowned CLI lane.
 
@@ -784,14 +818,14 @@ def _deliver_to_bot_chat(job: dict, content: str, profile: str, *, deferred: Opt
             argv, capture_output=True, text=True, timeout=_get_bot_chat_delivery_timeout(), env=env,
             creationflags=windows_hide_flags())
         if result.returncode != 0:
-            tail = (result.stderr or result.stdout or "").strip()[-500:]
+            tail = _format_failure_streams(result)
             logger.warning(
-                "Job '%s': bot-chat delivery to profile '%s' failed (exit %s) at %s%s",
-                job_id, profile_label, result.returncode, home, f": {tail}" if tail else "")
+                "Job '%s': bot-chat delivery to profile '%s' failed at %s: %s",
+                job_id, profile_label, home, tail)
             return (
                 f"Hermes could not deliver this result to Bot Chat (profile '{profile_label}'). "
                 "The result is saved; run `hermes cron runs` to see it, or `hermes doctor` if this keeps happening"
-                + (f". Details: {tail[-200:]}" if tail else ""))
+                f". Details: {tail}")
         logger.info("Job '%s': delivered to Bot Chat of profile '%s'", job_id, profile_label)
         return None
     except subprocess.TimeoutExpired:

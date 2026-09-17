@@ -31,6 +31,7 @@ def test_default_home_aliases_are_reported_as_default(tmp_path, monkeypatch):
     # An existing named profile takes precedence over the legacy basename alias.
     named_home = default_home / "profiles" / "hermes"
     named_home.mkdir(parents=True)
+    (named_home / "config.yaml").write_text("{}\n", encoding="utf-8")
     assert server._response_profile_name("hermes") == "hermes"
     assert server._profile_home("hermes") == named_home
 

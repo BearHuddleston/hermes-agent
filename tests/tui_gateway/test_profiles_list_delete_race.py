@@ -1181,6 +1181,7 @@ def test_post_move_rename_failure_still_publishes_new_profile(
     old_dir = home / "profiles" / "worker"
     new_dir = home / "profiles" / "research"
     old_dir.mkdir(parents=True)
+    (old_dir / "config.yaml").write_text("{}\n", encoding="utf-8")
 
     def fail_finish(*_args) -> None:
         raise RuntimeError("simulated alias update failure")
@@ -1231,6 +1232,7 @@ def test_concurrent_profile_use_cannot_restore_retired_name(
 ) -> None:
     old_dir = home / "profiles" / "worker"
     old_dir.mkdir(parents=True)
+    (old_dir / "config.yaml").write_text("{}\n", encoding="utf-8")
     profiles.set_active_profile("worker")
     finishing = threading.Event()
     release = threading.Event()

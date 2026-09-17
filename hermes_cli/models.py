@@ -2279,24 +2279,34 @@ def opencode_model_api_mode(provider_id: Optional[str], model_id: Optional[str])
     return "chat_completions"
 
 
+# Relay path per OpenCode family on opencode.ai hosts. The free tier is served by the Zen relay.
+_OPENCODE_FAMILY_PATHS = {"opencode-zen": "/zen", "opencode-free": "/zen", "opencode-go": "/zen/go"}
+
+
 def normalize_opencode_base_url(
     provider_id: Optional[str], api_mode: Optional[str], base_url: Optional[str]) -> str:
     """Normalize an OpenCode Zen / Go base URL for the API mode. Must be SYMMETRIC: the anthropic-
     stripped URL gets persisted to ``model.base_url`` after switching into an anthropic-routed model,
     and chat/codex modes heal it by re-adding ``/v1`` — but only on opencode.ai hosts, so custom
-    ``OPENCODE_*_BASE_URL`` proxies are left alone."""
+    ``OPENCODE_*_BASE_URL`` proxies are left alone. On those hosts the relay path segment follows
+    the resolved family too (``/zen`` vs ``/zen/go``): the two relays serve different model sets,
+    so a ``model.base_url`` carried over from the other family 401s ("Model ... is not supported")."""
     url = str(base_url or "").strip().rstrip("/")
-    if not url or opencode_provider_family(provider_id) is None:
+    family = opencode_provider_family(provider_id)
+    if not url or family is None:
         return url
+    try:
+        parsed = urllib.parse.urlparse(url)
+    except Exception:
+        parsed = None
+    official = parsed is not None and (parsed.netloc.lower() == "opencode.ai" or parsed.netloc.lower().endswith(".opencode.ai"))
+    if official and re.fullmatch(r"/zen(/go)?(/v1)?", parsed.path):
+        url = f"{parsed.scheme}://{parsed.netloc}{_OPENCODE_FAMILY_PATHS[family]}{'/v1' if parsed.path.endswith('/v1') else ''}"
     if api_mode == "anthropic_messages":
         return re.sub(r"/v1$", "", url)
     if url.endswith("/v1"):
         return url
-    try:
-        host = urllib.parse.urlparse(url).netloc.lower()
-    except Exception:
-        host = ""
-    return url + "/v1" if host == "opencode.ai" or host.endswith(".opencode.ai") else url
+    return url + "/v1" if official else url
 
 
 def github_model_reasoning_efforts(

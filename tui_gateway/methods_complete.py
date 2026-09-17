@@ -91,8 +91,9 @@ def _plugin_reference_items(pfx: str, qval: str) -> list[dict] | None:
             ac = asyncio.run(coro)
         else:  # already inside a running loop: run the coroutine on a side thread
             import concurrent.futures
+            import contextvars
             with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-                ac = pool.submit(asyncio.run, coro).result()
+                ac = pool.submit(contextvars.copy_context().run, asyncio.run, coro).result()
         return [{"text": f"@{pfx}:{it.text}", "display": it.display, "meta": it.meta} for it in ac]
     except Exception:
         return None

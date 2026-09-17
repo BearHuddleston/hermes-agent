@@ -26,6 +26,7 @@ def home(tmp_path, monkeypatch):
     h = tmp_path / ".hermes"
     profile_home = h / "profiles" / "ops"
     profile_home.mkdir(parents=True)
+    (profile_home / "config.yaml").write_text("{}\n", encoding="utf-8")
     monkeypatch.setenv("HERMES_HOME", str(h))
     from hermes_cli.profile_incarnation import write_fresh_profile_incarnation
 
@@ -100,10 +101,12 @@ def test_deliver_validates_profile_and_runs_transport(home, monkeypatch):
     _result(srv._methods["bot_relay.deliver"](2, {"profile": "hermes", "message": "x"}))
     assert calls["argv"][1:3] == ["-p", "default"]
 
-    # unknown profile refuses without spawning
+    # unknown profile refuses without spawning; so does a bare infra dir under profiles/ (#99392)
     calls.clear()
-    err = srv._methods["bot_relay.deliver"](3, {"profile": "ghost", "message": "x"})
-    assert "error" in err and "ghost" in err["error"]["message"]
+    (home / "profiles" / "sessions" / "cron").mkdir(parents=True)
+    for target in ("ghost", "sessions"):
+        err = srv._methods["bot_relay.deliver"](3, {"profile": target, "message": "x"})
+        assert "error" in err and target in err["error"]["message"]
     assert not calls
 
 

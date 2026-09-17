@@ -172,6 +172,7 @@ def gateway(tmp_path, monkeypatch):
 
     profile_home = home / "profiles" / "developer"
     profile_home.mkdir(parents=True)
+    (profile_home / "config.yaml").write_text("{}\n", encoding="utf-8")
 
     # session.resume resolves the profile via hermes_cli.profiles
     monkeypatch.setattr(

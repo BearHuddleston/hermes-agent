@@ -18,14 +18,29 @@ from rich.markup import escape as _escape
 from utils import base_url_host_matches
 
 # CLI-level fields describing the active model route; snapshotted before a switch / one-turn
-# override and restored wholesale on rollback.
+# override and restored wholesale on rollback. ``reasoning_config`` rides along because it is
+# resolved per model: a failed swap or `/model X --reasoning high --once` must not leave the
+# new model's effort behind with the old route.
 _RUNTIME_FIELDS = (
     "model", "provider", "requested_provider", "_explicit_api_key", "_explicit_base_url",
-    "api_key", "base_url", "api_mode")
+    "api_key", "base_url", "api_mode", "reasoning_config")
 
 
 def _runtime_fields(cli) -> dict:
     return {key: getattr(cli, key, None) for key in _RUNTIME_FIELDS}
+
+
+def _resolve_cli_reasoning(cli) -> None:
+    """Re-resolve the CLI-level ``reasoning_config`` for ``cli.model`` through the shared chokepoint
+    (per-model ``reasoning_overrides`` > global ``agent.reasoning_effort``). Startup resolves it once
+    for the launch model; every path that moves ``cli.model`` must call this BEFORE the agent branch,
+    because a lazily built agent inherits this field — an always-thinking model then goes out with
+    the launch model's effort and 400s (#112921, #96012). ``agent.switch_model`` re-resolves its own
+    copy for the live-agent path."""
+    from cli import CLI_CONFIG
+    from hermes_constants import resolve_reasoning_config
+    # getattr: tests drive /new unbound on a SimpleNamespace without ``model`` (blank -> config default).
+    cli.reasoning_config = resolve_reasoning_config(CLI_CONFIG, getattr(cli, "model", None) or "")
 
 
 def stored_session_route(session_meta, *, current_model, current_provider):
@@ -427,8 +442,9 @@ class CLIModelSwitchMixin:
                     "Credential re-resolution for resumed session provider "
                     "%s failed; keeping ambient credentials",
                     stored_provider, exc_info=True)
+        _resolve_cli_reasoning(self)
         # Mid-chat /resume swaps the live agent; on startup --resume _init_agent picks up
-        # self.model / self.provider.
+        # self.model / self.provider / self.reasoning_config.
         if self.agent is not None:
             try:
                 self.agent.switch_model(
@@ -501,6 +517,7 @@ class CLIModelSwitchMixin:
     def _snapshot_model_runtime(self) -> dict:
         """Capture current CLI and agent model runtime for one-turn restore."""
         agent = getattr(self, "agent", None)
+        # ``reasoning_config`` is a mutable dict: deepcopy it so a later in-place edit cannot alias the snapshot.
         return {
             **_runtime_fields(self),
             "reasoning_config": copy.deepcopy(getattr(self, "reasoning_config", None)),
@@ -516,9 +533,6 @@ class CLIModelSwitchMixin:
         for key in _RUNTIME_FIELDS:
             if key in snapshot:
                 setattr(self, key, snapshot.get(key))
-        # `/model X --reasoning high --once` must not leave the effort behind with the model.
-        if "reasoning_config" in snapshot:
-            self.reasoning_config = snapshot["reasoning_config"]
 
         agent = getattr(self, "agent", None)
         if agent is None:
@@ -602,6 +616,7 @@ class CLIModelSwitchMixin:
             self.base_url = result.base_url
         if result.api_mode:
             self.api_mode = result.api_mode
+        _resolve_cli_reasoning(self)
 
         if self.agent is not None:
             try:

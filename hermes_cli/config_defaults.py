@@ -411,8 +411,9 @@ DEFAULT_CONFIG = {
         # Windows only: a running Chrome/Edge/Brave locks its cookie DB, so the profile can't be
         # copied. When on, a locked profile still blocks and the agent ASKS first; on approval it
         # runs `hermes browser close-profile` (kills that profile's browser tree, unsaved tabs lost)
-        # and retries once; still locked -> stays blocked, no auto-kill. No effect on macOS/Linux
-        # (copy-while-running works).
+        # and retries once; still locked -> stays blocked, no auto-kill. No effect on macOS/Linux,
+        # where a running browser instead makes the Login Data / Web Data SQLite backups miss
+        # their deadline; quit the browser by hand there.
         "real_profile_autoclose": False,
         # Pin WHICH source profile directory is snapshotted for real-profile browsing (e.g. "Profile
         # 2"). Empty = browser's last-used profile, which on multi-profile machines can hand the

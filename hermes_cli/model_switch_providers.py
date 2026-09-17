@@ -737,6 +737,29 @@ class _PickerBuild:
         return discovered, native_catalog_empty, probe_live
 
 
+def _lap_lmstudio_row(b: _PickerBuild, user_providers: dict) -> None:
+    """Section 0: the active / ``providers:``-configured LM Studio row from the live catalog.
+
+    LM Studio has no models.dev mapping and its overlay row (section 2) needs a credential, so a
+    hand-written ``model.provider: lmstudio`` left the slug unclaimed until section 3, where a bare
+    ``providers.lmstudio: {request_timeout_seconds: ...}`` block (no ``base_url``/``models``) cannot
+    discover anything and rendered a one-model ``user-config`` row — discarding the catalog
+    ``_build_curated_lists`` had already live-probed into ``b.curated["lmstudio"]``. A block that
+    points the slug at an endpoint of its own stays with section 3's custom-endpoint handling."""
+    if "lmstudio" in b.excluded or "lmstudio" in b.seen_slugs:
+        return
+    configured = user_providers.get("lmstudio")
+    if isinstance(configured, dict) and _entry_base_url(configured, ("base_url", "api", "url")):
+        return
+    is_current = b.current_provider_norm == "lmstudio"
+    if not (is_current or isinstance(configured, dict)):
+        return
+    from hermes_cli.model_switch import _declared_model_ids
+    configured_models = _declared_model_ids(configured.get("models")) if isinstance(configured, dict) else []
+    model_ids = list(dict.fromkeys([*configured_models, *b.curated.get("lmstudio", [])]))
+    b.add_builtin_row("lmstudio", get_label("lmstudio"), is_current, model_ids, "hermes")
+
+
 def _lap_builtin_rows(b: _PickerBuild, data: dict, user_providers: dict) -> None:
     """Section 1: models.dev-mapped providers with api_key auth."""
     from hermes_cli.model_switch import _declared_model_ids, _scoped_key_env
@@ -1133,6 +1156,7 @@ def list_authenticated_providers(
         except Exception:
             pass  # best-effort; serial path still works
 
+    _lap_lmstudio_row(b, user_providers if isinstance(user_providers, dict) else {})
     _lap_builtin_rows(b, data, user_providers)
     _lap_overlay_rows(b, data)
     _lap_canonical_rows(b)

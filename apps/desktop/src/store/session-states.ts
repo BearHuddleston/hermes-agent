@@ -59,6 +59,7 @@ import { secondaryProfileOwnerForEvent } from './session-event-provenance'
 import { $focusedTreePaneId } from './session-focus'
 import { assertSessionOwnerResolved } from './session-owner-resolution'
 import {
+  isSessionOwnerRoute,
   requestForSessionProfile,
   type SessionOwnerRoute,
   type SessionOwnerScope,
@@ -116,6 +117,17 @@ export function recordSessionEventScope(event: { connectionId?: string; profile?
   if (profile) {
     sessionOwnerByRuntimeId.set(event.session_id, profile)
   }
+}
+
+/** The owner an inbound runtime EVENT proved for `sessionId` (#97511): the
+ *  exact (connectionId, profile) of the socket that delivered its events, or
+ *  the bare profile of a legacy profile-only pool. Exported so the session-scoped
+ *  RPC ladder can consult it WITHOUT the connection-blind profile rung
+ *  preempting it (see knownOwnerForSession). */
+export function runtimeSessionOwner(sessionId: null | string | undefined): SessionOwnerScope {
+  const id = String(sessionId ?? '').trim()
+
+  return id ? sessionOwnerByRuntimeId.get(id) : undefined
 }
 
 /** Forget only profile-pool runtime owners during permanent LOCAL profile
@@ -1038,10 +1050,15 @@ export function openTileGatewayScopes(): Set<string> {
  * Last rung: the owner recorded from the inbound runtime event itself
  * (sessionOwnerByRuntimeId, #97511) — an orphan runtime whose tile/hint/row
  * binding is absent or stale still routes through the exact
- * (connectionId, profile) or secondary socket's proven local profile. Every
- * durable rung above keeps outranking it, so a stored-id collision never
- * inherits a stale runtime ledger entry. Unproven profile fields record
- * nothing, so unknown owners in multi-profile topology still fail closed.
+ * (connectionId, profile) or secondary socket's proven local profile. It sits
+ * BELOW every durable EXACT route, so a stored-id collision never inherits a
+ * stale runtime ledger entry, but it must sit ABOVE a bare profile name: a
+ * bare profile carries no connection, and the profile door resolves it against
+ * the PRIMARY connection (store/gateway gatewayForProfile), which for an
+ * ordinary session that runs on a non-primary connection — two connections
+ * both exposing `default` is enough — is another machine that answers
+ * `4001 session not found`. Unproven profile fields record nothing, so unknown
+ * owners in multi-profile topology still fail closed.
  * Returns undefined when no owner is known — the caller fails closed
  * (assertSessionOwnerResolved), never falls to "active".
  */
@@ -1052,12 +1069,16 @@ export function knownOwnerForSession(sessionId: null | string | undefined): Sess
 
   const storedSessionId = storedSessionIdForRuntimeId(sessionId) ?? sessionId
 
-  return (
+  const durable =
     sessionTileOwner(storedSessionId) ??
     getSessionOwnerHint(storedSessionId) ??
-    knownSessionOwner(ownerLookupSessionRows(), storedSessionId) ??
-    sessionOwnerByRuntimeId.get(sessionId)
-  )
+    knownSessionOwner(ownerLookupSessionRows(), storedSessionId)
+
+  if (isSessionOwnerRoute(durable)) {
+    return durable
+  }
+
+  return sessionOwnerByRuntimeId.get(sessionId) ?? durable
 }
 
 /**
