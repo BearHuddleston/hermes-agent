@@ -186,6 +186,25 @@ describe('browser-hosted Desktop bridge', () => {
     expect(win.hermesDesktop?.quickEntry).toBeUndefined()
   })
 
+  it('disables native window controls and rejects their operations without side effects', () => {
+    const win = mutableWindow()
+    win.__HERMES_SESSION_TOKEN__ = 'served-token'
+    const fetchMock = vi.fn()
+    const closeMock = vi.spyOn(window, 'close').mockImplementation(() => undefined)
+    vi.stubGlobal('fetch', fetchMock)
+
+    expect(installBrowserDesktopBridge()).toBe(true)
+    const controls = win.hermesDesktop!.windowControls
+    expect(controls.custom).toBe(false)
+
+    for (const operation of [controls.minimize, controls.toggleMaximize, controls.close]) {
+      expect(operation).toThrow('Native window controls is not available in the browser-hosted Desktop')
+    }
+
+    expect(fetchMock).not.toHaveBeenCalled()
+    expect(closeMock).not.toHaveBeenCalled()
+  })
+
   it.each(['getPoolLimits', 'setPoolLimits'])(
     'rejects native backend pool operations through %s without a server request',
     async method => {

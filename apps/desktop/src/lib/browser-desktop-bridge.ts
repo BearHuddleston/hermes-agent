@@ -983,6 +983,12 @@ export function installBrowserDesktopBridge(): boolean {
     // Windows) before the browser-host marker is available.
     glassSupported: false,
     translucencySupported: false,
+    windowControls: {
+      custom: false,
+      minimize: () => { throw browserUnsupported('Native window controls') },
+      toggleMaximize: () => { throw browserUnsupported('Native window controls') },
+      close: () => { throw browserUnsupported('Native window controls') }
+    },
     git,
     getPathForFile: () => '',
     stageFileForAttach: (file: File) => stageBrowserFile(bootstrap, file, browserProfile()),
