@@ -264,6 +264,10 @@ def test_webapp_status_is_scoped_and_does_not_build(monkeypatch):
 
 
 def test_webapp_stop_never_targets_desktop_serve_backend(monkeypatch):
+    from hermes_constants import get_hermes_home
+
+    own_home = str(get_hermes_home())
+    monkeypatch.setattr(dashboard_procs, "_hermes_home_for_pid", lambda pid: own_home)
     scans = iter(
         [
             [
@@ -292,9 +296,52 @@ def test_webapp_stop_never_targets_desktop_serve_backend(monkeypatch):
     assert killed == [
         {
             "include_pids": {111},
+            "scope_home": own_home,
             "reason": "requested via webapp --stop",
         }
     ]
+
+
+@pytest.mark.parametrize(
+    ("own_running", "own_survives", "expected_exit"),
+    [(True, False, 0), (True, True, 1), (False, False, 0)],
+)
+def test_webapp_stop_only_targets_the_invoking_home(
+    tmp_path, monkeypatch, own_running, own_survives, expected_exit,
+):
+    own_home = str(tmp_path / "own")
+    foreign_home = str(tmp_path / "foreign")
+    monkeypatch.setenv("HERMES_HOME", own_home)
+    own_webapp = (111, "hermes webapp --port 9119")
+    spared = [
+        (222, "hermes serve --port 0"),
+        (333, "hermes webapp --port 9120"),
+        (444, "hermes webapp --port 9121"),
+    ]
+    scans = iter([
+        ([own_webapp] if own_running else []) + spared,
+        ([own_webapp] if own_survives else []) + spared,
+    ])
+    monkeypatch.setattr(dashboard_procs, "_scan_dashboard_processes", lambda: next(scans))
+    monkeypatch.setattr(
+        dashboard_procs, "_hermes_home_for_pid",
+        lambda pid: {111: own_home, 222: own_home, 333: foreign_home, 444: None}[pid],
+    )
+    killed = []
+    monkeypatch.setattr(
+        dashboard_procs, "_kill_stale_dashboard_processes",
+        lambda **kwargs: killed.append(kwargs),
+    )
+
+    with pytest.raises(SystemExit) as exc:
+        cli_main.cmd_webapp(_args(stop=True))
+
+    assert exc.value.code == expected_exit
+    assert killed == ([{
+        "include_pids": {111},
+        "scope_home": own_home,
+        "reason": "requested via webapp --stop",
+    }] if own_running else [])
 
 
 def test_web_server_commands_cannot_be_shadowed_by_profile_aliases():

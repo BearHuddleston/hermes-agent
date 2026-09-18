@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
+import { reconnectMovedCloudAgent } from '@/app/settings/cloud-team-change'
 import { $connection } from '@/store/session'
 
 import { installBrowserDesktopBridge } from './browser-desktop-bridge'
@@ -29,6 +30,30 @@ afterEach(() => {
 })
 
 describe('browser-hosted Desktop bridge', () => {
+  it('refuses cloud-team reconnection without a native connection registry', async () => {
+    mutableWindow().__HERMES_SESSION_TOKEN__ = 'served-token'
+    const fetchMock = vi.fn()
+    vi.stubGlobal('fetch', fetchMock)
+    expect(installBrowserDesktopBridge()).toBe(true)
+    const desktop = mutableWindow().hermesDesktop!
+    const logout = vi.spyOn(desktop, 'oauthLogoutConnectionConfig')
+    const signIn = vi.spyOn(desktop.cloud, 'agentSignIn')
+
+    await expect(reconnectMovedCloudAgent(desktop, {
+      id: 'cloud-agent',
+      kind: 'cloud',
+      label: 'Cloud agent',
+      url: 'https://agent.example.com',
+      authMode: 'oauth',
+      org: 'old-team',
+      tokenSet: false,
+      tokenPreview: null
+    }, 'new-team', () => true)).resolves.toBe(false)
+    expect(logout).not.toHaveBeenCalled()
+    expect(signIn).not.toHaveBeenCalled()
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
   it('does not replace the Electron preload bridge', () => {
     const win = mutableWindow()
     const existing = { api: vi.fn() } as unknown as Window['hermesDesktop']

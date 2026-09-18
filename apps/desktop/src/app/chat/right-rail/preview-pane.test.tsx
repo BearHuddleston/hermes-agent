@@ -2,6 +2,7 @@ import { act, cleanup, fireEvent, render, waitFor } from '@testing-library/react
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { onComposerAttachImagesRequest } from '@/app/chat/composer/focus'
+import { PANE_HIDDEN_ATTR } from '@/components/pane-shell/pane-visibility'
 import { $rightRailActiveTabId } from '@/store/layout'
 import { $previewTabs } from '@/store/preview'
 import { $connection, $selectedStoredSessionId } from '@/store/session'
@@ -172,6 +173,43 @@ describe('PreviewPane console state', () => {
       text: '',
       url: 'https://example.com'
     })
+  })
+
+  it('keeps native guest input available while hidden without focusing the guest', () => {
+    const target = {
+      kind: 'url' as const,
+      label: 'Preview',
+      source: 'https://example.com',
+      url: 'https://example.com'
+    }
+
+    const tabId = 'url:https://example.com' as const
+
+    $previewTabs.set([{ id: tabId, target }])
+    $rightRailActiveTabId.set(tabId)
+    const rendered = render(<PreviewPane tabId={tabId} target={target} />)
+    const webview = rendered.container.querySelector('webview') as HTMLElement
+    const focus = vi.spyOn(webview, 'focus')
+    const sendInputEvent = vi.fn()
+    Object.assign(webview, { sendInputEvent })
+
+    const input = activePreviewInput()!
+    input.focus()
+    expect(focus).toHaveBeenCalledOnce()
+    focus.mockClear()
+
+    rendered.container.setAttribute(PANE_HIDDEN_ATTR, '')
+    expect(activePreviewInput()).toBe(input)
+    input.focus()
+    const event = { type: 'mouseMove' as const, x: 12, y: 34 }
+    input.send(event)
+    expect(focus).not.toHaveBeenCalled()
+    expect(sendInputEvent).toHaveBeenCalledExactlyOnceWith(event)
+    expect(rendered.container.querySelector('webview')).toBe(webview)
+
+    rendered.container.removeAttribute(PANE_HIDDEN_ATTR)
+    input.focus()
+    expect(focus).toHaveBeenCalledOnce()
   })
 
   it('keeps the original URL available outside an embedded browser preview after loading', () => {

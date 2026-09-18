@@ -18,10 +18,27 @@ from hermes_cli.cli_output import line_input
 _PRE_BUILD_HINT = "  Pre-build first:  npm install --workspace web && npm run build -w web"
 
 
-def _find_stale_dashboard_pids(*, exclude_pids: set[int] | None = None) -> list[int]:
-    """Return PIDs of stale ``dashboard``/``serve`` processes for update cleanup."""
-    from hermes_cli.dashboard_procs import _scan_dashboard_processes
-    return [pid for pid, _cmd in _scan_dashboard_processes(exclude_pids=exclude_pids)]
+def _find_stale_dashboard_pids(*, exclude_pids: set[int] | None = None,
+                               scope_home: str | None = None) -> list[int]:
+    """PIDs of running ``dashboard``/``serve`` backends the caller may stop.
+
+    *scope_home*: keep only backends whose resolved Hermes home (see
+    ``_hermes_home_for_pid``) is this home; unreadable ownership is spared, never guessed.
+    ``--stop`` and the post-update cleanup pass their own home so another install's or
+    profile's backend on the same machine is never a target (#113978).
+    """
+    from hermes_cli.dashboard_procs import (
+        _caller_ancestor_pids,
+        _is_caller_wrapper_shell,
+        _pids_owned_by_hermes_home,
+        _scan_dashboard_processes,
+    )
+    pids = [pid for pid, _cmd in _scan_dashboard_processes(exclude_pids=exclude_pids)]
+    # The argv substring scan also selects the caller's own wrapper shell (``bash -c
+    # 'hermes dashboard --stop'``); killing it takes down the invoking terminal.
+    ancestors = _caller_ancestor_pids()
+    pids = [pid for pid in pids if not _is_caller_wrapper_shell(pid, ancestors)]
+    return _pids_owned_by_hermes_home(pids, scope_home) if scope_home else pids
 
 
 def _parse_dashboard_runtime(command: str) -> tuple[str, str, int] | None:
@@ -233,6 +250,8 @@ def _loaded_launchd_backend_jobs(
     if sys.platform != "darwin":
         return []
     import plistlib
+    from xml.parsers.expat import ExpatError
+
     from hermes_cli.gateway import _launchd_print_service_pid
     uid = os.getuid()  # windows-footgun: ok — darwin-only branch
     jobs: list[tuple[str, str, list[str], int | None]] = []
@@ -245,7 +264,11 @@ def _loaded_launchd_backend_jobs(
             try:
                 with open(plist_path, "rb") as f:
                     data = plistlib.load(f)
-            except (OSError, ValueError, plistlib.InvalidFileException):
+            # ExpatError is NOT a ValueError: plistlib propagates it unwrapped for
+            # XML that is not well-formed (e.g. a hand-edited plist with a raw
+            # `&` in `ProgramArguments`), and one such operator file must skip —
+            # not abort — the whole post-pull cleanup scan.
+            except (OSError, ValueError, plistlib.InvalidFileException, ExpatError):
                 continue
             if not isinstance(data, dict):
                 continue
@@ -786,7 +809,11 @@ def _is_electron_packaged_web_dist(path: str) -> bool:
 def cmd_webapp(args):
     """Build the Desktop browser bundle, then hand off to the web server."""
     from hermes_cli.main import PROJECT_ROOT, cmd_dashboard
-    from hermes_cli.dashboard_procs import _scan_dashboard_processes, _kill_stale_dashboard_processes
+    from hermes_cli.dashboard_procs import (
+        _scan_dashboard_processes,
+        _kill_stale_dashboard_processes,
+        _pids_owned_by_hermes_home,
+    )
 
     # Lifecycle probes are positive-identity-only and scoped to THIS Webapp
     # surface. They must never stop a native Desktop `serve` backend merely
@@ -795,23 +822,27 @@ def cmd_webapp(args):
         _report_dashboard_status(modes={"webapp"})
         raise SystemExit(0)
     if getattr(args, "stop", False):
-        webapp_pids = {
+        from hermes_constants import get_hermes_home
+
+        own_home = str(get_hermes_home())
+        webapp_pids = set(_pids_owned_by_hermes_home([
             pid
             for pid, command in _scan_dashboard_processes()
             if (_parse_dashboard_runtime(command) or (None, "", 0))[0] == "webapp"
-        }
+        ], own_home))
         if not webapp_pids:
-            print("No Hermes Webapp processes running.")
+            print("No Hermes Webapp processes running for this profile.")
             raise SystemExit(0)
         _kill_stale_dashboard_processes(
             reason="requested via webapp --stop",
             include_pids=webapp_pids,
+            scope_home=own_home,
         )
-        remaining = {
+        remaining = _pids_owned_by_hermes_home([
             pid
             for pid, command in _scan_dashboard_processes()
             if (_parse_dashboard_runtime(command) or (None, "", 0))[0] == "webapp"
-        }
+        ], own_home)
         raise SystemExit(1 if remaining else 0)
 
     from hermes_cli.webapp import (

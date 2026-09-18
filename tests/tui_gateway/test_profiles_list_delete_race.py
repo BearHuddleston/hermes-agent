@@ -195,7 +195,7 @@ def test_stale_profiles_list_cannot_resurrect_deleted_profile(
     # Model a profiles.list worker that observed state.db immediately before the
     # DELETE removed the directory, then resumed with its stale ProfileInfo row.
     monkeypatch.setattr(Path, "exists", stale_state_db_exists)
-    monkeypatch.setattr(profiles, "list_profiles", lambda: stale_rows)
+    monkeypatch.setattr(profiles, "list_profiles", lambda *, lazy_skill_count=False: stale_rows)
 
     result = srv._methods["profiles.list"]("list", {"include_sessions": True})
 
