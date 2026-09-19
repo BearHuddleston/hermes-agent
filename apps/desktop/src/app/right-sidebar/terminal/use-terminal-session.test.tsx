@@ -1,9 +1,9 @@
 import { act, cleanup, render, screen, waitFor } from '@testing-library/react'
-import { afterEach, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 
 import { installBrowserDesktopBridge } from '@/lib/browser-desktop-bridge'
 
-import { $terminals, createTerminal, updateTerminalReviveBuffer } from './terminals'
+import { $terminals, closeAllTerminals, closeOtherTerminals, createTerminal, updateTerminalReviveBuffer } from './terminals'
 import { useTerminalSession } from './use-terminal-session'
 
 const emulator = vi.hoisted(() => ({
@@ -53,6 +53,9 @@ vi.mock('@xterm/xterm', () => ({
     }
     attachCustomKeyEventHandler() {}
     write(data: string, callback?: () => void) {
+      if (data === '\u001bc') {emulator.output = ''}
+
+      if (data.includes('\u001b[6n')) {emulator.input('\u001b[1;1R')}
       emulator.output += data
       callback?.()
     }
@@ -81,14 +84,26 @@ vi.mock('@/themes/context', () => ({ useTheme: () => ({ renderedMode: 'dark', th
 class Socket {
   static OPEN = 1
   static instances: Socket[] = []
+  static persistent = false
+  url: URL
+  sent: string[] = []
   readyState = 1
   onmessage: ((event: MessageEvent) => void) | null = null
   onclose: ((event: CloseEvent) => void) | null = null
-  constructor() {
+  constructor(url: string | URL) {
+    this.url = new URL(url)
     Socket.instances.push(this)
-    queueMicrotask(() => this.onmessage?.({ data: '\u0000HERMES_TERMINAL_META:{"shell":"fish"}' } as MessageEvent))
+    queueMicrotask(() => {
+      const metadata = Socket.persistent
+        ? { shell: 'fish', cwd: '/work', terminalId: this.url.searchParams.get('attach') || `shell-${Socket.instances.length}`, closed: this.url.searchParams.get('action') === 'close' }
+        : { shell: 'fish' }
+
+      this.onmessage?.({ data: '\u0000HERMES_TERMINAL_META:' + JSON.stringify(metadata) } as MessageEvent)
+
+      if ('closed' in metadata && metadata.closed) {this.close()}
+    })
   }
-  send() {}
+  send(data: string) { this.sent.push(data) }
   close(code = 1000, reason = '') {
     this.readyState = 3
     this.onclose?.(new CloseEvent('close', { code, reason }))
@@ -115,12 +130,19 @@ function Harness({ id }: { id: string }) {
   )
 }
 
+beforeEach(() => {
+  window.dispatchEvent(new PageTransitionEvent('pageshow'))
+  localStorage.clear()
+})
+
 afterEach(() => {
   cleanup()
+  window.dispatchEvent(new Event('beforeunload'))
   Reflect.deleteProperty(window, 'hermesDesktop')
   Reflect.deleteProperty(window, '__HERMES_SESSION_TOKEN__')
   $terminals.set([])
   Socket.instances = []
+  Socket.persistent = false
   emulator.output = ''
   vi.unstubAllGlobals()
   vi.restoreAllMocks()
@@ -206,6 +228,67 @@ it.each(['attach', 'disconnect'])('cleans up the %s attempt before retry and ign
   view.unmount()
   expect(listeners.size).toBe(0)
   vi.restoreAllMocks()
+})
+
+it('replays server history once, suppresses parser replies, and detaches on remount', async () => {
+  Object.assign(window, { __HERMES_SESSION_TOKEN__: 'test-token' })
+  Socket.persistent = true
+  vi.stubGlobal('WebSocket', Socket)
+  installBrowserDesktopBridge()
+  const api = window.hermesDesktop!.terminal
+  const detach = vi.spyOn(api, 'detach')
+  const dispose = vi.spyOn(api, 'dispose')
+  const id = createTerminal('/work')
+  updateTerminalReviveBuffer(id, 'saved history')
+  const firstView = render(<Harness id={id} />)
+  await waitFor(() => expect(screen.getByText('open')).toBeTruthy())
+  expect(emulator.output).not.toContain('saved history')
+  expect($terminals.get()[0].persistent).toBe(true)
+  // Creation can already have a buffered DA/DSR query; an empty snapshot has
+  // no marker, so only the first frame is conservative, not all future output.
+  act(() => Socket.instances[0].output('startup history\u001b[6n'))
+  expect(Socket.instances[0].sent).toEqual([])
+  act(() => Socket.instances[0].output('live query\u001b[6n'))
+  expect(Socket.instances[0].sent).toEqual(['\u001b[1;1R'])
+  firstView.unmount()
+  expect(detach).toHaveBeenCalledTimes(1)
+  expect(dispose).not.toHaveBeenCalled()
+  render(<Harness id={id} />)
+  await waitFor(() => expect(screen.getByText('open')).toBeTruthy())
+  const second = Socket.instances[1]
+  expect(second.url.searchParams.get('attach')).toBe('shell-1')
+  act(() => second.output('history\u001b[6n'))
+  expect(second.sent).toEqual(['\u001b[RESIZE:80;24]'])
+  act(() => second.output('live query\u001b[6n'))
+  expect(second.sent).toEqual(['\u001b[RESIZE:80;24]', '\u001b[1;1R'])
+  act(() => second.close(4410))
+  expect(screen.getByText('closed')).toBeTruthy()
+  expect(emulator.output).toContain('Press Enter to create a new shell')
+  expect($terminals.get().some(tab => tab.id === id)).toBe(true)
+  expect(Socket.instances).toHaveLength(2)
+  act(() => emulator.input('\r'))
+  await waitFor(() => expect(screen.getByText('open')).toBeTruthy())
+  expect(Socket.instances[2].url.searchParams.has('attach')).toBe(false)
+})
+
+it('close others and close all terminate mounted and unmounted persisted shells', async () => {
+  Object.assign(window, { __HERMES_SESSION_TOKEN__: 'test-token' })
+  Socket.persistent = true
+  vi.stubGlobal('WebSocket', Socket)
+  installBrowserDesktopBridge()
+  const api = window.hermesDesktop!.terminal
+  const kept = createTerminal('/work')
+  const other = createTerminal('/work')
+  const session = await api.start({ cwd: '/work', restoreKey: other })
+  await api.detach!(session.id)
+  render(<Harness id={kept} />)
+  await waitFor(() => expect(screen.getByText('open')).toBeTruthy())
+  act(() => closeOtherTerminals(kept))
+  await waitFor(() => expect($terminals.get().map(tab => tab.id)).toEqual([kept]))
+  act(() => closeAllTerminals())
+  await waitFor(() => expect($terminals.get()).toEqual([]))
+  const closes = Socket.instances.filter(socket => socket.url.searchParams.get('action') === 'close')
+  expect(closes.map(socket => socket.url.searchParams.get('attach')).sort()).toEqual(['shell-1', 'shell-2'])
 })
 
 it('preserves saved tabs when page unload closes the browser socket', async () => {

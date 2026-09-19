@@ -445,7 +445,8 @@ async def pty_ws(ws: WebSocket) -> None:
     if host_terminal and not _host_terminal_request_allowed():
         await ws.close(code=4403, reason="host terminal requires authenticated Webapp")
         return
-    if host_terminal and ws.query_params.get("attach") is not None:
+    persistent_shell = host_terminal and ws.query_params.get("persistent") == "1"
+    if host_terminal and not persistent_shell and ws.query_params.get("attach") is not None:
         await ws.close(code=4403, reason="host terminal does not support reattach")
         return
     await ws.accept()
@@ -454,6 +455,11 @@ async def pty_ws(ws: WebSocket) -> None:
     # Native Windows can't import the POSIX PTY bridge: say so and close cleanly.
     if not _PTY_BRIDGE_AVAILABLE:
         await _pty_fail(ws, PtyUnavailableError("Pseudo-terminal support is not installed on this host."), surface=label)
+        return
+
+    if persistent_shell:
+        from hermes_cli.web_host_terminal_sessions import persistent_host_terminal
+        await persistent_host_terminal(ws)
         return
 
     profile = ws.query_params.get("profile") or None
@@ -580,7 +586,7 @@ async def pty_ws(ws: WebSocket) -> None:
             # Resize escape is consumed locally, never written to the PTY.
             match = _RESIZE_RE.match(raw)
             if match and match.end() == len(raw):
-                session.bridge.resize(cols=int(match.group(1)), rows=int(match.group(2)))
+                session.resize(ws, cols=int(match.group(1)), rows=int(match.group(2)))
                 continue
             if not await session.write(ws, raw):
                 await _close_stalled_pty_input(ws, path="keepalive")

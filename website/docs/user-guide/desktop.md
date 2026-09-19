@@ -83,6 +83,27 @@ Host files download through your browser's download manager. Supported audio
 and video play inline with seeking, using the server's existing file-access
 rules and size limit.
 
+### Terminal continuity in Webapp
+
+Refreshing the page or temporarily losing the browser connection detaches the
+terminal without ending its shell or foreground process. The saved terminal tab
+reattaches to that same shell and its original profile, even if another profile
+is now selected. Hiding a terminal is not closing it; explicitly closing its tab
+ends the shell. A second browser tab attaching to the same terminal takes over
+the connection rather than creating another shell.
+
+Detached shells are retained for **15 minutes** while the Webapp backend stays
+running. The server allows **16 host terminals**, including detached terminals;
+close an unused terminal to free a slot. Expired terminals and terminals whose
+profiles were deleted or replaced cannot be resumed. A backend restart ends
+these shells—this is browser-disconnect persistence, not restart persistence.
+
+Reconnect replays up to **1 MiB** of recent terminal output instead of appending
+a second copy of locally saved scrollback. This is a bounded output tail, not a
+complete terminal-screen snapshot: older output may be missing, and full-screen
+programs may need their own redraw command after reconnect. Hermes does not
+inject a redraw keystroke into the running shell or foreground program.
+
 Useful build/lifecycle flags:
 
 - `--skip-build` reuses `apps/desktop/dist-webapp`.

@@ -6,13 +6,12 @@ import type {
   HermesApiRequest,
   HermesConnection,
   HermesSelectPathsOptions,
-  HermesStagedUpload,
-  HermesTerminalExit,
-  HermesTerminalSession
+  HermesStagedUpload
 } from '@/global'
 import { translateNow } from '@/i18n'
 import { bytesToBase64 } from '@/lib/base64'
 import { createBrowserProfileBridge } from '@/lib/browser-profile'
+import { createBrowserTerminal } from '@/lib/browser-terminal'
 import { createBrowserZoom } from '@/lib/browser-zoom'
 import { createGitRestBridge } from '@/lib/git-rest'
 import { notifyError } from '@/store/notifications'
@@ -37,7 +36,6 @@ const SESSION_HEADER = 'X-Hermes-Session-Token'
 const DEFAULT_TIMEOUT_MS = 30_000
 const STAGED_UPLOAD_CACHE_LIMIT = 256
 const REAUTH_EVENT = 'hermes:browser-reauth-required'
-const TERMINAL_META_PREFIX = '\u0000HERMES_TERMINAL_META:'
 
 class BrowserReauthRequiredError extends Error {
   readonly loginUrl: string
@@ -606,207 +604,12 @@ export function installBrowserDesktopBridge(): boolean {
     return url
   }
 
-  interface BrowserTerminalState {
-    closed: boolean
-    cwd: string
-    dataListeners: Set<(payload: string) => void>
-    decoder: TextDecoder
-    exit: HermesTerminalExit | null
-    exitListeners: Set<(payload: HermesTerminalExit) => void>
-    pendingData: string
-    shell: string
-    socket: WebSocket
-  }
-
-  const browserTerminals = new Map<string, BrowserTerminalState>()
-  let browserTerminalSequence = 0
-
-  const emitTerminalData = (state: BrowserTerminalState, data: string) => {
-    if (!data) {
-      return
-    }
-
-    if (state.dataListeners.size === 0) {
-      state.pendingData = (state.pendingData + data).slice(-256 * 1024)
-
-      return
-    }
-
-    state.dataListeners.forEach(listener => listener(data))
-  }
-
-  const emitTerminalExit = (state: BrowserTerminalState, signal: string | null = null) => {
-    if (state.closed) {
-      return
-    }
-
-    state.closed = true
-    state.exit = { code: null, signal }
-    state.exitListeners.forEach(listener => listener(state.exit!))
-  }
-
-  const startBrowserTerminal = async (options?: {
-    cols?: number
-    cwd?: string
-    rows?: number
-  }): Promise<HermesTerminalSession> => {
-    let cwd = String(options?.cwd || '').trim()
-
-    if (!cwd) {
-      try {
-        cwd = (await api<{ cwd?: string }>({ path: '/api/fs/default-cwd', profile: browserProfile() })).cwd || ''
-      } catch {
-        cwd = ''
-      }
-    }
-
-    browserTerminalSequence += 1
-    const id = `browser-${Date.now().toString(36)}-${browserTerminalSequence.toString(36)}`
-    const profile = browserProfile()
-    const url = new URL(await authenticatedWebsocketUrl(bootstrap, '/api/pty', profile))
-    url.searchParams.set('mode', 'shell')
-    url.searchParams.set('cols', String(Math.max(2, Math.round(options?.cols || 80))))
-    url.searchParams.set('rows', String(Math.max(2, Math.round(options?.rows || 24))))
-
-    if (cwd) {url.searchParams.set('cwd', cwd)}
-    const socket = new WebSocket(url)
-    socket.binaryType = 'arraybuffer'
-
-    const state: BrowserTerminalState = {
-      closed: false,
-      cwd,
-      dataListeners: new Set(),
-      decoder: new TextDecoder(),
-      exit: null,
-      exitListeners: new Set(),
-      pendingData: '',
-      shell: 'host-shell',
-      socket
-    }
-
-    browserTerminals.set(id, state)
-
-    return new Promise<HermesTerminalSession>((resolve, reject) => {
-      let settled = false
-      let startupTimer = 0
-
-      const rejectStart = (message: string) => {
-        if (settled) {
-          return
-        }
-
-        settled = true
-        window.clearTimeout(startupTimer)
-        browserTerminals.delete(id)
-
-        try {
-          socket.close(1002, 'terminal startup failed')
-        } catch {
-          // The socket may already be closing.
-        }
-
-        reject(new Error(message))
-      }
-
-      const resolveStart = (shell: string) => {
-        if (settled) {
-          return
-        }
-
-        settled = true
-        window.clearTimeout(startupTimer)
-        state.shell = shell
-        resolve({ cwd: state.cwd, id, shell: state.shell })
-      }
-
-      startupTimer = window.setTimeout(
-        () => rejectStart('Host terminal did not provide startup metadata'),
-        10_000
-      )
-
-      socket.onmessage = event => {
-        if (typeof event.data === 'string') {
-          if (event.data.startsWith(TERMINAL_META_PREFIX)) {
-            try {
-              const payload = JSON.parse(event.data.slice(TERMINAL_META_PREFIX.length)) as { shell?: unknown }
-              const shell = typeof payload.shell === 'string' ? payload.shell.trim() : ''
-
-              if (!shell) {
-                rejectStart('Host terminal returned an empty shell identity')
-              } else {
-                resolveStart(shell)
-              }
-            } catch {
-              rejectStart('Host terminal returned invalid startup metadata')
-            }
-
-            return
-          }
-
-          emitTerminalData(state, event.data)
-
-          return
-        }
-
-        const binary = event.data as unknown
-
-        if (
-          binary instanceof ArrayBuffer ||
-          Object.prototype.toString.call(binary) === '[object ArrayBuffer]'
-        ) {
-          emitTerminalData(state, state.decoder.decode(binary as ArrayBuffer, { stream: true }))
-
-          return
-        }
-
-        if (ArrayBuffer.isView(binary)) {
-          emitTerminalData(
-            state,
-            state.decoder.decode(
-              new Uint8Array(binary.buffer, binary.byteOffset, binary.byteLength),
-              { stream: true }
-            )
-          )
-
-          return
-        }
-
-        if (binary instanceof Blob) {
-          void binary.arrayBuffer().then(buffer =>
-            emitTerminalData(state, state.decoder.decode(buffer, { stream: true }))
-          )
-        }
-      }
-
-      socket.onerror = () => rejectStart('Host terminal WebSocket failed to connect')
-
-      socket.onclose = event => {
-        emitTerminalData(state, state.decoder.decode())
-
-        if (!settled) {
-          rejectStart(event.reason || `Host terminal closed before startup (${event.code})`)
-        }
-
-        // A socket disappearing is not evidence that its shell exited.
-        emitTerminalExit(state, event.code === 4410 ? null : 'disconnected')
-      }
-    })
-  }
-
-  window.addEventListener(
-    'beforeunload',
-    () => {
-      browserTerminals.forEach(state => {
-        try {
-          state.socket.close(1000, 'page unload')
-        } catch {
-          // Best effort: the browser may already be tearing down its sockets.
-        }
-      })
-      browserTerminals.clear()
-    },
-    { once: true }
-  )
+  const terminal = createBrowserTerminal({
+    basePath: bootstrap.basePath,
+    currentProfile: browserProfile,
+    websocketUrl: profile => authenticatedWebsocketUrl(bootstrap, '/api/pty', profile),
+    defaultCwd: async profile => (await api<{ cwd?: string }>({ path: '/api/fs/default-cwd', profile })).cwd || ''
+  })
 
   const fsGet = <T>(route: string, path: string) =>
     api<T>({ path: queryPath(`/api/fs/${route}`, { path }), profile: browserProfile() })
@@ -1174,94 +977,7 @@ export function installBrowserDesktopBridge(): boolean {
       reachable: true,
       version: null
     }),
-    terminal: {
-      // Electron's attach opens its buffered output gate after listeners are
-      // registered. Browser terminals already buffer until onData subscribes,
-      // so attachment is a liveness acknowledgement for the same contract.
-      attach: async (id: string) => {
-        const state = browserTerminals.get(id)
-
-        return Boolean(state && !state.closed && state.socket.readyState === WebSocket.OPEN)
-      },
-      // The host process is remote from this renderer; unlike Electron, the
-      // bridge cannot inspect a PTY child's live cwd. Shell OSC 7/9;9 output is
-      // still observed by useTerminalSession, so return unknown rather than
-      // repeatedly overwriting that authoritative value with the launch cwd.
-      cwd: async () => null,
-      dispose: async (id: string) => {
-        const state = browserTerminals.get(id)
-
-        if (!state) {
-          return false
-        }
-
-        browserTerminals.delete(id)
-
-        try {
-          state.socket.close(1000, 'disposed')
-        } catch {
-          // Socket may already be closed after the Hermes TUI exited.
-        }
-
-        return true
-      },
-      onData: (id: string, callback: (payload: string) => void) => {
-        const state = browserTerminals.get(id)
-
-        if (!state) {
-          return noopUnsubscribe()
-        }
-
-        state.dataListeners.add(callback)
-
-        if (state.pendingData) {
-          const pending = state.pendingData
-          state.pendingData = ''
-          queueMicrotask(() => callback(pending))
-        }
-
-        return () => state.dataListeners.delete(callback)
-      },
-      onExit: (id: string, callback: (payload: HermesTerminalExit) => void) => {
-        const state = browserTerminals.get(id)
-
-        if (!state) {
-          return noopUnsubscribe()
-        }
-
-        state.exitListeners.add(callback)
-
-        if (state.exit) {
-          const exit = state.exit
-          queueMicrotask(() => callback(exit))
-        }
-
-        return () => state.exitListeners.delete(callback)
-      },
-      resize: async (id: string, size: { cols: number; rows: number }) => {
-        const state = browserTerminals.get(id)
-
-        if (!state || state.socket.readyState !== WebSocket.OPEN) {
-          return false
-        }
-
-        state.socket.send(`\u001b[RESIZE:${Math.max(1, Math.round(size.cols))};${Math.max(1, Math.round(size.rows))}]`)
-
-        return true
-      },
-      start: startBrowserTerminal,
-      write: async (id: string, data: string) => {
-        const state = browserTerminals.get(id)
-
-        if (!state || state.socket.readyState !== WebSocket.OPEN) {
-          return false
-        }
-
-        state.socket.send(data)
-
-        return true
-      }
-    },
+    terminal,
     themes: {
       fetchMarketplace: async (id: string) => ({ displayName: id, extensionId: id, themes: [] }),
       searchMarketplace: async () => []

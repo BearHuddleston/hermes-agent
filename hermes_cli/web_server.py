@@ -232,7 +232,11 @@ async def _lifespan(app: "FastAPI"):
         cron_thread.start()
 
     # Reap idle/dead keep-alive PTY sessions (30-min TTL).
+    PTY_REGISTRY._closed = False
     pty_reaper_task = asyncio.create_task(run_reaper(PTY_REGISTRY))
+    from hermes_cli.web_host_terminal_sessions import host_terminal_lifespan
+    host_terminals = host_terminal_lifespan(app)
+    await host_terminals.__aenter__()
     # Periodic authenticated self-test feeding the ``dashboard`` component on /api/status.
     selftest_task = asyncio.create_task(_dashboard_selftest_loop())
     # Live auto-archive timer, independent of list requests.
@@ -273,6 +277,7 @@ async def _lifespan(app: "FastAPI"):
         selftest_task.cancel()
         auto_archive_task.cancel()
         await PTY_REGISTRY.close_all()
+        await host_terminals.__aexit__(None, None, None)
         # Stop the managed llama-server with its parent (an orphan pins VRAM).
         try:
             from hermes_cli.local_runtime.bootstrap import shutdown_local_runtime

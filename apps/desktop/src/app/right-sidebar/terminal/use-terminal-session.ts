@@ -29,7 +29,7 @@ import {
 } from './selection'
 import { registerTerminalContextMenu } from './terminal-context-menu'
 import { prepareTerminalFontFamily } from './terminal-font'
-import { closeTerminal, updateTerminalRestoreCwd, updateTerminalReviveBuffer } from './terminals'
+import { $terminals, markTerminalPersistent, removeExitedTerminal, updateTerminalRestoreCwd, updateTerminalReviveBuffer } from './terminals'
 import { useTerminalFontController } from './use-terminal-font'
 
 // How many scrollback lines to serialize for relaunch restore. Mirrors VS Code's
@@ -62,9 +62,10 @@ if (typeof window !== 'undefined') {
 
   window.addEventListener('pagehide', markTearingDown)
   window.addEventListener('beforeunload', markTearingDown)
+  window.addEventListener('pageshow', () => { appTearingDown = false })
 }
 
-type TerminalStatus = 'closed' | 'open' | 'starting'
+type TerminalStatus = 'closed' | 'open' | 'starting' | 'reconnecting'
 
 // ⌘/Ctrl+L is a global shortcut, so a text selection in the file preview pane
 // lands in this handler with no xterm selection. Label those with the previewed
@@ -559,6 +560,9 @@ export function useTerminalSession({
     }
 
     let disposed = false
+    let persistent = Boolean($terminals.get().find(term => term.id === id)?.persistent)
+    let resumeOnly = persistent
+    let replayWrites = 0
     let retrySession: (() => void) | null = null
     const cleanup: Array<() => void> = []
     let lastSentSize: { cols: number; rows: number } | null = null
@@ -631,12 +635,24 @@ export function useTerminalSession({
       markHistoryReady()
     }
 
-    if (initialReviveBuffer) {
-      term.write(initialReviveBuffer)
-      term.write('\r\n', markLiveStart)
-    } else {
-      markLiveStart()
+    // Browser capability is negotiated by start metadata. Delay local history
+    // until then, otherwise the server replay would duplicate it.
+    let historyRestored = false
+
+    const restoreHistory = () => {
+      if (historyRestored) {return}
+      historyRestored = true
+
+      if (initialReviveBuffer && !persistent) {
+        ++replayWrites
+        term.write(initialReviveBuffer)
+        term.write('\r\n', () => { --replayWrites; markLiveStart() })
+      } else {
+        markLiveStart()
+      }
     }
+
+    if (!terminalApi.detach) {restoreHistory()}
 
     cleanup.push(() => liveStartMarker?.dispose())
 
@@ -691,7 +707,7 @@ export function useTerminalSession({
     let lastSnapshotAt = 0
 
     const persistSnapshot = () => {
-      if (disposed) {
+      if (disposed || persistent) {
         return
       }
 
@@ -915,6 +931,7 @@ export function useTerminalSession({
     host.addEventListener('wheel', onWheelActivity)
 
     const dataDisposable = term.onData(data => {
+      if (replayWrites) {return}
       const id = sessionIdRef.current
 
       if (!id && retrySession && data === '\r') {
@@ -1014,6 +1031,10 @@ export function useTerminalSession({
       cleanupAttempt?.()
       let current = true
       let attemptSessionId: string | null = null
+
+      const releaseSession = (sid: string) => persistent && terminalApi.detach
+        ? terminalApi.detach(sid) : terminalApi.dispose(sid)
+
       const subscriptions: Array<() => void> = []
 
       const release = () => {
@@ -1028,7 +1049,7 @@ export function useTerminalSession({
             sessionIdRef.current = null
           }
 
-          void terminalApi.dispose(sid)
+          void releaseSession(sid)
         }
       }
 
@@ -1036,14 +1057,20 @@ export function useTerminalSession({
 
       void terminalApi
         // Prefer the last observed cwd so retry/relaunch stays in the same directory.
-        .start({ cols: term.cols, cwd: lastObservedCwdRef.current || initialRestoreCwdRef.current || cwd, rows: term.rows })
+        .start({ cols: term.cols, cwd: lastObservedCwdRef.current || initialRestoreCwdRef.current || cwd, rows: term.rows, restoreKey: id, resumeOnly })
         .then(async session => {
+          persistent = Boolean(session.persistent)
+          resumeOnly = persistent
+
+          if (persistent) {markTerminalPersistent(id)}
+
           if (disposed || !current) {
-            void terminalApi.dispose(session.id)
+            void releaseSession(session.id)
 
             return
           }
 
+          restoreHistory()
           attemptSessionId = session.id
           sessionIdRef.current = session.id
           lastSentSize = { cols: term.cols, rows: term.rows }
@@ -1056,9 +1083,15 @@ export function useTerminalSession({
           selectionLabelRef.current = initial ? terminalSelectionLabel(term, shellNameRef.current, initial) : ''
 
           subscriptions.push(
-            terminalApi.onData(session.id, data => {
-              // Serialize only after xterm has parsed the current chunk.
-              if (current && !disposed) {
+            terminalApi.onData(session.id, (data, options) => {
+              if (!current || disposed) {return}
+
+              if (options?.replay) {
+                ++replayWrites
+                term.write(data, () => { --replayWrites })
+              } else if (persistent) {
+                term.write(data)
+              } else {
                 armedWrite(data, scheduleSnapshot)
               }
             }),
@@ -1069,6 +1102,24 @@ export function useTerminalSession({
 
               release()
 
+              if (persistent && exit.signal) {
+                setStatus('closed')
+
+                const messages: Record<string, string> = {
+                  disconnected: 'Terminal disconnected. Press Enter to reconnect to the same shell.',
+                  expired: 'Terminal expired or exited. Press Enter to create a new shell.',
+                  superseded: 'Terminal is attached in another window. Press Enter to take it back.',
+                  denied: 'Terminal access denied. Check your sign-in and profile, then press Enter to retry.',
+                  capacity: 'Terminal capacity reached. Close another terminal, then press Enter to retry.'
+                }
+
+                resumeOnly = exit.signal !== 'expired'
+                retrySession = startSession
+                term.write(`\r\n${messages[exit.signal] || 'Terminal disconnected. Press Enter to reconnect.'}\r\n`)
+
+                return
+              }
+
               if (exit.signal === 'disconnected') {
                 setStatus('closed')
                 retrySession = startSession
@@ -1078,9 +1129,20 @@ export function useTerminalSession({
               }
 
               // Only a current process exit removes the persisted tab.
-              closeTerminal(id)
+              removeExitedTerminal(id)
             })
           )
+
+          if (persistent && terminalApi.onState) {
+            subscriptions.push(terminalApi.onState(session.id, state => {
+              if (!current || disposed || appTearingDown) {return}
+              setStatus(state === 'disconnected' ? 'closed' : state)
+
+              if (state === 'reconnecting') {
+                term.write('\r\nTerminal disconnected. Reconnecting to the same shell…\r\n')
+              }
+            }))
+          }
 
           // onExit may replay a buffered exit before returning its unsubscribe.
           if (!current) {
@@ -1099,7 +1161,7 @@ export function useTerminalSession({
             return
           }
 
-          setStatus('open')
+          if (!persistent) {setStatus('open')}
 
           window.requestAnimationFrame(() => {
             if (current && !disposed) {
@@ -1115,7 +1177,14 @@ export function useTerminalSession({
           release()
           retrySession = startSession
           setStatus('closed')
-          term.write(`Terminal failed to start: ${error instanceof Error ? error.message : String(error)}. Press Enter to retry.\r\n`)
+          const expired = error && typeof error === 'object' && 'signal' in error && error.signal === 'expired'
+
+          if (expired) {
+            resumeOnly = false
+            term.write('Terminal expired or exited. Press Enter to create a new shell.\r\n')
+          } else {
+            term.write(`Terminal failed to start: ${error instanceof Error ? error.message : String(error)}. Press Enter to retry.\r\n`)
+          }
         })
     }
 
@@ -1148,7 +1217,7 @@ export function useTerminalSession({
 
       fitAndResize(initialActiveRef.current)
       initialActiveFitRef.current = initialActiveRef.current
-      void historyReady.then(() => {
+      void (terminalApi.detach ? Promise.resolve() : historyReady).then(() => {
         if (!disposed && host.isConnected) {
           startSession()
         }
@@ -1183,7 +1252,7 @@ export function useTerminalSession({
     }
     // `id` is stable for the instance's life (keyed by tab id), so listing it
     // doesn't re-create the shell — it just satisfies the deps check for the
-    // closeTerminal(id) call in onExit.
+    // removeExitedTerminal(id) call in onExit.
   }, [addSelectionToChat, cwd, id, latestFontFamilyRef, mountedRef])
 
   useEffect(() => {

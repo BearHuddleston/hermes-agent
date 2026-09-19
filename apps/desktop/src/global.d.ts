@@ -516,11 +516,16 @@ declare global {
          *  only; null on Windows or when unavailable). Used to reopen a tab
          *  where the user last `cd`'d. */
         cwd: (id: string) => Promise<string | null>
+        /** Explicit close: terminate the shell, including a disconnected attachment. */
         dispose: (id: string) => Promise<boolean>
-        onData: (id: string, callback: (payload: string) => void) => () => void
+        /** Browser cleanup releases the viewer without terminating its shell. */
+        detach?: (id: string) => Promise<boolean>
+        closeSaved?: (restoreKey: string) => Promise<boolean>
+        onState?: (id: string, callback: (state: HermesTerminalState) => void) => () => void
+        onData: (id: string, callback: (payload: string, options?: { replay: boolean }) => void) => () => void
         onExit: (id: string, callback: (payload: HermesTerminalExit) => void) => () => void
         resize: (id: string, size: { cols: number; rows: number }) => Promise<boolean>
-        start: (options?: { cols?: number; cwd?: string; rows?: number }) => Promise<HermesTerminalSession>
+        start: (options?: { cols?: number; cwd?: string; rows?: number; restoreKey?: string; resumeOnly?: boolean }) => Promise<HermesTerminalSession>
         write: (id: string, data: string) => Promise<boolean>
       }
       reachPreviewUrl?: (url: string) => Promise<string>
@@ -644,10 +649,14 @@ export interface DesktopMarketplaceThemeResult {
   themes: DesktopMarketplaceThemeFile[]
 }
 
+export type HermesTerminalState = 'open' | 'reconnecting' | 'disconnected'
+
 export interface HermesTerminalSession {
   cwd: string
   id: string
   shell: string
+  /** Server-owned process and replay; do not restore renderer scrollback. */
+  persistent?: boolean
 }
 
 export interface HermesTerminalExit {
