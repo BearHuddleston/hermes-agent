@@ -733,6 +733,58 @@ def test_run_doctor_accepts_vendor_slugs_for_named_custom_provider(monkeypatch, 
     assert "Either set model.provider to 'openrouter', or drop the vendor prefix." not in out
 
 
+@pytest.mark.parametrize(
+    ("base_url", "expects_warning"),
+    [
+        ("http://localhost:20128/v1", False),
+        ("https://api.openai.com/v1", True),
+    ],
+)
+def test_run_doctor_vendor_slug_policy_for_openai_api_endpoint(
+    monkeypatch, tmp_path, base_url, expects_warning
+):
+    """openai-api behind a custom router owns a vendor/model namespace (#69912); the real
+    OpenAI endpoint keeps the warning."""
+    home = tmp_path / ".hermes"
+    home.mkdir(parents=True, exist_ok=True)
+    (home / "config.yaml").write_text(
+        "model:\n"
+        "  provider: openai-api\n"
+        "  default: nvidia/z-ai/glm-5.2\n"
+        f"  base_url: {base_url}\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(doctor_mod, "HERMES_HOME", home)
+    monkeypatch.setattr(doctor_mod, "PROJECT_ROOT", tmp_path / "project")
+    monkeypatch.setattr(doctor_mod, "_DHH", str(home))
+    (tmp_path / "project").mkdir(exist_ok=True)
+
+    fake_model_tools = types.SimpleNamespace(
+        check_tool_availability=lambda *a, **kw: ([], []),
+        TOOLSET_REQUIREMENTS={},
+    )
+    monkeypatch.setitem(sys.modules, "model_tools", fake_model_tools)
+
+    try:
+        from hermes_cli import auth as _auth_mod
+        monkeypatch.setattr(_auth_mod, "get_nous_auth_status_local", lambda: {})
+        monkeypatch.setattr(_auth_mod, "get_codex_auth_status", lambda: {})
+        monkeypatch.setattr(_auth_mod, "get_xai_oauth_auth_status", lambda: {})
+    except Exception:
+        pass
+
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        doctor_mod.run_doctor(Namespace(fix=False))
+
+    warning = (
+        "model.default 'nvidia/z-ai/glm-5.2' uses a vendor/model slug "
+        "but provider is 'openai-api'"
+    )
+    assert (warning in buf.getvalue()) is expects_warning
+
+
 
 
 def test_run_doctor_accepts_kimi_coding_cn_provider(monkeypatch, tmp_path):
@@ -1533,6 +1585,36 @@ class TestDoctorStaleMaxIterationsDrift:
         )
         assert "shadows" not in out
 
+
+class TestDoctorLegacyCustomProvidersResidue:
+    """A legacy ``custom_providers`` list entry without a ``providers:`` twin lives on in the retired list
+    store; doctor must name it and point at the move. Twins (URL modulo trailing slash /
+    case) and non-list values are not this step's business."""
+
+    def _run(self, tmp_path, yaml_text):
+        cfg = tmp_path / "config.yaml"
+        cfg.write_text(yaml_text, encoding="utf-8")
+        finding = doctor_config.Finding()
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            doctor_config._drift_legacy_custom_providers(finding, False, cfg)
+        return buf.getvalue(), finding
+
+    def test_orphan_entry_is_flagged_with_repair_instruction(self, tmp_path):
+        out, finding = self._run(tmp_path, (
+            "custom_providers:\n  - name: Local (8283)\n    base_url: http://127.0.0.1:8283/v1\n"
+            "providers:\n  other:\n    api: http://127.0.0.1:8290/v1\n"))
+        assert "Legacy custom_providers entry 'Local (8283)' has no providers: twin" in out
+        assert finding.manual_issues and "providers.<key>.api: http://127.0.0.1:8283/v1" in finding.manual_issues[0]
+        assert finding.fixed == 0 and finding.issues == []  # warn-only: no --fix rewrite of config.yaml
+
+    def test_twin_and_scalar_are_silent(self, tmp_path):
+        out, finding = self._run(tmp_path, (
+            "custom_providers:\n  - name: Local\n    base_url: http://127.0.0.1:8283/V1/\n"
+            "providers:\n  local:\n    api: http://127.0.0.1:8283/v1\n"))
+        assert out == "" and finding.manual_issues == []
+        out, finding = self._run(tmp_path, "custom_providers: oops\n")
+        assert out == "" and finding.manual_issues == []
 
 
 

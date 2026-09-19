@@ -18,7 +18,7 @@ Cron jobs can:
 - deliver results back to the origin chat, local files, or configured platform targets
 - run in fresh agent sessions with the normal static tool list
 - run in **no-agent mode** — a script on a schedule, its stdout delivered verbatim, zero LLM involvement (see the [no-agent mode](#no-agent-mode-script-only-jobs) section below)
-- fire on **external events** — a webhook route with `cron_job` set fires the job the moment something happens (a PR gets feedback, a service posts an alert) instead of waiting for the next scheduled tick. See [Event-Triggered Cron Jobs](/user-guide/messaging/webhooks#event-triggered-cron-jobs).
+- fire on **external events** — a webhook route with `cron_job` set fires the job the moment something happens (a PR gets feedback, a service posts an alert) instead of waiting for the next scheduled tick. See [Event-Triggered Cron Jobs](../messaging/webhooks.md#event-triggered-cron-jobs).
 
 All of this is available to Hermes itself through the `cronjob` tool, so you can create, pause, edit, and remove jobs by asking in plain language — no CLI required.
 
@@ -31,7 +31,7 @@ All of this is available to Hermes itself through the `cronjob` tool, so you can
 
 Whichever provider a job resolves to, its provider-specific request settings (e.g. `request_overrides` such as `extra_body`/`extra_headers` for custom providers) carry into the scheduled run just like an interactive session.
 
-`hermes setup --portal` is the lowest-friction option for unattended runs since OAuth refresh is automatic. See [Nous Portal](/integrations/nous-portal).
+`hermes setup --portal` is the lowest-friction option for unattended runs since OAuth refresh is automatic. See [Nous Portal](../../integrations/nous-portal.md).
 :::
 
 :::tip
@@ -347,6 +347,8 @@ hermes cron list
 hermes cron status
 ```
 
+`hermes cron status` reports whether the scheduler is alive (gateway process, ticker heartbeat, last successful tick) and the soonest scheduled run across your active jobs, ordered by actual instant even when jobs store different UTC offsets. A `next_run_at` that is already more than 15 minutes in the past is never shown as an upcoming "Next run": `cron status` prints `⚠ Next run <time> is OVERDUE — passed 7h ago but the job has not fired`, `cron list` and the in-chat `/cron list` label the row `Overdue:`, the dashboard and the Desktop cron panel (including a Bot's Routines card) show `Overdue since`, and when the scheduler has stopped ticking `status` (with the gateway down) and the dashboard Cron page also say when it last ticked. That is the signature of a scheduler that stopped ticking — restart the gateway (`hermes gateway restart`) so the next tick picks the overdue job up, or run it right away with `hermes cron run <id>`.
+
 For a named profile served by the default-profile multiplexer, `hermes cron status` names that scheduler host and reports the named profile's own heartbeat health. Missing or stale heartbeats point to `hermes --profile default gateway restart`. `cron list` and `cron create` also warn when that heartbeat is missing or stale; `cron status` additionally checks the last successful tick and reports tick errors.
 
 ### Gateway scheduler behavior
@@ -444,6 +446,22 @@ fire past the schedule's own next occurrence when that comes sooner.
 cron:
   retry_unreachable: false   # default true; disables the automatic re-runs
 ```
+
+### Holding a job through a closed provider usage window
+
+The mirror case: the provider says exactly how long it will stay closed. When
+the scheduler resolves a subscription provider (currently the OpenAI Codex
+usage probe) and the provider reports its usage limit exhausted with a
+`retry after <N>s` hint (often many hours), and the whole fallback chain is
+unavailable, re-firing a sub-hourly job into that window is guaranteed to fail
+identically on every tick — and to alert every time. A 429 the model API
+returns mid-run is not held this way; it is retried on the normal cadence.
+
+Instead, the scheduler **parks the job**: the one failure alert says the
+window is closed and that the job is held, `next_run_at` moves to the first
+scheduled occurrence after the window (`quota_hold_until` on the job record),
+and nothing fires or alerts until then. Any run that reaches the model clears
+the hold. One-shot jobs are not held.
 
 ### Failure incidents: alert once, remind on a cooldown, acknowledge
 
@@ -696,7 +714,8 @@ Only the job's **own conversation** is ever touched:
 
 - the **origin chat** the job was created in;
 - the **home-channel fallback** when `deliver: origin` captured no origin (jobs
-  created by scripts or the API rather than from a live gateway chat) — the
+  created by scripts, or from a session on the request/response `api_server`
+  platform, which cannot receive a delivery) — the
   user's primary conversation standing in for the origin;
 - a job's **single explicit `platform:chat` target**, but only when the job
   itself opts in with `attach_to_session: true` — the job author declares that
@@ -873,7 +892,7 @@ Semantics:
 
 #### Giving a script a credential
 
-A script that must authenticate to an external service (an API token, a service-account key) gets it the same way terminal and `execute_code` children do — declare the variable name in the owning profile's `config.yaml` and define the value in that profile's `.env` (or an external [secret source](/user-guide/secrets/)):
+A script that must authenticate to an external service (an API token, a service-account key) gets it the same way terminal and `execute_code` children do — declare the variable name in the owning profile's `config.yaml` and define the value in that profile's `.env` (or an external [secret source](../secrets/index.md)):
 
 ```yaml
 terminal:
@@ -901,7 +920,7 @@ cronjob(action="create", schedule="every 5m",
 
 It picks `no_agent=True` automatically when the message content is fully determined by the script (watchdogs, threshold alerts, heartbeats). The same tool also lets the agent pause, resume, edit, and remove jobs — so the whole lifecycle is chat-driven without anyone touching the CLI.
 
-See the [Script-Only Cron Jobs guide](/guides/cron-script-only) for worked examples.
+See the [Script-Only Cron Jobs guide](../../guides/cron-script-only.md) for worked examples.
 
 ## Chaining jobs with `context_from`
 
@@ -982,7 +1001,7 @@ From the CLI: `hermes cron create "every 6h" "Scan for news" --continuity`, and 
 Cron jobs inherit your configured fallback providers and credential pool rotation. If the primary API key is rate-limited or the provider returns an error, the cron agent can:
 
 - **Fall back to an alternate provider** if you have `fallback_providers` (or the legacy `fallback_model`) configured in `config.yaml`
-- **Rotate to the next credential** in your [credential pool](/user-guide/configuration#credential-pool-strategies) for the same provider
+- **Rotate to the next credential** in your [credential pool](../configuration.md#credential-pool-strategies) for the same provider
 
 This means cron jobs that run at high frequency or during peak hours are more resilient — a single rate-limited key won't fail the entire run.
 
@@ -1241,8 +1260,8 @@ cronjob(action="create", name="process-feed",
 ```bash
 #!/bin/bash
 # ~/.hermes/scripts/flag-ready.sh
-if test -f /tmp/new-data-ready; then
-  rm -f /tmp/new-data-ready
+if test -f ~/.hermes/cache/scratch/new-data-ready; then
+  rm -f ~/.hermes/cache/scratch/new-data-ready
   echo '{"wakeAgent": true}'
 else
   echo '{"wakeAgent": false}'

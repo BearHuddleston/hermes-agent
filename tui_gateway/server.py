@@ -592,10 +592,21 @@ def _profile_scoped(handler):
     systemd / ``op run`` injection); once multiplexing is active it binds its own scope from the env
     frozen at activation (``_session_profile_runtime_scope``), never ambient state a secondary context
     might have poisoned (#107422).
+
+    No ``profile`` param but a ``session_id`` naming a live session: that session's ``profile_home``
+    is the scope. The TUI and the Desktop's ambient dispatcher send session-bound RPCs with the
+    session id alone, so a ``config.set`` from a focused worker session otherwise persisted into the
+    LAUNCH profile's config.yaml while the worker's stayed unchanged (#85669).
     """
     def wrapper(rid, params):
-        home = _profile_home(params.get("profile") if isinstance(params, dict) else None)
-        with _session_profile_runtime_scope({"profile_home": str(home) if home else None}):
+        p = params if isinstance(params, dict) else {}
+        if str(p.get("profile") or "").strip():
+            home = _profile_home(p.get("profile"))
+            profile_home = str(home) if home else None
+        else:
+            session = _sessions.get(str(p.get("session_id") or ""))
+            profile_home = session.get("profile_home") if isinstance(session, dict) else None
+        with _session_profile_runtime_scope({"profile_home": profile_home or None}):
             return handler(rid, params)
     return wrapper
 
@@ -1504,10 +1515,17 @@ def _resolve_startup_runtime() -> tuple[str, str | None]:
     if not (explicit_model := _env_model_seed()):
         return model, None
     with contextlib.suppress(Exception):
+        from hermes_cli.model_switch import resolve_startup_model_route
         from hermes_cli.models import detect_static_provider_for_model
-        cfg = _load_cfg().get("model") or {}
+        full_cfg = _load_cfg()
+        cfg = full_cfg.get("model") or {}
         current_provider = ((str(cfg.get("provider") or "").strip().lower() if isinstance(cfg, dict) else "")
                             or os.environ.get("HERMES_INFERENCE_PROVIDER", "").strip().lower() or "auto")
+        # Same owner as HermesCLI/oneshot: ``custom:<name>:<model>`` selects that provider (#73943).
+        if route := resolve_startup_model_route(
+                explicit_model, current_provider=current_provider,
+                user_providers=full_cfg.get("providers"), custom_providers=full_cfg.get("custom_providers")):
+            return route.model, route.provider
         if detected := detect_static_provider_for_model(explicit_model, current_provider):
             provider, detected_model = detected
             return detected_model, provider
@@ -2319,12 +2337,36 @@ def _resolve_agent_model_runtime(model_override, provider_override) -> tuple[str
     if resolution.used_fallback:
         if not resolution.selected_model:
             raise RuntimeError("Auth fallback resolved without a model")
+        # Same pre-agent switch the messaging gateway surfaces (#74349); _make_agent pops it onto the
+        # agent's one-shot notice so the TUI/Desktop user sees which provider actually answered.
+        from hermes_cli.fallback_config import pre_agent_fallback_notice
+        # requested_provider=None means resolve_runtime_provider read the persisted config provider.
+        primary_provider = requested_provider or (_load_cfg().get("model") or {}).get("provider")
+        resolution.runtime["_fallback_notice"] = pre_agent_fallback_notice(
+            primary_provider, model, resolution.runtime.get("provider"), resolution.selected_model)
         return resolution.selected_model, resolution.runtime
     if resolution.runtime.get("source") == "local-runtime":
         # Live supervisor beat any persisted loopback URL for this identity.
         overrides.pop("base_url", None)
     resolution.runtime.update({k: v for k, v in overrides.items() if v})
+    if any(overrides.values()):
+        _rederive_per_model_route(model, resolution.runtime)
     return model, resolution.runtime
+
+
+def _rederive_per_model_route(model: str, runtime: dict) -> None:
+    """A row's persisted api_mode/base_url were written for whichever model the session last ran. Providers
+    that pick the wire per model (OpenCode Zen/Go, Copilot, Nous) must re-derive both from the target model,
+    or a resumed opencode-go session keeps a MiniMax-era anthropic_messages route (and its /v1-stripped or
+    other-family relay URL) for a chat_completions model like deepseek-v4-flash-vision-exp (#96066)."""
+    from hermes_cli.model_switch import model_derived_api_mode
+    from hermes_cli.models import normalize_opencode_base_url
+    provider = str(runtime.get("requested_provider") or runtime.get("provider") or "")
+    api_mode = model_derived_api_mode(provider, model)
+    if api_mode is None:
+        return
+    runtime["api_mode"] = api_mode
+    runtime["base_url"] = normalize_opencode_base_url(provider, api_mode, runtime.get("base_url"))
 
 
 def _startup_system_prompt(cfg: dict, task_id: str) -> str:
@@ -2391,6 +2433,7 @@ def _make_agent(
     register_from_config(cfg)
     system_prompt = _startup_system_prompt(cfg, session_id or key)
     model, runtime = _resolve_agent_model_runtime(model_override, provider_override)
+    fallback_notice = runtime.pop("_fallback_notice", None)
     _pr = _load_provider_routing()
     platform = _resolve_agent_platform(platform_override)
     ignore_rules = is_truthy_value(os.environ.get("HERMES_IGNORE_RULES"))
@@ -2398,6 +2441,7 @@ def _make_agent(
         session = _sessions.get(sid)
     agent = AIAgent(
         model=model, max_iterations=_cfg_max_turns(cfg, 500), provider=runtime.get("provider"),
+        requested_provider=runtime.get("requested_provider"),
         base_url=runtime.get("base_url"), api_key=runtime.get("api_key"), api_mode=runtime.get("api_mode"),
         acp_command=runtime.get("command"), acp_args=runtime.get("args"),
         credential_pool=runtime.get("credential_pool"), quiet_mode=True,
@@ -2422,6 +2466,9 @@ def _make_agent(
     if context_cwd_is_launch_artifact is None:
         context_cwd_is_launch_artifact = _context_cwd_is_launch_artifact(session)
     agent._context_cwd_is_launch_artifact = bool(context_cwd_is_launch_artifact)
+    if fallback_notice:
+        # Emitted once on the first successful reply via _emit_pending_fallback_notice -> status_callback.
+        agent._pending_fallback_notice = fallback_notice
     return agent
 
 

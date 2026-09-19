@@ -63,15 +63,15 @@ the chat, and Install writes the same config the CLI would. On the CLI and in
 messaging apps the agent relays the commands below instead.
 
 ```bash
-hermes mcp                # interactive picker (default)
-hermes mcp catalog        # plain-text list, scriptable
-hermes mcp install n8n    # install a catalog entry by name
+hermes mcp                   # interactive picker (default)
+hermes mcp catalog           # plain-text list, scriptable
+hermes mcp install deepwiki  # install a catalog entry by name
 ```
 
 The picker shows each entry with its current status:
 
 ```
-n8n          available              Manage and inspect n8n workflows from Hermes
+deepwiki     available              Ask questions about public GitHub repositories
 linear       enabled                Linear issue/project management (remote OAuth)
 github       installed (disabled)   GitHub repo + PR tools
 ```
@@ -82,6 +82,14 @@ enable, disable, or uninstall. Catalog entries are stored under
 Nous approval. There is no community submission tier; entries are added by
 merging a PR.
 
+The third-party n8n bridge is no longer available for catalog installation.
+Existing installations keep their `mcp_servers` configuration, credentials,
+installed files, and selected tools. They continue to load as configured MCP
+servers and appear as custom entries in the picker, where you can still
+configure tools or enable and disable them. Catalog reinstall is no longer
+available. This change does not migrate existing connections to
+[n8n's official MCP server](https://docs.n8n.io/connect/connect-to-n8n-mcp-server/).
+
 Catalog entries can require:
 
 - **API key** — Hermes prompts at install time and writes the value to
@@ -90,6 +98,30 @@ Catalog entries can require:
   client opens a browser on first connection.
 - **OAuth** (third-party provider like Google/GitHub) — Hermes points you at
   `hermes auth <provider>` if you haven't authenticated already.
+
+### n8n's official MCP server
+
+The `n8n-official` catalog entry connects directly to your n8n Cloud or
+self-hosted instance over HTTP with browser OAuth. No local bridge or n8n
+API key is required.
+
+1. Ask an owner or admin to enable **Settings > Instance-level MCP** in n8n.
+2. Open **Connect** and copy the full **Server URL** ending in
+   `/mcp-server/http`, not the editor URL. Older versions show the endpoint
+   directly on the MCP settings page.
+3. Run `hermes mcp install n8n-official` and enter that URL when prompted.
+4. Complete browser OAuth. If needed, run `hermes mcp login n8n-official`
+   or use **Authorize** on the configured server in Desktop or the dashboard.
+5. Review tools with `hermes mcp configure n8n-official`, then start a new
+   session or use `/reload-mcp`.
+
+The Hermes backend must be able to reach the URL. n8n controls permissions
+and workflow exposure; some tools modify or run workflows. See
+[n8n's connection guide](https://docs.n8n.io/connect/connect-to-n8n-mcp-server/).
+
+This entry uses the existing catalog setup and storage behavior. It is
+separate from the retired `n8n` bridge, so existing connections, credentials,
+installed files, and tool selections are not replaced.
 
 ### Tool selection at install time
 
@@ -170,7 +202,7 @@ Cursor-style context variables are also substituted (case-sensitive):
 `${userHome}` (home directory), `${workspaceFolder}` (session workspace
 root), `${workspaceFolderBasename}`, and `${pathSeparator}` / `${/}`
 (the OS path separator). See the
-[MCP config reference](/docs/reference/mcp-config-reference) for details.
+[MCP config reference](../../reference/mcp-config-reference.md) for details.
 
 Note this is distinct from `${INSTALL_DIR}` in catalog manifests, which is
 substituted at install-time with the path the catalog cloned the entry's
@@ -443,7 +475,7 @@ Hermes reads MCP config from `~/.hermes/config.yaml` under `mcp_servers`.
 mcp_servers:
   filesystem:
     command: "npx"
-    args: ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"]
+    args: ["-y", "@modelcontextprotocol/server-filesystem", "/path/to/allowed/dir"]
 ```
 
 ### Recycling memory-heavy stdio servers
@@ -800,6 +832,22 @@ npx --version
 
 Then verify your config and restart Hermes.
 
+### Remote (HTTP) server rejects the connection
+
+`hermes mcp test <name>` reports what the server actually answered. When the MCP SDK can only say
+`Server returned an error response` (a 4xx/5xx whose body is not a JSON-RPC error), Hermes appends
+the HTTP status, the URL it requested and the start of the response body:
+
+```
+Streamable HTTP: Server returned an error response (HTTP 400 from POST http://host:27200/mcp:
+{"jsonrpc":"2.0","error":{"code":-32020,"message":"Unsupported MCP-Protocol-Version"}})
+```
+
+Read the status and body first: a `400`/`405` on the `initialize` POST usually means the endpoint
+speaks SSE only (set `transport: sse`) or a proxy in front of it rejects the request; a `401`/`403`
+means the token or OAuth grant is wrong; an HTML body means the URL points at a web page, not an MCP
+endpoint. `hermes logs --level debug` additionally shows the exact endpoint each connect attempt used.
+
 ### Tools not appearing
 
 Possible causes:
@@ -987,7 +1035,7 @@ The gateway does NOT need to be running for read operations (listing conversatio
 
 ## Related docs
 
-- [Use MCP with Hermes](/guides/use-mcp-with-hermes)
-- [CLI Commands](/reference/cli-commands)
-- [Slash Commands](/reference/slash-commands)
-- [FAQ](/reference/faq)
+- [Use MCP with Hermes](../../guides/use-mcp-with-hermes.md)
+- [CLI Commands](../../reference/cli-commands.md)
+- [Slash Commands](../../reference/slash-commands.md)
+- [FAQ](../../reference/faq.md)
