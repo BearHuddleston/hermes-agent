@@ -115,7 +115,7 @@ def _logged_in(client: TestClient) -> None:
 class TestWsTicketEndpoint:
     def test_authenticated_session_can_mint(self, gated_app):
         _logged_in(gated_app)
-        r = gated_app.post("/api/auth/ws-ticket")
+        r = gated_app.post("/api/auth/ws-ticket", headers={"Origin": "https://fly-app.fly.dev"})
         assert r.status_code == 200
         body = r.json()
         assert "ticket" in body

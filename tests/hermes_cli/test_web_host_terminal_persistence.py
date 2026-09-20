@@ -228,8 +228,8 @@ def test_identity_profile_incarnation_and_auth_gate(host_app, fake_bridges, tmp_
         with client.websocket_connect(ticket_url(extra="&profile=alpha&attach=" + token)) as ws:
             assert metadata(ws)["reconnected"]
         assert fake_bridges[0].writes == []  # never Ctrl-L into a host shell
-        with profile_lifecycle_lease():
-            alpha = home / "profiles" / "alpha"
+        alpha = home / "profiles" / "alpha"
+        with profile_lifecycle_lease(alpha):
             previous = ensure_profile_incarnation(alpha)
             assert write_fresh_profile_incarnation(alpha) != previous
         rejection(client, ticket_url(extra="&profile=alpha&attach=" + token), 4410)
@@ -268,9 +268,9 @@ def test_real_profile_a_b_a_and_process_exit_never_respawns(host_app, tmp_path):
 
 
 def test_capacity_expiry_close_idempotence_and_lifespan(host_app, fake_bridges):
-    from hermes_cli.web_host_terminal_sessions import HostTerminalRegistry
-    host_app.state.host_terminals = registry = HostTerminalRegistry(max_sessions=1)
     with TestClient(host_app) as client:
+        registry = host_app.state.host_terminals
+        registry._max = 1
         with client.websocket_connect(url()) as ws:
             token = metadata(ws)["terminalId"]
             rejection(client, url(), 1013)
@@ -324,7 +324,7 @@ def test_cross_process_retirement_closes_attached_shell(host_app, fake_bridges, 
                 sys.executable, "-c",
                 "import sys; from hermes_cli.profile_lifecycle import profile_lifecycle_lease, mark_profile_deleting; "
                 "from hermes_cli.profile_incarnation import read_profile_incarnation; "
-                "\nwith profile_lifecycle_lease(): mark_profile_deleting(sys.argv[1], read_profile_incarnation(sys.argv[1]))",
+                "\nwith profile_lifecycle_lease(sys.argv[1]): mark_profile_deleting(sys.argv[1], read_profile_incarnation(sys.argv[1]))",
                 str(profile),
             ], env={**os.environ, "HOME": str(tmp_path)}, check=True, timeout=5)
             with pytest.raises(WebSocketDisconnect) as error:
@@ -381,22 +381,31 @@ def test_capture_and_spawn_hold_profile_incarnation_lease(host_app, fake_bridges
     profile.mkdir(parents=True)
     (profile / "config.yaml").write_text("{}", encoding="utf-8")
     began, retired = threading.Event(), threading.Event()
+    errors = []
 
     def retirement():
-        began.set()
-        with profile_lifecycle.profile_lifecycle_lease():
-            write_fresh_profile_incarnation(profile)
-            retired.set()
+        try:
+            try:
+                with profile_lifecycle.profile_lifecycle_lease(profile, timeout=0):
+                    raise AssertionError("terminal configuration ran without a profile lease")
+            except TimeoutError:
+                began.set()
+            with profile_lifecycle.profile_lifecycle_lease(profile):
+                write_fresh_profile_incarnation(profile)
+                retired.set()
+        except Exception as exc:
+            errors.append(exc)
+            began.set()
 
     workers = []
     original = web_host_terminal.resolve_argv
 
     def resolving(**kwargs):
-        assert profile_lifecycle._PROFILE_MUTATION_LOCAL.depth > 0
         worker = threading.Thread(target=retirement)
         workers.append(worker)
         worker.start()
         assert began.wait(2)
+        assert not errors
         assert not retired.is_set()
         return original(**kwargs)
 
@@ -416,5 +425,6 @@ def test_capture_and_spawn_hold_profile_incarnation_lease(host_app, fake_bridges
                 assert first["code"] == 4410
         for worker in workers:
             worker.join(3)
+        assert not errors
         assert retired.is_set() and len(fake_bridges) == 1
         assert fake_bridges[0].closed.wait(3)

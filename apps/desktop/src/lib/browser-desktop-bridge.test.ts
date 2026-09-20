@@ -30,6 +30,16 @@ afterEach(() => {
 })
 
 describe('browser-hosted Desktop bridge', () => {
+  it('does not make network requests to resolve link titles', async () => {
+    mutableWindow().__HERMES_SESSION_TOKEN__ = 'served-token'
+    const fetchMock = vi.fn().mockResolvedValue(new Response('<title>Untrusted title</title>'))
+    vi.stubGlobal('fetch', fetchMock)
+    expect(installBrowserDesktopBridge()).toBe(true)
+
+    await expect(mutableWindow().hermesDesktop!.fetchLinkTitle('https://example.com/some-article')).resolves.toBe('')
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
   it('refuses cloud-team reconnection without a native connection registry', async () => {
     mutableWindow().__HERMES_SESSION_TOKEN__ = 'served-token'
     const fetchMock = vi.fn()

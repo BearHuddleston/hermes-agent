@@ -33,7 +33,8 @@ def _client(tmp_path: Path, monkeypatch) -> TestClient:
     monkeypatch.setenv("HERMES_HOME", str(home))
     monkeypatch.setattr(web_server, "_SESSION_TOKEN", "webapp-test-token")
     monkeypatch.setattr(web_server.app.state, "auth_required", False, raising=False)
-    return TestClient(web_server.app)
+    monkeypatch.setattr(web_server.app.state, "bound_host", "127.0.0.1", raising=False)
+    return TestClient(web_server.app, base_url="http://127.0.0.1")
 
 
 def test_browser_upload_stages_bytes_under_hermes_home(tmp_path: Path, monkeypatch):
@@ -60,6 +61,22 @@ def test_browser_upload_stages_bytes_under_hermes_home(tmp_path: Path, monkeypat
     assert staged.read_bytes() == b"browser bytes"
     assert not abandoned.exists()
     assert unrelated.read_text(encoding="utf-8") == "keep"
+
+
+@pytest.mark.parametrize("kind", ["file", "image"])
+def test_browser_upload_client_isolated_from_previous_server_bind(
+    tmp_path: Path, monkeypatch, kind
+):
+    # The OS lane runs files together; start_server leaves this global behind.
+    monkeypatch.setattr(web_server.app.state, "bound_host", "127.0.0.1", raising=False)
+    with _client(tmp_path, monkeypatch) as client:
+        response = client.post(
+            f"/api/chat/{kind}-upload",
+            headers={_SESSION_HEADER: "webapp-test-token"},
+            files={"file": ("notes.txt", b"browser bytes", "text/plain")} if kind == "file" else None,
+            json={"data_url": "data:image/png;base64,iVBORw0KGgo=", "filename": "image.png"} if kind == "image" else None,
+        )
+    assert response.status_code == 200, response.text
 
 
 @pytest.mark.linux_only

@@ -1021,7 +1021,7 @@ def _assert_profile_mutation_lock_is_cross_process(home: Path) -> None:
         "except TimeoutError:\n raise SystemExit(0)\nraise SystemExit(1)"
     )
 
-    with profile_lifecycle._cross_process_profile_mutation_lock():
+    with profile_lifecycle.profile_lifecycle_lease(profile_dir):
         result = subprocess.run(
             [sys.executable, "-c", script],
             env={**os.environ, "HERMES_HOME": str(home)},

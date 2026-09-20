@@ -216,12 +216,53 @@ def _write_dashboard_ready_file(actual_port: int) -> None:
         _log.warning("Failed to write dashboard ready file %r: %s", target, exc)
 
 
+def _private_browser_launch_file(url: str) -> str:
+    """Keep the credential out of browser/xdg-open argv; the file is owner-only."""
+    import atexit
+    import html
+    import tempfile
+    from hermes_constants import get_scratch_dir
+
+    # NamedTemporaryFile creates with 0600 (and Windows inherits the user's
+    # private profile ACL). Retain until exit: browser dispatch is asynchronous.
+    with tempfile.NamedTemporaryFile(
+        mode="w", encoding="utf-8", suffix=".html", prefix="webapp-launch-",
+        dir=get_scratch_dir(), delete=False,
+    ) as stream:
+        stream.write(
+            '<!doctype html><meta name="referrer" content="no-referrer">'
+            f'<meta http-equiv="refresh" content="0;url={html.escape(url, quote=True)}">'
+        )
+    path = Path(stream.name)
+    atexit.register(path.unlink, missing_ok=True)
+    return path.as_uri()
+
+
 def _maybe_open_browser(host: str, actual_port: int, open_browser: bool, initial_profile: str) -> None:
     """Open the dashboard URL in the user's browser if appropriate.
 
     Skips headless Linux (no DISPLAY/WAYLAND_DISPLAY) so a TUI browser can't
     SIGHUP the server; maps ``0.0.0.0``/``::`` binds to ``127.0.0.1``.
     """
+    from hermes_cli.web_server import app
+    from urllib.parse import quote
+
+    display_host = host if host not in ("0.0.0.0", "::") else "127.0.0.1"
+    if ":" in display_host:
+        display_host = f"[{display_host}]"
+    _open_url = f"http://{display_host}:{actual_port}"
+    if initial_profile:
+        _open_url += f"/?profile={quote(initial_profile, safe='')}"
+    private_launch = (getattr(app.state, "ui_surface", "dashboard") == "webapp"
+                      and not getattr(app.state, "auth_required", False))
+    if private_launch:
+        from hermes_cli.web_server import _SESSION_TOKEN
+
+        _open_url += f"#hermes-session={quote(_SESSION_TOKEN, safe='')}"
+        # Operator-only handoff, including --no-open/headless launches. Never log
+        # or serve this URL, or put the credential in a query string.
+        print(f"  Webapp launch link (private; grants host access): {_open_url}", flush=True)
+
     if not open_browser:
         return
 
@@ -235,16 +276,13 @@ def _maybe_open_browser(host: str, actual_port: int, open_browser: bool, initial
         )
         return
 
-    _display_host = host if host not in ("0.0.0.0", "::") else "127.0.0.1"
-    _open_url = f"http://{_display_host}:{actual_port}"
-    if initial_profile:
-        from urllib.parse import quote
-        _open_url += f"/?profile={quote(initial_profile)}"
-
     def _open():
         try:
             time.sleep(1.0)
-            webbrowser.open(_open_url)
+            # Browser launchers put their URL in argv (visible to other OS
+            # users). Pass only an owner-readable redirect FILE, never the token.
+            target = _private_browser_launch_file(_open_url) if private_launch else _open_url
+            webbrowser.open(target)
         except Exception:
             pass
 

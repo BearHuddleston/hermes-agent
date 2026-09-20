@@ -902,6 +902,11 @@ def _route_named_profile_dashboard(
     if listening_surface == expected_surface:
         print(f"Machine {expected_surface} already running on port {args.port}.")
         print(f"  Managing profile '{_launch_profile}': {url}")
+        if expected_surface == "webapp":
+            print("  Local Webapp: open this URL in an already authorized tab, or use the")
+            print("  private launch link from the running server, adding the profile query")
+            print("  above BEFORE its # fragment. A fresh bare-URL tab cannot sign in.")
+            print("  Lost the link? Restart that Webapp to print a new one. Remote OAuth is unchanged.")
         if not args.no_open:
             with contextlib.suppress(Exception):
                 import webbrowser

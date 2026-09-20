@@ -4,6 +4,7 @@ from __future__ import annotations
 import logging
 import time
 from typing import Callable, Optional
+from urllib.parse import urlsplit
 
 from fastapi import Request
 from fastapi.responses import JSONResponse
@@ -28,6 +29,47 @@ def extract_bearer(request: Request) -> str:
     if len(parts) == 2 and parts[0].strip().lower() == "bearer":
         return parts[1].strip()
     return ""
+
+
+def _http_origin(value: str) -> tuple[str, str, int] | None:
+    """Parse one serialized HTTP origin, never an opaque or URL-like origin."""
+    if not value or any(ord(c) <= 32 or ord(c) >= 127 or c in "\\,?#%" for c in value):
+        return None
+    try:
+        parsed = urlsplit(value)
+        if (parsed.scheme not in {"http", "https"} or not parsed.hostname
+                or parsed.username is not None or parsed.password is not None or parsed.path
+                or parsed.netloc.endswith(":")):
+            return None
+        port = parsed.port
+        effective_port = port if port is not None else (443 if parsed.scheme == "https" else 80)
+        return parsed.scheme, parsed.hostname, effective_port
+    except ValueError:
+        return None
+
+
+def cookie_origin_is_allowed(request: Request) -> bool:
+    """Cookie writes require exact scheme/host/port, not just SameSite.
+
+    Use the same public-URL authority as OAuth, otherwise the request's Host
+    and ASGI scheme (uvicorn applies *trusted* proxy headers). Never trust raw
+    forwarded headers here or reuse WS's opaque/non-HTTP Origin exemption.
+    """
+    from hermes_cli.dashboard_auth.prefix import resolve_public_url
+    from hermes_cli.web_server import _is_accepted_host
+
+    origins = request.headers.getlist("origin")
+    origin = _http_origin(origins[0]) if len(origins) == 1 else None
+    if origin is None:
+        return False
+    bound_host = getattr(request.app.state, "bound_host", None)
+    if bound_host and not _is_accepted_host(
+        request.headers.get("host", ""), bound_host,
+        getattr(request.app.state, "trusted_public_hosts", frozenset()),
+    ):
+        return False
+    target = urlsplit(resolve_public_url() or str(request.url))
+    return origin == _http_origin(f"{target.scheme}://{target.netloc}")
 
 
 def is_safe_next_path(path: str) -> bool:

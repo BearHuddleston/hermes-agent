@@ -393,6 +393,12 @@ _DASHBOARD_EMBEDDED_CHAT_ENABLED = True
 _DESKTOP_ATTACHMENT_WS_MAX_BYTES = 384 * 1024 * 1024
 
 
+from hermes_cli.web_upload_limit import ChatFileUploadLimitMiddleware
+
+# Innermost user middleware: auth/Host checks run before body ingestion, and
+# the receive limit runs before FastAPI can spool a multipart attachment.
+app.add_middleware(ChatFileUploadLimitMiddleware)
+
 # CORS: localhost origins only — allow_origins=["*"] on 0.0.0.0 would let any
 # website read/modify config and secrets.
 app.add_middleware(
@@ -1430,6 +1436,11 @@ def start_server(
         _log.debug("Nous auth keepalive did not start: %s", exc)
 
     _configure_auth_gate(host, allow_public, ssh_session_token, ssh_owner_nonce)
+    if app.state.ui_surface == "webapp" and not app.state.auth_required:
+        # Webapp launch credentials are process-local, never inherited from
+        # Desktop environment/argv. Every start invalidates old launch links.
+        global _SESSION_TOKEN
+        _SESSION_TOKEN = secrets.token_urlsafe(32)
 
     # host_header_middleware validates Host against this (DNS rebinding,
     # GHSA-ppp5-vxwm-4cf7).

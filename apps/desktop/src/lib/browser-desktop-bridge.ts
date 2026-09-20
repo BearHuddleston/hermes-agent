@@ -10,6 +10,7 @@ import type {
 } from '@/global'
 import { translateNow } from '@/i18n'
 import { bytesToBase64 } from '@/lib/base64'
+import { consumeWebappSession, watchWebappLaunchLink, WEBAPP_LAUNCH_REQUIRED } from '@/lib/browser-launch-session'
 import { createBrowserProfileBridge } from '@/lib/browser-profile'
 import { createBrowserTerminal } from '@/lib/browser-terminal'
 import { createBrowserZoom } from '@/lib/browser-zoom'
@@ -22,6 +23,7 @@ interface BrowserBootstrapWindow {
   __HERMES_AUTH_REQUIRED__?: boolean
   __HERMES_BASE_PATH__?: string
   __HERMES_SESSION_TOKEN__?: string
+  __HERMES_UI_SURFACE__?: string
   hermesDesktop?: Window['hermesDesktop']
 }
 
@@ -88,14 +90,16 @@ function normalizedBasePath(value: string | undefined): string {
 
 function browserBootstrap(): BrowserBootstrap | null {
   const win = window as unknown as BrowserBootstrapWindow
-  const token = String(win.__HERMES_SESSION_TOKEN__ || '').trim()
   const authRequired = win.__HERMES_AUTH_REQUIRED__ === true
+  const basePath = normalizedBasePath(win.__HERMES_BASE_PATH__)
+  const webapp = win.__HERMES_UI_SURFACE__ === 'webapp'
+  const token = authRequired ? '' : webapp ? consumeWebappSession(basePath) : String(win.__HERMES_SESSION_TOKEN__ || '').trim()
 
-  if (!token && !authRequired) {return null}
+  if (!token && !authRequired && !webapp) {return null}
 
   return {
     authRequired,
-    basePath: normalizedBasePath(win.__HERMES_BASE_PATH__),
+    basePath,
     token,
     stagedUploads: new Map()
   }
@@ -230,6 +234,8 @@ async function browserFetch(
   bootstrap: BrowserBootstrap,
   request: BrowserFetchRequest
 ): Promise<{ response: Response; text: string }> {
+  if (!bootstrap.authRequired && !bootstrap.token) {throw new Error(WEBAPP_LAUNCH_REQUIRED)}
+
   const controller = request.timeoutMs === undefined ? null : new AbortController()
   const timeout = controller ? window.setTimeout(() => controller.abort(), request.timeoutMs) : null
   const headers = new Headers(request.headers)
@@ -248,6 +254,8 @@ async function browserFetch(
     const text = await response.text()
 
     if (!response.ok) {
+      if (!bootstrap.authRequired && response.status === 401) {throw new Error(WEBAPP_LAUNCH_REQUIRED)}
+
       const authError = reauthError(bootstrap, response, text)
 
       if (authError) {
@@ -400,6 +408,8 @@ async function authenticatedWebsocketUrl(
   profile?: null | string
 ): Promise<string> {
   if (!bootstrap.authRequired) {
+    if (!bootstrap.token) {throw new Error(WEBAPP_LAUNCH_REQUIRED)}
+
     return websocketUrl(bootstrap.basePath, path, { token: bootstrap.token }, profile)
   }
 
@@ -416,6 +426,8 @@ async function authenticatedWebsocketUrl(
 }
 
 function connectionFor(bootstrap: BrowserBootstrap, profile?: null | string): HermesConnection {
+  if (!bootstrap.authRequired && !bootstrap.token) {throw new Error(WEBAPP_LAUNCH_REQUIRED)}
+
   const baseUrl = `${window.location.origin}${bootstrap.basePath}`
 
   return {
@@ -518,6 +530,10 @@ export function installBrowserDesktopBridge(): boolean {
   const bootstrap = browserBootstrap()
 
   if (!bootstrap) {return false}
+
+  if (win.__HERMES_UI_SURFACE__ === 'webapp' && !bootstrap.authRequired) {
+    watchWebappLaunchLink(() => window.location.reload())
+  }
 
   // Reconnect belongs to the window, not whichever secondary profile is active.
   // Explicit null still selects the default backend.
@@ -695,15 +711,9 @@ export function installBrowserDesktopBridge(): boolean {
       throw browserUnsupported('Gateway reconfiguration')
     },
     cancelBootstrap: async () => ({ cancelled: false, ok: true }),
-    fetchLinkTitle: async (url: string) => {
-      try {
-        const html = await (await fetch(url)).text()
-
-        return html.match(/<title[^>]*>([\s\S]*?)<\/title>/i)?.[1]?.trim() || new URL(url).hostname
-      } catch {
-        return new URL(url).hostname
-      }
-    },
+    // Rendering an untrusted link must not contact its destination. PrettyLink
+    // uses the URL slug when no title is available; Electron keeps its resolver.
+    fetchLinkTitle: async () => '',
     findInPage: async (query: string) => {
       const find = (window as Window & { find?: (value: string) => boolean }).find
 

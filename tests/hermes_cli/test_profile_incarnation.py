@@ -164,11 +164,11 @@ def _assert_resource_lease_timeout_fails_closed(
         "home=Path(os.environ['PROFILE_HOME']); token=os.environ['INCARNATION']; "
         "\ntry:\n"
         " with profile_incarnation_lease(home, token):\n  pass\n"
-        "except FileNotFoundError:\n raise SystemExit(0)\n"
-        "except TimeoutError:\n raise SystemExit(2)\n"
+        "except TimeoutError:\n raise SystemExit(0)\n"
+        "except FileNotFoundError:\n raise SystemExit(2)\n"
         "raise SystemExit(1)"
     )
-    with profile_lifecycle._cross_process_profile_mutation_lock():
+    with profile_lifecycle.profile_lifecycle_lease(profile_home):
         result = subprocess.run(
             [sys.executable, "-c", script],
             env={

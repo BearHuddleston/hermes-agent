@@ -155,10 +155,13 @@ describe('PreviewPane console state', () => {
 
     expect(frame).toBeInstanceOf(HTMLIFrameElement)
     expect(rendered.container.querySelector('webview')).toBeNull()
-    expect(frame?.getAttribute('sandbox')).toBe(
-      'allow-forms allow-popups allow-scripts'
-    )
-    expect(frame?.getAttribute('sandbox')).not.toContain('allow-same-origin')
+    const sandbox = new Set(frame!.getAttribute('sandbox')!.split(/\s+/))
+    expect(sandbox.has('allow-forms')).toBe(true)
+    expect(sandbox.has('allow-scripts')).toBe(true)
+    expect(sandbox.has('allow-popups')).toBe(false)
+    expect(sandbox.has('allow-popups-to-escape-sandbox')).toBe(false)
+    expect(sandbox.has('allow-top-navigation')).toBe(false)
+    expect(sandbox.has('allow-same-origin')).toBe(false)
     expect(frame?.getAttribute('allow')).toBe('fullscreen')
     expect(frame?.getAttribute('allow')).not.toMatch(/camera|clipboard|microphone/)
     expect(rendered.container.querySelector('[data-preview-browser]')).toBeNull()

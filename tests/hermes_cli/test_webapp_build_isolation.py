@@ -30,9 +30,12 @@ def test_webapp_installs_and_builds_in_a_private_workspace(tmp_path, monkeypatch
     native.parent.mkdir()
     native.write_text("existing native renderer", encoding="utf-8")
     roots = []
+    from hermes_constants import get_scratch_dir
+    scratch = get_scratch_dir()
 
     def install(_npm, cwd, **_kwargs):
         roots.append(cwd)
+        assert cwd.parent == scratch
         # Model npm ci's destructive removal at the actual requested destination.
         shutil.rmtree(cwd / "node_modules", ignore_errors=True)
         assert (cwd / ".npmrc").read_text() == "engine-strict=true\n"

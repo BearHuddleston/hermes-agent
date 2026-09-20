@@ -1841,6 +1841,22 @@ uses the same hardened FastAPI server and authentication gate as
 `hermes dashboard`, but serves the Desktop renderer instead of the dashboard
 admin UI. See [Desktop App → Use the Desktop workspace from a browser](../user-guide/desktop.md#use-the-desktop-workspace-from-a-browser).
 
+For a loopback launch, use the **private launch link** printed by the command
+(including with `--no-open`). Its fragment carries the existing session token
+for privileged APIs, including host files, command execution and the terminal.
+The Webapp never includes this credential in public HTML. Do not share the
+link or publish captured CLI output. The browser removes the fragment and
+keeps the token in tab-local `sessionStorage`, so reload/reconnect works.
+
+A fresh tab needs the original launch link; a bare URL shows instructions
+instead of granting access. To manage a named profile on an existing server,
+open its `?profile=<name>` URL in an already authorized tab, or add that query
+**before** the original launch link's `#` fragment. If you lost the link, restart
+that Webapp to print a new one. Restarting invalidates old links. Authenticated
+remote Webapps continue to use OAuth cookies and single-use WebSocket tickets.
+Automatic local browser launch passes an owner-only redirect file, not the
+secret URL, to the OS browser launcher.
+
 | Option | Default | Description |
 |--------|---------|-------------|
 | `--port` | `9119` | Port to run the web server on (`0` asks the OS to assign one) |

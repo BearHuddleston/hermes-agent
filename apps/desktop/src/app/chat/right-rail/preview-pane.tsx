@@ -1054,7 +1054,7 @@ export function PreviewPane({ embedded = false, onRestartServer, reloadRequest =
       frame.referrerPolicy = 'no-referrer'
       frame.setAttribute(
         'sandbox',
-        'allow-forms allow-popups allow-scripts'
+        'allow-forms allow-scripts'
       )
       // Browser-hosted previews deliberately grant no camera, microphone, or
       // clipboard capability. Fullscreen is the only delegated permission.

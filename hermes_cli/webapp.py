@@ -191,6 +191,7 @@ def _publish_dist(staging: Path, dist: Path) -> None:
 def _private_build_workspace(project_root: Path):
     """Copy renderer inputs so npm cannot prune the native installation."""
     from pathspec import PathSpec
+    from hermes_constants import get_scratch_dir
 
     manifest = json.loads((project_root / "package.json").read_text(encoding="utf-8"))
     ignore_file = project_root / ".gitignore"
@@ -204,7 +205,7 @@ def _private_build_workspace(project_root: Path):
                 or spec.match_file((parent / name).relative_to(project_root).as_posix()
                                    + ("/" if (parent / name).is_dir() else ""))]
 
-    with tempfile.TemporaryDirectory(prefix="hermes-webapp-build-") as temporary:
+    with tempfile.TemporaryDirectory(prefix="hermes-webapp-build-", dir=get_scratch_dir()) as temporary:
         workspace = Path(temporary)
         for name in ("package.json", "package-lock.json", ".npmrc"):
             source = project_root / name

@@ -13,7 +13,7 @@ import os
 import re
 import secrets
 import stat
-from contextlib import ExitStack, contextmanager
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Iterator
 
@@ -104,22 +104,15 @@ def profile_incarnation_lease(
     """Hold the profile-mutation lease while binding a checked named path.
 
     Custom/default homes are not reusable named lifecycle objects and keep
-    their legacy lock-free behavior. The shared lease lives in the focused
-    lifecycle owner so marker code never imports the profile command godfile.
+    their legacy lock-free behavior. Contention raises TimeoutError; only a
+    missing/retired generation raises FileNotFoundError.
     """
     home = Path(profile_home)
     if profile_deletion_marker_path(home) is None:
         yield home
         return
 
-    lease_stack = ExitStack()
-    try:
-        lease_stack.enter_context(_profile_mutation_lease())
-    except TimeoutError as exc:
-        raise FileNotFoundError(
-            f"Named profile lifecycle lease is unavailable: {home}"
-        ) from exc
-    try:
+    with _profile_mutation_lease(home):
         if named_profile_home_is_unavailable(home):
             raise FileNotFoundError(
                 f"Named profile home is missing or being deleted: {home}"
@@ -132,8 +125,6 @@ def profile_incarnation_lease(
         elif not profile_incarnation_matches(home, expected_incarnation):
             raise FileNotFoundError(f"Named profile incarnation is stale: {home}")
         yield home
-    finally:
-        lease_stack.close()
 
 
 def write_fresh_profile_incarnation(profile_home: Path | str) -> str:

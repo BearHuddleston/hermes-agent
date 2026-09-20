@@ -93,8 +93,8 @@ _HEADLESS_MSG = (
 def mount_spa(application: FastAPI):
     """Mount the built SPA; unmatched paths fall back to index.html for client-side routing.
 
-    The session token is injected into index.html via a ``<script>`` tag so the SPA can
-    authenticate without a separate token-dispensing endpoint. Behind a path-prefix reverse
+    Dashboard injects its session token into index.html; Webapp instead receives
+    the same credential through an operator-only launch fragment. Behind a path-prefix reverse
     proxy (``X-Forwarded-Prefix: /hermes``) the served index.html is rewritten so absolute
     asset URLs and the runtime ``__HERMES_BASE_PATH__`` honour that prefix without a rebuild.
 
@@ -102,7 +102,7 @@ def mount_spa(application: FastAPI):
     with a missing dist per-request (404 JSON / ``check_dir=False``), so a long-lived
     ``--skip-build`` process recovers the moment a build appears on disk — no restart.
     """
-    from hermes_cli.web_server import WEB_DIST, _DASHBOARD_EMBEDDED_CHAT_ENABLED, app
+    from hermes_cli.web_server import WEB_DIST, _DASHBOARD_EMBEDDED_CHAT_ENABLED
     from hermes_cli.web_deps import _server
 
     # `hermes serve` is the headless backend: it must NEVER serve the browser SPA, even if a
@@ -118,7 +118,7 @@ def mount_spa(application: FastAPI):
             # gate is off: on a gated serve the token must never be readable without auth.
             # See #94227, #95575.
             gated = bool(getattr(application.state, "auth_required", False))
-            if full_path == "" and not gated:
+            if full_path == "" and not gated and getattr(application.state, "ui_surface", "dashboard") != "webapp":
                 return HTMLResponse(
                     "<!doctype html><html><head><script>"
                     f"window.__HERMES_SESSION_TOKEN__={json.dumps(_server()._SESSION_TOKEN)};"
@@ -151,8 +151,11 @@ def mount_spa(application: FastAPI):
             # Partial build / wiped dist / permissions: same JSON 404 as a fully-missing dist.
             return JSONResponse({"error": "Frontend not built. Run: cd web && npm run build"}, status_code=404)
         chat_js = "true" if _DASHBOARD_EMBEDDED_CHAT_ENABLED else "false"
-        gated = bool(getattr(app.state, "auth_required", False))
-        token_js = "" if gated else f'window.__HERMES_SESSION_TOKEN__="{_server()._SESSION_TOKEN}";'
+        gated = bool(getattr(application.state, "auth_required", False))
+        surface = getattr(application.state, "ui_surface", "dashboard")
+        # Webapp grants host files and shell.exec as well as PTYs: its existing
+        # session token must come from the operator, never anonymous HTML.
+        token_js = "" if gated or surface == "webapp" else f'window.__HERMES_SESSION_TOKEN__="{_server()._SESSION_TOKEN}";'
         # Launcher-preselected profile (``--open-profile``): the SPA's fallback scope when the URL
         # omits ``?profile=`` (#73085). ``</`` escaped so a hostile name cannot close the script tag.
         initial_profile_js = json.dumps(str(getattr(application.state, "initial_profile", "") or "")).replace("</", "<\\/")
@@ -162,6 +165,7 @@ def mount_spa(application: FastAPI):
             f'window.__HERMES_BASE_PATH__="{prefix}";'
             f"window.__HERMES_AUTH_REQUIRED__={'true' if gated else 'false'};"
             f"window.__HERMES_INITIAL_PROFILE__={initial_profile_js};"
+            f"window.__HERMES_UI_SURFACE__={json.dumps(surface)};"
             f"</script>"
         )
         if prefix:
@@ -214,6 +218,8 @@ def mount_spa(application: FastAPI):
         # real 404 JSON instead of index.html (which breaks JSON clients with a SyntaxError).
         if full_path == "api" or full_path.startswith("api/"):
             return JSONResponse({"detail": f"No such API endpoint: /{full_path}"}, status_code=404)
+        if full_path == "index.html" and getattr(application.state, "ui_surface", "dashboard") == "webapp":
+            return _serve_index(prefix)
         file_path = WEB_DIST / full_path
         # Prevent path traversal via url-encoded sequences (%2e%2e/)
         if (

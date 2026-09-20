@@ -19,7 +19,6 @@ from fastapi import HTTPException, WebSocket, WebSocketDisconnect
 from hermes_cli.profile_incarnation import (
     ensure_profile_incarnation, profile_incarnation_lease, profile_incarnation_matches,
 )
-from hermes_cli.profile_lifecycle import profile_lifecycle_lease
 from hermes_cli.pty_session import PtySession, PtySessionRegistry, RegistryFull, run_reaper
 from hermes_constants import get_hermes_home, named_profile_home_is_unavailable
 
@@ -95,24 +94,23 @@ class HostTerminalRegistry(PtySessionRegistry):
 
         def spawn():
             nonlocal owner
-            # Resolution, incarnation capture, config and spawn are one lease:
+            home = _request_home(ws.query_params.get("profile"))
+            # Capture the generation and spawn under this name's lease so
             # deletion/recreation cannot retarget an already-admitted request.
-            with profile_lifecycle_lease():
-                home = _request_home(ws.query_params.get("profile"))
+            with profile_incarnation_lease(home):
                 if not home.is_dir():
                     raise TerminalExpired()
-                with profile_incarnation_lease(home):
-                    incarnation = ensure_profile_incarnation(home)
-                    argv, cwd, env, shell = _resolve_host_terminal_argv(
-                        profile=ws.query_params.get("profile"),
-                        requested_cwd=ws.query_params.get("cwd"))
-                    env["HERMES_HOME"] = str(home)
-                    bridge = PtyBridge.spawn(
-                        argv, cwd=cwd, env=env,
-                        cols=query_dimension(ws.query_params.get("cols"), 80, 2000),
-                        rows=query_dimension(ws.query_params.get("rows"), 24, 1000))
-                    owner = HostOwner(identity, home, incarnation, shell, cwd)
-                    return bridge
+                incarnation = ensure_profile_incarnation(home)
+                argv, cwd, env, shell = _resolve_host_terminal_argv(
+                    profile=ws.query_params.get("profile"),
+                    requested_cwd=ws.query_params.get("cwd"))
+                env["HERMES_HOME"] = str(home)
+                bridge = PtyBridge.spawn(
+                    argv, cwd=cwd, env=env,
+                    cols=query_dimension(ws.query_params.get("cols"), 80, 2000),
+                    rows=query_dimension(ws.query_params.get("rows"), 24, 1000))
+                owner = HostOwner(identity, home, incarnation, shell, cwd)
+                return bridge
 
         session, _ = await self.attach_or_spawn(token, spawn=spawn)
         assert owner is not None  # spawn completed under the incarnation lease
@@ -187,7 +185,9 @@ def get_host_terminals(app) -> HostTerminalRegistry:
 
 @asynccontextmanager
 async def host_terminal_lifespan(app):
-    registry = get_host_terminals(app)
+    # Overlapping lifespans must not share loop-bound sessions or teardown.
+    registry = HostTerminalRegistry()
+    app.state.host_terminals = registry
     reaper = asyncio.create_task(run_reaper(registry, interval=1.0))
     try:
         yield
@@ -196,7 +196,8 @@ async def host_terminal_lifespan(app):
         with suppress(asyncio.CancelledError):
             await reaper
         await registry.close_all()
-        del app.state.host_terminals
+        if getattr(app.state, "host_terminals", None) is registry:
+            del app.state.host_terminals
 
 
 def _metadata(token, owner, session, registry, *, reconnected):

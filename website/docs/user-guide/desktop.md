@@ -70,14 +70,23 @@ same limit used when the staged bytes enter that flow. The terminal rail opens
 the host's interactive shell through the existing authenticated `/api/pty`
 transport; Dashboard's Chat
 tab continues to use the Hermes TUI mode on that same endpoint. Host-shell mode
-is available on loopback and authenticated remote Webapp binds, and is refused
-for any unauthenticated non-loopback bind. Native-only affordances—HUD/global shortcuts,
+is available on loopback with the private launch link printed by `hermes webapp`,
+and on authenticated remote Webapp binds. The browser consumes the link's secret
+fragment into tab-local session storage; refresh keeps access, while a fresh tab
+needs the original link. Old links expire when the backend restarts. This is
+the same session token used by privileged APIs (host files, RPC command
+execution and terminals), and is never supplied in public Webapp HTML. A bare
+URL in a fresh tab shows launch-link instructions. To select a named profile
+on an existing server, navigate in an authorized tab or put `?profile=<name>`
+before the private link's `#` fragment. Keep the link and captured CLI output private.
+Host-shell mode is refused for any unauthenticated non-loopback bind. Native-only affordances—HUD/global shortcuts,
 always-on-top overlays, OS-window inspection, external-terminal launch, and the
 native updater—remain available only in Electron. Website links open in a
-separate browser tab by default in Webapp. Explicit URL previews use a
-capability-minimal sandboxed iframe, with an **Open in browser** action for
-sites that reject embedding. Electron-only DevTools and trusted-input preview
-automation are not exposed through that iframe.
+separate browser tab by default in Webapp. Link labels are derived from their
+URLs without fetching page titles. Explicit URL previews use a capability-minimal
+sandboxed iframe that cannot open popups. Use **Open in browser** for sites that
+reject embedding or need popup flows such as OAuth sign-in. Electron-only
+DevTools and trusted-input preview automation are not exposed through that iframe.
 
 Host files download through your browser's download manager. Supported audio
 and video play inline with seeking, using the server's existing file-access

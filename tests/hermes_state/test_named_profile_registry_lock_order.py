@@ -1,5 +1,6 @@
 """Named-profile binding must precede registry construction admission."""
 
+from contextlib import contextmanager
 from pathlib import Path
 import threading
 import shutil
@@ -20,7 +21,7 @@ def test_rest_open_cannot_admit_while_gateway_holds_profile_lease(tmp_path, monk
     token = ensure_profile_incarnation(profile)
     path = (profile / "state.db").resolve()
     attempted_lease = threading.Event()
-    real_lock = profile_lifecycle._PROFILE_LIFECYCLE_LOCK
+    real_lock = profile_lifecycle._cross_process_profile_mutation_lock
     results = []
     errors = []
 
@@ -32,16 +33,14 @@ def test_rest_open_cannot_admit_while_gateway_holds_profile_lease(tmp_path, monk
 
     worker = threading.Thread(target=rest_open, daemon=True)
 
-    class ObservedLock:
-        def __enter__(self):
-            if threading.current_thread() is worker:
-                attempted_lease.set()
-            return real_lock.__enter__()
+    @contextmanager
+    def observed_lock(*args, **kwargs):
+        if threading.current_thread() is worker:
+            attempted_lease.set()
+        with real_lock(*args, **kwargs):
+            yield
 
-        def __exit__(self, *args):
-            return real_lock.__exit__(*args)
-
-    monkeypatch.setattr(profile_lifecycle, "_PROFILE_LIFECYCLE_LOCK", ObservedLock())
+    monkeypatch.setattr(profile_lifecycle, "_cross_process_profile_mutation_lock", observed_lock)
     gateway_db = None
     admitted = None
     try:
@@ -106,7 +105,7 @@ def test_warm_acquire_rejects_generation_replaced_before_registry_lock(tmp_path,
         assert reached_lock.wait(5)
         old_db.close()
         old_db = None
-        with profile_lifecycle.profile_lifecycle_lease():
+        with profile_lifecycle.profile_lifecycle_lease(profile):
             profile_lifecycle.mark_profile_deleting(profile, token)
             shutil.rmtree(profile)
             profile.mkdir()

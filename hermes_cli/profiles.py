@@ -28,6 +28,9 @@ from hermes_cli.profile_lifecycle import (
     move_profile_generation,
     profile_deletion_marker,
     profile_home_is_tombstoned,
+    profile_lifecycle_lease,
+    profile_selection_lease,
+    profile_shared_file_lease,
     serialized_profile_mutation,
     verify_profile_resources_released,
 )
@@ -786,40 +789,43 @@ def _clean_previous_names(raw) -> List[str]:
     return cleaned
 
 
-@serialized_profile_mutation
+@serialized_profile_mutation("profile_dir")
 def write_profile_meta(
     profile_dir: Path, *, description: Optional[str] = None, description_auto: Optional[bool] = None,
     display_name: Optional[str] = None, previous_names: Optional[List[str]] = None,
 ) -> None:
     """Update ``profile.yaml`` in place: only passed fields are overwritten; the file is
     created if missing. The profile directory itself must exist."""
-    if not profile_dir.is_dir() or profile_home_is_tombstoned(profile_dir):
-        raise FileNotFoundError(f"profile directory does not exist or is being deleted: {profile_dir}")
     path = profile_dir / "profile.yaml"
-    existing: dict = _load_yaml_dict(path) or {}
-    if description is not None:
-        existing["description"] = description.strip()
-    if description_auto is not None:
-        existing["description_auto"] = bool(description_auto)
-    if display_name is not None:
-        # Empty string clears the key (falls back to the canonical id).
-        if display_name.strip():
-            existing["display_name"] = display_name.strip()
-        else:
-            existing.pop("display_name", None)
-    if previous_names is not None:
-        # Rename history for group-chat member sync (#110200): consumers match
-        # stale persisted handles against the live roster via these names.
-        cleaned = _clean_previous_names(previous_names)
-        if cleaned:
-            existing["previous_names"] = cleaned
-        else:
-            existing.pop("previous_names", None)
-    # Atomic write: bare open("w") truncates before the dump, and the read path swallows
-    # parse errors as {}, so a crashed write would silently drop unspecified fields.
-    # See #51356.
-    from utils import atomic_yaml_write
-    atomic_yaml_write(path, existing, sort_keys=False, create_parent=False)
+    # Default/custom homes deliberately skip the named-generation lease, but
+    # their metadata still needs serialized read/modify/write.
+    with profile_shared_file_lease(path):
+        if not profile_dir.is_dir() or profile_home_is_tombstoned(profile_dir):
+            raise FileNotFoundError(f"profile directory does not exist or is being deleted: {profile_dir}")
+        existing: dict = _load_yaml_dict(path) or {}
+        if description is not None:
+            existing["description"] = description.strip()
+        if description_auto is not None:
+            existing["description_auto"] = bool(description_auto)
+        if display_name is not None:
+            # Empty string clears the key (falls back to the canonical id).
+            if display_name.strip():
+                existing["display_name"] = display_name.strip()
+            else:
+                existing.pop("display_name", None)
+        if previous_names is not None:
+            # Rename history for group-chat member sync (#110200): consumers match
+            # stale persisted handles against the live roster via these names.
+            cleaned = _clean_previous_names(previous_names)
+            if cleaned:
+                existing["previous_names"] = cleaned
+            else:
+                existing.pop("previous_names", None)
+        # Atomic write: bare open("w") truncates before the dump, and the read path swallows
+        # parse errors as {}, so a crashed write would silently drop unspecified fields.
+        # See #51356.
+        from utils import atomic_yaml_write
+        atomic_yaml_write(path, existing, sort_keys=False, create_parent=False)
 
 
 def format_profile_label(name: str, display_name: Optional[str]) -> str:
@@ -1076,7 +1082,7 @@ def _initialize_profile(
     name: str, clone_from: Optional[str] = None, clone_all: bool = False, clone_config: bool = False,
     no_alias: bool = False, no_skills: bool = False, description: Optional[str] = None,
     clone_channels: bool = False, sync_imports: bool = False,
-    *, _target_dir: Path,
+    *, _target_dir: Path, source_dir: Optional[Path],
 ) -> Path:
     """Initialize a staged profile directory before publication.
 
@@ -1107,7 +1113,6 @@ def _initialize_profile(
     profile_dir = _target_dir
     if profile_dir.exists():
         raise _profile_exists_error(canon)
-    source_dir = _resolve_clone_source(clone_from) if cloning else None
     if source_dir is not None and clone_channels:
         from hermes_cli.profile_channels import clone_channels_refusal
         refusal = clone_channels_refusal(source_dir, clone_from or get_active_profile_name() or "default")
@@ -1162,7 +1167,6 @@ def _finish_profile_layout(profile_dir: Path, *, no_skills: bool, clone_all: boo
         write_profile_meta(profile_dir, description=description.strip(), description_auto=False)
 
 
-@serialized_profile_mutation
 def create_profile(
     name: str,
     clone_from: Optional[str] = None,
@@ -1178,33 +1182,45 @@ def create_profile(
     canon = normalize_profile_name(name)
     validate_profile_name(canon)
     profile_dir = get_profile_dir(canon)
-    _prepare_profile_creation_target(canon, profile_dir)
+    cloning = clone_from is not None or clone_all or clone_config
+    source_dir = _resolve_clone_source(clone_from) if cloning else None
+    homes = (profile_dir, source_dir) if source_dir is not None else (profile_dir,)
+    with profile_lifecycle_lease(*homes):
+        # Validate the source after acquiring BOTH names: a clone must never
+        # read through a concurrent source retirement or replacement.
+        from hermes_cli.profile_incarnation import profile_incarnation_lease
 
-    def initialize(staging_dir: Path) -> Path:
-        return _initialize_profile(
-            name,
-            clone_from=clone_from,
-            clone_all=clone_all,
-            clone_config=clone_config,
-            no_alias=no_alias,
-            no_skills=no_skills,
-            description=description,
-            clone_channels=clone_channels,
-            sync_imports=sync_imports,
-            _target_dir=staging_dir,
-        )
+        with contextlib.ExitStack() as source_lease:
+            if source_dir is not None:
+                source_lease.enter_context(profile_incarnation_lease(source_dir))
+            _prepare_profile_creation_target(canon, profile_dir)
 
-    create_profile_generation(
-        canon,
-        profile_dir,
-        _get_profiles_root(),
-        initialize,
-    )
-    _maybe_register_gateway_service(canon)
-    # A running multiplexer enumerates profiles/ at boot: ask it to serve this one now (it also
-    # rescans periodically, so a missed signal only delays serving).
-    _notify_multiplexer(canon)
-    return profile_dir
+            def initialize(staging_dir: Path) -> Path:
+                return _initialize_profile(
+                    name,
+                    clone_from=clone_from,
+                    clone_all=clone_all,
+                    clone_config=clone_config,
+                    no_alias=no_alias,
+                    no_skills=no_skills,
+                    description=description,
+                    clone_channels=clone_channels,
+                    sync_imports=sync_imports,
+                    _target_dir=staging_dir,
+                    source_dir=source_dir,
+                )
+
+            create_profile_generation(
+                canon,
+                profile_dir,
+                _get_profiles_root(),
+                initialize,
+            )
+        _maybe_register_gateway_service(canon)
+        # A running multiplexer enumerates profiles/ at boot: ask it to serve this one now (it also
+        # rescans periodically, so a missed signal only delays serving).
+        _notify_multiplexer(canon)
+        return profile_dir
 
 
 def _notify_multiplexer(canon: str) -> None:
@@ -1519,7 +1535,7 @@ def _profile_directory_identity(profile_dir: Path) -> tuple[int, int, int, str |
     )
 
 
-@serialized_profile_mutation
+@serialized_profile_mutation("profile_dir")
 def _profile_delete_confirmation_identity(profile_dir: Path) -> tuple[int, int, int, str | None]:
     # Backfill live legacy homes while briefly holding the mutation lease, then
     # release it before prompting. Never mint an identity behind a deletion fence.
@@ -1578,7 +1594,7 @@ def delete_profile(name: str, yes: bool = False) -> Path:
     return _delete_profile_confirmed(canon, profile_dir, confirmed_identity)
 
 
-@serialized_profile_mutation
+@serialized_profile_mutation("profile_dir")
 def _delete_profile_confirmed(
     canon: str,
     profile_dir: Path,
@@ -1857,25 +1873,25 @@ def get_active_profile(root: Path | None = None) -> str:
         return "default"
 
 
-@serialized_profile_mutation
 def set_active_profile(name: str) -> None:
     """Set the sticky active profile (``default`` = remove the file)."""
     canon = _canon_valid(name)
-    if canon != "default" and not profile_exists(canon):
-        raise _missing_profile_error(canon)
-    path = _get_active_profile_path()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    if canon == "default":
-        path.unlink(missing_ok=True)
-    else:
-        tmp = path.with_suffix(".tmp")  # atomic write
-        tmp.write_text(canon + "\n", encoding="utf-8")
-        tmp.replace(path)
+    with profile_lifecycle_lease(get_profile_dir(canon)), profile_selection_lease():
+        if canon != "default" and not profile_exists(canon):
+            raise _missing_profile_error(canon)
+        path = _get_active_profile_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        if canon == "default":
+            path.unlink(missing_ok=True)
+        else:
+            tmp = path.with_suffix(".tmp")  # atomic write
+            tmp.write_text(canon + "\n", encoding="utf-8")
+            tmp.replace(path)
 
 
 def _retarget_active_profile(old: str, new: str, message: str) -> None:
     """If the sticky active profile is *old*, point it at *new* and print *message*. Never raises."""
-    with contextlib.suppress(Exception):
+    with contextlib.suppress(Exception), profile_selection_lease():
         if get_active_profile() == old:
             set_active_profile(new)
             print(message)
@@ -2060,7 +2076,7 @@ def export_profile(name: str, output_path: str, extra_files: Optional[Dict[str, 
         return Path(make_targz(base, tmpdir, canon))
 
 
-@serialized_profile_mutation
+@serialized_profile_mutation("profile_dir")
 def _import_profile_into_home(
     archive: Path,
     archive_root: str,
@@ -2147,25 +2163,26 @@ def _migrate_honcho_profile_host(old_name: str, new_name: str, new_dir: Path) ->
         if resolved in seen or not path.is_file():
             continue
         seen.add(resolved)
-        try:
-            raw = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            continue
-        hosts = raw.get("hosts")
-        if not isinstance(hosts, dict):
-            continue
-        source_host = old_host if old_host in hosts else legacy_old_host
-        if source_host not in hosts:
-            continue
-        if new_host in hosts:
-            print(f"⚠ Honcho host block not migrated: {new_host} already exists in {path}")
-            continue
-        block = hosts[source_host]
-        if isinstance(block, dict) and "aiPeer" not in block:
-            block["aiPeer"] = old_name  # source_host is ``hermes_<old>`` or legacy ``hermes.<old>``
-        hosts[new_host] = hosts.pop(source_host)
-        if _atomic_write_json(path, raw):
-            print(f"✓ Honcho host updated: {source_host} → {new_host}")
+        with profile_shared_file_lease(resolved):
+            try:
+                raw = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                continue
+            hosts = raw.get("hosts")
+            if not isinstance(hosts, dict):
+                continue
+            source_host = old_host if old_host in hosts else legacy_old_host
+            if source_host not in hosts:
+                continue
+            if new_host in hosts:
+                print(f"⚠ Honcho host block not migrated: {new_host} already exists in {path}")
+                continue
+            block = hosts[source_host]
+            if isinstance(block, dict) and "aiPeer" not in block:
+                block["aiPeer"] = old_name  # source_host is ``hermes_<old>`` or legacy ``hermes.<old>``
+            hosts[new_host] = hosts.pop(source_host)
+            if _atomic_write_json(path, raw):
+                print(f"✓ Honcho host updated: {source_host} → {new_host}")
 
 
 def _finish_profile_rename(old_canon: str, new_canon: str, old_dir: Path, new_dir: Path) -> None:
@@ -2195,7 +2212,6 @@ def _record_profile_rename(new_dir: Path, old_canon: str) -> None:
         logger.debug("profile rename: could not record previous name %r in %s: %s", old_canon, new_dir, exc)
 
 
-@serialized_profile_mutation
 def rename_profile(old_name: str, new_name: str) -> Path:
     """Rename a profile: directory, wrapper script, service, active_profile. The default
     profile's home IS the installation root, so "renaming" it sets a presentation-only
@@ -2212,63 +2228,64 @@ def rename_profile(old_name: str, new_name: str) -> Path:
         raise ValueError("Cannot rename to 'default' — it is reserved.")
     old_dir = get_profile_dir(old_canon)
     new_dir = get_profile_dir(new_canon)
-    if not old_dir.is_dir():
-        raise _unknown_profile_error(old_canon)
-    if profile_home_is_tombstoned(old_dir):
-        raise RuntimeError(f"Profile '{old_canon}' is being deleted and cannot be renamed.")
-    if new_dir.exists():
-        raise _profile_exists_error(new_canon)
-    profile_incarnation = ensure_profile_incarnation(old_dir)
+    with profile_lifecycle_lease(old_dir, new_dir):
+        if not old_dir.is_dir():
+            raise _unknown_profile_error(old_canon)
+        if profile_home_is_tombstoned(old_dir):
+            raise RuntimeError(f"Profile '{old_canon}' is being deleted and cannot be renamed.")
+        if new_dir.exists():
+            raise _profile_exists_error(new_canon)
+        profile_incarnation = ensure_profile_incarnation(old_dir)
 
-    # 1. Stop gateway if running
-    if _check_gateway_running(old_dir):
-        _cleanup_gateway_service(old_canon, old_dir)
-        _stop_gateway_process(old_dir)
-    _stop_profile_backends(old_canon, old_dir)
+        # 1. Stop gateway if running
+        if _check_gateway_running(old_dir):
+            _cleanup_gateway_service(old_canon, old_dir)
+            _stop_gateway_process(old_dir)
+        _stop_profile_backends(old_canon, old_dir)
 
-    # Unroute the old name after retirement has fenced stale writers, before moving its home.
-    live_mux = _live_default_multiplexer()
-    retired = begin_profile_retirement(old_dir, profile_incarnation)
-    if retired:
-        print(f"✓ Retired {retired} in-process profile resource(s)")
-    if live_mux:
-        _notify_multiplexer(old_canon)
-
-    # Cached MCP stderr handles otherwise keep the old home open on Windows.
-    from hermes_constants import hermes_home_key
-    from tools.mcp_tool_lifecycle import shutdown_mcp_servers
-    shutdown_mcp_servers(scope=hermes_home_key(old_dir))
-
-    try:
-        verify_profile_resources_released(
-            old_dir,
-            profile_incarnation,
-            subject=f"Profile '{old_canon}'",
-            retry_action="rename",
-        )
-        move_profile_generation(
-            old_dir,
-            new_dir,
-            profile_incarnation,
-            lambda: _finish_profile_rename(old_canon, new_canon, old_dir, new_dir),
-        )
-    finally:
-        # Publication happens inside move_profile_generation before this sticky
-        # selection update, so set_active_profile can resolve the new name.
-        if new_dir.is_dir() and not profile_home_is_tombstoned(new_dir):
-            # Metadata writes reject tombstoned homes. Record the rename only
-            # after publication, including when post-move alias updates failed.
-            _record_profile_rename(new_dir, old_canon)
-            _retarget_active_profile(old_canon, new_canon, f"✓ Active profile updated: {new_canon}")
-            # Migrate identity after the new generation admits DB access, before hot-serving it.
-            from hermes_cli.profile_identity import _migrate_profile_identity
-            _migrate_profile_identity(old_canon, new_canon, live_mux)
-            if live_mux:
-                _notify_multiplexer(new_canon)
-        elif live_mux and not profile_home_is_tombstoned(old_dir):
-            # A failed move or drain restored the old generation's admission.
+        # Unroute the old name after retirement has fenced stale writers, before moving its home.
+        live_mux = _live_default_multiplexer()
+        retired = begin_profile_retirement(old_dir, profile_incarnation)
+        if retired:
+            print(f"✓ Retired {retired} in-process profile resource(s)")
+        if live_mux:
             _notify_multiplexer(old_canon)
-    return new_dir
+
+        # Cached MCP stderr handles otherwise keep the old home open on Windows.
+        from hermes_constants import hermes_home_key
+        from tools.mcp_tool_lifecycle import shutdown_mcp_servers
+        shutdown_mcp_servers(scope=hermes_home_key(old_dir))
+
+        try:
+            verify_profile_resources_released(
+                old_dir,
+                profile_incarnation,
+                subject=f"Profile '{old_canon}'",
+                retry_action="rename",
+            )
+            move_profile_generation(
+                old_dir,
+                new_dir,
+                profile_incarnation,
+                lambda: _finish_profile_rename(old_canon, new_canon, old_dir, new_dir),
+            )
+        finally:
+            # Publication happens inside move_profile_generation before this sticky
+            # selection update, so set_active_profile can resolve the new name.
+            if new_dir.is_dir() and not profile_home_is_tombstoned(new_dir):
+                # Metadata writes reject tombstoned homes. Record the rename only
+                # after publication, including when post-move alias updates failed.
+                _record_profile_rename(new_dir, old_canon)
+                _retarget_active_profile(old_canon, new_canon, f"✓ Active profile updated: {new_canon}")
+                # Migrate identity after the new generation admits DB access, before hot-serving it.
+                from hermes_cli.profile_identity import _migrate_profile_identity
+                _migrate_profile_identity(old_canon, new_canon, live_mux)
+                if live_mux:
+                    _notify_multiplexer(new_canon)
+            elif live_mux and not profile_home_is_tombstoned(old_dir):
+                # A failed move or drain restored the old generation's admission.
+                _notify_multiplexer(old_canon)
+        return new_dir
 
 
 # Profile env resolution (called from _apply_profile_override)

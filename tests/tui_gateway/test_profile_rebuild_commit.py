@@ -128,8 +128,14 @@ def test_rebuild_commits_only_to_live_profile_record(
     monkeypatch.setitem(server._sessions, "profile-rebuild", session)
     built, closed, connections = [], [], []
 
+    other = home / "profiles" / "other"
+    other_incarnation = None
+    if change == "rebind":
+        other.mkdir()
+        other_incarnation = server._capture_profile_incarnation(other)
+
     def change_target():
-        with profile_lifecycle_lease():
+        with profile_lifecycle_lease(profile):
             if change in {"retire", "recreate"}:
                 server._profile_lifecycle.retire(profile, incarnation)
             if change == "recreate":
@@ -137,10 +143,7 @@ def test_rebuild_commits_only_to_live_profile_record(
                 assert fresh != incarnation
                 server.allow_profile_home(profile, fresh)
             if change == "rebind":
-                other = home / "profiles" / "other"
-                other.mkdir()
-                session.update(profile_home=str(other),
-                               profile_incarnation=server._capture_profile_incarnation(other))
+                session.update(profile_home=str(other), profile_incarnation=other_incarnation)
             if change == "closing":
                 session["_closing"] = True
             if change == "replace":
@@ -235,7 +238,7 @@ def test_tools_configure_cannot_write_across_profile_recreation(tmp_path, monkey
     replacement_config = yaml.safe_dump({"platform_toolsets": {"cli": ["file", "web"]}})
 
     def recreate():
-        with profile_lifecycle.profile_lifecycle_lease():
+        with profile_lifecycle.profile_lifecycle_lease(profile):
             server._profile_lifecycle.retire(profile, incarnation)
             shutil.rmtree(profile)
             profile.mkdir()
@@ -259,14 +262,12 @@ def test_tools_configure_cannot_write_across_profile_recreation(tmp_path, monkey
         def try_recreate():
             # Nonblocking on another thread makes this a deterministic exclusion probe,
             # not an assertion that a scheduled delete happened to be slow.
-            lock = profile_lifecycle._PROFILE_LIFECYCLE_LOCK
-            if not lock.acquire(blocking=False):
-                return False
             try:
-                recreate()
-                return True
-            finally:
-                lock.release()
+                with profile_lifecycle.profile_lifecycle_lease(profile, timeout=0):
+                    recreate()
+                    return True
+            except TimeoutError:
+                return False
 
         def save_during_recreate(cfg):
             with ThreadPoolExecutor(max_workers=1) as pool:

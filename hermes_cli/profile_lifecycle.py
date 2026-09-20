@@ -10,8 +10,11 @@ depend on this owner, never the reverse.
 
 from __future__ import annotations
 
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from functools import wraps
+import errno
+import hashlib
+import inspect
 import logging
 import os
 from pathlib import Path
@@ -27,10 +30,8 @@ from hermes_constants import get_default_hermes_root, profile_deletion_marker_pa
 
 logger = logging.getLogger(__name__)
 
-# Named-profile resource binders take the same lock only while turning a
-# checked pathname into an open handle or file write. Ordinary observations
-# remain lock-free.
-_PROFILE_LIFECYCLE_LOCK = threading.RLock()
+# Each reusable name owns a stable lock outside its directory. Never unlink
+# these files: waiters must keep locking the same inode across delete/recreate.
 _PROFILE_MUTATION_LOCAL = threading.local()
 _PROFILE_LIFECYCLE_LOCK_TIMEOUT_SECONDS = 120.0
 _PROFILE_DB_RELEASE_TIMEOUT_SECONDS = 5.0
@@ -40,29 +41,37 @@ def _profiles_root() -> Path:
     return get_default_hermes_root() / "profiles"
 
 
-def _profile_lifecycle_modes() -> tuple[int, int]:
+def _profile_lifecycle_modes(profiles_root: Path | None = None) -> tuple[int, int]:
     """Return directory/file modes compatible with managed shared roots."""
     try:
-        group_shared = bool(_profiles_root().stat().st_mode & stat.S_IWGRP)
+        mode = (profiles_root or _profiles_root()).stat().st_mode
     except OSError:
-        group_shared = False
-    return (0o770, 0o660) if group_shared else (0o700, 0o600)
+        mode = 0
+    directory, file = (0o770, 0o660) if mode & stat.S_IWGRP else (0o700, 0o600)
+    return directory | (mode & stat.S_ISGID), file
+
+
+def _profile_lock_path(profile_home: Path | str) -> Path | None:
+    marker = profile_deletion_marker_path(Path(profile_home))
+    if marker is None:
+        return None
+    # Resolve the parent, not the reusable profile directory (which can move).
+    return marker.parent.parent.resolve() / ".locks" / (marker.name + ".lock")
 
 
 @contextmanager
-def _cross_process_profile_mutation_lock() -> Iterator[None]:
-    """Serialize create/delete/rename across Hermes processes on this host."""
-    lock_path = _profiles_root() / ".profile-lifecycle.lock"
-    _, file_mode = _profile_lifecycle_modes()
-    lock_path.parent.mkdir(parents=True, exist_ok=True)
+def _cross_process_profile_mutation_lock(lock_path: Path, *, deadline: float) -> Iterator[None]:
+    """Acquire one stable lock file without any process-wide mutex held."""
+    directory_mode, file_mode = _profile_lifecycle_modes(lock_path.parent.parent)
+    lock_path.parent.mkdir(mode=directory_mode, parents=True, exist_ok=True)
     handle = open(lock_path, "a+b")
     try:
         os.chmod(lock_path, file_mode)
+        os.chmod(lock_path.parent, directory_mode)
     except OSError:
         pass
     acquired = False
     try:
-        deadline = time.monotonic() + _PROFILE_LIFECYCLE_LOCK_TIMEOUT_SECONDS
         while True:
             try:
                 if sys.platform == "win32":
@@ -80,12 +89,15 @@ def _cross_process_profile_mutation_lock() -> Iterator[None]:
                     fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
                 acquired = True
                 break
-            except (BlockingIOError, OSError):
-                if time.monotonic() >= deadline:
+            except OSError as exc:
+                if exc.errno not in (errno.EACCES, errno.EAGAIN, errno.EDEADLK):
+                    raise
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
                     raise TimeoutError(
-                        f"Timed out waiting for profile lifecycle lock: {lock_path}"
-                    )
-                time.sleep(0.05)
+                        f"Timed out waiting for profile lifecycle lock: {lock_path}; retry the operation."
+                    ) from exc
+                time.sleep(min(0.05, remaining))
         yield
     finally:
         if acquired:
@@ -105,39 +117,81 @@ def _cross_process_profile_mutation_lock() -> Iterator[None]:
 
 
 @contextmanager
-def profile_lifecycle_lease() -> Iterator[None]:
-    """Exclude profile mutations while binding one named-profile resource.
+def _lifecycle_leases(lock_paths: list[Path], timeout: float | None = None) -> Iterator[None]:
+    deadline = time.monotonic() + (
+        _PROFILE_LIFECYCLE_LOCK_TIMEOUT_SECONDS if timeout is None else timeout
+    )
+    # Bookkeeping is thread-local; a global RLock would hide the deadline while
+    # another thread waits on the OS lock. Nested calls reuse only their OWN names.
+    if getattr(_PROFILE_MUTATION_LOCAL, "pid", None) != os.getpid():
+        _PROFILE_MUTATION_LOCAL.pid = os.getpid()
+        _PROFILE_MUTATION_LOCAL.held = set()
+    held = _PROFILE_MUTATION_LOCAL.held
+    paths = {os.path.normcase(str(path)): path for path in lock_paths}
+    acquiring = sorted(paths.keys() - held)
+    if held and acquiring and acquiring[0] < max(held):
+        raise RuntimeError("Profile lifecycle lock order inversion; acquire all profile homes together.")
+    with ExitStack() as stack:
+        for key in acquiring:
+            stack.enter_context(_cross_process_profile_mutation_lock(paths[key], deadline=deadline))
+            held.add(key)
+            stack.callback(held.remove, key)
+        yield
 
-    Lock order is lifecycle first, then any gateway session/resource lock.
-    Nested profile operations on the same thread reuse the outer cross-process
-    lease so create/import/delete helpers remain re-entrant.
+
+@contextmanager
+def profile_lifecycle_lease(
+    profile_home: Path | str, *other_homes: Path | str, timeout: float | None = None,
+) -> Iterator[None]:
+    """Exclude mutation of these names; default/custom/staging homes stay lock-free.
+
+    Acquire all clone/rename homes together in sorted order, then gateway
+    session/resource locks. Re-entry for already held homes is allowed; adding
+    a lower-ordered name is rejected instead of deadlocking. One deadline covers
+    the entire acquisition, including contention with threads in this process.
     """
-    with _PROFILE_LIFECYCLE_LOCK:
-        depth = int(getattr(_PROFILE_MUTATION_LOCAL, "depth", 0))
-        if depth:
-            _PROFILE_MUTATION_LOCAL.depth = depth + 1
-            try:
-                yield
-            finally:
-                _PROFILE_MUTATION_LOCAL.depth = depth
-            return
-        with _cross_process_profile_mutation_lock():
-            _PROFILE_MUTATION_LOCAL.depth = 1
-            try:
-                yield
-            finally:
-                _PROFILE_MUTATION_LOCAL.depth = 0
+    paths = [path for home in (profile_home, *other_homes)
+             if (path := _profile_lock_path(home)) is not None]
+    with _lifecycle_leases(paths, timeout):
+        yield
 
 
-def serialized_profile_mutation(func):
-    """Serialize a profile mutation through the shared lifecycle lease."""
+@contextmanager
+def profile_shared_file_lease(path: Path) -> Iterator[None]:
+    """Protect profile-mutation RMWs whose file is shared across names.
 
-    @wraps(func)
-    def wrapped(*args, **kwargs):
-        with profile_lifecycle_lease():
-            return func(*args, **kwargs)
+    These short leases sort after names and before sticky selection. They
+    never enclose new profile acquisitions or expensive copy/retirement work.
+    """
+    key = hashlib.sha256(os.path.normcase(str(path.resolve())).encode()).hexdigest()
+    with _lifecycle_leases([_profiles_root().resolve() / ".locks" / f"~file-{key}.lock"]):
+        yield
 
-    return wrapped
+
+@contextmanager
+def profile_selection_lease() -> Iterator[None]:
+    """Serialize only the shared sticky-selection read/modify/write.
+
+    This sorts after named-profile locks and must never enclose a new profile
+    acquisition. It is not held across copy, retirement or database binding.
+    """
+    with _lifecycle_leases([_profiles_root().resolve() / ".locks" / "~selection.lock"]):
+        yield
+
+
+def serialized_profile_mutation(*path_parameters: str):
+    """Lease the explicit path arguments of a profile mutation."""
+    def decorate(func):
+        signature = inspect.signature(func)
+
+        @wraps(func)
+        def wrapped(*args, **kwargs):
+            arguments = signature.bind(*args, **kwargs).arguments
+            with profile_lifecycle_lease(*(arguments[name] for name in path_parameters)):
+                return func(*args, **kwargs)
+
+        return wrapped
+    return decorate
 
 
 def profile_deletion_marker(profile_dir: Path | str) -> Path:
@@ -187,10 +241,8 @@ def clear_profile_deletion_marker(profile_dir: Path | str) -> None:
     """Remove a named profile's durable tombstone after publication/rollback."""
     marker = profile_deletion_marker(profile_dir)
     marker.unlink(missing_ok=True)
-    try:
-        marker.parent.rmdir()
-    except OSError:
-        pass
+    # Other names publish tombstones independently. Removing their shared
+    # parent can race another publisher between mkdir and atomic replace.
 
 
 def profile_home_is_tombstoned(profile_dir: Path | str) -> bool:
@@ -388,10 +440,8 @@ def create_profile_generation(
         raise
     finally:
         shutil.rmtree(staging_parent, ignore_errors=True)
-        try:
-            staging_root.rmdir()
-        except OSError:
-            pass
+        # Keep the shared staging root: another name may be between its
+        # parent mkdir and attempt-directory mkdir.
     return profile_dir
 
 
