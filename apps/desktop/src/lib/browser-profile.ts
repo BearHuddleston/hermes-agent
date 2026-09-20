@@ -4,6 +4,7 @@ interface BrowserProfileOptions {
   basePath: string
   currentProfile: () => string | null
   requireConnection: (connectionId?: string | null) => void
+  openWindow: (target: URL) => Promise<{ ok: true }>
 }
 
 function setUrlProfile(url: URL, profile: string | null): void {
@@ -17,7 +18,8 @@ function setUrlProfile(url: URL, profile: string | null): void {
 export function createBrowserProfileBridge({
   basePath,
   currentProfile,
-  requireConnection
+  requireConnection,
+  openWindow
 }: BrowserProfileOptions): Pick<Window['hermesDesktop'], 'openWindow' | 'profile'> {
   // localStorage supplies origin isolation; the base path separates colocated servers.
   const storageKey = `hermes:webapp:default-profile:${basePath || '/'}`
@@ -65,15 +67,11 @@ export function createBrowserProfileBridge({
       const url = new URL(window.location.href)
       setUrlProfile(url, options === undefined ? currentProfile() : requireRoute(options).profile)
 
-      if (options !== undefined) {
-        url.searchParams.delete('win')
-        url.searchParams.delete('watch')
-        url.hash = '/'
-      }
+      url.searchParams.delete('win')
+      url.searchParams.delete('watch')
+      url.hash = '/'
 
-      window.open(url.href, '_blank', 'noopener,noreferrer')
-
-      return { ok: true }
+      return openWindow(url)
     },
     profile: {
       get: async () => ({ profile: currentProfile() }),

@@ -67,6 +67,16 @@ it('opens the requested profile on this host without carrying another session or
   const open = vi.spyOn(window, 'open').mockImplementation(() => null)
   expect(installBrowserDesktopBridge()).toBe(true)
 
+  const originalUrl = window.location.href
+  await window.hermesDesktop.openWindow()
+  const peer = new URL(String(open.mock.calls[0][0]))
+  expect(peer.searchParams.get('profile')).toBe('active')
+  expect(peer.searchParams.has('watch')).toBe(false)
+  expect(peer.searchParams.has('win')).toBe(false)
+  expect(peer.hash).toBe('#/')
+  expect(window.location.href).toBe(originalUrl)
+  open.mockClear()
+
   await window.hermesDesktop.openWindow({ connectionId: 'local', profile: 'research' })
   const target = new URL(String(open.mock.calls[0][0]))
   expect(target.origin).toBe(window.location.origin)

@@ -118,7 +118,7 @@ class TestUnifiedDashboardRouting:
         assert exc.value.code == 1
         assert opened == []
 
-    def test_named_webapp_attaches_only_to_matching_surface(self, main_mod, monkeypatch):
+    def test_named_webapp_prints_route_without_opening_unauthorized_tab(self, main_mod, monkeypatch, capsys):
         monkeypatch.delenv("HERMES_DESKTOP", raising=False)
         monkeypatch.delenv("HERMES_WEB_DIST", raising=False)
         monkeypatch.setattr(
@@ -144,7 +144,10 @@ class TestUnifiedDashboardRouting:
             )
 
         assert exc.value.code == 0
-        assert opened == ["http://127.0.0.1:9119/?profile=worker_x"]
+        assert opened == []
+        output = capsys.readouterr().out
+        assert "http://127.0.0.1:9119/?profile=worker_x" in output
+        assert "private launch link" in output
 
 
     def test_desktop_profile_backend_skips_machine_dashboard_reroute(self, main_mod, monkeypatch):

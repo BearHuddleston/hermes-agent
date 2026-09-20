@@ -19,6 +19,7 @@ afterEach(() => {
   localStorage.clear()
   window.history.replaceState(null, '', '/')
   vi.unstubAllGlobals()
+  vi.restoreAllMocks()
 })
 
 it('uses one private session for REST, RPC and terminal across reload without losing the profile', async () => {
@@ -96,4 +97,67 @@ it('reloads for a pasted launch fragment but not HashRouter navigation', () => {
   window.dispatchEvent(new Event('beforeunload'))
   window.dispatchEvent(new HashChangeEvent('hashchange'))
   expect(reload).toHaveBeenCalledOnce()
+})
+
+it.each(['window', 'session'] as const)('hands off a private %s through a one-use ticket without sharing its session token', async kind => {
+  const token = 'a'.repeat(43)
+  const ticket = 'b'.repeat(43)
+  win.__HERMES_UI_SURFACE__ = 'webapp'
+  win.__HERMES_BASE_PATH__ = '/one'
+  window.history.replaceState(null, '', `/one/?profile=coder#hermes-session=${token}`)
+  const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({ ticket })))
+  vi.stubGlobal('fetch', fetchMock)
+
+  class Channel {
+    static current: Channel
+    onmessage: ((event: { data: unknown }) => void) | null = null
+    constructor(readonly name: string) { Channel.current = this }
+    postMessage = vi.fn(() => queueMicrotask(() => this.onmessage?.({ data: { type: 'done' } })))
+    close = vi.fn()
+  }
+  vi.stubGlobal('BroadcastChannel', Channel)
+  const open = vi.spyOn(window, 'open').mockReturnValue(null)
+  expect(installBrowserDesktopBridge()).toBe(true)
+
+  const pending = kind === 'window'
+    ? window.hermesDesktop.openWindow({ connectionId: 'local', profile: 'research' })
+    : window.hermesDesktop.openSessionWindow('session / 1', { profile: 'research', watch: true })
+
+  // The window opens before any await, preserving the browser user gesture.
+  expect(open).toHaveBeenCalledOnce()
+  expect(fetchMock).not.toHaveBeenCalled()
+  Channel.current.onmessage?.({ data: { type: 'ready' } })
+  await pending
+
+  expect(fetchMock).toHaveBeenCalledOnce()
+  const [url, init] = fetchMock.mock.calls[0] as [URL, RequestInit]
+  expect(url.pathname).toBe('/one/api/webapp/window-ticket')
+  expect(init.method).toBe('POST')
+  expect(new Headers(init.headers).get('X-Hermes-Session-Token')).toBe(token)
+  expect(open).toHaveBeenCalledOnce()
+  const [opened, target, features] = open.mock.calls[0]
+  const child = new URL(String(opened))
+  expect(child.origin).toBe(window.location.origin)
+  expect(child.pathname).toBe('/one/webapp/window')
+  expect(child.search).toBe('')
+  const handoff = new URLSearchParams(child.hash.slice(1))
+  expect(Channel.current.name).toBe(`hermes.webapp.window:${handoff.get('channel')}`)
+  expect(Channel.current.postMessage).toHaveBeenCalledWith({ ticket })
+  expect(Channel.current.close).toHaveBeenCalledOnce()
+  expect(handoff.get('query')).toContain('profile=research')
+  expect(handoff.get('route')).toBe(kind === 'window' ? '/' : '/session%20%2F%201')
+  expect(handoff.get('query')?.includes('watch=1')).toBe(kind === 'session')
+  expect([target, features]).toEqual(['_blank', 'noopener,noreferrer'])
+  expect(String(opened)).not.toContain(token)
+  expect(String(opened)).not.toContain(ticket)
+  expect(window.location.search).toBe('?profile=coder')
+  expect(Object.values(localStorage)).not.toContain(token)
+
+  fetchMock.mockResolvedValueOnce(new Response('Unauthorized', { status: 401 }))
+  open.mockClear()
+  const failed = window.hermesDesktop.openWindow()
+  Channel.current.onmessage?.({ data: { type: 'ready' } })
+  await expect(failed).rejects.toThrow()
+  expect(Channel.current.postMessage).toHaveBeenCalledWith({ error: expect.any(String) })
+  expect(Channel.current.close).toHaveBeenCalledOnce()
 })

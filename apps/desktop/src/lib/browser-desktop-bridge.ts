@@ -13,6 +13,7 @@ import { bytesToBase64 } from '@/lib/base64'
 import { consumeWebappSession, watchWebappLaunchLink, WEBAPP_LAUNCH_REQUIRED } from '@/lib/browser-launch-session'
 import { createBrowserProfileBridge } from '@/lib/browser-profile'
 import { createBrowserTerminal } from '@/lib/browser-terminal'
+import { createBrowserWindowOpener } from '@/lib/browser-window'
 import { createBrowserZoom } from '@/lib/browser-zoom'
 import { createGitRestBridge } from '@/lib/git-rest'
 import { notifyError } from '@/store/notifications'
@@ -576,6 +577,12 @@ export function installBrowserDesktopBridge(): boolean {
 
   const api = <T>(request: HermesApiRequest) => browserApi<T>(bootstrap, request)
 
+  const openWindow = createBrowserWindowOpener({
+    api,
+    basePath: bootstrap.basePath,
+    privateSession: win.__HERMES_UI_SURFACE__ === 'webapp' && !bootstrap.authRequired
+  })
+
   window.addEventListener(
     'beforeunload',
     () => {
@@ -856,13 +863,13 @@ export function installBrowserDesktopBridge(): boolean {
       }
 
       target.hash = `/${encodeURIComponent(id)}`
-      window.open(target.href, '_blank', 'noopener,noreferrer')
 
-      return { ok: true }
+      return openWindow(target)
     },
     ...createBrowserProfileBridge({
       basePath: bootstrap.basePath,
       currentProfile: browserProfile,
+      openWindow,
       requireConnection: requireBrowserConnection
     }),
     oauthLoginConnectionConfig: async (remoteUrl: string) => {

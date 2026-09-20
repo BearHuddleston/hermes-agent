@@ -62,16 +62,20 @@ def test_private_launch_uses_existing_token_and_owner_only_browser_redirect(monk
 
 
 def test_existing_named_webapp_preserves_profile_and_explains_private_access(monkeypatch, capsys):
+    import webbrowser
     from hermes_cli import main_dashboard, profiles
 
     monkeypatch.setattr(profiles, "get_active_profile_name", lambda: "coder")
     monkeypatch.delenv("HERMES_DESKTOP", raising=False)
     monkeypatch.setattr(main_dashboard, "_dashboard_surface_at", lambda *a: "webapp")
+    opened = []
+    monkeypatch.setattr(webbrowser, "open", opened.append)
     args = SimpleNamespace(host="127.0.0.1", port=9123, webapp_surface=True,
-                           no_open=True, isolated=False, open_profile="")
+                           no_open=False, isolated=False, open_profile="")
     with pytest.raises(SystemExit) as result:
         main_dashboard._route_named_profile_dashboard(args, False, "", "")
     assert result.value.code == 0
     output = capsys.readouterr().out
     assert "?profile=coder" in output
     assert "private launch link" in output and "BEFORE its # fragment" in output
+    assert not opened

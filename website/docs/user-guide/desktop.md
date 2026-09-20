@@ -72,13 +72,18 @@ transport; Dashboard's Chat
 tab continues to use the Hermes TUI mode on that same endpoint. Host-shell mode
 is available on loopback with the private launch link printed by `hermes webapp`,
 and on authenticated remote Webapp binds. The browser consumes the link's secret
-fragment into tab-local session storage; refresh keeps access, while a fresh tab
-needs the original link. Old links expire when the backend restarts. This is
+fragment into tab-local session storage; refresh keeps access. **New Window**,
+profile windows, and session pop-outs use a short-lived, single-use handoff
+from the authorized tab, without sharing an opener or putting the session token
+in the new URL. A manually opened fresh tab still needs the original link.
+Old links expire when the backend restarts. This is
 the same session token used by privileged APIs (host files, RPC command
 execution and terminals), and is never supplied in public Webapp HTML. A bare
 URL in a fresh tab shows launch-link instructions. To select a named profile
 on an existing server, navigate in an authorized tab or put `?profile=<name>`
 before the private link's `#` fragment. Keep the link and captured CLI output private.
+The named-profile CLI launcher prints these instructions rather than opening
+an unauthorized bare-URL tab when a Webapp is already running.
 Host-shell mode is refused for any unauthenticated non-loopback bind. Native-only affordances—HUD/global shortcuts,
 always-on-top overlays, OS-window inspection, external-terminal launch, and the
 native updater—remain available only in Electron. Website links open in a

@@ -907,7 +907,7 @@ def _route_named_profile_dashboard(
             print("  private launch link from the running server, adding the profile query")
             print("  above BEFORE its # fragment. A fresh bare-URL tab cannot sign in.")
             print("  Lost the link? Restart that Webapp to print a new one. Remote OAuth is unchanged.")
-        if not args.no_open:
+        if not args.no_open and expected_surface != "webapp":
             with contextlib.suppress(Exception):
                 import webbrowser
                 webbrowser.open(url)
