@@ -238,6 +238,8 @@ class PtySessionRegistry:
         self._buffer_cap = buffer_cap
         self._read_timeout = read_timeout
         self._sessions: Dict[str, PtySession] = {}
+        # One registry-wide reservation spans lookup, spawn, and registration:
+        # racing connections with one attach token must share one tracked PTY.
         self._spawn_lock = asyncio.Lock()
         self._spawn_cleanup: set[asyncio.Task] = set()
         self._closed = False

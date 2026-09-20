@@ -337,6 +337,32 @@ def _fail_closed_after_preflight_timeout(agent, request_tokens: int) -> None:
     )
 
 
+def _fail_closed_on_insufficient_progress(agent, request_tokens: int) -> None:
+    """Stop an over-window turn the moment preflight proves it cannot shrink the session, with
+    "start a new session" guidance, instead of sending a request the model cannot accept.
+
+    ``_fail_closed_after_preflight_timeout`` only stops a turn whose compression wait timed out. A
+    pass that ran and reclaimed nothing (or under 5%) on a request still above the model window used
+    to fall through to the provider call: the provider rejected it, the overflow handler forced
+    another compression pass, and each pass re-waited its budget while the UI sat blocked (#116472:
+    ~356k tokens on a 131k window). Only a ``True`` verdict fails closed — an unknown window or a
+    fitting request keeps the send-as-is behaviour — and a pass skipped by the summary-failure
+    cooldown is a defer, not proof of incompressibility, so it keeps its typed cooldown result.
+    """
+    from agent.conversation_compression import compression_blocked_transiently, request_exceeds_model_window
+
+    if request_exceeds_model_window(agent, request_tokens) is not True:
+        return
+    if compression_blocked_transiently(agent):
+        return
+    window = agent.context_compressor.context_length
+    raise PreflightCompressionTimedOut(
+        "Context compression could not bring this session under the model's context window "
+        f"(~{request_tokens:,} tokens vs {window:,}). The provider call was not "
+        "sent. Start a new session with /new; this session is too large to compress further."
+    )
+
+
 def _review_fork_first_request_pending(agent: Any) -> bool:
     """Whether a detached review fork has yet to send its first provider request: it
     replays the parent's FULL snapshot as a warm cache read, so compaction must wait

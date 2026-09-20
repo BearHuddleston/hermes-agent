@@ -1197,6 +1197,9 @@ class TestRenameProfile:
         def _record_notify(name):
             # Snapshot the world at each multiplexer signal to pin ordering.
             calls.append((name, old_dir.exists(), new_dir.exists(), profiles.named_profile_is_deleted(old_dir)))
+            if name == "newname":
+                assert not profiles.profile_home_is_tombstoned(new_dir)
+                assert profiles.read_profile_meta(new_dir)["previous_names"] == ["oldname"]
             if name == "oldname" and old_dir.exists():
                 # A still-live component of the multiplexer writing into the old home mid-teardown.
                 with pytest.raises(FileNotFoundError):
@@ -1360,6 +1363,53 @@ class TestRenameProfile:
         assert "agent:oldname:feishu:dm:chatA" not in routing
         assert "agent:newname:feishu:dm:chatA" in routing
         root_db2.close()
+
+    @pytest.mark.parametrize("alias_update_fails", [False, True])
+    def test_rename_records_previous_name(self, profile_env, alias_update_fails):
+        old_dir = create_profile("oldname", no_alias=True)
+        incarnation = profiles.read_profile_incarnation(old_dir)
+        new_dir = get_profile_dir("newname")
+
+        # A post-move alias failure still publishes the moved generation, so
+        # its Bot Mode rename history must be recorded on that path too.
+        with patch("hermes_cli.profiles.check_alias_collision", return_value="skip",
+                   side_effect=RuntimeError("alias update failed") if alias_update_fails else None):
+            if alias_update_fails:
+                with pytest.raises(RuntimeError, match="alias update failed"):
+                    rename_profile("oldname", "newname")
+            else:
+                assert rename_profile("oldname", "newname") == new_dir
+
+        assert profiles.profile_home_is_tombstoned(old_dir)
+        assert not profiles.profile_home_is_tombstoned(new_dir)
+        assert profiles.read_profile_incarnation(new_dir) == incarnation
+        # The rename history is recorded in the new profile's metadata ...
+        assert profiles.read_profile_meta(new_dir)["previous_names"] == ["oldname"]
+        # ... and surfaces through list_profiles (the gateway's profiles.list
+        # source), so Bot Mode group chats can re-link stale member handles.
+        info = next(p for p in list_profiles() if p.name == "newname")
+        assert info.previous_names == ["oldname"]
+
+    def test_rename_accumulates_previous_names(self, profile_env):
+        create_profile("firstname", no_alias=True)
+
+        with patch("hermes_cli.profiles.check_alias_collision", return_value="skip"):
+            rename_profile("firstname", "secondname")
+            rename_profile("secondname", "thirdname")
+
+        info = next(p for p in list_profiles() if p.name == "thirdname")
+        assert info.previous_names == ["firstname", "secondname"]
+
+    def test_rename_succeeds_when_previous_name_write_fails(self, profile_env):
+        create_profile("oldname", no_alias=True)
+
+        # The history write is best-effort: it must never fail the rename.
+        with patch("hermes_cli.profiles.check_alias_collision", return_value="skip"), \
+             patch("hermes_cli.profiles.write_profile_meta", side_effect=OSError("disk full")):
+            new_dir = rename_profile("oldname", "newname")
+
+        assert new_dir.is_dir()
+
 
 
 class TestExportImport:

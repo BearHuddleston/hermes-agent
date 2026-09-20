@@ -99,7 +99,8 @@ def _end_position(text: str) -> Dict[str, int]:
     # splitlines drops a trailing newline: the end is then the start of the next (empty) line.
     if text.endswith(("\n", "\r")):
         return {"line": len(lines), "character": 0}
-    return {"line": len(lines) - 1, "character": len(lines[-1])}
+    # Positions use UTF-16 code units, matching our advertised positionEncodings.
+    return {"line": len(lines) - 1, "character": len(lines[-1].encode("utf-16-le")) // 2}
 
 
 @dataclass
@@ -206,9 +207,12 @@ class LSPClient:
             if not self._connection_is_open():
                 raise LSPProtocolError("server connection closed during initialization")
             self._state = "running"
-        except Exception:
+        except BaseException:
             self._state = "error"
-            await self._cleanup_process()
+            # ``_BackgroundLoop.run`` cancels this task when its outer budget expires.
+            # CancelledError is a BaseException on supported Python versions, and cleanup
+            # must outlive that cancellation or the spawned server escapes all tracking.
+            await asyncio.shield(self._cleanup_process())
             raise
 
     async def _spawn(self) -> None:
@@ -351,12 +355,17 @@ class LSPClient:
             if proc is None or proc.returncode is not None:
                 return
             try:
-                proc.terminate()
-                try:
-                    await asyncio.wait_for(proc.wait(), timeout=SHUTDOWN_GRACE)
-                except asyncio.TimeoutError:
+                # ``shutdown`` has already given the protocol a grace period.  Hard-kill
+                # the tree while its ancestry is still observable: waiting for the launcher
+                # after SIGTERM can let an ignoring descendant become reparented and escape.
+                # Windows maps this to a synchronous taskkill /T /F (up to 15s), so the
+                # kill runs off the event loop.
+                from agent.deadline import kill_process_tree
+
+                if not await asyncio.to_thread(kill_process_tree, proc.pid):
                     proc.kill()
-                    await proc.wait()
+                with contextlib.suppress(asyncio.TimeoutError):
+                    await asyncio.wait_for(proc.wait(), timeout=SHUTDOWN_GRACE)
             except ProcessLookupError:
                 pass
 

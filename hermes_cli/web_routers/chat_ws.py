@@ -609,7 +609,12 @@ async def pty_ws(ws: WebSocket) -> None:
 async def gateway_ws(ws: WebSocket) -> None:
     if not await _close_unless_sidecar_allowed(ws, allow_internal=True):
         return
+    from hermes_cli.mcp_startup import start_deferred_mcp_discovery_now
     from tui_gateway.ws import handle_ws
+
+    # First chat client of a standalone dashboard: fire the discovery armed at boot (no-op
+    # otherwise). Off-loop: the first act is a config read + the ~350 ms `mcp` SDK import.
+    await asyncio.to_thread(start_deferred_mcp_discovery_now)
 
     # The authenticated identity (ticket / internal credential) stamped by
     # _ws_auth_reason becomes the identity authority for privileged RPCs

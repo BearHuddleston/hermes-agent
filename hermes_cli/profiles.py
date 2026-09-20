@@ -13,7 +13,7 @@ import subprocess
 import sys
 import threading
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
@@ -563,6 +563,10 @@ class ProfileInfo:
     # Bot Mode title (``profile.yaml`` ``ui_meta['hermes-bots'].title``) — the name
     # the Bots roster shows. Presentation-only, like ``display_name``.
     bot_title: str = ""
+    # Canonical ids this profile was previously known by (``hermes profile rename``
+    # appends here). Lets Bot Mode group chats re-link persisted member
+    # descriptors to the renamed live profile (#110200).
+    previous_names: List[str] = field(default_factory=list)
 
 
 def _load_yaml_dict(path: Path) -> Optional[dict]:
@@ -748,9 +752,9 @@ def _cached_skill_count(profile_dir: Path) -> int:
 
 
 def read_profile_meta(profile_dir: Path) -> dict:
-    """Read ``profile.yaml`` -> ``{description, description_auto, display_name}`` (empty
-    defaults when missing/unreadable). Never raises — a corrupt file on one profile must not
-    break ``hermes profile list``."""
+    """Read ``profile.yaml`` -> ``{description, description_auto, display_name,
+    previous_names}`` (empty defaults when missing/unreadable). Never raises — a
+    corrupt file on one profile must not break ``hermes profile list``."""
     data = _load_yaml_dict(profile_dir / "profile.yaml") or {}
     ui_meta = data.get("ui_meta")
     bot_title = ""
@@ -763,13 +767,29 @@ def read_profile_meta(profile_dir: Path) -> dict:
         "description_auto": bool(data.get("description_auto", False)),
         "display_name": str(data.get("display_name") or "").strip(),
         "bot_title": bot_title,
+        "previous_names": _clean_previous_names(data.get("previous_names")),
     }
+
+
+def _clean_previous_names(raw) -> List[str]:
+    """Normalize the ``previous_names`` list from ``profile.yaml``: strings only,
+    stripped, de-duplicated preserving order. Never raises."""
+    if not isinstance(raw, list):
+        return []
+    cleaned: List[str] = []
+    seen = set()
+    for item in raw:
+        name = str(item or "").strip()
+        if name and name not in seen:
+            seen.add(name)
+            cleaned.append(name)
+    return cleaned
 
 
 @serialized_profile_mutation
 def write_profile_meta(
     profile_dir: Path, *, description: Optional[str] = None, description_auto: Optional[bool] = None,
-    display_name: Optional[str] = None,
+    display_name: Optional[str] = None, previous_names: Optional[List[str]] = None,
 ) -> None:
     """Update ``profile.yaml`` in place: only passed fields are overwritten; the file is
     created if missing. The profile directory itself must exist."""
@@ -787,6 +807,14 @@ def write_profile_meta(
             existing["display_name"] = display_name.strip()
         else:
             existing.pop("display_name", None)
+    if previous_names is not None:
+        # Rename history for group-chat member sync (#110200): consumers match
+        # stale persisted handles against the live roster via these names.
+        cleaned = _clean_previous_names(previous_names)
+        if cleaned:
+            existing["previous_names"] = cleaned
+        else:
+            existing.pop("previous_names", None)
     # Atomic write: bare open("w") truncates before the dump, and the read path swallows
     # parse errors as {}, so a crashed write would silently drop unspecified fields.
     # See #51356.
@@ -2151,6 +2179,22 @@ def _finish_profile_rename(old_canon: str, new_canon: str, old_dir: Path, new_di
     else:
         print(f"⚠ Cannot create alias '{new_canon}' — {collision}")
 
+
+def _record_profile_rename(new_dir: Path, old_canon: str) -> None:
+    """Append ``old_canon`` to the renamed profile's ``previous_names`` history.
+    Best-effort: never raises, so a metadata write failure cannot fail the rename.
+
+    Only reached for a real slug change — ``rename_profile`` returns early for the
+    default profile (display-name only) and refuses ``old == new`` (target exists)."""
+    try:
+        history = read_profile_meta(new_dir).get("previous_names") or []
+        if old_canon not in history:
+            history = [*history, old_canon]
+        write_profile_meta(new_dir, previous_names=history)
+    except Exception as exc:  # unwritable / corrupt profile.yaml — history is advisory
+        logger.debug("profile rename: could not record previous name %r in %s: %s", old_canon, new_dir, exc)
+
+
 @serialized_profile_mutation
 def rename_profile(old_name: str, new_name: str) -> Path:
     """Rename a profile: directory, wrapper script, service, active_profile. The default
@@ -2212,6 +2256,9 @@ def rename_profile(old_name: str, new_name: str) -> Path:
         # Publication happens inside move_profile_generation before this sticky
         # selection update, so set_active_profile can resolve the new name.
         if new_dir.is_dir() and not profile_home_is_tombstoned(new_dir):
+            # Metadata writes reject tombstoned homes. Record the rename only
+            # after publication, including when post-move alias updates failed.
+            _record_profile_rename(new_dir, old_canon)
             _retarget_active_profile(old_canon, new_canon, f"✓ Active profile updated: {new_canon}")
             # Migrate identity after the new generation admits DB access, before hot-serving it.
             from hermes_cli.profile_identity import _migrate_profile_identity
