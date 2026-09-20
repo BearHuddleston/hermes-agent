@@ -178,26 +178,39 @@ class HostTerminalRegistry(PtySessionRegistry):
 
 
 def get_host_terminals(app) -> HostTerminalRegistry:
-    if not hasattr(app.state, "host_terminals"):
-        app.state.host_terminals = HostTerminalRegistry()
-    return app.state.host_terminals
+    registry = getattr(app.state, "host_terminals", None)
+    if registry is None or registry._closed:
+        raise RuntimeError("Host terminal service is not running; start the application lifespan first.")
+    return registry
 
 
 @asynccontextmanager
 async def host_terminal_lifespan(app):
     # Overlapping lifespans must not share loop-bound sessions or teardown.
     registry = HostTerminalRegistry()
+    registries = getattr(app.state, "_host_terminal_registries", None)
+    if registries is None:
+        registries = app.state._host_terminal_registries = []
+    registries.append(registry)
     app.state.host_terminals = registry
     reaper = asyncio.create_task(run_reaper(registry, interval=1.0))
     try:
         yield
     finally:
+        # Withdraw ownership before awaiting cleanup so another teardown cannot
+        # restore this registry while its reaper/sessions are shutting down.
+        registries.remove(registry)
+        if getattr(app.state, "host_terminals", None) is registry:
+            if registries:
+                app.state.host_terminals = registries[-1]
+            else:
+                del app.state.host_terminals
+        if not registries:
+            del app.state._host_terminal_registries
         reaper.cancel()
         with suppress(asyncio.CancelledError):
             await reaper
         await registry.close_all()
-        if getattr(app.state, "host_terminals", None) is registry:
-            del app.state.host_terminals
 
 
 def _metadata(token, owner, session, registry, *, reconnected):
@@ -213,11 +226,11 @@ async def persistent_host_terminal(ws: WebSocket) -> None:
     """Called only after both the existing WS gate and host policy have passed."""
     from hermes_cli.web_server_chat import _HOST_TERMINAL_META_PREFIX, _RESIZE_RE
     from hermes_cli.web_routers.chat_ws import _pty_fail
-    registry = get_host_terminals(ws.app)
     token = ws.query_params.get("attach")
     action = ws.query_params.get("action")
     session = None
     try:
+        registry = get_host_terminals(ws.app)
         identity = _request_identity(ws)
         if action not in (None, "close") or (action == "close" and token is None):
             raise TerminalDenied()
