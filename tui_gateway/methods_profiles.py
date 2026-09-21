@@ -218,20 +218,26 @@ def _profile_session_fields(row, profile_path):
     read-only attach (a writable ``SessionDB()`` waits up to 20s for the write lock + runs DDL
     and stalled the 5s roster poll); no/unreadable DB -> every field None (the readers swallow)."""
     from hermes_constants import named_profile_home_is_unavailable
+    from hermes_cli.profile_incarnation import read_profile_incarnation
     from tui_gateway.profile_roster_cache import cached_session_fields, invalidate
 
     profile_dir = Path(profile_path)
+    empty = dict(last_session=None, worker_session=None, canonical_session=None)
     # A retired profile must not return a warm cache entry for its old store.
     if named_profile_home_is_unavailable(profile_dir):
         invalidate(profile_path)
-        row.update(last_session=None, worker_session=None, canonical_session=None)
+        row.update(empty)
         return
+
+    incarnation = _try(lambda: read_profile_incarnation(profile_dir), None)
 
     def _read() -> dict:
         db_path = profile_dir / "state.db"
-        db = None
-        if not named_profile_home_is_unavailable(profile_dir) and _try(db_path.exists, False):
-            db = _try(lambda: _lazy("hermes_state", "SessionDB")(db_path=db_path, read_only=True), None)
+        if named_profile_home_is_unavailable(profile_dir) or not db_path.exists():
+            raise FileNotFoundError(f"Profile store is unavailable: {db_path}")
+        # Let a failed open escape the cache computation: an unavailable read
+        # is not a successful empty store and must be retried on the next poll.
+        db = _lazy("hermes_state", "SessionDB")(db_path=db_path, read_only=True)
         try:
             last, worker = _latest_profile_session_rows(db)
             # Resolved server-side on every listing so no client carries a session pointer.
@@ -243,7 +249,14 @@ def _profile_session_fields(row, profile_path):
 
     # These three are a pure function of the profile's session store, and the roster re-asks every
     # 5s per connection — so they are reused while that store has not moved (#117257).
-    row.update(cached_session_fields(profile_path, _read))
+    fields = _try(lambda: cached_session_fields(profile_path, _read), None)
+    # A warm hit performs no SessionDB admission. Recheck at publication so a
+    # retirement or replacement during lookup cannot publish the old answer.
+    if (fields is None or named_profile_home_is_unavailable(profile_dir)
+            or _try(lambda: read_profile_incarnation(profile_dir), None) != incarnation):
+        invalidate(profile_path)
+        fields = empty
+    row.update(fields)
 
 
 def _profile_ui_meta_fields(row: dict, profile_dir) -> None:
