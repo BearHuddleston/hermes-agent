@@ -104,6 +104,12 @@ import { installCommandScreenshot } from './command-screenshot'
 import { writeComposerPaste } from './composer-paste'
 import { applyConnectionChange, teardownSshState } from './connection-apply'
 import {
+  connectionInstallIds,
+  evictConnectionCaches,
+  sshInventoryAttemptedAt,
+  sshRosterCache
+} from './connection-caches'
+import {
   apiRequestRegistryConnectionId,
   authModeFromStatus,
   buildGatewayWsUrl,
@@ -165,7 +171,7 @@ import {
 } from './connection-registry'
 import type { RosterProfileMetadata } from './connection-registry'
 import { describeCrashReason, installCrashForensics } from './crash-forensics'
-import { adoptServedDashboardToken } from './dashboard-token'
+import { adoptServedDashboardToken, resolveServedDashboardToken } from './dashboard-token'
 import { loadOrCreateInstallationId, sshOwnershipId } from './desktop-installation'
 import { formatDesktopLogLine } from './desktop-log-line'
 import {
@@ -248,6 +254,7 @@ import {
   tightenSecretFileMode,
   writeSecretFileAtomic
 } from './hardening'
+import { type AttachedBackend, attachOrReserveSpawn, spawnLedgerPath, type SpawnReservation } from './host-backend-attach'
 import { requestHudClose } from './hud-close'
 import { cursorPointInWindow } from './hud-cursor'
 import { startHudGameOverlayWatch } from './hud-game-overlay'
@@ -259,6 +266,7 @@ import { createHudSnapShortcut } from './hud-snap-shortcut'
 import { buildHudWindowUrl } from './hud-url'
 import { resolveHudWindowing } from './hud-windowing'
 import { createIntroRevealWindowController } from './intro-reveal-window'
+import { isAuthWall, resolveLinkTitle } from './link-title-wall'
 import { createLinkTitleWindow, guardLinkTitleSession, readLinkTitleWindowTitle } from './link-title-window'
 import { notifyLauncherWindowRevealed } from './linux-launcher-ready'
 import { createLocalBackendLifecycle, waitForTeardown } from './local-backend-lifecycle'
@@ -385,6 +393,7 @@ import {
   resolveRemoteRequestHeaders
 } from './remote-ws-headers'
 import { missingRendererAssets } from './renderer-bundle'
+import { planLaunchSwitches, readDesktopLaunchConfig } from './renderer-heap-flags'
 import { loadRendererLoadErrorPage } from './renderer-load-error-page'
 import { attachRendererConsoleCapture, formatRendererBoundaryReport } from './renderer-log'
 import { fetchRosterSourceData } from './roster-source-fetch'
@@ -873,6 +882,32 @@ function resolveHermesHome() {
 }
 
 const HERMES_HOME = resolveHermesHome()
+
+// #77311: `desktop.electron_flags` and the renderer heap ceiling
+// (`desktop.renderer_max_old_space_mb`) used to reach Chromium only through
+// the `hermes desktop` launcher's argv, so a packaged app opened from its
+// Start-menu / .desktop entry ran with no `--js-flags` at all. Apply them here
+// from config.yaml, before `ready` — Chromium copies `js-flags` to renderer
+// processes only from the browser's pre-launch command line.
+{
+  let desktopLaunchYaml = ''
+
+  try {
+    desktopLaunchYaml = fs.readFileSync(path.join(HERMES_HOME, 'config.yaml'), 'utf8')
+  } catch {
+    void 0 // first run: no config yet → Chromium defaults
+  }
+
+  for (const planned of planLaunchSwitches(readDesktopLaunchConfig(desktopLaunchYaml), process.argv.slice(1))) {
+    if (planned.value === undefined) {
+      app.commandLine.appendSwitch(planned.name)
+    } else {
+      app.commandLine.appendSwitch(planned.name, planned.value)
+    }
+
+    console.log(`[hermes] desktop launch switch from config.yaml: --${planned.name}${planned.value === undefined ? '' : `=${planned.value}`}`)
+  }
+}
 
 function pathWithHermesManagedNode(...entries) {
   const managed = hermesManagedNodePathEntries(HERMES_HOME).filter(directoryExists)
@@ -1567,7 +1602,7 @@ function persistPoolLimits(limits) {
 // readPersistedPoolLimits() call below, because that call logs during module
 // evaluation; declaring these later crashed launch with `undefined.push` in
 // the packaged build (esbuild lowers the TDZ to undefined instead of throwing).
-const hermesLog = []
+const hermesLog: string[] = []
 let desktopLogBuffer = ''
 let desktopLogFlushTimer = null
 let desktopLogFlushPromise = Promise.resolve()
@@ -3385,6 +3420,7 @@ async function checkUpdatesViaApi({ slug, branch, currentSha, updateRoot }) {
   // Compare failure (rate-limited, local-only HEAD 404) keeps the honest
   // "update available, count unknown" — never a fabricated number.
   let compareError = null
+
   const compared = await fetchGitHubApi(compareApiUrl(slug, currentSha, targetSha))
     .then(parseCompare)
     .catch(error => {
@@ -4367,7 +4403,7 @@ async function applyUpdates(opts: { stopSafeBlockers?: boolean } = {}) {
       // immediately, so child.pid is NOT the script's pid — the script
       // claims the update marker itself with its own $PID as its first
       // action, and a relaunched Desktop parks on that.
-      const wrapped = wrapHandoffForDetachedConsole(scriptHandoff, [
+      const wrappedArgs = [
         '-InstallRoot',
         updateRoot,
         '-Branch',
@@ -4376,7 +4412,14 @@ async function applyUpdates(opts: { stopSafeBlockers?: boolean } = {}) {
         String(process.pid),
         '-RelaunchExe',
         process.execPath
-      ])
+      ]
+      // Same remote-ownership rule as the posix hand-off (#117529): a
+      // remote-served Desktop must not let the update (re)start a local
+      // messaging gateway that competes with the remote host's polling.
+      if (globalRemoteActive()) {
+        wrappedArgs.push('-NoGateway')
+      }
+      const wrapped = wrapHandoffForDetachedConsole(scriptHandoff, wrappedArgs)
 
       child = spawnUpdaterProcess(wrapped.command, wrapped.args, {
         cwd: HERMES_HOME,
@@ -4760,6 +4803,13 @@ async function applyUpdatesPosixHandoff(opts: any) {
   }
 
   const args = [...handoff.args, '--install-root', updateRoot, '--branch', branch, '--desktop-pid', String(process.pid)]
+  // A remote-served Desktop owns no local messaging gateway: `hermes update
+  // --gateway` would (re)start one here anyway, and with the same channel
+  // credentials as the remote host it becomes a competing long-poll consumer
+  // (#117529). Keep --gateway for the local-ownership default.
+  if (globalRemoteActive()) {
+    args.push('--no-gateway')
+  }
   const updateStartedAt = Math.floor(Date.now() / 1000)
 
   // Relaunch target: the running .app bundle on mac (script swaps the
@@ -5913,13 +5963,11 @@ const TITLE_MAX_REDIRECTS = 3
 const TITLE_USER_AGENT =
   'Mozilla/5.0 (Macintosh; Intel Mac OS X 14_6_0) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36'
 
-const TITLE_ERROR_RE =
-  /\b(access denied|attention required|captcha|error|forbidden|just a moment|request blocked|too many requests)\b/i
-
 const HTML_ENTITIES = { amp: '&', lt: '<', gt: '>', quot: '"', apos: "'", nbsp: ' ', '#39': "'" }
 
-// Tier-2 renderer fallback config. Only invoked when curl came back empty or
-// matched TITLE_ERROR_RE — keeps cold/CDN-cached pages on the cheap path.
+// Tier-2 renderer fallback config. Only invoked when curl came back with no
+// usable title and no sign-in wall (electron/link-title-wall.ts) — keeps
+// cold/CDN-cached pages on the cheap path.
 const RENDER_TITLE_MAX_CONCURRENT = 2
 const RENDER_TITLE_TIMEOUT_MS = 8000
 const RENDER_TITLE_GRACE_MS = 700
@@ -5980,12 +6028,29 @@ function parseHtmlTitle(html) {
   return raw ? decodeHtmlEntities(raw).replace(/\s+/g, ' ').trim() : ''
 }
 
-function fetchHtmlTitleWithCurl(rawUrl: string): Promise<string> {
+// `--write-out` trailer: `\n<mark><url_effective>` after the body.
+const URL_EFFECTIVE_MARK = 'hermes-url-effective:'
+const URL_EFFECTIVE_TAIL_BYTES = 4096
+
+function splitUrlEffective(stdout: string): { effectiveUrl: string; html: string } {
+  const at = stdout.lastIndexOf(`\n${URL_EFFECTIVE_MARK}`)
+
+  if (at < 0) {
+    return { effectiveUrl: '', html: stdout }
+  }
+
+  return {
+    effectiveUrl: stdout.slice(at + 1 + URL_EFFECTIVE_MARK.length).trim(),
+    html: stdout.slice(0, at)
+  }
+}
+
+function fetchHtmlTitleWithCurl(rawUrl: string): Promise<{ authWall: boolean; title: string }> {
   return new Promise(resolve => {
     const url = String(rawUrl || '').trim()
 
     if (!url) {
-      return resolve('')
+      return resolve({ authWall: false, title: '' })
     }
 
     const args = [
@@ -6007,32 +6072,52 @@ function fetchHtmlTitleWithCurl(rawUrl: string): Promise<string> {
       '--header',
       'Accept-Encoding: identity',
       '--raw',
+      // Arrival URL after redirects, on its own line after the body: a sign-in
+      // wall is proven from where curl landed even when the page has no markup id.
+      '--write-out',
+      `\n${URL_EFFECTIVE_MARK}%{url_effective}`,
       url
     ]
 
     const child = spawn('curl', args, hiddenWindowsChildOptions({ stdio: ['ignore', 'pipe', 'ignore'] }))
-    const chunks = []
+    const chunks: Buffer[] = []
+    // The last bytes of stdout, kept past the body budget so the `--write-out`
+    // arrival URL survives a body larger than TITLE_BYTE_BUDGET.
+    let tail = Buffer.alloc(0)
     let bytes = 0
 
     child.stdout.on('data', chunk => {
+      const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)
+      tail = Buffer.concat([tail, buffer]).subarray(-URL_EFFECTIVE_TAIL_BYTES)
+
       if (bytes >= TITLE_BYTE_BUDGET) {
         return
       }
 
-      const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)
       const remaining = TITLE_BYTE_BUDGET - bytes
       const next = buffer.length > remaining ? buffer.subarray(0, remaining) : buffer
       chunks.push(next)
       bytes += next.length
     })
 
-    child.on('error', () => resolve(''))
+    child.on('error', () => resolve({ authWall: false, title: '' }))
     child.on('close', () => {
       if (!chunks.length) {
-        return resolve('')
+        return resolve({ authWall: false, title: '' })
       }
 
-      resolve(parseHtmlTitle(Buffer.concat(chunks).toString('utf8')))
+      const body = Buffer.concat(chunks)
+
+      // The trailer is inside `body` unless the budget cut it off; then it is in `tail`.
+      const { effectiveUrl, html } = splitUrlEffective(
+        (bytes >= TITLE_BYTE_BUDGET ? Buffer.concat([body, tail]) : body).toString('utf8')
+      )
+
+      const title = parseHtmlTitle(html)
+
+      // A sign-in wall answers the cookieless title partition, and tier 2 must
+      // never load it: the wall asks the OS for a passkey.
+      resolve({ authWall: isAuthWall({ body: html, effectiveUrl, title }), title })
     })
   })
 }
@@ -6151,12 +6236,8 @@ function fetchHtmlTitleWithRenderer(rawUrl: string): Promise<string> {
   })
 }
 
-// Strips known error/captcha titles (e.g. "GetYourGuide – Error", "Just a
-// moment...") so they don't get cached as the resolved title.
-function usableTitle(value: string): string {
-  return value && !TITLE_ERROR_RE.test(value) ? value : ''
-}
-
+// Tier ladder (curl → hidden renderer) and its sign-in-wall rule live in
+// electron/link-title-wall.ts; main.ts only supplies the two tiers' I/O.
 function fetchLinkTitle(rawUrl) {
   const url = String(rawUrl || '').trim()
   const key = canonicalTitleCacheKey(url)
@@ -6170,15 +6251,14 @@ function fetchLinkTitle(rawUrl) {
   }
 
   if (titleInflight.has(key)) {
-    return titleInflight.get(key)
+    return Promise.resolve(titleInflight.get(key))
   }
 
-  const pending = fetchHtmlTitleWithCurl(url)
-    .catch(() => '')
-    .then(value => usableTitle((value || '').slice(0, 240)))
-    .then(
-      async value => value || usableTitle(((await fetchHtmlTitleWithRenderer(url).catch(() => '')) || '').slice(0, 240))
-    )
+  const pending = resolveLinkTitle({
+    curl: () => fetchHtmlTitleWithCurl(url),
+    renderer: () => fetchHtmlTitleWithRenderer(url),
+    url
+  })
     .then(clean => {
       cacheTitle(key, clean)
       titleInflight.delete(key)
@@ -6499,6 +6579,7 @@ async function previewFileTarget(rawTarget, baseDir) {
     for (const candidate of homeRelativeAttachmentCandidates(raw, app.getPath('home'), HERMES_HOME)) {
       if (fileExists(candidate)) {
         resolved = candidate
+
         break
       }
     }
@@ -9586,6 +9667,9 @@ async function saveRegistryConnection(input: any = {}) {
   // their secondaries for this connection id.
   if (existing && connectionDialFieldsChanged(existing, entry)) {
     await stopRegistryConnectionBackends(entry.id)
+    // The id now names a different machine: its cached roster/identity describe the old one,
+    // and a cached ssh inventory is never retried (`shouldRetrySshInventory`).
+    evictConnectionCaches(entry.id)
     broadcastConnectionsChanged({ connectionId: entry.id, reason: 'updated' })
   } else {
     // Every OTHER successful save (a brand-new connection, a label rename)
@@ -10027,9 +10111,11 @@ async function buildRemoteConnection(
 }
 
 const sshConnections = new Map<string, any>()
+
 const sshIsolatedKeepalives = createSshIsolatedKeepaliveRegistry({
   log: chunk => sshRememberLog(chunk)
 })
+
 const desktopInstallationId = loadOrCreateInstallationId(DESKTOP_INSTALLATION_PATH)
 
 // Managed SSH update lifecycle (#93042): while an update owns a registered
@@ -12315,6 +12401,7 @@ function startPoolIdleReaper() {
         const retiring = entry.process
           ? poolRetirer.retireIdle(profile, poolIdleMs())
           : stopPoolBackend(profile)
+
         void retiring.catch(error => rememberLog(`Pool idle retirement failed: ${String(error)}`))
       }
     }
@@ -12602,6 +12689,7 @@ async function runPoolBackendStart(profile, entry, opts: { forceLocal?: boolean;
   const startFailed = new Promise((_resolve, reject) => {
     rejectStart = reject
   })
+
   // Exit/error can now arrive while the ownership claim is still pending.
   startFailed.catch(() => {})
 
@@ -12637,6 +12725,7 @@ async function runPoolBackendStart(profile, entry, opts: { forceLocal?: boolean;
     describeOutputTail: () => outputTail.describe(),
     readyFile
   })
+
   portAnnouncement.catch(() => {})
   await claimBackendChild(child, `${backend.command} ${backend.args.join(' ')}`, profile, backendNonce, outputTail)
   assertPoolEntryStillOwned(poolKey, entry, { releaseSlot: false })
@@ -12719,10 +12808,12 @@ const poolStopper = createPoolStopper({
 
 function stopPoolBackend(profile: string): Promise<void> {
   const entry = backendPool.get(profile)
+
   const stopping = releaseLocalBackendSlotAfterExit(
     () => releaseLocalBackendSlot(entry),
     () => poolStopper.stop(profile)
   )
+
   // Fire-and-forget callers still need diagnostics; awaiters receive the
   // rejection, while physical ownership and the exit finalizer remain live.
   void stopping.catch(error => {
@@ -12753,6 +12844,7 @@ const poolRetirer = createPoolRetirer({
   onRetiring: broadcastPoolBackendRetiring,
   log: rememberLog
 })
+
 localBackendLifecycle.signal.addEventListener('abort', poolRetirer.dispose, { once: true })
 
 async function teardownPoolBackendAndWait(profile) {
@@ -12781,6 +12873,7 @@ const backendShutdown = createBackendShutdownCoordinator(async () => {
 })
 
 const quitTeardown = createQuitTeardownCoordinator(() => app.quit())
+
 const quitFinalization = createQuitFinalization({
   isWindows: IS_WINDOWS,
   hardExit: code => {
@@ -12856,6 +12949,137 @@ async function prepareProfileRenameRequest(request) {
   })
 }
 
+// ── Attach-first: one backend per HOST (multiplex-only) ───────────────────
+// Escape hatch: a dedicated, private backend for this app instead of the host's.
+const ISOLATED_BACKEND = process.env.HERMES_DESKTOP_ISOLATED_BACKEND === '1'
+const ATTACHED_LIVENESS_POLL_MS = 15_000
+let attachedBackendMonitor: NodeJS.Timeout | null = null
+let hostSpawnReservation: SpawnReservation | null = null
+
+function stopAttachedBackendMonitor() {
+  if (attachedBackendMonitor) {
+    clearInterval(attachedBackendMonitor)
+    attachedBackendMonitor = null
+  }
+}
+
+/**
+ * An attached backend has no child process, so `child.exit` can never drive
+ * recovery. Poll its readiness instead; a backend that dies under us
+ * invalidates the connection and hands the respawn to the same supervisor path
+ * a dead child would (which re-runs discovery and spawns, since the host now
+ * has no backend).
+ */
+function startAttachedBackendMonitor(attached: AttachedBackend) {
+  stopAttachedBackendMonitor()
+
+  attachedBackendMonitor = setInterval(() => {
+    void waitForHermes(attached.baseUrl, attached.token, undefined, 'token', {}).catch(() => {
+      stopAttachedBackendMonitor()
+      rememberLog(`[attach] attached backend on ${attached.baseUrl} (pid ${attached.pid}) is gone; recovering`)
+      invalidatePrimaryConnection()
+      scheduleUnexpectedPrimaryRecovery({ error: 'The Hermes backend this app attached to exited.', ready: true })
+    })
+  }, ATTACHED_LIVENESS_POLL_MS)
+
+  attachedBackendMonitor.unref?.()
+}
+
+/** Discover and attach to the host's running backend; null means "spawn one". */
+function attachToRunningHostBackend(): Promise<AttachedBackend | null> {
+  const options = { isolated: ISOLATED_BACKEND, ledgerPath: spawnLedgerPath(HERMES_HOME, path.join) }
+
+  return attachOrReserveSpawn(options, hostBackendAttachDeps(), hostSpawnGateDeps())
+    .then(outcome => {
+      if ('attached' in outcome) {
+        releaseHostSpawnReservation()
+
+        return outcome.attached
+      }
+
+      hostSpawnReservation = outcome.reservation
+
+      return null
+    })
+    .catch(error => {
+      // Discovery must never be able to block boot: fall through to spawning.
+      rememberLog(`[attach] host backend discovery failed (${error.message}); spawning our own`)
+
+      return null
+    })
+}
+
+function hostBackendAttachDeps() {
+  return {
+    log: rememberLog,
+    readLedger: (target: string) => {
+      try {
+        return fs.readFileSync(target, 'utf8')
+      } catch {
+        return null
+      }
+    },
+    probeWebSocket: (wsUrl: string) => probeGatewayWebSocket(wsUrl, { WebSocketImpl: globalThis.WebSocket }),
+    resolveServedToken: (baseUrl: string) => resolveServedDashboardToken(baseUrl, ''),
+    waitForReady: (baseUrl: string, token: string) => waitForHermes(baseUrl, token, undefined, 'token', {})
+  }
+}
+
+function hostSpawnGatePath() {
+  return path.join(HERMES_HOME, 'desktop-backend-spawn.json')
+}
+
+function hostSpawnGateDeps() {
+  return {
+    now: () => Date.now(),
+    read: () => {
+      try {
+        const record = JSON.parse(fs.readFileSync(hostSpawnGatePath(), 'utf8'))
+        const owner = Number(record?.pid)
+
+        if (!Number.isInteger(owner) || owner <= 0) {
+          return null
+        }
+
+        // A gate whose owner is gone is no gate at all.
+        try {
+          process.kill(owner, 0)
+        } catch {
+          return null
+        }
+
+        return { ownerAlive: true, startedAt: Number(record?.startedAt) || 0 }
+      } catch {
+        return null
+      }
+    },
+    take: () => {
+      const gatePath = hostSpawnGatePath()
+
+      try {
+        fs.writeFileSync(gatePath, JSON.stringify({ pid: process.pid, startedAt: Date.now() }), { mode: 0o600 })
+      } catch {
+        // A gate we cannot write is a race we cannot win; spawning anyway is
+        // exactly today's behaviour, so never fail boot over it.
+      }
+
+      return () => {
+        try {
+          fs.unlinkSync(gatePath)
+        } catch {
+          // Already gone / never written.
+        }
+      }
+    },
+    sleep: (ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms))
+  }
+}
+
+function releaseHostSpawnReservation() {
+  hostSpawnReservation?.release()
+  hostSpawnReservation = null
+}
+
 function startHermes() {
   primaryRecoverySuppressed = false
   primaryStartsInFlight += 1
@@ -12877,7 +13101,12 @@ function startHermes() {
 // "log and return", and recovery then hinged on the renderer noticing its
 // socket drop — a 9 h engine-less window when it did not. Pool children are
 // deliberately not consulted: they never own the window backend.
-function scheduleUnexpectedPrimaryRecovery({ code = null, signal = null, error = null, ready = false } = {}) {
+function scheduleUnexpectedPrimaryRecovery({
+  code = null,
+  signal = null,
+  error = null,
+  ready = false
+}: { code?: number | null; error?: string | null; ready?: boolean; signal?: string | null } = {}) {
   if (!ready) {
     return false
   }
@@ -12892,6 +13121,7 @@ function scheduleUnexpectedPrimaryRecovery({ code = null, signal = null, error =
     if (primaryExitRecovery.isCrashLooping()) {
       const message =
         'Hermes backend keeps crashing right after it restarts; not restarting it again. Relaunch Hermes Desktop.'
+
       rememberLog(`[supervisor] ${message}`)
       sendBackendExit({ code, signal, error: message })
 
@@ -13045,6 +13275,7 @@ async function runHermesStart() {
     const setup = await runPrimaryBackendStartup({
       signal: localBackendLifecycle.signal,
       assertCurrentAttempt: () => backendConnectionState.assertCurrentAttempt(connectionAttempt),
+      attachHostBackend: attachToRunningHostBackend,
       connectRemote,
       ensureLocalRuntime: backend =>
         ensureRuntime(backend, () => backendConnectionState.assertCurrentAttempt(connectionAttempt)),
@@ -13078,8 +13309,41 @@ async function runHermesStart() {
       return setup.connection
     }
 
+    // Multiplex-only: a backend was already running on this host and we attached
+    // to it. Nothing was spawned, so there is no child to own — liveness is
+    // polled instead (startAttachedBackendMonitor).
+    if (setup.kind === 'attached') {
+      const attached = setup.attached
+
+      setWslBridgeProfileState(primaryProfile, true)
+      startAttachedBackendMonitor(attached)
+
+      updateBootProgress({
+        phase: 'backend.ready',
+        message: 'Attached to the running Hermes backend',
+        progress: 94,
+        running: true,
+        error: null
+      })
+
+      return {
+        baseUrl: attached.baseUrl,
+        mode: 'local',
+        source: 'local',
+        authMode: 'token',
+        attached: true,
+        token: attached.token,
+        profile: primaryProfile,
+        wsUrl: attached.wsUrl,
+        logs: hermesLog.slice(-80),
+        ...getWindowState()
+      }
+    }
+
     // Local WSL backend — paths are bridgeable.
     setWslBridgeProfileState(primaryProfile, true)
+
+    stopAttachedBackendMonitor()
 
     const backend = setup.backend
     // Route old runtimes (no `serve`) through the legacy `dashboard --no-open`.
@@ -13266,6 +13530,9 @@ async function runHermesStart() {
     await Promise.race([waitForHermes(baseUrl, token), backendStartFailed])
     backendConnectionState.assertCurrentAttempt(connectionAttempt)
     backendReady = true
+    // The host now has a bound, registered backend: the next launcher will
+    // discover and attach to it, so the spawn gate is done.
+    releaseHostSpawnReservation()
     primaryExitRecovery.reset()
     backendStartFailure = null
 
@@ -13318,6 +13585,8 @@ async function runHermesStart() {
       ...getWindowState()
     }
   })().catch(async error => {
+    releaseHostSpawnReservation()
+
     if (!backendConnectionState.clearPromiseForAttempt(connectionAttempt)) {
       throw error
     }
@@ -13739,6 +14008,7 @@ function createInstanceWindow(
     source && !source.isDestroyed() ? windowConnectionRoutes.get(source.webContents.id) : null,
     { connectionId: null, profile: primaryProfileKey() }
   )
+
   validateDesktopProfileRoute(route)
   const icon = getAppIconPath()
 
@@ -14918,6 +15188,28 @@ function createWindow() {
           repairHint: 'hermes desktop --force-build',
           reloadUrl: DEV_SERVER || pathToFileURL(resolveRendererIndex()).toString()
         })
+      },
+      // #116472: the OS/Chromium can SIGKILL a renderer while the window is live (memory
+      // reclaim, an external kill). Hermes never does this itself and never reloads it
+      // (a killed-after-close window must not pop back up), so without this the window sat
+      // silent with only a desktop.log line. Surface the reason + a recovery button instead.
+      onRendererTerminated: details => {
+        // An intentional quit/handoff also tears the renderer down; never pop a
+        // recovery page for it (its window may still be alive when this fires).
+        if (isQuittingForHandoff || backendShutdown.hasStarted() || mainWindow.isDestroyed()) {
+          return
+        }
+
+        const reason = details?.reason ? String(details.reason) : 'unknown'
+        const exit = details?.exitCode === undefined ? '' : `, exit code ${String(details.exitCode)}`
+        rememberLog(`[renderer:main] renderer terminated while live (reason=${reason}${exit}); surfacing recovery page`)
+        void loadRendererLoadErrorPage(mainWindow, {
+          title: 'Hermes desktop UI was terminated',
+          errorDescription:
+            `The desktop UI process was terminated unexpectedly (reason: ${reason}${exit}). ` +
+            'Your sessions and the background gateway are unaffected — reload to continue.',
+          reloadUrl: DEV_SERVER || pathToFileURL(resolveRendererIndex()).toString()
+        })
       }
     },
     reloadWindowMs: RENDERER_RELOAD_WINDOW_MS,
@@ -15574,6 +15866,9 @@ ipcMain.handle('hermes:connections:remove', async (_event, id) => {
   // Tear down anything the removed connection still had running: pooled
   // backends under its composite keys and any ssh tunnel scopes it owned.
   await stopRegistryConnectionBackends(key)
+  // …and everything cached ABOUT it. Ids are recycled label slugs, so re-adding "Mac mini"
+  // gets `mac-mini` back — with the removed machine's profile list still cached under it.
+  evictConnectionCaches(key)
   // And the renderer side: without this push, secondaries scoped to the
   // removed connection keep their WebSocket open (remote/cloud have no local
   // process to kill) and stream ghost events until page reload.
@@ -15698,8 +15993,9 @@ ipcMain.handle('hermes:connections:test', async (_event, id) => {
 // would spawn tunnels the user never asked for); once dialed, their pooled
 // descriptor serves the enumeration like any remote. Last-known SSH profile
 // lists are reused so switching the window back to local does not empty Bot Mode.
-const sshRosterCache = new Map<string, string[]>()
-const sshInventoryAttemptedAt = new Map<string, number>()
+// These three live in ./connection-caches, which states (and tests) the invariant they share:
+// each is keyed by connection id and is only valid while that id names the same machine, so
+// removing a connection or re-pointing it must evict them (`evictConnectionCaches`).
 const SSH_INVENTORY_RETRY_MS = 60_000
 
 // Stable backend identity per registered connection: the `install_id` its
@@ -15708,7 +16004,6 @@ const SSH_INVENTORY_RETRY_MS = 60_000
 // status probe is cached per connection with a TTL to avoid doubling roster
 // traffic; the Test button refreshes it eagerly. A missing id simply bypasses
 // the same-backend roster collapse — fully backward compatible.
-const connectionInstallIds = new Map<string, { id?: string; ts: number }>()
 const INSTALL_ID_TTL_MS = 5 * 60_000
 const INSTALL_ID_NEGATIVE_TTL_MS = 60_000
 
@@ -15784,6 +16079,14 @@ async function probeSshProfileInventory(connection) {
     if (profiles.length > 0) {
       sshRosterCache.set(connection.id, profiles)
     }
+
+    // Backend identity, on the session we already have open: without it an ssh connection has no
+    // install id at all, so two addresses for one machine never collapse into one roster row
+    // (#88828 wired this for remote/local only, through /api/status).
+    connectionInstallIds.set(connection.id, {
+      id: await remoteLifecycle.readRemoteInstallId(ssh),
+      ts: Date.now()
+    })
   } catch (error: any) {
     sshRememberLog(`[ssh] profile inventory failed for ${connection.id}: ${error?.message || error}`)
   } finally {
@@ -15836,7 +16139,14 @@ async function enumerateRegistryAgentSources(registry = readDesktopConnectionsRe
         // (ECONNRESET / liveness probe drop).
         if (connection.kind === 'ssh') {
           await probeSshProfileInventory(connection)
-          raw = { connection, profiles: null, error: 'connect-on-demand' }
+          // The inventory probe learns the backend's install id on its own session; carrying it
+          // here is what lets two ssh addresses for one machine collapse to one row.
+          raw = {
+            connection,
+            profiles: null,
+            error: 'connect-on-demand',
+            installId: connectionInstallIds.get(connection.id)?.id
+          }
         } else {
           // Same connect-on-demand courtesy for the forced-local path: when
           // the primary route is remote, enumerating "This device" would
@@ -16748,6 +17058,7 @@ async function dispatchRegistryApiRequest(
   // OUT of the claim: an interactive open coalescing onto an in-flight
   // passive read would otherwise inherit its "no warm backend" rejection.
   const spawnPriority = spawnPriorityFrom(request?.priority)
+
   const connection: any = request?.passive
     ? await ensureRegistryBackend(registryConnectionId, routeProfile, '', { passive: true })
     : await backendDialClaims.run(backendScopeKey(registryConnectionId, routeProfile), () =>
@@ -17172,7 +17483,7 @@ ipcMain.handle('hermes:savePastedText', async (_event, payload) => {
     throw new Error('savePastedText: missing text')
   }
 
-  return writeComposerPaste(app.getPath('userData'), text)
+  return writeComposerPaste(HERMES_HOME, text)
 })
 
 ipcMain.handle('hermes:saveClipboardImage', async () => {
@@ -18363,6 +18674,7 @@ function heldQuitForActiveWork(event: Electron.Event): boolean {
   }
 
   const prompt = quitPromptFor(mergeActiveWork(activeWorkByWebContents.values()), isQuittingForHandoff)
+
   // A hidden aux window must never parent the quit prompt: the dialog would
   // be invisible and the held quit unanswerable (#116376 §E).
   const parent =

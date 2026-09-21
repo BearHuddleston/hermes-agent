@@ -50,6 +50,71 @@ def output_until(ws, marker):
 
 
 @pytest.mark.linux_only
+@pytest.mark.parametrize("persistent", [False, True])
+@pytest.mark.parametrize("named_launch", [False, True])
+def test_shell_scopes_passthrough_after_eager_activation(
+    host_app, tmp_path, monkeypatch, persistent, named_launch,
+):
+    from agent import secret_scope
+    from hermes_constants import get_hermes_home_override
+    from tools.terminal_scope import get_terminal_scope
+    from tui_gateway import launch_profile_policy
+
+    root = tmp_path / ".hermes"
+    launch = root / "profiles" / "launch" if named_launch else root
+    other = root / "profiles" / "other"
+    passthrough = "WEBAPP_TEST_TOKEN"
+    launch_only = "WEBAPP_LAUNCH_ONLY_TOKEN"
+    other_only = "WEBAPP_OTHER_ONLY_TOKEN"
+    for home in (launch, other):
+        home.mkdir(parents=True, exist_ok=True)
+        (home / "config.yaml").write_text(
+            f"terminal:\n  env_passthrough: [{passthrough}, {launch_only}, {other_only}]\n",
+            encoding="utf-8",
+        )
+    (other / ".env").write_text(
+        f"{passthrough}=other-value\n{other_only}=other-only\n", encoding="utf-8",
+    )
+    monkeypatch.setenv("HERMES_HOME", str(launch))
+    monkeypatch.setenv(passthrough, "launch-value")
+    monkeypatch.setenv(launch_only, "launch-only")
+    monkeypatch.delenv(other_only, raising=False)
+    monkeypatch.delenv("GATEWAY_MULTIPLEX_PROFILES", raising=False)
+    monkeypatch.setattr(secret_scope, "_MULTIPLEX_ACTIVE", False)
+    monkeypatch.setattr(launch_profile_policy, "_snapshot", None)
+    assert launch_profile_policy.activate_multi_profile_hosting_eagerly()
+    # A later secondary's process-env residue must not replace the frozen launch value.
+    monkeypatch.setenv(passthrough, "ambient-poison")
+
+    command = (
+        "printf 'SCO%s=%s:%s:%s\\n' PE "
+        f'"${{{passthrough}}}" "${{{launch_only}-missing}}" "${{{other_only}-missing}}"\n'
+    ).encode()
+    launch_name = "launch" if named_launch else "default"
+    with TestClient(host_app, base_url="http://localhost") as client:
+        for profile, expected in (
+            ("current", b"launch-value:launch-only:missing"),
+            ("other", b"other-value:missing:other-only"),
+            (launch_name, b"launch-value:launch-only:missing"),
+        ):
+            endpoint = url(f"&profile={profile}")
+            if not persistent:
+                endpoint = endpoint.replace("&persistent=1", "")
+            with client.websocket_connect(endpoint) as ws:
+                assert metadata(ws)["shell"] == "sh"
+                ws.send_bytes(command)
+                output = output_until(ws, b"SCOPE=")
+                assert b"SCOPE=" + expected in output
+                assert b"ambient-poison" not in output
+            assert secret_scope.current_secret_scope() is None
+            assert get_hermes_home_override() is None
+            assert get_terminal_scope() is None
+    # The fix must bind the caller, not disable the process-wide fail-closed guard.
+    with pytest.raises(secret_scope.UnscopedSecretError):
+        secret_scope.get_secret(passthrough)
+
+
+@pytest.mark.linux_only
 def test_real_shell_survives_disconnect_and_explicit_close(host_app, tmp_path):
     import shlex
     import sys

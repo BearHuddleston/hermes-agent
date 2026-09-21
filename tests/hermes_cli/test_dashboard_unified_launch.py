@@ -27,36 +27,16 @@ def _args(**kw):
     return types.SimpleNamespace(**defaults)
 
 
+def _host_owner(monkeypatch, surface):
+    from gateway import host_rendezvous as hr
+
+    record = types.SimpleNamespace(pid=123, host="127.0.0.1", port=9119, role="serve", profiles=())
+    monkeypatch.setattr(main_dashboard, "_host_backend_attachment", lambda: record)
+    monkeypatch.setattr(hr, "probe_owner", lambda _: {"servesSpa": True, "ui_surface": surface})
+    monkeypatch.setattr(main_dashboard, "_explicit_endpoint_flags", lambda: set())
+
+
 class TestUnifiedDashboardRouting:
-
-
-    def test_surface_probe_recognizes_pre_webapp_hermes_as_dashboard(self, main_mod, monkeypatch):
-        class Response:
-            status = 200
-
-            def __enter__(self):
-                return self
-
-            def __exit__(self, *_args):
-                return False
-
-            def read(self, _limit) -> bytes:
-                return b'{"version":"0.20.4","config_version":9,"gateway_running":false}'
-
-        monkeypatch.setattr("urllib.request.urlopen", lambda *_args, **_kwargs: Response())
-
-        assert main_dashboard._dashboard_surface_at("127.0.0.1", 9119) == "dashboard"
-
-        class InvalidResponse(Response):
-            def read(self, _limit) -> bytes:
-                return b'{"version":"0.20.5","ui_surface":"unknown"}'
-
-        monkeypatch.setattr(
-            "urllib.request.urlopen",
-            lambda *_args, **_kwargs: InvalidResponse(),
-        )
-        assert main_dashboard._dashboard_surface_at("127.0.0.1", 9119) is None
-
 
     def test_profile_launch_reexecs_machine_dashboard(self, main_mod, monkeypatch):
         monkeypatch.delenv("HERMES_HOME", raising=False)
@@ -64,7 +44,7 @@ class TestUnifiedDashboardRouting:
             "hermes_cli.profiles.get_active_profile_name", lambda: "worker_x"
         )
         monkeypatch.setattr(main_dashboard, "_dashboard_listening", lambda host, port: False)
-        monkeypatch.setattr(main_dashboard, "_dashboard_surface_at", lambda host, port: None)
+        monkeypatch.setattr(main_dashboard, "_host_backend_attachment", lambda: None)
         execs = []
 
         def fake_exec(exe, argv, env):
@@ -96,13 +76,7 @@ class TestUnifiedDashboardRouting:
         monkeypatch.setattr(
             "hermes_cli.profiles.get_active_profile_name", lambda: "worker_x"
         )
-        monkeypatch.setattr(main_dashboard, "_dashboard_listening", lambda host, port: True)
-        monkeypatch.setattr(
-            main_dashboard,
-            "_dashboard_surface_at",
-            lambda host, port: "dashboard",
-            raising=False,
-        )
+        _host_owner(monkeypatch, "dashboard")
         opened = []
         monkeypatch.setitem(
             sys.modules,
@@ -124,13 +98,7 @@ class TestUnifiedDashboardRouting:
         monkeypatch.setattr(
             "hermes_cli.profiles.get_active_profile_name", lambda: "worker_x"
         )
-        monkeypatch.setattr(main_dashboard, "_dashboard_listening", lambda host, port: True)
-        monkeypatch.setattr(
-            main_dashboard,
-            "_dashboard_surface_at",
-            lambda host, port: "webapp",
-            raising=False,
-        )
+        _host_owner(monkeypatch, "webapp")
         opened = []
         monkeypatch.setitem(
             sys.modules,

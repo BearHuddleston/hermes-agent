@@ -519,6 +519,11 @@ DEFAULT_CONFIG = {
         # re-sends the full prefix) — costly on long-context models. When false the watcher still
         # detects the change and prints /reload-mcp guidance.
         "auto_reload_on_config_change": True,
+        # Max MCP servers connected (and their stdio child trees spawned) at once per discovery
+        # pass — at boot, on /reload-mcp and on the config watcher's reconcile. Unbounded, a config
+        # with N servers spawns N process trees in the same instant (RAM/CPU spike, 429 fan-out on
+        # multi-profile fleets). 0 = unlimited.
+        "discovery_concurrency": 4,
     },
     # Tool-output truncation. max_bytes: terminal_tool output cap in chars (head+tail kept; 50_000 ≈
     # 12-15K tokens). max_lines: max `limit` one read_file call may request before clamping.
@@ -570,7 +575,9 @@ DEFAULT_CONFIG = {
         # (~3x fewer retained tokens; a few extra summarizer calls at the boundary). "legacy" =
         # 0.20×threshold verbatim tail (100-240K tokens on big windows).
         "tail_mode": "lean",
-        "protect_last_n": 20,         # minimum recent messages kept uncompressed
+        # protect_last_n: minimum recent messages kept uncompressed, honoured up to a small count
+        # floor; the verbatim tail is otherwise token-bounded and never above 20% of the window.
+        "protect_last_n": 20,
         # min_tail_user_messages: REAL (actionable) user messages guaranteed to survive in the tail.
         # 1 = single last-user anchor; raise (e.g. 3) when bulky tool outputs fill the tail budget.
         "min_tail_user_messages": 1,
@@ -2502,6 +2509,10 @@ DEFAULT_CONFIG = {
         # Extra Electron flags per launch, e.g. ["--ozone-platform=x11"] or GPU workarounds. List of
         # strings; a single string is shell-split.
         "electron_flags": [],
+        # V8 old-space ceiling (MB) for the renderer, applied as --js-flags=--max-old-space-size=N by
+        # the app itself (also for Start-menu / .desktop launches). 0 = Chromium's default limit.
+        # A ceiling turns a machine-wide freeze into a bounded renderer reload (#77311).
+        "renderer_max_old_space_mb": 0,
         # Linux Ozone backend, bridged to ELECTRON_OZONE_PLATFORM_HINT (explicit env wins). auto =
         # Chromium default; x11 = XWayland, for compositors that ignore always-on-top for Wayland
         # clients (e.g. COSMIC) — also puts the HUD on the solid-window input path; wayland = force

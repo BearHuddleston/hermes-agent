@@ -12,11 +12,7 @@ export const en: Translations = {
     grant: 'Reconnect',
     connected: 'Connected',
     checking: 'Checking your apps…',
-    waitingSignIn: 'Waiting for you to finish signing in…',
     notConnected: 'Not connected',
-    notAvailable: 'Not available',
-    startWith: count => `Start the task with ${count} ${count === 1 ? 'app' : 'apps'} connected`,
-    startWithout: 'Start without connections',
     skipped: 'Skipped',
     disabled: 'Unavailable',
     failed: 'Could not connect',
@@ -25,7 +21,6 @@ export const en: Translations = {
     waiting: 'Waiting for your browser…',
     timeout: 'Still waiting for authorization.',
     refresh: 'Refresh status',
-    statusError: 'Could not check connections. Try refreshing.',
     connectError: 'Could not start authorization. Try again.',
     connectErrorFor: (app: string) => `Could not start authorization for ${app}.`,
     unavailable: 'Connectors are unavailable for this session.',
@@ -33,7 +28,12 @@ export const en: Translations = {
     search: 'Find an app',
     empty: 'No matching apps',
     disclaimer: 'Connecting is optional. Only authorize the apps you want Hermes to use.',
-    execution: 'Connector tools'
+    execution: 'Connector tools',
+    setup: server => `Set up ${server}`,
+    openInBrowser: 'Open in browser',
+    setupCancel: 'Cancel',
+    authorizedToolsUnavailable: 'Authorized. Tools unavailable.',
+    required: 'Required'
   },
 
   sessionImport: {
@@ -1849,6 +1849,17 @@ export const en: Translations = {
       updateToPin: (sha: string) => `Update to ${sha}`,
       updateFailed: (name: string) => `Could not update ${name}`,
       updated: (name: string) => `${name} updated to the current catalog pin. Restart the gateway to apply.`,
+      uninstall: 'Uninstall',
+      uninstallTip: (name: string, profile: string) => `Uninstall ${name} from ${profile}`,
+      uninstallConfirmTitle: (name: string) => `Uninstall ${name}?`,
+      uninstallConfirmBody: (name: string, profile: string) =>
+        `This deletes the plugin's files from the ${profile} profile. Any desktop half it shipped is removed with it. Reinstall it from the catalog or from Git at any time.`,
+      uninstallFailed: (name: string) => `Could not uninstall ${name}`,
+      uninstalled: (name: string) => `${name} uninstalled. Restart the gateway to unload it.`,
+      uninstallDesktopTip: (name: string) => `Uninstall ${name} from this app`,
+      uninstallDesktopConfirmBody: (name: string) =>
+        `This deletes ${name} from the desktop-plugins folder on this computer and unloads it now. Reinstall it from Git or drop the folder back at any time.`,
+      uninstalledDesktop: (name: string) => `${name} uninstalled.`,
       deepLinkErrorTitle: 'Plugin install link rejected',
       deepLinkCatalogInvalidName: 'The link\u2019s catalog name is missing or invalid.',
       deepLinkCatalogUnknown: (name: string) =>
@@ -4317,7 +4328,6 @@ export const en: Translations = {
       authorized: server => `Authorized ${server}`,
       failed: server => `Setup failed for ${server}`,
       toolCount: count => (count === 1 ? '1 tool' : `${count} tools`),
-      notInCatalog: server => `“${server}” is not in the MCP catalog`,
       envRequired: 'Fill in the required credentials first',
       sendFailed: 'Could not send MCP setup response',
       reloadFailed: 'Server saved, but reloading MCP tools failed — they load next session',

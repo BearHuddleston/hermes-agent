@@ -114,29 +114,45 @@ def resolve_argv(
     version: str,
 ) -> tuple[list[str], str, dict[str, str], str]:
     """Return argv/cwd/env/name for Webapp's authenticated host terminal."""
-    from hermes_cli.config import TERMINAL_CONFIG_ENV_MAP, apply_terminal_config_to_env
-    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
-    from tools.environments.local import build_subprocess_env
+    from gateway.run import _profile_runtime_scope
+    from hermes_cli.config import TERMINAL_CONFIG_ENV_MAP
+    from hermes_constants import (
+        get_process_hermes_home, reset_hermes_home_override, set_hermes_home_override,
+    )
+    from tools.environments.local import build_subprocess_env, served_profile_child_env
+    from tools.terminal_scope import enforce_no_refusal, get_terminal_scope
+    from tui_gateway.launch_profile_policy import (
+        activate_multi_profile_hosting, launch_profile_runtime_scope,
+    )
 
     requested_profile = (profile or "").strip()
     profile_dir = None
     if requested_profile and requested_profile.lower() != "current":
         profile_dir = resolve_profile_dir(requested_profile)
 
-    override_token = (
-        set_hermes_home_override(str(profile_dir)) if profile_dir is not None else None
-    )
+    launch_home = get_process_hermes_home()
+    home = profile_dir if profile_dir is not None else launch_home
+    if home.resolve() != launch_home.resolve():
+        activate_multi_profile_hosting()
+        scope = _profile_runtime_scope(home)
+    else:
+        scope = launch_profile_runtime_scope(home)
+    # The startup eager-multiplex guard applies even before a secondary's first
+    # request. Home alone cannot authorize passthrough reads; both shell paths
+    # need the same complete scope, including the frozen launch environment.
+    override_token = set_hermes_home_override(str(home))
     try:
-        base_env = os.environ.copy()
-        if profile_dir is not None:
-            base_env["HERMES_HOME"] = str(profile_dir)
+        with scope:
+            enforce_no_refusal()
+            base_env = served_profile_child_env(target_home=home)
             for env_var in TERMINAL_CONFIG_ENV_MAP.values():
                 base_env.pop(env_var, None)
-        apply_terminal_config_to_env(env=base_env)
-        env = build_subprocess_env(base=base_env, scrub_secrets=True)
+            terminal_scope = get_terminal_scope()
+            assert terminal_scope is not None  # both runtime scopes bind the complete policy
+            base_env.update(terminal_scope)
+            env = build_subprocess_env(base=base_env, scrub_secrets=True)
     finally:
-        if override_token is not None:
-            reset_hermes_home_override(override_token)
+        reset_hermes_home_override(override_token)
 
     for key in list(env):
         if key == "npm_config_prefix" or key.startswith(("npm_config_", "npm_package_")):

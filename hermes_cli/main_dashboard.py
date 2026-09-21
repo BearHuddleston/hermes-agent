@@ -550,52 +550,6 @@ def _cancel(message: str = "  Cancelled.") -> NoReturn:
     sys.exit(1)
 
 
-def _dashboard_surface_at(host: str, port: int) -> str | None:
-    """Verified Hermes UI surface at ``host:port``, or ``None``.
-
-    The public status endpoint works in both loopback-token and gated-cookie
-    modes, so named-profile routing can distinguish Dashboard from Webapp
-    without possessing a session or attaching to an arbitrary TCP listener.
-    """
-    import json
-    from urllib.request import Request, urlopen
-
-    probe_host = _dashboard_probe_host(host)
-    authority = f"[{probe_host}]" if ":" in probe_host else probe_host
-    request = Request(
-        f"http://{authority}:{port}/api/status",
-        headers={"Accept": "application/json", "User-Agent": "hermes-surface-probe"},
-    )
-    try:
-        with urlopen(request, timeout=3.0) as response:  # nosec B310 -- local operator-selected listener
-            if getattr(response, "status", 200) != 200:
-                return None
-            raw = response.read(65_537)
-    except (OSError, ValueError):
-        return None
-    if len(raw) > 65_536:
-        return None
-    try:
-        payload = json.loads(raw.decode("utf-8"))
-    except (UnicodeDecodeError, ValueError):
-        return None
-    if not isinstance(payload, dict):
-        return None
-    surface = payload.get("ui_surface")
-    if surface in {"dashboard", "webapp", "serve"}:
-        return surface
-    # Status payloads from Hermes versions predating ``ui_surface`` are always
-    # Dashboard: Webapp did not exist yet. Require a non-empty Hermes version
-    # and only fall back when the surface key is absent, never when it is invalid.
-    if (
-        "ui_surface" not in payload
-        and isinstance(payload.get("version"), str)
-        and payload["version"].strip()
-    ):
-        return "dashboard"
-    return None
-
-
 def _maybe_setup_dashboard_auth_interactively(args) -> None:
     """Offer to configure dashboard auth when the gate engages and no provider exists.
 
@@ -872,15 +826,152 @@ def cmd_webapp(args):
     return cmd_dashboard(args)
 
 
+def _host_backend_attachment():
+    """Live host serve/dashboard record to attach to, or ``None``.
+
+    Record-based discovery replaces the old bare-TCP probe: "something accepts a connection on
+    this port" proved nothing about WHO answers (a foreign service, or a recycled PID's new
+    owner). The record carries ``(pid, createTime)`` so liveness is proved against the same
+    incarnation, and its token fingerprint must still match the 0600 token file the owner wrote.
+    The record only nominates a CANDIDATE; :func:`_attach_to_host_backend` makes it prove itself.
+    """
+    try:
+        from gateway import host_rendezvous as hr
+
+        record = hr.read_record(hr.ROLE_SERVE)
+        if record is None or not record.port:
+            return None
+        return record if hr.record_token_is_consistent(record) else None
+    except Exception:
+        return None
+
+
+def _explicit_endpoint_flags(argv=None) -> set:
+    """Which of ``--host``/``--port`` the operator actually typed.
+
+    argparse defaults are indistinguishable from a typed value in ``args``, and the difference is
+    load-bearing: an unset ``--port`` may attach to whatever port the host owner bound, but a
+    typed ``--port 8899`` or ``--host 0.0.0.0`` (LAN access) must never be silently answered with
+    a loopback attach on some other port.
+    """
+    typed = set()
+    for token in (sys.argv[1:] if argv is None else argv):
+        name = str(token).split("=", 1)[0]
+        if name in ("--host", "--port"):
+            typed.add(name[2:])
+    return typed
+
+
+def _endpoint_conflict(args, record, typed: set) -> str:
+    """Why an explicitly requested endpoint cannot be served by ``record`` ('' when it can)."""
+    if "port" in typed:
+        wanted_port = getattr(args, "port", None)
+        # ``--port 0`` is "any free port", not a demand for a specific one.
+        if isinstance(wanted_port, int) and wanted_port > 0 and wanted_port != record.port:
+            return f"--port {wanted_port} (the host owner is on port {record.port})"
+    if "host" in typed:
+        wanted_host = str(getattr(args, "host", "") or "")
+        owner_host = record.host or "127.0.0.1"
+        loopback = {"127.0.0.1", "localhost", "::1"}
+        wildcard = {"0.0.0.0", "::", "*"}
+        # A wildcard owner already answers on loopback; anything else must match exactly.
+        reachable = wanted_host == owner_host or (owner_host in wildcard and wanted_host in loopback)
+        if not reachable:
+            return f"--host {wanted_host} (the host owner is bound to {owner_host})"
+    return ""
+
+
+def _attach_to_host_backend(args, headless_backend: bool) -> None:
+    """Multiplex-only: a second `hermes serve`/`dashboard` attaches to the host backend.
+
+    Exactly ONE backend runs per host and multiplexes every profile, so a second invocation —
+    for ANY profile, the default included — reports the live one and exits 0 instead of binding
+    a second port. ``--isolated`` opts out (Desktop's SSH backend proves ownership with it) and
+    Desktop pool backends (HERMES_DESKTOP=1) keep their own lifecycle.
+
+    Exit 0 means "the host backend answered and serves what you asked for", and nothing else:
+
+    * the owner must ANSWER on its recorded port and identify itself (a record alone cannot see a
+      graceful-shutdown window or a foreign listener that inherited the port) — a supervisor or
+      `hermes update` relaunch landing in that window would otherwise exit 0 with NOTHING
+      listening, reporting success for a dead service;
+    * an explicitly typed ``--port``/``--host`` the owner cannot serve is a non-zero REFUSAL
+      naming the owner, never a silent redirect;
+    * a `hermes dashboard` user is never handed a headless backend's URL (no SPA behind it).
+
+    Returns normally — leaving the caller to BIND — when no owner answers.
+    """
+    if getattr(args, "isolated", False) or os.environ.get("HERMES_DESKTOP") == "1":
+        return
+    record = _host_backend_attachment()
+    if record is None:
+        return
+
+    from gateway import host_rendezvous as hr
+
+    identity = hr.probe_owner(record)
+    if identity is None:
+        # Unprovable liveness (no psutil), a closed port, a foreign listener: all mean "no owner
+        # answered". Fall through to the bind — never exit 0 on an attach that did not happen.
+        return
+
+    typed = _explicit_endpoint_flags()
+    conflict = _endpoint_conflict(args, record, typed)
+    if conflict:
+        print(f"Refusing to start: this host is already served by {hr.describe(record)}.")
+        print(f"  You asked for {conflict}.")
+        print("  Stop that backend, or drop the flag to use the running one.")
+        sys.exit(1)
+
+    if not headless_backend and not identity.get("servesSpa"):
+        print(f"Refusing to start: this host is already served by {hr.describe(record)}, "
+              "which is a headless `hermes serve` backend with no dashboard UI.")
+        print("  Stop it and run `hermes dashboard`, or use --isolated for a dedicated server.")
+        sys.exit(1)
+
+    expected_surface = "webapp" if getattr(args, "webapp_surface", False) else "dashboard"
+    # Pre-Webapp host identities only distinguish SPA from headless. Once an
+    # exact surface is advertised, an invalid or different value cannot attach.
+    owner_surface = identity.get("ui_surface", "dashboard")
+    if not headless_backend and owner_surface != expected_surface:
+        print(f"Refusing to start: {hr.describe(record)} serves {owner_surface}, "
+              f"not Hermes {expected_surface}.")
+        print("  Stop that backend, or use --isolated with a different --port.")
+        sys.exit(1)
+
+    try:
+        from hermes_cli.profiles import get_active_profile_name
+        profile = get_active_profile_name()
+    except Exception:
+        profile = "default"
+    wanted = getattr(args, "open_profile", "") or profile
+    url = f"http://{hr.dial_host(record)}:{record.port}/?profile={wanted}"
+
+    kind = "backend" if headless_backend else expected_surface
+    print(f"Hermes {kind} already running on this host: PID {record.pid}, port {record.port}.")
+    print(f"  Managing profile '{wanted}': {url}")
+    if kind == "webapp":
+        print("  Local Webapp: open this URL in an already authorized tab, or use the")
+        print("  private launch link from the running server, adding the profile query")
+        print("  above BEFORE its # fragment. A fresh bare-URL tab cannot sign in.")
+        print("  Lost the link? Restart that Webapp to print a new one. Remote OAuth is unchanged.")
+    if kind == "dashboard" and not args.no_open:
+        with contextlib.suppress(Exception):
+            import webbrowser
+            webbrowser.open(url)
+    sys.exit(0)
+
+
 def _route_named_profile_dashboard(
     args, _headless_backend: bool, _ssh_owner_nonce: str, _token_file: str) -> None:
     """Route a named-profile launch to the single MACHINE dashboard (per-request ``?profile=`` scoping
     makes one server per profile pure fragmentation).
 
-    Already listening → open ``?profile=<name>`` and exit; else re-exec pinned to
-    ``-p default`` (so ``_apply_profile_override`` can't re-route via the sticky
-    active_profile file). ``--isolated`` opts out; Desktop pool backends
-    (HERMES_DESKTOP=1) stay per-profile. Returns normally when no routing applies.
+    No-record fallback to :func:`_attach_to_host_backend`, which already attached (and exited)
+    when the host publishes a live rendezvous record: re-exec pinned to ``-p default`` (so
+    ``_apply_profile_override`` can't re-route via the sticky active_profile file). ``--isolated``
+    opts out; Desktop pool backends (HERMES_DESKTOP=1) stay per-profile. Returns normally when no
+    routing applies.
     """
     try:
         from hermes_cli.profiles import get_active_profile_name
@@ -897,30 +988,6 @@ def _route_named_profile_dashboard(
         return
 
     expected_surface = "webapp" if getattr(args, "webapp_surface", False) else "dashboard"
-    url = f"http://{args.host or '127.0.0.1'}:{args.port}/?profile={_launch_profile}"
-    listening_surface = _dashboard_surface_at(args.host, args.port)
-    if listening_surface == expected_surface:
-        print(f"Machine {expected_surface} already running on port {args.port}.")
-        print(f"  Managing profile '{_launch_profile}': {url}")
-        if expected_surface == "webapp":
-            print("  Local Webapp: open this URL in an already authorized tab, or use the")
-            print("  private launch link from the running server, adding the profile query")
-            print("  above BEFORE its # fragment. A fresh bare-URL tab cannot sign in.")
-            print("  Lost the link? Restart that Webapp to print a new one. Remote OAuth is unchanged.")
-        if not args.no_open and expected_surface != "webapp":
-            with contextlib.suppress(Exception):
-                import webbrowser
-                webbrowser.open(url)
-        sys.exit(0)
-
-    if listening_surface is not None or _dashboard_listening(args.host, args.port):
-        found = listening_surface or "unverified listener"
-        print(
-            f"Port {args.port} is already owned by {found}; refusing to open it "
-            f"as Hermes {expected_surface}.")
-        print("  Stop that listener or choose a different --port.")
-        sys.exit(1)
-
     print(
         f"Routing to the machine dashboard (profile '{_launch_profile}' "
         f"preselected). Use --isolated for a dedicated per-profile server."

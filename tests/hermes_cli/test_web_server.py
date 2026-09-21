@@ -3920,17 +3920,24 @@ class TestStatusInstallId:
         second = self.client.get("/api/status")
         assert second.json().get("install_id") == install_id
 
-    def test_status_advertises_exact_ui_surface(self, monkeypatch):
+    @pytest.mark.parametrize("surface", ["dashboard", "webapp", "serve"])
+    def test_status_advertises_exact_ui_surface(self, monkeypatch, surface):
         import hermes_cli.web_server as ws
 
-        monkeypatch.setattr(ws.app.state, "ui_surface", "webapp", raising=False)
+        monkeypatch.setattr(ws.app.state, "ui_surface", surface, raising=False)
         monkeypatch.setattr(_gw_status, "get_running_pid_cached", lambda: None)
         monkeypatch.setattr(_gw_status, "read_runtime_status", lambda: None)
 
         response = self.client.get("/api/status")
 
         assert response.status_code == 200
-        assert response.json()["ui_surface"] == "webapp"
+        assert response.json()["ui_surface"] == surface
+
+        identity = self.client.get("/api/host/identity")
+        assert identity.status_code == 200
+        assert identity.json()["ui_surface"] == surface
+        self.client.headers.pop(ws._SESSION_HEADER_NAME)
+        assert self.client.get("/api/host/identity").status_code == 401
 
     def test_install_id_survives_process_cache_reset(self, monkeypatch):
         """A restart (fresh cache) re-reads the SAME persisted id."""

@@ -64,16 +64,20 @@ def test_private_launch_uses_existing_token_and_owner_only_browser_redirect(monk
 def test_existing_named_webapp_preserves_profile_and_explains_private_access(monkeypatch, capsys):
     import webbrowser
     from hermes_cli import main_dashboard, profiles
+    from gateway import host_rendezvous as hr
 
     monkeypatch.setattr(profiles, "get_active_profile_name", lambda: "coder")
     monkeypatch.delenv("HERMES_DESKTOP", raising=False)
-    monkeypatch.setattr(main_dashboard, "_dashboard_surface_at", lambda *a: "webapp")
+    record = SimpleNamespace(pid=123, host="127.0.0.1", port=9123, role="serve", profiles=())
+    monkeypatch.setattr(main_dashboard, "_host_backend_attachment", lambda: record)
+    monkeypatch.setattr(hr, "probe_owner", lambda _: {"servesSpa": True, "ui_surface": "webapp"})
+    monkeypatch.setattr(main_dashboard, "_explicit_endpoint_flags", lambda: set())
     opened = []
     monkeypatch.setattr(webbrowser, "open", opened.append)
     args = SimpleNamespace(host="127.0.0.1", port=9123, webapp_surface=True,
                            no_open=False, isolated=False, open_profile="")
     with pytest.raises(SystemExit) as result:
-        main_dashboard._route_named_profile_dashboard(args, False, "", "")
+        main_dashboard._attach_to_host_backend(args, False)
     assert result.value.code == 0
     output = capsys.readouterr().out
     assert "?profile=coder" in output
