@@ -3,6 +3,7 @@
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 import base64
+import os
 import shutil
 import threading
 
@@ -199,6 +200,7 @@ def test_clipboard_write_errors_preserve_counter_and_cleanup(
     session["image_counter"] = 3
     staging_paths = []
     write_bytes = Path.write_bytes
+    link = os.link
 
     def extract(path, *, create_parent=True):
         staging_paths.append(path)
@@ -207,14 +209,13 @@ def test_clipboard_write_errors_preserve_counter_and_cleanup(
             raise PermissionError("clipboard write denied")
         return True
 
-    def final_write(path, data):
-        written = write_bytes(path, data)
+    def final_write(path, target):
         if path.parent == profile_home / "images":
             raise PermissionError("clipboard write denied")
-        return written
+        return link(path, target)
 
     monkeypatch.setattr(clipboard, "save_clipboard_image", extract)
-    monkeypatch.setattr(Path, "write_bytes", final_write)
+    monkeypatch.setattr(os, "link", final_write)
     with pytest.raises(PermissionError, match="clipboard write denied"):
         server._methods["clipboard.paste"]("write-error", {"session_id": sid})
     assert session["image_counter"] == 3

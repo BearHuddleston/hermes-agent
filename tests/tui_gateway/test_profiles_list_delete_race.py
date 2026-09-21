@@ -254,11 +254,14 @@ def test_delete_retires_live_session_and_blocks_stale_writable_db_open(
     with pytest.raises(FileNotFoundError, match="being deleted"):
         profiles.write_profile_meta(profile_dir, display_name="stale")
     stale_session = {"profile_home": str(profile_dir)}
+    monkeypatch.setitem(srv._sessions, "stale", stale_session)
     with pytest.raises(FileNotFoundError, match="missing or being deleted"):
-        srv._queue_attached_image(stale_session, b"stale", ".png", prefix="stale")
+        srv._queue_attached_image(stale_session, b"stale", ".png", prefix="stale",
+                                  owner=srv._attachment_owner(stale_session, "stale"))
     with pytest.raises(FileNotFoundError, match="missing or being deleted"):
         srv._stage_session_file_attachment(
-            stale_session, raw_path="", data_url="data:text/plain;base64,c3RhbGU=", name="stale.txt")
+            stale_session, raw_path="", data_url="data:text/plain;base64,c3RhbGU=", name="stale.txt",
+            owner=srv._attachment_owner(stale_session, "stale"))
     from hermes_cli import clipboard
 
     monkeypatch.setattr(srv, "_sess_building", lambda _params, _rid: (stale_session, None))
@@ -296,6 +299,7 @@ def test_explicit_recreate_clears_profile_deletion_tombstone(home: Path) -> None
 
 def test_stale_session_incarnation_cannot_write_into_recreated_profile(
     home: Path,
+    monkeypatch,
 ) -> None:
     profile_dir = home / "profiles" / "worker"
     profile_dir.mkdir(parents=True)
@@ -315,6 +319,7 @@ def test_stale_session_incarnation_cannot_write_into_recreated_profile(
     profiles.delete_profile("worker", yes=True)
     profiles.create_profile("worker", no_alias=True, no_skills=True)
 
+    monkeypatch.setitem(srv._sessions, "stale", stale_session)
     new_incarnation = (
         profile_dir.joinpath(".profile-incarnation").read_text(encoding="utf-8").strip()
     )
@@ -329,7 +334,8 @@ def test_stale_session_incarnation_cannot_write_into_recreated_profile(
         )
     assert not replacement_db.exists()
     with pytest.raises(FileNotFoundError, match="incarnation"):
-        srv._queue_attached_image(stale_session, b"stale", ".png", prefix="stale")
+        srv._queue_attached_image(stale_session, b"stale", ".png", prefix="stale",
+                                  owner=srv._attachment_owner(stale_session, "stale"))
     assert stale_session["attached_images"] == []
     images_dir = profile_dir / "images"
     assert not images_dir.exists() or list(images_dir.iterdir()) == []
@@ -346,11 +352,13 @@ def test_stale_session_incarnation_cannot_write_into_recreated_profile(
         "profile_home": str(profile_dir),
         "profile_incarnation": new_incarnation,
     }
+    monkeypatch.setitem(srv._sessions, "current-image", current_session)
     current_image = srv._queue_attached_image(
         current_session,
         b"current",
         ".png",
         prefix="current",
+        owner=srv._attachment_owner(current_session, "current-image"),
     )
     assert current_image.read_bytes() == b"current"
     assert current_session["attached_images"] == [str(current_image)]
@@ -389,20 +397,21 @@ def _assert_attachment_write_holds_profile_lifecycle_lease(
         "profile_incarnation": incarnation,
         "session_key": "attachment-race",
     }
+    monkeypatch.setitem(srv._sessions, "attachment-race", session)
     entered_write = threading.Event()
     release_write = threading.Event()
-    real_write_bytes = Path.write_bytes
+    real_write_temp = srv._write_attachment_temp
     stored: list[Path] = []
     errors: list[BaseException] = []
 
-    def blocking_write_bytes(path: Path, payload: bytes) -> int:
-        if path.parent.name == "attachments" and path.parent.parent == profile_dir:
+    def blocking_write_bytes(path: Path, payload: bytes) -> Path:
+        if path == profile_dir / "attachments":
             entered_write.set()
             if not release_write.wait(timeout=5):
                 raise TimeoutError("attachment write barrier was not released")
-        return real_write_bytes(path, payload)
+        return real_write_temp(path, payload)
 
-    monkeypatch.setattr(Path, "write_bytes", blocking_write_bytes)
+    monkeypatch.setattr(srv, "_write_attachment_temp", blocking_write_bytes)
 
     def attach() -> None:
         try:
@@ -411,6 +420,7 @@ def _assert_attachment_write_holds_profile_lifecycle_lease(
                 raw_path="",
                 data_url="data:text/plain;base64,c2FmZQ==",
                 name="report.txt",
+                owner=srv._attachment_owner(session, "attachment-race"),
             )
             assert uploaded is True
             stored.append(path)

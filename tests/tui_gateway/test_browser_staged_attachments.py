@@ -81,7 +81,7 @@ def attachment_runtime(tmp_path: Path, monkeypatch):
 
 @pytest.mark.parametrize(
     ("source_profile", "target_profile"),
-    [(None, None), ("worker", "worker"), ("foreground", "tile-owner")],
+    [(None, None), ("worker", "worker"), ("foreground", "tile-owner"), ("z", "a")],
 )
 def test_uploaded_file_reaches_the_owning_session_cache_without_retransmission(
     attachment_runtime, source_profile, target_profile
@@ -159,15 +159,15 @@ def test_failed_staged_attach_keeps_source_available_for_retry(attachment_runtim
     runtime = attachment_runtime
     uploaded = runtime.upload("worker")
     target_home = runtime.add_session("worker")
-    write_bytes = Path.write_bytes
+    write_temp = runtime.server._write_attachment_temp
 
     def fail_target(path, data):
-        if path.parent == target_home / "attachments":
+        if path == target_home / "attachments":
             raise PermissionError("temporary target failure")
-        return write_bytes(path, data)
+        return write_temp(path, data)
 
     with monkeypatch.context() as patch:
-        patch.setattr(Path, "write_bytes", fail_target)
+        patch.setattr(runtime.server, "_write_attachment_temp", fail_target)
         failed = runtime.attach(uploaded["staged_upload"])
         assert "temporary target failure" in failed["error"]["message"]
     assert Path(uploaded["path"]).read_bytes() == b"browser payload"

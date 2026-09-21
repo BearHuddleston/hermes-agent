@@ -712,6 +712,10 @@ def _(rid, params: dict) -> dict:
     if err:
         return err
     try:
+        owner = _attachment_owner(session, sid)
+    except LookupError:
+        return _err(rid, 4001, "session not found")
+    try:
         from hermes_cli.clipboard import has_clipboard_image, save_clipboard_image
     except Exception as e:
         return _err(rid, 5027, f"clipboard unavailable: {e}")
@@ -719,8 +723,7 @@ def _(rid, params: dict) -> dict:
     import tempfile
 
     with _sessions_lock:
-        profile_home = session.get("profile_home") or None
-        profile_incarnation = session.get("profile_incarnation") or None
+        _, profile_home, profile_incarnation = owner
         if _profile_home_rejected(
             profile_home,
             profile_incarnation,
@@ -745,24 +748,15 @@ def _(rid, params: dict) -> dict:
                 else "No image found in clipboard"
             )
             return _ok(rid, {"attached": False, "message": msg})
-        img_bytes = staged_path.read_bytes()
+        try:
+            img_bytes = _read_attachment_bytes(staged_path, _ATTACHMENT_MAX_BYTES)
+        except ValueError as exc:
+            return _err(rid, 4018, str(exc))
 
     try:
-        # Retain the captured identity even if the session was rebound while
-        # extraction ran. The shared publisher uses these same reentrant locks.
-        with _profile_home_lease(profile_home, profile_incarnation):
-            with _sessions_lock:
-                if (
-                    _sessions.get(sid) is not session
-                    or session.get("_closing")
-                    or session.get("_finalized")
-                ):
-                    return _err(rid, 4001, "session not found")
-                if not _session_profile_identity_matches(
-                    session, profile_home, profile_incarnation,
-                ):
-                    return _err(rid, 4041, "profile incarnation changed during clipboard paste")
-                img_path = _queue_attached_image(session, img_bytes, ".png", prefix="clip")
+        img_path = _queue_attached_image(session, img_bytes, ".png", prefix="clip", owner=owner)
+    except LookupError:
+        return _err(rid, 4001, "session not found")
     except FileNotFoundError:
         return _err(rid, 4041, "profile incarnation changed during clipboard paste")
 
@@ -774,6 +768,10 @@ def _(rid, params: dict) -> dict:
     session, err = _sess_building(params, rid)
     if err:
         return err
+    try:
+        owner = _attachment_owner(session, params.get("session_id") or "")
+    except LookupError:
+        return _err(rid, 4001, "session not found")
     raw = str(params.get("path", "") or "").strip()
     if not raw:
         return _err(rid, 4015, "path required")
@@ -789,7 +787,9 @@ def _(rid, params: dict) -> dict:
                 return _err(rid, 4016, f"image not found: {path_token}")
         if image_path.suffix.lower() not in _IMAGE_EXTENSIONS:
             return _err(rid, 4016, f"unsupported image: {image_path.name}")
-        session.setdefault("attached_images", []).append(str(image_path))
+        with _profile_home_lease(owner[1], owner[2]), _sessions_lock:
+            _check_attachment_owner(session, owner)
+            session.setdefault("attached_images", []).append(str(image_path))
         return _ok(rid, _attached_image_result(
             session, image_path,
             remainder=remainder, text=remainder or f"[User attached image: {image_path.name}]"))
@@ -804,6 +804,10 @@ def _(rid, params: dict) -> dict:
     session, err = _sess_building(params, rid)
     if err:
         return err
+    try:
+        owner = _attachment_owner(session, params.get("session_id") or "")
+    except LookupError:
+        return _err(rid, 4001, "session not found")
     raw_b64 = str(params.get("content_base64") or params.get("data") or "").strip()
     if not raw_b64:
         return _err(rid, 4015, "content_base64 required")
@@ -820,7 +824,7 @@ def _(rid, params: dict) -> dict:
     if ext not in _allowed_image_extensions():
         return _err(rid, 4016, f"unsupported image extension: {ext}")
     try:
-        img_path = _queue_attached_image(session, img_bytes, ext, prefix="upload")
+        img_path = _queue_attached_image(session, img_bytes, ext, prefix="upload", owner=owner)
     except Exception as e:
         return _err(rid, 5027, f"write failed: {e}")
     return _ok(rid, _attached_image_result(
@@ -853,7 +857,13 @@ def _pdf_attach_source(rid, params, td_path, raw_path, raw_b64):
     if pdf.stat().st_size > _PDF_ATTACH_MAX_BYTES:
         mb = _PDF_ATTACH_MAX_BYTES // (1024 * 1024)
         return None, None, _err(rid, 4018, f"PDF too large; cap is {mb} MB")
-    return pdf, pdf.name, None
+    try:
+        payload = _read_attachment_bytes(pdf, _PDF_ATTACH_MAX_BYTES)
+    except ValueError as exc:
+        return None, None, _err(rid, 4018, f"PDF too large: {exc}")
+    pdf_path = td_path / "input.pdf"
+    pdf_path.write_bytes(payload)
+    return pdf_path, pdf.name, None
 
 
 def _pdf_page_range(rid, params):
@@ -885,6 +895,10 @@ def _(rid, params: dict) -> dict:
     session, err = _sess_building(params, rid)
     if err:
         return err
+    try:
+        owner = _attachment_owner(session, params.get("session_id") or "")
+    except LookupError:
+        return _err(rid, 4001, "session not found")
     if shutil.which("pdftoppm") is None:
         return _err(rid, 5028, "pdftoppm not installed (poppler-utils package required)")
     raw_path = str(params.get("path", "") or "").strip()
@@ -924,8 +938,16 @@ def _(rid, params: dict) -> dict:
                 page_int = int(page_num)
             except ValueError:
                 page_int = first_page + len(attached_pages)
-            dst = _queue_attached_image(
-                session, src.read_bytes(), ".png", prefix=f"pdf_p{page_num}")
+            try:
+                dst = _queue_attached_image(
+                    session, _read_attachment_bytes(src, _ATTACHMENT_MAX_BYTES), ".png",
+                    prefix=f"pdf_p{page_num}", owner=owner)
+            except LookupError:
+                return _err(rid, 4001, "session not found")
+            except FileNotFoundError as exc:
+                return _err(rid, 4041, str(exc))
+            except ValueError as exc:
+                return _err(rid, 4018, str(exc))
             attached_pages.append({"path": str(dst), "page": page_int, **_image_meta(dst)})
         return _ok(rid, {
             "attached": True, "filename": display_name, "pages_attached": len(attached_pages),
@@ -940,6 +962,10 @@ def _(rid, params: dict) -> dict:
     session, err = _sess_building(params, rid)
     if err:
         return err
+    try:
+        owner = _attachment_owner(session, params.get("session_id") or "")
+    except LookupError:
+        return _err(rid, 4001, "session not found")
     raw, data_url, name = (
         str(params.get(k, "") or "").strip() for k in ("path", "data_url", "name"))
     staged_upload = params.get("staged_upload")
@@ -947,10 +973,10 @@ def _(rid, params: dict) -> dict:
         return _err(rid, 4015, "path or data_url required")
     try:
         if staged_upload is not None:
-            stored_path, uploaded = _stage_browser_file_attachment(session, staged_upload, name)
+            stored_path, uploaded = _stage_browser_file_attachment(session, staged_upload, name, owner=owner)
         else:
             stored_path, uploaded = _stage_session_file_attachment(
-                session, raw_path=raw, data_url=data_url, name=name)
+                session, raw_path=raw, data_url=data_url, name=name, owner=owner)
         ref_path = _attachment_ref_path(session, stored_path)
         return _ok(rid, {
             "attached": True, "name": stored_path.name, "path": str(stored_path),
