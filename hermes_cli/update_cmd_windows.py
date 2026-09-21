@@ -321,15 +321,15 @@ def _venv_launcher_ancestors(pids: list[int]) -> list[int]:
 def _venv_holder_kind(cmdline: str) -> str:
     """Machine-readable class of one venv holder for ``--list-venv-holders``.
 
-    ``gateway`` (the pausable gateway matcher), ``backend`` (``serve``/``dashboard`` -- the Desktop
-    app's backend shape), ``hermes:<subcommand>`` for any other Hermes entry, else ``python``.
+    ``gateway`` (the pausable gateway matcher), ``backend`` (all web-server purposes),
+    ``hermes:<subcommand>`` for any other Hermes entry, else ``python``.
     Derived from the same classifiers the refusal path uses so automation stops exactly what the
     guard would refuse on."""
     from hermes_cli._scan_venv_blockers import _is_pausable_gateway
     if _is_pausable_gateway(cmdline):
         return "gateway"
     subcommand = _hermes_holder_subcommand(cmdline)
-    if subcommand in _BACKEND_PURPOSES:
+    if subcommand in _WEB_SERVER_PURPOSES:
         return "backend"
     if subcommand:
         return f"hermes:{subcommand}"
