@@ -11,6 +11,8 @@ import shutil
 import subprocess
 import sys
 
+from hermes_cli.update_inventory import _SERVE_KINDS
+
 logger = logging.getLogger(__name__)
 
 
@@ -20,7 +22,7 @@ def _serve_unit_recovery_available() -> bool:
 
 
 def _surviving_pre_update_serve_runtimes(plan) -> list[dict]:
-    """Pre-update serve/dashboard runtimes that are STILL the same process — i.e. live on the
+    """Pre-update serve/dashboard/webapp runtimes that are STILL the same process — i.e. live on the
     pre-update code generation. Identity is the incarnation ``(pid, create_time)``, never the PID
     alone: ``ledger_entries()`` prunes dead entries, but a correctly restarted serve can come back
     on the same number. Fail closed on missing evidence (unreadable ledger, no incarnation on either
@@ -28,7 +30,7 @@ def _surviving_pre_update_serve_runtimes(plan) -> list[dict]:
     planned: dict[int, dict] = {}
     try:
         for runtime in getattr(plan, "runtimes", ()) or ():
-            if getattr(runtime, "kind", None) not in ("serve", "dashboard"):
+            if getattr(runtime, "kind", None) not in _SERVE_KINDS:
                 continue
             pid = getattr(runtime, "pid", None)
             if not isinstance(pid, int) or pid <= 0:
@@ -49,7 +51,7 @@ def _surviving_pre_update_serve_runtimes(plan) -> list[dict]:
         live: dict[int, float | None] = {
             entry["pid"]: _numeric(entry.get("create_time"))
             for entry in ledger_entries()
-            if entry.get("purpose") in ("serve", "dashboard") and isinstance(entry.get("pid"), int)}
+            if entry.get("purpose") in _SERVE_KINDS and isinstance(entry.get("pid"), int)}
     except Exception as exc:
         logger.debug("Serve/dashboard survivor probe failed: %s", exc)
         live = None
@@ -203,6 +205,13 @@ def _recover_gateway_restart_after_abort(
         return _all_failed()
 
     verified, relaunch_attempted, failed = sorted(verified), sorted(relaunch_attempted), sorted(failed)
+    covered_map = recovery_result.get("covered")
+    for owner, others in (covered_map if isinstance(covered_map, dict) else {}).items():
+        if isinstance(owner, str) and isinstance(others, list) and others:
+            print(
+                f"  • One host gateway serves {owner} and {', '.join(str(o) for o in others)} — "
+                f"restarted once through {owner}; that restart is their outcome."
+            )
     for names, text in (
         (verified, "  ✓ Restarted supervised gateway(s) in a fresh process (systemd-verified active): "),
         (relaunch_attempted, "  ⚠ Relaunch attempted in a fresh process but not"

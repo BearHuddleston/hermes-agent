@@ -133,7 +133,10 @@ describe('useComposerDraft — attachment scope stays coherent with the committe
     })
 
     expect(mainComposerScope.$attachments.get()).toEqual([preSessionAttachment])
-    expect(takeSessionDraft('session-created')).toEqual({ attachments: [preSessionAttachment], text: 'do not lose this draft' })
+    expect(takeSessionDraft('session-created')).toEqual({
+      attachments: [preSessionAttachment],
+      text: 'do not lose this draft'
+    })
     expect(takeSessionDraft(null)).toEqual({ attachments: [], text: '' })
     clearSessionDraft('session-created')
   })
@@ -163,7 +166,9 @@ describe('useComposerDraft — attachment scope stays coherent with the committe
     // and does not re-publish the notice the user already dismissed.
     dismissRestoredDraftNotice()
     act(() => {
-      rerender(<ProbeHarness activeQueueSessionKey="session-A" onLayoutSnapshot={() => undefined} sessionId="session-A" />)
+      rerender(
+        <ProbeHarness activeQueueSessionKey="session-A" onLayoutSnapshot={() => undefined} sessionId="session-A" />
+      )
     })
     act(() => {
       rerender(<ProbeHarness activeQueueSessionKey={null} onLayoutSnapshot={() => undefined} sessionId="" />)
@@ -182,7 +187,9 @@ describe('useComposerDraft — attachment scope stays coherent with the committe
     )
 
     act(() => {
-      rerender(<ProbeHarness activeQueueSessionKey="session-A" onLayoutSnapshot={() => undefined} sessionId="session-A" />)
+      rerender(
+        <ProbeHarness activeQueueSessionKey="session-A" onLayoutSnapshot={() => undefined} sessionId="session-A" />
+      )
     })
 
     expect(takeSessionDraft('session-A')).toEqual({ attachments: [], text: '' })
@@ -572,7 +579,9 @@ describe('useComposerDraft — a hidden keep-alive tab never auto-focuses its co
     act(() => {
       lateRestore('rejected draft', [])
 
-      if (hidden) {lateFocus()}
+      if (hidden) {
+        lateFocus()
+      }
     })
 
     expect(composerPlainText(draft.editorRef.current!)).toBe('rejected draft')

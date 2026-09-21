@@ -252,16 +252,17 @@ def test_gateway_runtimes_are_not_counted_as_serve_survivors(monkeypatch):
     )
 
 
-def test_dashboard_survivors_count_too(monkeypatch):
+@pytest.mark.parametrize("kind", ["dashboard", "webapp"])
+def test_dashboard_survivors_count_too(monkeypatch, kind):
     monkeypatch.setattr(
         _identity_module(),
         "ledger_entries",
-        lambda *a, **k: [{"pid": 77, "purpose": "dashboard"}],
+        lambda *a, **k: [{"pid": 77, "purpose": kind}],
     )
     rows = update_cmd._surviving_pre_update_serve_runtimes(
-        _plan(_runtime("dashboard", "default", "manual-serve", 77))
+        _plan(_runtime(kind, "default", "manual-serve", 77))
     )
-    assert [row["kind"] for row in rows] == ["dashboard"]
+    assert [row["kind"] for row in rows] == [kind]
 
 
 def test_unreadable_ledger_fails_closed(monkeypatch):
