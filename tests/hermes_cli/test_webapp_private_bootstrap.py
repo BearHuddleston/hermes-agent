@@ -15,8 +15,11 @@ from starlette.websockets import WebSocketDisconnect
 ])
 def test_bootstrap_token_visibility(monkeypatch, tmp_path, surface, gated, headless):
     from hermes_cli import web_server as server
+    from hermes_cli import web_server_profiles
     from hermes_cli.web_server_dashboard import mount_spa
 
+    serving_profile = "profile</script>"
+    monkeypatch.setattr(web_server_profiles, "serving_profile_name", lambda: serving_profile)
     (tmp_path / "index.html").write_text("<html><head></head><body>Webapp</body></html>")
     application = FastAPI()
     application.state.ui_surface = surface
@@ -31,6 +34,9 @@ def test_bootstrap_token_visibility(monkeypatch, tmp_path, surface, gated, headl
         should_inject = not gated and surface != "webapp" and path != "/index.html" and (not headless or path == "/")
         assert (server._SESSION_TOKEN in response.text) is should_inject
         assert server._SESSION_TOKEN not in str(response.headers)
+        if not headless and (path != "/index.html" or surface == "webapp"):
+            profile_js = json.dumps(serving_profile).replace("</", "<\\/")
+            assert f"window.__HERMES_DASHBOARD_PROFILE__={profile_js};" in response.text
         if surface == "webapp" and not headless:
             assert 'window.__HERMES_UI_SURFACE__="webapp"' in response.text
 
