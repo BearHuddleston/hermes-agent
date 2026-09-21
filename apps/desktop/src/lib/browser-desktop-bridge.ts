@@ -10,6 +10,7 @@ import type {
 } from '@/global'
 import { translateNow } from '@/i18n'
 import { bytesToBase64 } from '@/lib/base64'
+import { fetchBrowserImage } from '@/lib/browser-image-download'
 import { consumeWebappSession, watchWebappLaunchLink, WEBAPP_LAUNCH_REQUIRED } from '@/lib/browser-launch-session'
 import { createBrowserProfileBridge } from '@/lib/browser-profile'
 import { createBrowserTerminal } from '@/lib/browser-terminal'
@@ -650,10 +651,7 @@ export function installBrowserDesktopBridge(): boolean {
     // Cross-origin anchors ignore download and navigate the current tab.
     // Fetch without Hermes credentials; CORS denial must not fall back to navigation.
     if (target.origin !== window.location.origin && !['blob:', 'data:'].includes(target.protocol)) {
-      const response = await fetch(target, { credentials: 'omit', mode: 'cors' })
-
-      if (!response.ok) {throw new Error(`Image download failed (${response.status})`)}
-      downloadHref = URL.createObjectURL(await response.blob())
+      downloadHref = URL.createObjectURL(await fetchBrowserImage(target))
       transientObjectUrls.add(downloadHref)
       window.setTimeout(() => {
         URL.revokeObjectURL(downloadHref)

@@ -95,7 +95,12 @@ DevTools and trusted-input preview automation are not exposed through that ifram
 
 Host files download through your browser's download manager. Supported audio
 and video play inline with seeking, using the server's existing file-access
-rules and size limit.
+rules and size limit. **Save Image** for cross-origin URLs requires CORS and
+fetches without credentials, with a **25 MiB** streamed byte ceiling and a
+**30-second** deadline covering the request and body. A failed download reports
+an error without navigating away; open the image in a separate tab to save it
+instead. These limits do not apply to browser-managed same-origin file downloads,
+inline media streams, blob/data URLs, or native Electron downloads.
 
 ### Terminal continuity in Webapp
 
