@@ -1407,6 +1407,13 @@ No background `auto-title` thread starts and no automatic title-model request is
 explicit repair command `hermes sessions retitle-skills` still calls the model. `enabled: false`
 still disables both stages.
 
+On a `custom` main provider (llama.cpp, Ollama, vLLM, LM Studio and other self-hosted
+OpenAI-compatible servers) the title model call is sent **after** the turn's reply has
+arrived, not concurrently with it, unless `auxiliary.title_generation` is pinned to another
+provider or `base_url`. A single-slot local server that receives the `json_schema` title
+request while decoding the reply can otherwise answer the reply with `{"title": ...}`,
+which is then stored and replayed as the assistant's turn.
+
 In Hermes Desktop, a plain-text paste over 3,000 characters becomes a generated `.txt`
 attachment. The first ~1,000 characters of that paste are handed to the title stages as a
 title-only hint (the agent turn still sees only the attachment reference), so a "summarize
@@ -1909,7 +1916,7 @@ Model ids contain dots (`claude-opus-4.5`, `qwen3.6:27b`), which `hermes config 
 :::
 
 :::note Local OpenAI-compatible endpoints
-A custom `base_url` (`http://localhost:11434/v1`, a vLLM, SGLang or router endpoint) receives the resolved effort — `agent.reasoning_effort` or the matching per-model override — as the standard top-level `reasoning_effort` request field, clamped to the values the OpenAI-compatible wire accepts (`none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`). The nested `reasoning` object is reserved for endpoints known to accept it (Nous Portal, OpenRouter reasoning-capable models, GitHub Models) because arbitrary servers reject unknown fields with HTTP 400. If your server reads its thinking budget from a different field (Ollama's `think`, vLLM's `chat_template_kwargs`, a router-specific key), set it under the custom provider's [`extra_body`](../integrations/providers.md#named-custom-providers), which is merged into every request routed there.
+A custom `base_url` (`http://localhost:11434/v1`, a vLLM, SGLang or router endpoint) receives the resolved effort — `agent.reasoning_effort` or the matching per-model override — as the standard top-level `reasoning_effort` request field, clamped to the values the OpenAI-compatible wire accepts (`none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`). An unset effort is sent as `medium` here too, the same default the Nous Portal and OpenRouter routes apply — leaving the field off would hand the choice to the endpoint, and a hosted reasoning model's own default can be its ceiling (kimi-k3 defaults to `max`: about 3x the reasoning tokens and latency of `medium`). The field stays off for a model the catalog or `model_overrides` mark `supports_reasoning: false`, for a local Ollama model pulled without the `thinking` capability, and for the rest of a session after the endpoint answered `400` to the field. The nested `reasoning` object is reserved for endpoints known to accept it (Nous Portal, OpenRouter reasoning-capable models, GitHub Models) because arbitrary servers reject unknown fields with HTTP 400. If your server reads its thinking budget from a different field (Ollama's `think`, vLLM's `chat_template_kwargs`, a router-specific key), set it under the custom provider's [`extra_body`](../integrations/providers.md#named-custom-providers), which is merged into every request routed there.
 :::
 
 **Resolution priority:**
@@ -2633,6 +2640,8 @@ human_delay:
   min_ms: 800                  # Minimum delay (custom mode)
   max_ms: 2500                 # Maximum delay (custom mode)
 ```
+
+Each profile's own `config.yaml` is read, so multiplexed profiles keep independent pacing; there is no process-environment override. In `custom` mode a non-integer, negative or inverted `min_ms`/`max_ms` pair is rejected with a warning naming the key and the `natural` range (800–2500 ms) is used instead.
 
 ## Code Execution
 

@@ -35,13 +35,13 @@ from hermes_cli.profile_lifecycle import (
     verify_profile_resources_released,
 )
 from hermes_constants import (
-    LOCAL_RUNTIME_ROOT_DIRS, named_profile_has_identity,
+    LOCAL_RUNTIME_ROOT_DIRS, PROFILE_ID_RE, named_profile_has_identity,
     named_profile_is_deleted, named_profile_is_live,
 )
 
 logger = logging.getLogger(__name__)
 
-_PROFILE_ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
+_PROFILE_ID_RE = PROFILE_ID_RE  # legacy alias; hermes_constants.PROFILE_ID_RE is canonical
 
 # Directories bootstrapped inside every new profile. ``home`` is the back-compat/Docker
 # HOME for tool subprocesses (host subprocesses keep the real HOME so CLI credentials

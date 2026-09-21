@@ -15,7 +15,7 @@ from pathlib import Path
 import pytest
 
 from agent.lsp.client import LSPClient
-from agent.lsp.protocol import LSPProtocolError
+from agent.lsp.protocol import LSPProtocolError, LSPRequestError
 
 
 MOCK_SERVER = str(Path(__file__).parent / "_mock_lsp_server.py")
@@ -69,6 +69,56 @@ async def test_client_receives_published_errors(tmp_path: Path):
         assert d["code"] == "MOCK001"
         assert d["source"] == "mock-lsp"
         assert "synthetic error" in d["message"]
+    finally:
+        await client.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_aborted_start_reports_exit_status_and_stderr_tail(tmp_path: Path):
+    """A server that dies mid-initialize must not fail as an opaque protocol error.
+
+    A Node language server that exhausts its heap aborts (SIGABRT) before answering
+    ``initialize``; the failure the caller logs should carry the exit status and the
+    stderr trace instead of a bare JSON-RPC error text.
+    """
+    client = _client(tmp_path, "oom_abort")
+
+    with pytest.raises(LSPProtocolError) as excinfo:
+        await client.start()
+
+    assert client.state == "error"
+    assert client._proc is None
+    message = str(excinfo.value)
+    # negative returncode rendered as a signal, not a bare code
+    assert "signal" in message
+    # stderr tail reached the failure report
+    assert "JavaScript heap out of memory" in message
+    await client.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_initialize_error_response_keeps_its_exception_type(tmp_path: Path):
+    """A JSON-RPC error to ``initialize`` must surface as the LSPRequestError the server sent,
+    with the exit details appended -- not as a TypeError from re-instantiating an exception
+    class whose constructor is not ``(message)``."""
+    client = _client(tmp_path, "init_error")
+
+    with pytest.raises(LSPRequestError) as excinfo:
+        await client.start()
+
+    assert excinfo.value.code == -32602
+    message = str(excinfo.value)
+    assert "bad init" in message
+    assert "server exited" in message
+    await client.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_failure_details_empty_for_live_server(tmp_path: Path):
+    client = _client(tmp_path, "clean")
+    await client.start()
+    try:
+        assert client.failure_details() == ""
     finally:
         await client.shutdown()
 
