@@ -1329,6 +1329,7 @@ def _logged_in_oauth_active_provider(*, skip_free_tier: bool = False) -> Optiona
 def _config_model_provider() -> Tuple[Any, Optional[str]]:
     """``(model_cfg, provider)`` from config.yaml when ``model.provider`` names a registry provider
     or a custom OpenAI-compatible endpoint (``custom``, ``custom:<name>``, ``vllm``/``ollama``/...).
+    A ``model.provider: openrouter`` pin and a bare ``providers:`` entry name are explicit intent too.
 
     The normal chat/gateway path resolves config.provider upstream in resolve_requested_provider();
     this is the safety net for the direct ``resolve_provider("auto")`` callers. A configured custom
@@ -1344,8 +1345,16 @@ def _config_model_provider() -> Tuple[Any, Optional[str]]:
         provider = _plugin_aliases().get(provider, provider)
         if provider == "custom" or provider.startswith("custom:"):
             return model_cfg, "custom"
-        if provider in PROVIDER_REGISTRY:
+        # openrouter is absent from PROVIDER_REGISTRY on purpose, so it needs its own rung (#109397);
+        # a non-openrouter base_url under it is a deliberate mirror (#10622), not a contradiction.
+        if provider == "openrouter" or provider in PROVIDER_REGISTRY:
             return model_cfg, provider
+        # Bare ``providers:`` name (the ``custom:<name>`` intent spelled without the prefix); reuse the
+        # runtime's own lookup so disabled / endpoint-less entries stay excluded.
+        if provider:
+            from hermes_cli.runtime_provider_custom import has_named_custom_provider
+            if has_named_custom_provider(provider):
+                return model_cfg, "custom"
         # No provider pin but a base_url the bare-custom runtime rung would honour (a loopback
         # llama.cpp/vLLM/ollama server) — same explicit intent, spelled by URL.
         base_url = str(model_cfg.get("base_url") or "").strip() if isinstance(model_cfg, dict) else ""

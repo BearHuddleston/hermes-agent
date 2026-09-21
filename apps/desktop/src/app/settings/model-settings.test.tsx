@@ -3,6 +3,8 @@ import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-libra
 import { MemoryRouter } from 'react-router'
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import type * as ConfigApi from '@/api/config'
+
 import { ModelSettings } from './model-settings'
 
 // Radix Select calls scrollIntoView on its items when the content opens; jsdom
@@ -29,7 +31,10 @@ const startManualOnboarding = vi.fn()
 const startManualProviderOAuth = vi.fn()
 let profileSwitchHandler: (() => void) | null = null
 
-vi.mock('@/hermes', () => ({
+// Keep the real read-origin helpers (WeakMap peek/bind) live: the shared
+// config hook reaches them through the barrel, and a bare mock would throw.
+vi.mock('@/hermes', async () => ({
+  ...(await vi.importActual<typeof ConfigApi>('@/api/config')),
   getGlobalModelInfo: (profile?: null | string) => getGlobalModelInfo(profile),
   getGlobalModelOptions: (opts?: unknown, profile?: null | string) => getGlobalModelOptions(opts, profile),
   getAuxiliaryModels: (profile?: null | string) => getAuxiliaryModels(profile),
