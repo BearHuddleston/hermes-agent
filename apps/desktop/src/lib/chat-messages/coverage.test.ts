@@ -50,3 +50,25 @@ it('does not claim coverage of another call, unseen content, live work or richer
     expect(durableToolRowCoversLiveMessage([stored], row)).toBe(false)
   }
 })
+
+it.each(['isError', 'metadata'] as const)('does not discard a tool failure carried only by %s', kind => {
+  const raw: ChatMessagePart = { ...tool, result: 'partial output', toolResultMetadata: undefined }
+
+  const failed: ChatMessagePart =
+    kind === 'isError'
+      ? { ...raw, isError: true }
+      : { ...raw, toolResultMetadata: { error: true, message: 'process exited 1' } }
+
+  const durable = { ...stored, parts: [text('Earlier progress.'), raw, text('Finished.')] }
+  const local = { ...live, parts: [failed, text('Finished.')] }
+  expect(durableToolRowCoversLiveMessage([durable], local)).toBe(false)
+})
+
+it('does not require display-only hints that hydrated history never carries', () => {
+  const withHints: ChatMessagePart = {
+    ...tool,
+    toolResultMetadata: { inline_diff: '+changed', summary: 'Finished write_file in 0.1s', duration_s: 0.1 }
+  }
+
+  expect(durableToolRowCoversLiveMessage([stored], { ...live, parts: [withHints, text('Finished.')] })).toBe(true)
+})

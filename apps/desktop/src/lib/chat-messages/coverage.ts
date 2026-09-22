@@ -54,6 +54,11 @@ export function withoutCoveredAssistantPrefix(stored: ChatMessage[], local: Chat
   return anchored ? remaining : local
 }
 
+/** Envelope fields that can be a tool's only failure or edit evidence. Hydrated
+ * tool parts never carry display hints such as `summary`/`duration_s`, so
+ * requiring those would make every live completion permanently "uncovered". */
+const COVERED_TOOL_METADATA = ['error', 'message', 'inline_diff'] as const
+
 /** A sealed live bubble can start at a tool inside a folded durable bubble.
  * Match that call occurrence, not the bubble's role ordinal or prose alone.
  * Missing durable result metadata is not coverage of a richer local tool. */
@@ -91,8 +96,12 @@ export function durableToolRowCoversLiveMessage(stored: ChatMessage[], local: Ch
           part.type !== 'tool-call' ||
           (durable?.type === 'tool-call' &&
             (part.result === undefined || JSON.stringify(part.result) === JSON.stringify(durable.result)) &&
-            (!part.toolResultMetadata?.inline_diff ||
-              part.toolResultMetadata.inline_diff === durable.toolResultMetadata?.inline_diff))
+            (!part.isError || durable.isError === true) &&
+            COVERED_TOOL_METADATA.every(
+              key =>
+                part.toolResultMetadata?.[key] === undefined ||
+                JSON.stringify(part.toolResultMetadata[key]) === JSON.stringify(durable.toolResultMetadata?.[key])
+            ))
         )
       })
     )
