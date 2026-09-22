@@ -180,3 +180,18 @@ def test_managed_recreation_requires_operator_owned_directories(named_home, monk
     with pytest.raises(HomeInitializationError, match="Required directory does not exist"):
         config.ensure_hermes_home()
     assert not (named_home / "cron").exists()
+
+
+@pytest.mark.parametrize("reader", [config.load_config, config.load_config_readonly])
+def test_cached_config_cannot_bypass_named_profile_retirement(named_home, reader):
+    from hermes_cli.profile_lifecycle import mark_profile_deleting
+
+    write_fresh_profile_incarnation(named_home)
+    (named_home / "config.yaml").write_text("model:\n  provider: auto\n", encoding="utf-8")
+    reader()
+    # Retirement fences the still-present files before deleting them; the YAML
+    # signature remains a cache hit, but this generation is no longer usable.
+    mark_profile_deleting(named_home)
+
+    with pytest.raises(FileNotFoundError, match="missing or being deleted"):
+        reader()

@@ -45,7 +45,14 @@ def _examples():
         # Quoting it in ordinary prose is human input, despite the UI prefix.
         {"role": "user", "content": f"{TODO_INJECTION_HEADER} explain this phrase"},
         {"role": "user", "content": "repeat this"},
-        {"role": "assistant", "content": "second finished answer"},
+        {
+            "role": "assistant", "content": "second finished answer",
+            "tool_calls": [{
+                "id": "search-call", "type": "function",
+                "function": {"name": "tool_search", "arguments": json.dumps({"queries": ["repository search"]})},
+            }],
+        },
+        {"role": "tool", "tool_call_id": "search-call", "content": "[]"},
     ]
 
 
@@ -74,6 +81,7 @@ def test_db_rest_and_rpc_keep_canonical_provenance_without_changing_history(
             db.append_message(
                 key, message["role"], message["content"], timestamp=float(index),
                 display_kind=message.get("display_kind"),
+                tool_calls=message.get("tool_calls"), tool_call_id=message.get("tool_call_id"),
             )
         history = db.get_messages_as_conversation(key, include_row_ids=True)
         before_history = copy.deepcopy(history)
@@ -121,6 +129,13 @@ def test_db_rest_and_rpc_keep_canonical_provenance_without_changing_history(
         assert carrier["display_content"] == "REAL ASK"
         assert carrier["user_originated"] is True
         assert carrier["content"] == source[6]["content"]
+
+        rest_call = next(row for row in rest_rows if row.get("tool_calls"))
+        rpc_tool = next(row for row in rpc_rows if row["role"] == "tool")
+        labels = rest_call["tool_call_labels"]["search-call"]
+        assert labels == rpc_tool["labels"]
+        assert labels[0]["name"] == "tool_search"
+        assert labels[0]["action"] == "repository search"
 
         assert source == original_source
         assert history == before_history

@@ -1,4 +1,5 @@
 """Session-only tools ingress and rebuild failure preserve profile isolation."""
+import json
 import threading
 from types import SimpleNamespace
 
@@ -8,6 +9,7 @@ import yaml
 
 @pytest.mark.parametrize("explicit_profile", [None, "default"])
 def test_tools_configure_uses_live_session_profile(tmp_path, monkeypatch, explicit_profile):
+    from hermes_cli.agent_plugins import MCP_SCHEMA_V1, PLUGIN_SCHEMA_V1
     from tui_gateway import server
     from hermes_constants import get_hermes_home
 
@@ -16,10 +18,20 @@ def test_tools_configure_uses_live_session_profile(tmp_path, monkeypatch, explic
     profile.mkdir(parents=True)
     monkeypatch.setenv("HERMES_HOME", str(home))
     monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path)
+    # Discovery activates multiplexing, whose launch scope uses this boot snapshot.
+    monkeypatch.setattr(server, "_hermes_home", str(home))
     config = {"platform_toolsets": {"cli": ["terminal", "web"]}}
     for path in (home, profile):
         (path / "config.yaml").write_text(yaml.safe_dump(config))
+    plugin = profile / "plugins" / "portable"
+    plugin.mkdir(parents=True)
+    (plugin / "plugin.json").write_text(json.dumps({"$schema": PLUGIN_SCHEMA_V1, "name": "portable.test"}))
+    (plugin / "mcp.json").write_text(json.dumps({
+        "$schema": MCP_SCHEMA_V1, "mcpServers": {"worker": {"type": "stdio", "command": "python"}},
+    }))
+    (profile / "config.yaml").write_text(yaml.safe_dump({**config, "plugins": {"enabled": ["portable.test"]}}))
     launch_before = (home / "config.yaml").read_bytes()
+    profile_before = (profile / "config.yaml").read_bytes()
     seen = []
     monkeypatch.setattr(server, "_reset_session_agent", lambda *_: seen.append(get_hermes_home()) or {})
     monkeypatch.setitem(server._sessions, "profile-tools", {
@@ -29,6 +41,13 @@ def test_tools_configure_uses_live_session_profile(tmp_path, monkeypatch, explic
     params = {"session_id": "profile-tools", "action": "disable", "names": ["terminal"]}
     if explicit_profile is not None:
         params["profile"] = explicit_profile
+    listed = server._methods["mcp.servers.list"](0, {"profile": "worker"})
+    plugin_server = next(row for row in listed["result"]["servers"] if row["plugin"] == "portable.test")
+    refused = server._methods["tools.configure"](0, {**params, "names": [f"{plugin_server['name']}:*"]})
+    assert refused["error"]["code"] == 4090
+    assert (profile / "config.yaml").read_bytes() == profile_before
+    assert (home / "config.yaml").read_bytes() == launch_before
+    assert not seen
     response = server._methods["tools.configure"](1, params)
     assert "error" not in response
     assert (home / "config.yaml").read_bytes() == launch_before

@@ -93,14 +93,14 @@ def test_credential_mirror_rewrite_cannot_recreate_profile_deleted_before_commit
         encoding="utf-8",
     )
     token = set_hermes_home_override(profile_dir)
-    real_atomic_write = utils.atomic_yaml_write
+    real_atomic_write = utils.atomic_roundtrip_yaml_save
 
     def delete_before_commit(path, data, **kwargs):
         profile_lifecycle.mark_profile_deleting(profile_dir)
         shutil.rmtree(profile_dir)
         return real_atomic_write(path, data, **kwargs)
 
-    monkeypatch.setattr(utils, "atomic_yaml_write", delete_before_commit)
+    monkeypatch.setattr(utils, "atomic_roundtrip_yaml_save", delete_before_commit)
     try:
         with pytest.raises(FileNotFoundError):
             credential_lifecycle._scrub_config_yaml_mirrors(

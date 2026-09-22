@@ -334,3 +334,32 @@ it('does not let an earlier stale pending assistant take ownership from the curr
   expect(recovered.streamId).not.toBe(stale.id)
   expect(textRows(recovered.messages, 'new partial answer')[0].pending).toBe(true)
 })
+
+it('keeps an idle recovered runtime journal until actual durable history covers it', () => {
+  const live = appendLiveSessionProjection(oldHistory(), snapshot()).map(message =>
+    message.runtimeTurnStartedAt === 10 ? { ...message, id: 'hydrated-runtime-row' } : message
+  )
+
+  record(live)
+
+  const recovered = recoverInFlightTurnJournal('stored', oldHistory())
+  expect(textRows(recovered.messages, 'new partial answer')[0]).toMatchObject({ pending: false, recovered: true })
+  persistInFlightTurnState({
+    storedSessionId: 'stored', messages: recovered.messages, streamId: null,
+    busy: false, awaitingResponse: false, turnStartedAt: null
+  })
+  vi.advanceTimersByTime(400)
+
+  const repeated = recoverInFlightTurnJournal('stored', recovered.messages)
+  expect(repeated.caughtUp).toBe(false)
+  expect(textRows(repeated.messages, 'new partial answer')).toHaveLength(1)
+  expect(readInFlightTurnJournal('stored')).not.toBeNull()
+
+  const committed = [
+    ...oldHistory(),
+    ...toChatMessages([{ role: 'assistant', content: 'new partial answer', timestamp: 12 }])
+  ]
+
+  expect(recoverInFlightTurnJournal('stored', committed).caughtUp).toBe(true)
+  expect(readInFlightTurnJournal('stored')).toBeNull()
+})
