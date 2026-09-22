@@ -34,6 +34,8 @@ interface ModelPickerDialogProps {
   onSelect: (selection: { provider: string; model: string }) => void
   ownerConnectionId?: null | string
   profile?: string
+  /** Desktop route profile for provider setup; `profile` may be the backend-side target. */
+  setupProfile?: string
   request?: <T>(method: string, params?: Record<string, unknown>) => Promise<T>
   /**
    * Optional class for DialogContent. Use it to lift the picker onto a higher
@@ -55,6 +57,7 @@ export function ModelPickerDialog({
   ownerConnectionId,
   profile = 'default',
   request,
+  setupProfile,
   contentClassName
 }: ModelPickerDialogProps) {
   const { t } = useI18n()
@@ -172,9 +175,11 @@ export function ModelPickerDialog({
   // model-confirm) instead of duplicating provider UI here. Closes the picker
   // so the onboarding overlay isn't rendered underneath it.
   const addProvider = () => {
+    const ownerProfile = setupProfile ?? profile
+
     startManualOnboarding(
       undefined,
-      ownerConnectionId !== undefined ? { connectionId: ownerConnectionId, profile } : profile
+      ownerConnectionId !== undefined ? { connectionId: ownerConnectionId, profile: ownerProfile } : ownerProfile
     )
     onOpenChange(false)
   }
