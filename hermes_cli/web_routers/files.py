@@ -519,11 +519,13 @@ async def download_managed_file(
 
 @router.get("/api/files/stream")
 @router.head("/api/files/stream")
-async def stream_managed_file(request: Request, path: str):
+async def stream_managed_file(request: Request, path: str, profile: Optional[str] = None):
     """Stream managed audio/video inline with HTTP Range support — Electron's
     media pipeline may reject an attachment response as an ``<audio>``/
     ``<video>`` source. Same auth, size cap, sensitive guard and MIME detection
     as download."""
+    if path.lower().startswith("file:"):
+        path = str(await _fs_download_path(path, profile, None))
     return _managed_file_response(request, path, content_disposition_type="inline", media_only=True)
 
 

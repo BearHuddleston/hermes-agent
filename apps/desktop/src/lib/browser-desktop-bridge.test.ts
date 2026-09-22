@@ -551,11 +551,17 @@ describe('browser-hosted Desktop bridge', () => {
     expect(installBrowserDesktopBridge()).toBe(true)
     $connection.set(await win.hermesDesktop!.getConnectionFor!({ connectionId: 'local', profile: 'research' }))
 
-    for (const path of ['/srv/a b.mp4', '/srv/voice.m4a']) {
-      const url = new URL(await resolveMediaPlaybackSrc(`file://${encodeURI(path)}`))
+    for (const path of [
+      '/srv/a b.mp4',
+      'file:///srv/voice%20memo.m4a',
+      'C:/Users/Alice/video.mp4',
+      'file:///C:/Users/Alice/video%20clip.mp4',
+      'file://nas/share/video%20clip.mp4'
+    ]) {
+      const url = new URL(await resolveMediaPlaybackSrc(path))
       expect(url.origin).toBe(window.location.origin)
       expect(url.pathname).toBe('/hermes/api/files/stream')
-      expect(url.searchParams.get('path')).toBe(path)
+      expect.soft(url.searchParams.get('path'), path).toBe(path)
       expect(url.searchParams.get('profile')).toBe('research')
       expect(url.searchParams.get('token')).toBe(token || null)
     }

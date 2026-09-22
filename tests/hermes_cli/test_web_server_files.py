@@ -284,6 +284,77 @@ def test_stream_rejects_non_media_active_content(forced_files_client):
         assert response.json()["detail"] == "Unsupported media type"
 
 
+@pytest.mark.parametrize("locked", [True, False])
+def test_stream_file_uri_uses_host_resolution_without_bypassing_policy(
+    forced_files_client, monkeypatch, locked,
+):
+    client, root = forced_files_client
+    artifact = _seed_file(client, root, name="out/a b.mp4")
+    if not locked:
+        monkeypatch.delenv("HERMES_DASHBOARD_FILES_ROOT")
+
+    params = {"path": artifact.as_uri()}
+    response = client.get("/api/files/stream", params=params, headers={"Range": "bytes=1-3"})
+    assert response.status_code == 206, response.text
+    assert response.content == b"ell"
+    assert response.headers["content-range"] == "bytes 1-3/5"
+    assert response.headers["content-disposition"].startswith("inline;")
+    assert response.headers["x-content-type-options"] == "nosniff"
+    head = client.head("/api/files/stream", params=params)
+    assert head.status_code == 200
+    assert head.content == b""
+    assert head.headers["content-length"] == "5"
+
+    outside = root.parent / "outside.mp4"
+    outside.write_bytes(b"outside")
+    assert client.get("/api/files/stream", params={"path": outside.as_uri()}).status_code == (
+        403 if locked else 200
+    )
+    sensitive = root / ".env"
+    sensitive.write_text("fixture-only")
+    assert client.get("/api/files/stream", params={"path": sensitive.as_uri()}).status_code == 403
+    non_media = root / "active.html"
+    non_media.write_text("<p>not media</p>")
+    assert client.get("/api/files/stream", params={"path": non_media.as_uri()}).status_code == 415
+    assert client.get("/api/files/stream", params={"path": (root / "missing.mp4").as_uri()}).status_code == 404
+
+    # Ordinary relative managed paths still resolve under the locked root, not cwd.
+    assert client.get("/api/files/stream", params={"path": "out/a b.mp4"}).status_code == (
+        200 if locked else 400
+    )
+    monkeypatch.setattr(web_server, "_MANAGED_FILE_MAX_BYTES", 1)
+    assert client.get("/api/files/stream", params=params).status_code == 413
+
+
+@pytest.mark.windows_only
+@pytest.mark.parametrize("uri,expected", [
+    ("file:///C:/Users/Alice/video%20clip.mp4", "C:/Users/Alice/video clip.mp4"),
+    ("file://127.0.0.1/hermes-media-test/video%20clip.mp4", "//127.0.0.1/hermes-media-test/video clip.mp4"),
+])
+def test_stream_windows_file_uri_reaches_policy_with_absolute_host_path(
+    local_files_client, monkeypatch, uri, expected,
+):
+    from pathlib import Path
+    from starlette.responses import Response
+
+    client, _home = local_files_client
+    paths = []
+
+    def capture_response(request, path, *, content_disposition_type, media_only):
+        paths.append(Path(path))
+        assert content_disposition_type == "inline"
+        assert media_only is True
+        return Response(status_code=204)
+
+    # Exercise Windows URI conversion through the route without requiring a
+    # mounted SMB share; real policy/stream I/O is covered by the test above.
+    monkeypatch.setattr(_rt_files, "_managed_file_response", capture_response)
+    response = client.get("/api/files/stream", params={"path": uri})
+    assert response.status_code == 204
+    assert paths == [Path(expected).resolve(strict=False)]
+    assert paths[0].is_absolute()
+
+
 def test_query_token_does_not_authenticate_other_endpoints(forced_files_client):
     client, root = forced_files_client
     file_path = _seed_file(client, root)

@@ -114,7 +114,8 @@ export async function resolveMediaPlaybackSrc(path: string): Promise<string> {
 
       return window.hermesDesktop.getGatewayFileStreamUrl({
         connectionId: conn?.connectionId,
-        path: filePathFromMediaPath(path),
+        // The gateway OS owns file-URI conversion, including drive letters and UNC hosts.
+        path,
         profile: conn?.profile
       })
     }
@@ -154,7 +155,7 @@ export function mediaGatewayStreamUrl(path: string): string {
   const conn = $connection.get()
 
   if (isRemoteGateway()) {
-    const file = encodeURIComponent(filePathFromMediaPath(path))
+    const file = encodeURIComponent(path)
 
     const scope = [
       conn?.connectionId ? `connectionId=${encodeURIComponent(conn.connectionId)}` : '',
