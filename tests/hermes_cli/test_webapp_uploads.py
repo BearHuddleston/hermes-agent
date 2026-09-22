@@ -4,11 +4,15 @@ import asyncio
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from io import BytesIO
+import json
 import os
 from pathlib import Path
+import re
 import shutil
 import tempfile
 import threading
+from types import SimpleNamespace
+from zipfile import ZIP_DEFLATED, ZipFile
 
 import pytest
 
@@ -35,6 +39,149 @@ def _client(tmp_path: Path, monkeypatch) -> TestClient:
     monkeypatch.setattr(web_server.app.state, "auth_required", False, raising=False)
     monkeypatch.setattr(web_server.app.state, "bound_host", "127.0.0.1", raising=False)
     return TestClient(web_server.app, base_url="http://127.0.0.1")
+
+
+def _office_upload(suffix: str, text: str) -> bytes:
+    """Minimal OOXML packages, without optional document-writing dependencies."""
+    package_ns = "http://schemas.openxmlformats.org/package/2006/relationships"
+    office_ns = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
+    if suffix == ".docx":
+        main_part = "word/document.xml"
+        main_type = "wordprocessingml.document.main+xml"
+        parts = {
+            main_part: (
+                '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
+                f"<w:body><w:p><w:r><w:t>{text}</w:t></w:r></w:p></w:body></w:document>"
+            ),
+        }
+        overrides = ""
+    else:
+        main_part = "xl/workbook.xml"
+        main_type = "spreadsheetml.sheet.main+xml"
+        sheet_ns = "http://schemas.openxmlformats.org/spreadsheetml/2006/main"
+        parts = {
+            main_part: (
+                f'<workbook xmlns="{sheet_ns}" xmlns:r="{office_ns}">'
+                '<sheets><sheet name="Report" sheetId="1" r:id="rId1"/></sheets></workbook>'
+            ),
+            "xl/_rels/workbook.xml.rels": (
+                f'<Relationships xmlns="{package_ns}"><Relationship Id="rId1" '
+                f'Type="{office_ns}/worksheet" Target="worksheets/sheet1.xml"/></Relationships>'
+            ),
+            "xl/worksheets/sheet1.xml": (
+                f'<worksheet xmlns="{sheet_ns}"><sheetData><row r="1">'
+                f'<c r="A1" t="inlineStr"><is><t>{text}</t></is></c>'
+                "</row></sheetData></worksheet>"
+            ),
+        }
+        overrides = (
+            '<Override PartName="/xl/worksheets/sheet1.xml" '
+            'ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>'
+        )
+    parts["[Content_Types].xml"] = (
+        '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">'
+        '<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>'
+        '<Default Extension="xml" ContentType="application/xml"/>'
+        f'<Override PartName="/{main_part}" ContentType="application/vnd.openxmlformats-officedocument.{main_type}"/>'
+        f"{overrides}</Types>"
+    )
+    parts["_rels/.rels"] = (
+        f'<Relationships xmlns="{package_ns}"><Relationship Id="rId1" '
+        f'Type="{office_ns}/officeDocument" Target="{main_part}"/></Relationships>'
+    )
+    buffer = BytesIO()
+    with ZipFile(buffer, "w", compression=ZIP_DEFLATED) as archive:
+        for part, xml in parts.items():
+            archive.writestr(part, xml)
+    return buffer.getvalue()
+
+
+@pytest.mark.parametrize("filename", ["отчёт.docx", "таблица.xlsx"])
+def test_browser_document_upload_remains_extractable_after_file_attach(
+    tmp_path: Path, monkeypatch, filename: str
+):
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    with _client(tmp_path, monkeypatch) as client:
+        from hermes_cli import install_identity
+        from tui_gateway import server
+        from tools.file_tools import read_file_tool
+        from tools.terminal_tool import clear_task_env_overrides, register_task_env_overrides
+        from tools.terminal_tool_lifecycle import cleanup_vm
+
+        home = tmp_path / "hermes-home"
+        workspace = tmp_path / "workspace"
+        workspace.mkdir()
+        sid = "browser-document-upload"
+        monkeypatch.setattr(server, "_hermes_home", home)
+        monkeypatch.setattr(server, "_sessions", {sid: {
+            "agent": SimpleNamespace(),
+            "session_key": sid,
+            "cwd": str(workspace),
+            "profile_home": str(home),
+            "profile_incarnation": profile_incarnation.ensure_profile_incarnation(home),
+        }})
+        monkeypatch.setattr(install_identity, "_INSTALL_ID_CACHE", {"root": None, "value": None})
+        text = "Browser document content survives upload and attachment"
+        payload = _office_upload(Path(filename).suffix, text)
+        response = client.post(
+            "/api/chat/file-upload",
+            files={"file": (filename, payload, "application/octet-stream")},
+            headers={_SESSION_HEADER: "webapp-test-token"},
+        )
+        assert response.status_code == 200, response.text
+        source = Path(response.json()["path"])
+        attached = server.handle_request({
+            "id": "attach-document",
+            "method": "file.attach",
+            "params": {
+                "session_id": sid,
+                "name": filename,
+                "staged_upload": response.json()["staged_upload"],
+            },
+        })
+        assert "error" not in attached, attached
+        stored = Path(attached["result"]["path"])
+        assert source.parent == home / "uploads"
+        assert stored.parent == home / "attachments"
+        assert attached["result"]["uploaded"] is True
+        assert stored.read_bytes() == source.read_bytes() == payload
+        register_task_env_overrides(sid, {"env_type": "local", "cwd": str(workspace)})
+        try:
+            extracted = json.loads(read_file_tool(attached["result"]["ref_path"], task_id=sid))
+        finally:
+            cleanup_vm(sid)
+            clear_task_env_overrides(sid)
+        assert extracted.get("extracted_document") is True, extracted
+        assert text in extracted["content"]
+        assert stored.suffix == source.suffix == Path(filename).suffix
+
+
+@pytest.mark.parametrize(
+    ("filename", "suffix"),
+    [
+        ("отчёт.docx", ".docx"),
+        ("../../таблица.xlsx", ".xlsx"),
+        (r"..\..\таблица.xlsx", ".xlsx"),
+        ("!!!.PDF", ".PDF"),
+        ("long-" * 100 + ".docx", ".docx"),
+        ("отчёт" * 100 + ".xlsx", ".xlsx"),
+        ("report.tar.gz", ".gz"),
+        ("x." + "a" * 200, None),
+        ("../../..", ""),
+        ("отчёт", ""),
+        (None, ""),
+    ],
+    ids=["cyrillic", "traversal", "backslashes", "punctuation", "long-stem",
+         "long-cyrillic", "compound", "long-suffix", "dots", "no-suffix", "missing"],
+)
+def test_safe_upload_filename_is_bounded_basename_with_document_suffix(filename, suffix):
+    cleaned = uploads._safe_filename(filename)
+    assert 1 <= len(cleaned) <= 120
+    assert re.fullmatch(r"[A-Za-z0-9_-][A-Za-z0-9._-]*", cleaned)
+    assert Path(cleaned).name == cleaned
+    assert Path(cleaned).stem.strip(".-")
+    if suffix is not None:
+        assert Path(cleaned).suffix == suffix
 
 
 def test_browser_upload_stages_bytes_under_hermes_home(tmp_path: Path, monkeypatch):

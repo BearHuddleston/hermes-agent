@@ -30,9 +30,12 @@ _SAFE_FILENAME = re.compile(r"[^A-Za-z0-9._-]+")
 
 
 def _safe_filename(value: str | None) -> str:
-    name = Path(str(value or "attachment")).name
-    clean = _SAFE_FILENAME.sub("-", name).strip(".-")
-    return (clean or "attachment")[-120:]
+    name = Path(str(value or "attachment"))
+    # Sanitizing the whole name would turn an all-non-ASCII stem into a
+    # leading dot, then strip the extension separator needed by read_file.
+    stem = _SAFE_FILENAME.sub("-", name.stem).strip(".-") or "attachment"
+    suffix = _SAFE_FILENAME.sub("-", name.suffix).rstrip(".-")[:119]
+    return stem[:120 - len(suffix)] + suffix
 
 
 def _prune_stale_uploads(root: Path, *, now: float | None = None) -> None:
