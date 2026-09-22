@@ -74,3 +74,39 @@ it('publishes newly recovered preview metadata even when the result already exis
   const published = preserveEquivalentTranscript(previous, next)
   expect(published[1].parts[0]).toMatchObject({ toolResultMetadata: { inline_diff: '+new' } })
 })
+
+it.each(['local', 'durable'] as const)('keeps reused tool IDs within their %s user interval', ahead => {
+  const first = { ...completed, result: { value: 'first' } }
+  const second = { ...completed, result: { value: 'second' } }
+  const nextUser: ChatMessage = { ...user, id: 'later-user', rowId: 2 }
+  const prefix = [user, row('stored-first', [first])]
+  const suffix = [nextUser, row('later-answer', [second])]
+  const durable = ahead === 'durable' ? [...prefix, ...suffix] : prefix
+  const local = ahead === 'local' ? [...prefix, ...suffix] : prefix
+  const result = reconcileSettledTranscript(durable, local)
+
+  expect(
+    result.flatMap(message => message.parts).flatMap(part => (part.type === 'tool-call' ? [part.result] : []))
+  ).toEqual([{ value: 'first' }, { value: 'second' }])
+})
+
+it('does not overlay an ambiguous cold tool ID onto an earlier user interval', () => {
+  const first = { ...completed, result: { value: 'first' } }
+  const second = { ...completed, result: { value: 'second' } }
+  const nextUser: ChatMessage = { ...user, id: 'later-user', rowId: 2 }
+  const durable = [user, row('stored-first', [first]), nextUser, row('stored-second', [second])]
+  const local = [row('cold-live', [second])]
+
+  expect(reconcileSettledTranscript(durable, local)).toEqual([...durable, ...local])
+})
+
+it('keeps a retained text-only failure on its own user interval', () => {
+  const nextUser: ChatMessage = { ...user, id: 'later-user', rowId: 2 }
+  const laterAnswer = row('later-success', [text('Successful later answer.')])
+  const durable = [user, row('stored-partial', [text('Partial answer.')]), nextUser, laterAnswer]
+  const failure = { ...row('assistant-stream-error', [text('Partial answer.')]), error: 'provider failed' }
+  const result = reconcileSettledTranscript(durable, [user, failure])
+
+  expect(result[1].error).toBe('provider failed')
+  expect(result.find(message => message.id === laterAnswer.id)).toEqual(laterAnswer)
+})

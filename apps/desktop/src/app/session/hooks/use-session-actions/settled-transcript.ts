@@ -43,17 +43,30 @@ export function reconcileSettledTranscript(durable: ChatMessage[], local: ChatMe
       leading.flatMap(message => message.parts.flatMap(part => (part.type === 'tool-call' ? [part.toolCallId] : [])))
     )
 
-    const toolRow = durable.findIndex(message =>
-      message.parts.some(part => part.type === 'tool-call' && toolIds.has(part.toolCallId))
-    )
+    const matchingIntervals = new Set<number>()
+    let userIndex = -1
 
-    if (toolRow < 0) {
+    for (let index = 0; index < durable.length; index++) {
+      const message = durable[index]
+
+      if (message.role === 'user') {
+        userIndex = index
+      }
+
+      if (message.parts.some(part => part.type === 'tool-call' && toolIds.has(part.toolCallId))) {
+        matchingIntervals.add(userIndex)
+      }
+    }
+
+    if (matchingIntervals.size !== 1) {
       // No occurrence identity: never discard the fetched prompt/history just
-      // because local assistant-only rows have synthetic stream IDs.
+      // because local assistant-only rows have synthetic stream IDs. Tool IDs
+      // can repeat across turns, so a match in several user intervals is not
+      // proof of a shared occurrence either; retain both without overlaying.
       return [...durable, ...local]
     }
 
-    durableStart = durable.findLastIndex((message, index) => index < toolRow && message.role === 'user')
+    durableStart = [...matchingIntervals][0]
   }
 
   const durableTail = durable.slice(durableStart + 1)
@@ -61,16 +74,21 @@ export function reconcileSettledTranscript(durable: ChatMessage[], local: ChatMe
   const nextUser = localTail.findIndex(message => message.role === 'user')
   const localRun = nextUser < 0 ? localTail : localTail.slice(0, nextUser)
 
+  // Tool IDs are not unique across turns: take live tool state only from the
+  // matched local interval and apply it only within the matched durable one.
   const localTools = new Map(
-    localTail.flatMap(message =>
+    localRun.flatMap(message =>
       message.parts.flatMap(part => (part.type === 'tool-call' ? [[part.toolCallId, part] as const] : []))
     )
   )
 
-  const enriched = durableTail.map(message => ({
+  const nextDurableUser = durableTail.findIndex(message => message.role === 'user')
+  const durableRunEnd = nextDurableUser < 0 ? durableTail.length : nextDurableUser
+
+  const enriched = durableTail.map((message, index) => ({
     ...message,
     parts: message.parts.map(part => {
-      if (part.type !== 'tool-call') {
+      if (part.type !== 'tool-call' || index >= durableRunEnd) {
         return part
       }
 
@@ -87,14 +105,16 @@ export function reconcileSettledTranscript(durable: ChatMessage[], local: ChatMe
     })
   }))
 
-  let remaining = withoutCoveredAssistantPrefix(enriched, localTail)
+  const durableRun = enriched.slice(0, durableRunEnd)
+  const durableLater = enriched.slice(durableRunEnd)
+  // Coverage evidence must come from the matched durable run, not a later
+  // turn whose tool IDs happen to repeat.
+  let remaining = withoutCoveredAssistantPrefix(durableRun, localTail)
 
   if (remaining === localTail) {
     // A cold viewer can join halfway through the durable assistant run. Align
     // by tool identity, then require the same ordered-prefix proof; never use
     // equal prose elsewhere in the session to choose an offset.
-    const nextDurableUser = enriched.findIndex(message => message.role === 'user')
-    const durableRun = nextDurableUser < 0 ? enriched : enriched.slice(0, nextDurableUser)
     const parts = durableRun.flatMap(message => message.parts)
 
     const localParts = localRun.flatMap(message => message.parts)
@@ -121,10 +141,13 @@ export function reconcileSettledTranscript(durable: ChatMessage[], local: ChatMe
   // The viewer may have missed every tool frame. Within the shared prompt,
   // merge its text-only reply into the durable structured run; do not compare
   // equal text from unrelated turns or consume an accepted next user prompt.
+  // The merge projects the local terminal (pending/interim/error) onto the
+  // last row it receives, so give it only the matched durable run.
   if (localRun.every(message => message.parts.every(part => part.type === 'text'))) {
     return [
       ...durable.slice(0, durableStart + 1),
-      ...mergeLiveAssistantRun(localRun, enriched),
+      ...mergeLiveAssistantRun(localRun, durableRun),
+      ...durableLater,
       ...(nextUser < 0 ? [] : localTail.slice(nextUser))
     ]
   }
