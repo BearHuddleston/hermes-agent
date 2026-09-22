@@ -368,7 +368,7 @@ export function useSessionStateCache({
       // the param was always a fresh spread, so every call looked like a
       // change — including periodic ~1/s session.info heartbeats that churn
       // $sessionStates and its computed atoms on every tick.
-      const next = updater(previous)
+      let next = updater(previous)
 
       // If the updater returned the same reference, nothing changed for this
       // session — skip the store write, publishSessionState, and view sync.
@@ -377,6 +377,17 @@ export function useSessionStateCache({
       // cache, so stale reads don't regress.
       if (next === previous) {
         return previous
+      }
+
+      // Preserve an entire busy→idle cycle even when both ends of an async
+      // activation/history read see idle. This is local ordering, not a clock.
+      if (
+        (previous.busy || previous.turnLive) &&
+        !next.busy &&
+        !next.turnLive &&
+        (next.turnSettlementVersion ?? 0) === (previous.turnSettlementVersion ?? 0)
+      ) {
+        next = { ...next, turnSettlementVersion: (previous.turnSettlementVersion ?? 0) + 1 }
       }
 
       sessionStateCache.set(sessionId, next)

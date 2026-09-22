@@ -9,6 +9,7 @@ import {
   textPart,
   toChatMessages
 } from '@/lib/chat-messages'
+import { durableToolRowCoversLiveMessage } from '@/lib/chat-messages/coverage'
 import { normalizePersonalityValue } from '@/lib/chat-runtime'
 import { embeddedImageUrls, textWithoutEmbeddedImages } from '@/lib/embedded-images'
 import { parseErrorSurface } from '@/lib/error-surface'
@@ -246,7 +247,7 @@ export function chatPartsEquivalent(aPart: ChatMessage['parts'][number], bPart: 
     const aHasResult = aCall.result !== undefined
     const bHasResult = bCall.result !== undefined
 
-    return aHasResult === bHasResult
+    return aHasResult === bHasResult && aPart.toolResultMetadata?.inline_diff === bPart.toolResultMetadata?.inline_diff
   }
 
   // For all other handled part types (source, image, file, data, generative-ui,
@@ -679,6 +680,10 @@ export function preserveLocalPendingTurnMessages(
       message.role === 'assistant' && (message.pending === true || message.id.startsWith('assistant-stream-'))
 
     if (!isOptimisticUser && !isPendingAssistant) {
+      continue
+    }
+
+    if (isPendingAssistant && durableToolRowCoversLiveMessage(nextMessages, message)) {
       continue
     }
 

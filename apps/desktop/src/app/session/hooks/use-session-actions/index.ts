@@ -34,6 +34,7 @@ import {
   $gateway,
   openGatewayForAgent,
   openGatewayForProfile,
+  pendingSessionReplay,
   requestGatewayForAgent,
   retainGatewayForAgent
 } from '@/store/gateway'
@@ -144,6 +145,7 @@ import { reconcilePersistedLiveTurn } from './persisted-live-turn'
 import { provisionalTranscriptPaint, transcriptRestScope } from './provisional-transcript'
 import { pendingClarifyToolPayload, restorePendingClarifyFromSnapshot } from './restore-pending-clarify'
 import { projectPendingConnection, restorePendingConnectionFromSnapshot } from './restore-pending-connection'
+import { reconcileSettledTranscript } from './settled-transcript'
 import {
   createPersistedDisplayTranscriptProvenance,
   hasPersistedDisplayTranscriptProvenance,
@@ -179,6 +181,23 @@ import {
   upsertOptimisticSession,
   upsertUnlistedSessionOwner
 } from './utils'
+
+function withoutSettledTurnProjection(
+  snapshot: SessionResumeResult,
+  liveState: ClientSessionState | undefined
+): SessionResumeResult {
+  return {
+    ...snapshot,
+    running: liveState?.busy ?? false,
+    inflight: undefined,
+    queued: undefined,
+    open_requests: undefined,
+    pending_approval: undefined,
+    pending_connection: undefined,
+    todo_state: undefined,
+    turn_started_at: liveState?.turnStartedAt ? liveState.turnStartedAt / 1000 : null
+  }
+}
 
 interface SessionActionsOptions {
   activeSessionId: string | null
@@ -1292,6 +1311,12 @@ export function useSessionActions({
           setSessionStartedAt(Date.now())
 
           try {
+            const replay = pendingSessionReplay(cachedRuntimeId)
+
+            if (replay && (!(await replay) || !isCurrentResume())) {
+              return
+            }
+
             let activated: SessionResumeResult | null = null
             const activateStartedAt = Date.now() / 1000
             const activateBaselineState = sessionStateByRuntimeIdRef.current.get(cachedRuntimeId) ?? cachedViewState
@@ -1336,6 +1361,18 @@ export function useSessionActions({
               sessionStateByRuntimeIdRef.current.delete(cachedRuntimeId)
               dropSessionState(cachedRuntimeId)
             } else {
+              const stateAfterActivate = sessionStateByRuntimeIdRef.current.get(cachedRuntimeId)
+
+              const settledWhileActivating =
+                (stateAfterActivate?.turnSettlementVersion ?? 0) !== (activateBaselineState.turnSettlementVersion ?? 0)
+
+              if (settledWhileActivating) {
+                // The attached transport already ended this snapshot's turn.
+                // Do not graft its obsolete inflight prompt/commentary back in.
+                activated = withoutSettledTurnProjection(activated, stateAfterActivate)
+                cachedViewState = stateAfterActivate ?? cachedViewState
+              }
+
               const pendingApproval = restorePendingApproval(activated, cachedRuntimeId)
 
               const pendingClarifyState = restorePendingClarifyFromSnapshot(
@@ -1412,10 +1449,10 @@ export function useSessionActions({
                   ...state,
                   ...(runtimeInfo ?? {}),
                   busy: running,
-                  awaitingResponse: running && !pendingClarify,
+                  awaitingResponse: settledWhileActivating ? state.awaitingResponse : running && !pendingClarify,
                   // Resumed onto an already-running turn — that IS backend
                   // proof the turn is live (no message.start will replay).
-                  turnLive: state.turnLive || running,
+                  turnLive: settledWhileActivating ? state.turnLive : state.turnLive || running,
                   needsInput:
                     pendingApproval ||
                     Boolean(pendingClarify) ||
@@ -1424,7 +1461,9 @@ export function useSessionActions({
                   // Adopting someone else's turn: we'll stream its reply
                   // without ever having received its prompt, so the settle
                   // path must not take the "I saw it all" shortcut.
-                  adoptedRunningTurn: state.adoptedRunningTurn || running,
+                  adoptedRunningTurn: settledWhileActivating
+                    ? state.adoptedRunningTurn
+                    : state.adoptedRunningTurn || running,
                   turnStartedAt: running ? (activatedTurnStartedAt ?? state.turnStartedAt ?? Date.now()) : null
                 }),
                 storedSessionId
@@ -1432,7 +1471,7 @@ export function useSessionActions({
 
               busyRef.current = running
               setBusy(running)
-              setAwaitingResponse(running && !pendingClarify)
+              setAwaitingResponse(activatedLivenessState.awaitingResponse)
               syncSessionStateToView(
                 cachedRuntimeId,
                 suppressTranscriptForView(activatedLivenessState, suppressUnprovenWarmTranscript)
@@ -1468,6 +1507,13 @@ export function useSessionActions({
 
               if (persistedTranscriptPromise) {
                 const persisted = await persistedTranscriptPromise
+                const replayAtReturn = pendingSessionReplay(cachedRuntimeId)
+
+                if (replayAtReturn && !(await replayAtReturn)) {
+                  hydration.release()
+
+                  return
+                }
 
                 // Navigation only revokes foreground publication, not this
                 // runtime's display read. Edits/rebinds revoke both.
@@ -1505,32 +1551,56 @@ export function useSessionActions({
                     cachedViewState.messages
                   )
 
-                  const runtimeMessages = toChatMessages(activated.messages)
-                  const previousMessages = removeRepresentedLocalLiveProjection(cachedViewState.messages, activated)
+                  const latestState = sessionStateByRuntimeIdRef.current.get(cachedRuntimeId)
 
-                  const liveProjection = dedupeInflightUserAgainstTranscript(
-                    persistedMessages,
-                    runtimeMessages,
-                    activated
-                  )
+                  const settledSinceActivate =
+                    (latestState?.turnSettlementVersion ?? 0) !== (activateBaselineState.turnSettlementVersion ?? 0)
 
-                  const currentLiveTurn = reconcilePersistedLiveTurn(
-                    persistedMessages,
-                    sessionStateByRuntimeIdRef.current.get(cachedRuntimeId)?.messages ?? previousMessages,
-                    persisted.messages,
-                    liveProjection
-                  )
+                  if (settledSinceActivate && latestState) {
+                    // Reject obsolete control/inflight projections, not durable
+                    // history: it can recover missed prompts and tool results.
+                    activatedMessages = reconcileSettledTranscript(persistedMessages, latestState.messages)
+                    reconciledCurrentLiveTurn = true
+                  } else {
+                    const runtimeMessages = toChatMessages(activated.messages)
+                    const previousMessages = removeRepresentedLocalLiveProjection(cachedViewState.messages, activated)
 
-                  // `null` does not depend on `previous`; retrying the live-turn
-                  // reconcile inside the fallback would return `null` again.
-                  reconciledCurrentLiveTurn = currentLiveTurn !== null
-                  activatedMessages =
-                    currentLiveTurn ??
-                    reconcileAuthoritativeChatMessages(persistedMessages, previousMessages, liveProjection)
+                    const liveProjection = dedupeInflightUserAgainstTranscript(
+                      persistedMessages,
+                      runtimeMessages,
+                      activated
+                    )
+
+                    const currentLiveTurn = reconcilePersistedLiveTurn(
+                      persistedMessages,
+                      latestState?.messages ?? previousMessages,
+                      persisted.messages,
+                      liveProjection
+                    )
+
+                    // `null` does not depend on `previous`; retrying the live-turn
+                    // reconcile inside the fallback would return `null` again.
+                    reconciledCurrentLiveTurn = currentLiveTurn !== null
+                    activatedMessages =
+                      currentLiveTurn ??
+                      reconcileAuthoritativeChatMessages(persistedMessages, previousMessages, liveProjection)
+                  }
                 }
               }
 
-              const currentMessages = sessionStateByRuntimeIdRef.current.get(cachedRuntimeId)?.messages
+              const stateAfterHydration = sessionStateByRuntimeIdRef.current.get(cachedRuntimeId)
+              const currentMessages = stateAfterHydration?.messages
+
+              const settledSinceActivate =
+                (stateAfterHydration?.turnSettlementVersion ?? 0) !== (activateBaselineState.turnSettlementVersion ?? 0)
+
+              // A failed/empty REST read must not escape the same authority
+              // boundary. Keep the live result rather than the stale projection.
+              if (settledSinceActivate && currentMessages && !reconciledCurrentLiveTurn) {
+                activatedMessages = currentMessages
+                reconciledCurrentLiveTurn = true
+                acceptedPersistedDisplayTranscript = false
+              }
 
               // The occurrence-aware path already read the latest cache. An
               // additional identity overlay would restore its consumed tools.
@@ -1542,21 +1612,23 @@ export function useSessionActions({
                 )
               }
 
-              const pendingClarifyProjection = pendingClarify
-                ? restorePendingClarifyToolCall(activatedMessages, pendingClarifyToolPayload(pendingClarify))
-                : null
+              const pendingClarifyProjection =
+                !settledSinceActivate && pendingClarify
+                  ? restorePendingClarifyToolCall(activatedMessages, pendingClarifyToolPayload(pendingClarify))
+                  : null
 
-              const clearedClarifyProjection = clarifyAuthoritativelyAbsent
-                ? settlePendingClarifyToolCall(
-                    activatedMessages,
-                    pendingClarifyState.cleared ? pendingClarifyToolPayload(pendingClarifyState.cleared) : {},
-                    running
-                  )
-                : null
+              const clearedClarifyProjection =
+                !settledSinceActivate && clarifyAuthoritativelyAbsent
+                  ? settlePendingClarifyToolCall(
+                      activatedMessages,
+                      pendingClarifyState.cleared ? pendingClarifyToolPayload(pendingClarifyState.cleared) : {},
+                      running
+                    )
+                  : null
 
               const pendingConnectionProjection = projectPendingConnection(
                 pendingClarifyProjection?.messages ?? clearedClarifyProjection?.messages ?? activatedMessages,
-                pendingConnection
+                settledSinceActivate ? null : pendingConnection
               )
 
               const visibleActivatedMessages =
@@ -1708,6 +1780,7 @@ export function useSessionActions({
       })
 
       let resumedRunning = false
+      let resumedAwaitingResponse = false
       // A recovered in-flight tail means the turn already produced output, so
       // it resumes into the streaming state rather than the "awaiting first
       // token" spinner.
@@ -1732,6 +1805,11 @@ export function useSessionActions({
         const prefetchPromise = watchWindow ? null : getLatestSessionMessages(storedSessionId, sessionRestScope)
 
         let resumeRuntimeBaselineMessages: ChatMessage[] = []
+
+        const resumeSettlementVersions = new Map(
+          [...sessionStateByRuntimeIdRef.current].map(([id, state]) => [id, state.turnSettlementVersion ?? 0])
+        )
+
         const resumeStartedAt = Date.now() / 1000
 
         const resumePromise = singleFlightSessionResume(storedSessionId, () =>
@@ -1811,13 +1889,21 @@ export function useSessionActions({
           }
         }
 
-        const resumed = await resumePromise
+        let resumed = await resumePromise
 
         if (!isCurrentResume()) {
           return
         }
 
         const currentMessages = viewMessagesForReconcile()
+        const liveResumeState = sessionStateByRuntimeIdRef.current.get(resumed.session_id)
+
+        const settledWhileResuming =
+          (liveResumeState?.turnSettlementVersion ?? 0) !== (resumeSettlementVersions.get(resumed.session_id) ?? 0)
+
+        if (settledWhileResuming) {
+          resumed = withoutSettledTurnProjection(resumed, liveResumeState)
+        }
 
         // Keep the local snapshot when resume would only reshuffle runtime
         // projection. When the REST prefetch already hydrated the transcript,
@@ -1832,6 +1918,13 @@ export function useSessionActions({
         const hasLiveProjection = Boolean(resumed.inflight || resumed.queued)
 
         const preferredMessages = (() => {
+          if (settledWhileResuming && liveResumeState) {
+            return reconcileSettledTranscript(
+              (prefetchMatchesResumedSession ? prefetchedTranscriptMessages : null) ?? toChatMessages(resumed.messages),
+              liveResumeState.messages
+            )
+          }
+
           if (prefetchApplied && prefetchMatchesResumedSession) {
             if (hasLiveProjection && prefetchedTranscriptMessages) {
               const runtimeMessages = toChatMessages(resumed.messages)
@@ -1884,11 +1977,9 @@ export function useSessionActions({
         const currentRuntimeMessages =
           sessionStateByRuntimeIdRef.current.get(resumed.session_id)?.messages ?? resumeRuntimeBaselineMessages
 
-        const preferredWithRuntimeChanges = overlayConcurrentMessageChanges(
-          preferredMessages,
-          resumeRuntimeBaselineMessages,
-          currentRuntimeMessages
-        )
+        const preferredWithRuntimeChanges = settledWhileResuming
+          ? preferredMessages
+          : overlayConcurrentMessageChanges(preferredMessages, resumeRuntimeBaselineMessages, currentRuntimeMessages)
 
         // #70449: same stale-snapshot guard as the warm path — a turn that
         // started while the resume RPC was in flight has already marked the
@@ -2008,7 +2099,7 @@ export function useSessionActions({
               })
             : undefined
 
-        updateSessionState(
+        const resumedState = updateSessionState(
           resumed.session_id,
           state => ({
             ...state,
@@ -2016,15 +2107,17 @@ export function useSessionActions({
             messages: visibleMessagesForView,
             transcriptProvenance,
             busy: resumedRunning,
-            awaitingResponse: resumedRunning && !recoveredInFlightTail,
+            awaitingResponse: settledWhileResuming ? state.awaitingResponse : resumedRunning && !recoveredInFlightTail,
             // Backend reported this turn running at resume time — live proof.
-            turnLive: state.turnLive || resumedRunning,
+            turnLive: settledWhileResuming ? state.turnLive : state.turnLive || resumedRunning,
             needsInput:
               pendingApproval ||
               Boolean(pendingClarify) ||
               Boolean(pendingConnection) ||
               (clarifyAuthoritativelyAbsent ? false : state.needsInput),
-            adoptedRunningTurn: state.adoptedRunningTurn || resumedRunning,
+            adoptedRunningTurn: settledWhileResuming
+              ? state.adoptedRunningTurn
+              : state.adoptedRunningTurn || resumedRunning,
             ...(inFlightRecovery.applied
               ? {
                   sawAssistantPayload: true,
@@ -2047,6 +2140,8 @@ export function useSessionActions({
         )
 
         // updateSessionState stages its view sync through requestAnimationFrame.
+        resumedAwaitingResponse = resumedState.awaitingResponse
+
         // Commit the final, already-reconciled transcript now so resume has one
         // additive DOM build instead of an eager prefetch build plus a later
         // runtime projection build.
@@ -2233,7 +2328,7 @@ export function useSessionActions({
         if (isCurrentResume()) {
           busyRef.current = resumedRunning
           setBusy(resumedRunning)
-          setAwaitingResponse(resumedRunning && !recoveredInFlightTail)
+          setAwaitingResponse(resumedAwaitingResponse)
         }
       }
     },

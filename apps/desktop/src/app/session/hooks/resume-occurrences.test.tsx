@@ -448,3 +448,362 @@ it('settles a retained idle error once across repeated resume and a changed erro
     expect(state.awaitingResponse).toBe(false)
   }
 })
+
+it.each(['activation', 'history'] as const)(
+  'does not revive a turn that completes while warm %s is pending',
+  async boundary => {
+    for (const scenario of ['settled', 'next-turn', 'whole-turn', 'history-failure']) {
+      const snapshot: SessionResumeResult = {
+        session_id: runtimeId,
+        resumed: storedId,
+        messages: [],
+        messages_omitted: true,
+        message_count: 0,
+        running: true,
+        turn_started_at: 2,
+        inflight: { user: prompt, assistant: commentary, streaming: true }
+      }
+
+      const durable = history([commentary])
+      durable.push({ id: 4, role: 'assistant', content: 'Finished result.', timestamp: 4 })
+      const { result, requestGateway } = mount(snapshot)
+      act(() => {
+        result.current.cache.activeSessionIdRef.current = runtimeId
+        result.current.cache.selectedStoredSessionIdRef.current = storedId
+        result.current.cache.updateSessionState(
+          runtimeId,
+          state => ({ ...state, messages: toChatMessages([user]) }),
+          storedId
+        )
+
+        if (scenario === 'whole-turn') {
+          return
+        }
+
+        result.current.stream.handleGatewayEvent({ session_id: runtimeId, type: 'message.start', payload: {} })
+        result.current.stream.handleGatewayEvent({
+          session_id: runtimeId,
+          type: 'message.interim',
+          payload: { text: commentary }
+        })
+        result.current.stream.handleGatewayEvent({
+          session_id: runtimeId,
+          type: 'tool.start',
+          payload: { name: 'read_file', tool_id: 'call-0', args: {} }
+        })
+        result.current.stream.handleGatewayEvent({
+          session_id: runtimeId,
+          type: 'tool.complete',
+          payload: { name: 'read_file', tool_id: 'call-0', result: 'fixture' }
+        })
+      })
+
+      let release!: () => void
+
+      if (boundary === 'activation') {
+        requestGateway.mockReturnValue(
+          new Promise<SessionResumeResult>(resolve => {
+            release = () => resolve(snapshot)
+          })
+        )
+
+        if (scenario === 'history-failure') {
+          vi.mocked(getLatestSessionMessages).mockRejectedValue(new Error('history unavailable'))
+        } else {
+          vi.mocked(getLatestSessionMessages).mockResolvedValue({ session_id: storedId, messages: durable })
+        }
+      } else {
+        vi.mocked(getLatestSessionMessages).mockReturnValue(
+          new Promise((resolve, reject) => {
+            release = () =>
+              scenario === 'history-failure'
+                ? reject(new Error('history unavailable'))
+                : resolve({ session_id: storedId, messages: durable })
+          })
+        )
+      }
+
+      let pending!: Promise<void>
+      await act(async () => {
+        pending = result.current.actions.resumeSession(storedId, true)
+      })
+      expect(requestGateway).toHaveBeenCalledWith(
+        'session.activate',
+        expect.objectContaining({ session_id: runtimeId })
+      )
+
+      if (scenario === 'whole-turn') {
+        act(() => {
+          result.current.stream.handleGatewayEvent({ session_id: runtimeId, type: 'message.start', payload: {} })
+          result.current.stream.handleGatewayEvent({
+            session_id: runtimeId,
+            type: 'message.interim',
+            payload: { text: commentary }
+          })
+        })
+      }
+
+      act(() =>
+        result.current.stream.handleGatewayEvent({
+          session_id: runtimeId,
+          type: 'message.complete',
+          payload: { text: 'Finished result.' }
+        })
+      )
+      expect(result.current.cache.sessionStateByRuntimeIdRef.current.get(runtimeId)?.busy).toBe(false)
+
+      if (scenario === 'next-turn') {
+        act(() => {
+          result.current.cache.updateSessionState(
+            runtimeId,
+            state => ({
+              ...state,
+              messages: [...state.messages, { id: 'user-next', role: 'user', parts: [{ type: 'text', text: prompt }] }]
+            }),
+            storedId
+          )
+          result.current.stream.handleGatewayEvent({ session_id: runtimeId, type: 'message.start', payload: {} })
+          result.current.stream.handleGatewayEvent({
+            session_id: runtimeId,
+            type: 'message.interim',
+            payload: { text: 'New turn progress.' }
+          })
+        })
+      }
+
+      const stateBeforeRelease = result.current.cache.sessionStateByRuntimeIdRef.current.get(runtimeId)!
+      await act(async () => {
+        release()
+        await pending
+      })
+      const state = result.current.cache.sessionStateByRuntimeIdRef.current.get(runtimeId)!
+      expect.soft(state.busy, scenario).toBe(stateBeforeRelease.busy)
+      expect.soft(state.awaitingResponse, scenario).toBe(stateBeforeRelease.awaitingResponse)
+      expect.soft(state.turnStartedAt, scenario).toBe(stateBeforeRelease.turnStartedAt)
+      expect.soft(state.turnLive, scenario).toBe(stateBeforeRelease.turnLive)
+      expect.soft(state.streamId, scenario).toBe(stateBeforeRelease.streamId)
+      expect
+        .soft(
+          state.messages.some(message => message.pending),
+          scenario
+        )
+        .toBe(stateBeforeRelease.messages.some(message => message.pending))
+
+      const text = state.messages
+        .filter(message => message.role === 'assistant')
+        .map(chatMessageText)
+        .join('\n')
+
+      expect.soft(text.match(/Finished result\./g)).toHaveLength(1)
+      expect.soft(text.match(/Checking the phase\./g)).toHaveLength(1)
+      expect.soft(text.indexOf(commentary)).toBeLessThan(text.indexOf('Finished result.'))
+
+      if (scenario === 'next-turn') {
+        expect.soft(text.match(/New turn progress\./g)).toHaveLength(1)
+        expect.soft(state.messages.filter(message => message.role === 'user')).toHaveLength(2)
+      }
+
+      cleanup()
+    }
+  }
+)
+
+it.each([true, false])('keeps cold history and completion when message.start was received: %s', async receivedStart => {
+  for (const boundary of ['resume', 'history']) {
+    const snapshot: SessionResumeResult = {
+      session_id: runtimeId,
+      resumed: storedId,
+      messages: [],
+      messages_omitted: true,
+      message_count: 0,
+      running: true,
+      turn_started_at: 2,
+      inflight: { user: prompt, assistant: commentary, streaming: true }
+    }
+
+    const durable = history([commentary])
+    durable.push({ id: 4, role: 'assistant', content: 'Finished result.', timestamp: 4 })
+    const { result, requestGateway } = mount(snapshot)
+    let release!: () => void
+
+    if (boundary === 'resume') {
+      requestGateway.mockReturnValue(
+        new Promise<SessionResumeResult>(resolve => {
+          release = () => resolve(snapshot)
+        })
+      )
+      vi.mocked(getLatestSessionMessages).mockResolvedValue({ session_id: storedId, messages: durable })
+    } else {
+      vi.mocked(getLatestSessionMessages).mockReturnValue(
+        new Promise(resolve => {
+          release = () => resolve({ session_id: storedId, messages: durable })
+        })
+      )
+    }
+
+    let pending!: Promise<void>
+    await act(async () => {
+      pending = result.current.actions.resumeSession(storedId, true)
+    })
+    expect(requestGateway).toHaveBeenCalledWith('session.resume', expect.objectContaining({ session_id: storedId }))
+    act(() => {
+      // A cold viewer can join an already-running turn without ever receiving
+      // its start event or owning a local prompt row.
+      if (receivedStart) {
+        result.current.stream.handleGatewayEvent({ session_id: runtimeId, type: 'message.start', payload: {} })
+      }
+
+      result.current.stream.handleGatewayEvent({
+        session_id: runtimeId,
+        type: 'message.interim',
+        payload: { text: commentary }
+      })
+      result.current.stream.handleGatewayEvent({
+        session_id: runtimeId,
+        type: 'tool.start',
+        payload: { name: 'read_file', tool_id: 'call-0', args: {} }
+      })
+      result.current.stream.handleGatewayEvent({
+        session_id: runtimeId,
+        type: 'tool.complete',
+        payload: { name: 'read_file', tool_id: 'call-0', result: 'fixture' }
+      })
+      result.current.stream.handleGatewayEvent({
+        session_id: runtimeId,
+        type: 'message.complete',
+        payload: { text: 'Finished result.' }
+      })
+    })
+    expect(result.current.cache.sessionStateByRuntimeIdRef.current.get(runtimeId)?.busy).toBe(false)
+    await act(async () => {
+      release()
+      await pending
+    })
+    const state = result.current.cache.sessionStateByRuntimeIdRef.current.get(runtimeId)!
+    expect.soft(state.busy, boundary).toBe(false)
+    expect.soft(state.awaitingResponse, boundary).toBe(false)
+    expect.soft(state.turnStartedAt, boundary).toBeNull()
+    expect
+      .soft(state.messages.filter(message => message.role === 'user').map(chatMessageText), boundary)
+      .toEqual([prompt])
+    expect
+      .soft(
+        state.messages.some(message => message.pending),
+        boundary
+      )
+      .toBe(false)
+
+    const text = state.messages
+      .filter(message => message.role === 'assistant')
+      .map(chatMessageText)
+      .join('\n')
+
+    expect.soft(text.match(/Finished result\./g), boundary).toHaveLength(1)
+    expect.soft(text.match(/Checking the phase\./g), boundary).toHaveLength(1)
+    cleanup()
+  }
+})
+
+it.each(['activation', 'history'] as const)(
+  'recovers a missed edit completion while warm %s settles',
+  async boundary => {
+    const snapshot: SessionResumeResult = {
+      session_id: runtimeId,
+      resumed: storedId,
+      messages: [],
+      messages_omitted: true,
+      message_count: 0,
+      running: true,
+      turn_started_at: 2,
+      inflight: { user: prompt, streaming: true }
+    }
+
+    const { result, requestGateway } = mount(snapshot)
+    act(() => {
+      result.current.cache.activeSessionIdRef.current = runtimeId
+      result.current.cache.selectedStoredSessionIdRef.current = storedId
+      result.current.cache.updateSessionState(
+        runtimeId,
+        state => ({ ...state, messages: toChatMessages([user]) }),
+        storedId
+      )
+      result.current.stream.handleGatewayEvent({ session_id: runtimeId, type: 'message.start', payload: {} })
+      result.current.stream.handleGatewayEvent({
+        session_id: runtimeId,
+        type: 'tool.start',
+        payload: { name: 'patch', tool_id: 'edit-call', args: { path: 'publish.py' } }
+      })
+    })
+    const inlineDiff = '--- a/publish.py\n+++ b/publish.py\n@@ -1 +1 @@\n-old\n+new'
+
+    const durable: SessionMessage[] = [
+      user,
+      {
+        id: 2,
+        role: 'assistant',
+        content: '',
+        timestamp: 2,
+        tool_calls: [
+          { id: 'edit-call', type: 'function', function: { name: 'patch', arguments: '{"path":"publish.py"}' } }
+        ]
+      },
+      {
+        id: 3,
+        role: 'tool',
+        tool_call_id: 'edit-call',
+        tool_name: 'patch',
+        content: JSON.stringify({ success: true, diff: inlineDiff, files_modified: ['publish.py'] }),
+        timestamp: 3
+      },
+      { id: 4, role: 'assistant', content: 'Finished result.', timestamp: 4 }
+    ]
+
+    let release!: () => void
+
+    if (boundary === 'activation') {
+      requestGateway.mockReturnValue(
+        new Promise(resolve => {
+          release = () => resolve(snapshot)
+        })
+      )
+      vi.mocked(getLatestSessionMessages).mockResolvedValue({ session_id: storedId, messages: durable })
+    } else {
+      vi.mocked(getLatestSessionMessages).mockReturnValue(
+        new Promise(resolve => {
+          release = () => resolve({ session_id: storedId, messages: durable })
+        })
+      )
+    }
+
+    let pending!: Promise<void>
+    await act(async () => {
+      pending = result.current.actions.resumeSession(storedId, true)
+    })
+    // tool.complete was lost before reattachment, but the terminal frame arrives.
+    act(() =>
+      result.current.stream.handleGatewayEvent({
+        session_id: runtimeId,
+        type: 'message.complete',
+        payload: { text: 'Finished result.' }
+      })
+    )
+    await act(async () => {
+      release()
+      await pending
+    })
+    const state = result.current.cache.sessionStateByRuntimeIdRef.current.get(runtimeId)!
+    const tools = state.messages.flatMap(message => message.parts).filter(part => part.type === 'tool-call')
+    expect(tools).toHaveLength(1)
+    expect(tools[0]).toMatchObject({
+      toolCallId: 'edit-call',
+      result: { success: true, diff: inlineDiff, files_modified: ['publish.py'] }
+    })
+    expect(
+      state.messages
+        .map(chatMessageText)
+        .join('\n')
+        .match(/Finished result\./g)
+    ).toHaveLength(1)
+    expect(state.busy).toBe(false)
+  }
+)

@@ -163,6 +163,8 @@ export interface ClientSessionState {
   yolo: boolean
   personality: string
   busy: boolean
+  /** Local settlement generation: an async resume cannot revive an ended turn. */
+  turnSettlementVersion?: number
   awaitingResponse: boolean
   streamId: string | null
   sawAssistantPayload: boolean

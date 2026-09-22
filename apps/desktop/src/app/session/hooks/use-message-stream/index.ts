@@ -618,6 +618,7 @@ export function useMessageStream({
         if (state.interrupted) {
           return {
             ...state,
+            turnSettlementVersion: (state.turnSettlementVersion ?? 0) + 1,
             awaitingResponse: false,
             busy: false,
             needsInput: false,
@@ -854,6 +855,9 @@ export function useMessageStream({
           ...state,
           messages: nextMessages,
           adoptedRunningTurn: false,
+          // A cold attachment may see completion without seeing message.start.
+          // Record the event itself, not only a busy→idle transition.
+          turnSettlementVersion: (state.turnSettlementVersion ?? 0) + 1,
           streamId: null,
           pendingBranchGroup: null,
           awaitingResponse: false,
@@ -948,6 +952,7 @@ export function useMessageStream({
           streamId: null,
           pendingBranchGroup: null,
           sawAssistantPayload: true,
+          turnSettlementVersion: (state.turnSettlementVersion ?? 0) + 1,
           awaitingResponse: false,
           busy: false,
           needsInput: false,
