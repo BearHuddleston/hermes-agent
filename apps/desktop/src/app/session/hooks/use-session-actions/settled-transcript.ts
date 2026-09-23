@@ -1,9 +1,49 @@
-import type { ChatMessage } from '@/lib/chat-messages'
+import { textWithoutReferenceLines } from '@/components/assistant-ui/reference-kinds'
+import { type ChatMessage, chatMessageText } from '@/lib/chat-messages'
 import { withoutCoveredAssistantPrefix } from '@/lib/chat-messages/coverage'
 
 import { mergeLiveAssistantRun } from './live-turn-remainder'
 
 const sameRow = (a: ChatMessage, b: ChatMessage) => a.id === b.id || (a.rowId !== undefined && a.rowId === b.rowId)
+
+const samePromptText = (a: ChatMessage, b: ChatMessage) =>
+  textWithoutReferenceLines(chatMessageText(a)).trim() === textWithoutReferenceLines(chatMessageText(b)).trim()
+
+/** Messages after `index` up to the next user prompt. */
+function runAfter(messages: ChatMessage[], index: number): ChatMessage[] {
+  const next = messages.findIndex((message, position) => position > index && message.role === 'user')
+
+  return messages.slice(index + 1, next < 0 ? undefined : next)
+}
+
+/** The durable user index (-1 before any prompt) of the only interval that
+ * contains one of `run`'s tool IDs; undefined when none or several do. */
+function soleToolInterval(durable: ChatMessage[], run: ChatMessage[]): number | undefined {
+  const toolIds = new Set(
+    run.flatMap(message => message.parts.flatMap(part => (part.type === 'tool-call' ? [part.toolCallId] : [])))
+  )
+
+  if (!toolIds.size) {
+    return undefined
+  }
+
+  const matchingIntervals = new Set<number>()
+  let userIndex = -1
+
+  for (let index = 0; index < durable.length; index++) {
+    const message = durable[index]
+
+    if (message.role === 'user') {
+      userIndex = index
+    }
+
+    if (message.parts.some(part => part.type === 'tool-call' && toolIds.has(part.toolCallId))) {
+      matchingIntervals.add(userIndex)
+    }
+  }
+
+  return matchingIntervals.size === 1 ? [...matchingIntervals][0] : undefined
+}
 
 /** Completion owns liveness, not the history read's missing rows/results.
  * Reconcile only a proven shared user interval, or the assistant run containing
@@ -36,29 +76,40 @@ export function reconcileSettledTranscript(durable: ChatMessage[], local: ChatMe
   }
 
   if (durableStart < 0) {
-    const firstUser = local.findIndex(message => message.role === 'user')
-    const leading = firstUser < 0 ? local : local.slice(0, firstUser)
+    // An optimistic prompt (synthetic ID, no rowId yet) has no row identity.
+    // Align it through a tool occurrence its own run shares with exactly one
+    // durable interval, and require that interval's prompt to be the same
+    // text; equal prompt text alone never proves the occurrence. Repeated
+    // prompts reusing a tool ID can map several local intervals onto one
+    // durable interval; that is ambiguous, so keep the conservative fallback.
+    const candidates: Array<[localIndex: number, durableIndex: number]> = []
 
-    const toolIds = new Set(
-      leading.flatMap(message => message.parts.flatMap(part => (part.type === 'tool-call' ? [part.toolCallId] : [])))
-    )
-
-    const matchingIntervals = new Set<number>()
-    let userIndex = -1
-
-    for (let index = 0; index < durable.length; index++) {
-      const message = durable[index]
-
-      if (message.role === 'user') {
-        userIndex = index
+    for (let index = 0; index < local.length; index++) {
+      if (local[index].role !== 'user') {
+        continue
       }
 
-      if (message.parts.some(part => part.type === 'tool-call' && toolIds.has(part.toolCallId))) {
-        matchingIntervals.add(userIndex)
+      const match = soleToolInterval(durable, runAfter(local, index))
+
+      if (match !== undefined && match >= 0 && samePromptText(durable[match], local[index])) {
+        candidates.push([index, match])
       }
     }
 
-    if (matchingIntervals.size !== 1) {
+    // Like the rowId path, anchor on the latest aligned prompt; reject it when
+    // another local prompt claims the same durable interval.
+    const latest = candidates.at(-1)
+
+    if (latest && candidates.filter(([, durableIndex]) => durableIndex === latest[1]).length === 1) {
+      ;[localStart, durableStart] = latest
+    }
+  }
+
+  if (durableStart < 0) {
+    const firstUser = local.findIndex(message => message.role === 'user')
+    const match = soleToolInterval(durable, firstUser < 0 ? local : local.slice(0, firstUser))
+
+    if (match === undefined) {
       // No occurrence identity: never discard the fetched prompt/history just
       // because local assistant-only rows have synthetic stream IDs. Tool IDs
       // can repeat across turns, so a match in several user intervals is not
@@ -66,7 +117,7 @@ export function reconcileSettledTranscript(durable: ChatMessage[], local: ChatMe
       return [...durable, ...local]
     }
 
-    durableStart = [...matchingIntervals][0]
+    durableStart = match
   }
 
   const durableTail = durable.slice(durableStart + 1)

@@ -807,3 +807,83 @@ it.each(['activation', 'history'] as const)(
     expect(state.busy).toBe(false)
   }
 )
+
+it('does not duplicate an optimistic prompt when its turn completes while warm history is pending', async () => {
+  const snapshot: SessionResumeResult = {
+    session_id: runtimeId,
+    resumed: storedId,
+    messages: [],
+    messages_omitted: true,
+    message_count: 0,
+    running: true,
+    turn_started_at: 2,
+    inflight: { user: prompt, assistant: commentary, streaming: true }
+  }
+
+  const durable = history([commentary])
+  durable.push({ id: 4, role: 'assistant', content: 'Finished result.', timestamp: 4 })
+  const { result } = mount(snapshot)
+  act(() => {
+    result.current.cache.activeSessionIdRef.current = runtimeId
+    result.current.cache.selectedStoredSessionIdRef.current = storedId
+    // Accepted but not yet acknowledged: synthetic ID and no durable rowId.
+    result.current.cache.updateSessionState(
+      runtimeId,
+      state => ({
+        ...state,
+        messages: [{ id: 'user-1790000000', role: 'user', parts: [{ type: 'text', text: prompt }] }]
+      }),
+      storedId
+    )
+    result.current.stream.handleGatewayEvent({ session_id: runtimeId, type: 'message.start', payload: {} })
+    result.current.stream.handleGatewayEvent({
+      session_id: runtimeId,
+      type: 'message.interim',
+      payload: { text: commentary }
+    })
+    result.current.stream.handleGatewayEvent({
+      session_id: runtimeId,
+      type: 'tool.start',
+      payload: { name: 'read_file', tool_id: 'call-0', args: {} }
+    })
+    result.current.stream.handleGatewayEvent({
+      session_id: runtimeId,
+      type: 'tool.complete',
+      payload: { name: 'read_file', tool_id: 'call-0', result: 'fixture' }
+    })
+  })
+
+  let release!: () => void
+  vi.mocked(getLatestSessionMessages).mockReturnValue(
+    new Promise(resolve => {
+      release = () => resolve({ session_id: storedId, messages: durable })
+    })
+  )
+
+  let pending!: Promise<void>
+  await act(async () => {
+    pending = result.current.actions.resumeSession(storedId, true)
+  })
+  act(() =>
+    result.current.stream.handleGatewayEvent({
+      session_id: runtimeId,
+      type: 'message.complete',
+      payload: { text: 'Finished result.' }
+    })
+  )
+  await act(async () => {
+    release()
+    await pending
+  })
+
+  const state = result.current.cache.sessionStateByRuntimeIdRef.current.get(runtimeId)!
+  expect(state.messages.filter(message => message.role === 'user').map(chatMessageText)).toEqual([prompt])
+
+  const text = state.messages
+    .filter(message => message.role === 'assistant')
+    .map(chatMessageText)
+    .join('\n')
+
+  expect(text.match(/Finished result\./g)).toHaveLength(1)
+  expect(text.match(/Checking the phase\./g)).toHaveLength(1)
+})

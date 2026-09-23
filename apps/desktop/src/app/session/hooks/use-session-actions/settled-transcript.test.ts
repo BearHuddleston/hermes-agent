@@ -110,3 +110,33 @@ it('keeps a retained text-only failure on its own user interval', () => {
   expect(result[1].error).toBe('provider failed')
   expect(result.find(message => message.id === laterAnswer.id)).toEqual(laterAnswer)
 })
+
+it('aligns an optimistic prompt through its own tool occurrence without duplicating it', () => {
+  const durable = [user, row('stored', [text('Checking.'), completed, text('Done.')])]
+  const optimistic: ChatMessage = { ...user, id: 'user-1790000000', rowId: undefined }
+
+  const local = [
+    optimistic,
+    row('assistant-stream-tools', [text('Checking.'), tool]),
+    row('live-final', [text('Done.')])
+  ]
+
+  const result = reconcileSettledTranscript(durable, local)
+
+  expect(result.filter(message => message.role === 'user')).toEqual([user])
+  expect(result.map(chatMessageText)).toEqual(['Do the edit', 'Checking.Done.'])
+  expect(result.flatMap(message => message.parts).filter(part => part.type === 'tool-call')).toEqual([completed])
+})
+
+it('keeps both transcripts when optimistic alignment is ambiguous or the prompt differs', () => {
+  const durable = [user, row('stored', [text('Checking.'), completed, text('Done.')])]
+  const optimistic: ChatMessage = { ...user, id: 'user-1790000000', rowId: undefined }
+  const repeated: ChatMessage = { ...optimistic, id: 'user-1790000001' }
+  const edited: ChatMessage = { ...optimistic, parts: [text('A different prompt')] }
+
+  const ambiguous = [optimistic, row('first', [tool]), repeated, row('second', [tool])]
+  expect(reconcileSettledTranscript(durable, ambiguous)).toEqual([...durable, ...ambiguous])
+
+  const mismatched = [edited, row('live', [tool])]
+  expect(reconcileSettledTranscript(durable, mismatched)).toEqual([...durable, ...mismatched])
+})
