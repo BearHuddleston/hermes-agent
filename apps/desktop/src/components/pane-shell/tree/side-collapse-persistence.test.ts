@@ -1,5 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { LAYOUT_KEYS } from '@/lib/layout-persistence'
+
 /** Re-import real stores over the same storage, as a page refresh does. The
  * workspace is available; Files keeps its own toggle, independent of its side. */
 async function boot() {
@@ -109,7 +111,7 @@ describe('side visibility survives a page refresh independently of Files', () =>
     // primary layout's sides. Keep the Files default opposite the saved side.
     state.tree.setTreeSideCollapsed('right', false)
     state.tree.setTreeSideCollapsed('left', true)
-    const sidesKey = 'hermes.desktop.layoutTree.sides.v1'
+    const sidesKey = LAYOUT_KEYS.collapsed
     const savedSides = window.localStorage.getItem(sidesKey)
 
     for (const win of ['secondary', 'browser']) {
@@ -127,13 +129,12 @@ describe('side visibility survives a page refresh independently of Files', () =>
     expect(state.tree.$collapsedTreeSides.get().has('right')).toBe(false)
     expect(state.tree.$collapsedTreeSides.get().has('left')).toBe(true)
 
-    // Untrusted saved values fall back per side, without overwriting on boot.
-    const malformed = JSON.stringify({ left: true, right: 'false' })
+    // Invalid storage falls back to this mode's chrome defaults.
+    const malformed = JSON.stringify(['left', 'invalid-side'])
     window.localStorage.setItem(sidesKey, malformed)
     state = await boot()
-    expect(state.tree.$collapsedTreeSides.get().has('left')).toBe(true)
+    expect(state.tree.$collapsedTreeSides.get().has('left')).toBe(false)
     expect(state.tree.$collapsedTreeSides.get().has('right')).toBe(true)
-    expect(window.localStorage.getItem(sidesKey)).toBe(malformed)
   })
 
   it('toggles an ancestor-hidden pane on the first press and keeps unrelated zones visible', async () => {

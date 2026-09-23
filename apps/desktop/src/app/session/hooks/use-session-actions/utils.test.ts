@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
 import { textWithoutReferenceLines, WIRE_REFERENCE_KINDS } from '@/components/assistant-ui/reference-kinds'
-import { type ChatMessage, type ChatMessagePart, chatMessageText, toChatMessages } from '@/lib/chat-messages'
+import { type ChatMessage, type ChatMessagePart, chatMessageText, textPart, toChatMessages } from '@/lib/chat-messages'
 import { $approvalModes, approvalModeForProfile } from '@/store/approval-mode'
 import { $desktopOnboarding, consumePendingCredentialWarning } from '@/store/onboarding'
 import { $activeGatewayProfile } from '@/store/profile'
@@ -726,6 +726,43 @@ describe('reconcileResumeMessages', () => {
 })
 
 describe('preserveLocalPendingTurnMessages', () => {
+  it('does not append acknowledged local history after a shifted newest page', () => {
+    const previous = [
+      msg('user-first', 'user', 'Original request', { timestamp: 1 }),
+      msg('assistant-stream-first', 'assistant', 'Working.', { pending: false, timestamp: 2 }),
+      msg('user-followup', 'user', 'Follow-up request', { timestamp: 3 }),
+      msg('assistant-stream-final', 'assistant', 'Completed.', { pending: false, rowId: 30, durableComplete: true })
+    ]
+
+    const answer = msg('stored-answer', 'assistant', 'Completed.', { rowId: 30, timestamp: 5 })
+
+    const folded = { ...answer, rowId: 20, parts: [{ ...textPart('Completed.'), sourceRowId: 30 }] }
+
+    for (const next of [[answer], [msg('stored-followup', 'user', 'Follow-up request'), answer], [folded]]) {
+      expect(preserveLocalPendingTurnMessages(next, previous)).toEqual(next)
+    }
+
+    const unacknowledged = msg('user-new', 'user', 'A new request', { timestamp: 6 })
+    expect(preserveLocalPendingTurnMessages([answer], [...previous, unacknowledged])).toEqual([answer, unacknowledged])
+  })
+
+  it('keeps a newer equal reply and its prompt until that occurrence is persisted', () => {
+    const previousAnswer = msg('stored-answer', 'assistant', 'Completed.', { rowId: 10 })
+    const prompt = msg('user-new', 'user', 'Repeat the check', { rowId: 11 })
+    const reply = msg('assistant-stream-new', 'assistant', 'Completed.', { pending: false, rowId: 12 })
+    reply.parts.push({ type: 'reasoning', text: 'Reasoning only from the new occurrence.' })
+    expect(reconcileResumeMessages([previousAnswer], [prompt, reply])).toEqual([previousAnswer])
+
+    // Neither equal prose nor missing clocks can make a different persisted
+    // occurrence acknowledge this one, even when the older row left the cache.
+    for (const previous of [
+      [previousAnswer, prompt, reply],
+      [prompt, reply]
+    ]) {
+      expect(preserveLocalPendingTurnMessages([previousAnswer], previous)).toEqual([previousAnswer, prompt, reply])
+    }
+  })
+
   it('keeps an optimistic user turn and pending assistant when the server projection is behind', () => {
     const next = [msg('1-user', 'user', 'first'), msg('2-assistant', 'assistant', 'first answer')]
 
@@ -1540,14 +1577,8 @@ describe('appendLiveSessionProjection', () => {
   })
 
   it.each([
-    [
-      'background-process notice',
-      '[IMPORTANT: Background process proc_123 completed normally with exit code 0.]'
-    ],
-    [
-      'compaction task snapshot',
-      '[Your active task list was preserved across context compression]\n- [>] current task'
-    ]
+    ['background-process notice', '[IMPORTANT: Background process proc_123 completed normally with exit code 0.]'],
+    ['compaction task snapshot', '[Your active task list was preserved across context compression]\n- [>] current task']
   ])('keeps an attached inflight prompt anchored before a later %s', (_kind, syntheticNotice) => {
     const stored = [
       msg('stored-user', 'user', 'current running prompt', {
@@ -1587,12 +1618,9 @@ describe('appendLiveSessionProjection', () => {
     const stored = [
       msg('stored-user', 'user', 'repeat this', { timestamp: 1 }),
       msg('stored-assistant', 'assistant', 'finished answer', { timestamp: 2 }),
-      msg(
-        'synthetic-notice',
-        'user',
-        '[IMPORTANT: Background process proc_123 completed normally with exit code 0.]',
-        { timestamp: 3 }
-      )
+      msg('synthetic-notice', 'user', '[IMPORTANT: Background process proc_123 completed normally with exit code 0.]', {
+        timestamp: 3
+      })
     ]
 
     const restored = appendLiveSessionProjection(stored, {
