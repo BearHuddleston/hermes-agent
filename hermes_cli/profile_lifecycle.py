@@ -282,9 +282,10 @@ def retire_in_process_profile_resources(
             logger.debug("Failed to release cached profile SessionDB", exc_info=True)
 
     try:
-        from plugins.memory.holographic.store import MemoryStore
+        from plugins.memory import import_provider_module
 
-        retired += max(0, int(MemoryStore.release_all_under(profile_dir) or 0))
+        memory_store = import_provider_module("holographic", "store").MemoryStore
+        retired += max(0, int(memory_store.release_all_under(profile_dir) or 0))
     except Exception:
         logger.debug("Failed to release profile memory-store connections", exc_info=True)
     if retire_error is not None:

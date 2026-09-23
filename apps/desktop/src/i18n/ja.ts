@@ -363,9 +363,11 @@ export const ja = defineLocale({
         reviewRepository: 'リポジトリを確認',
         repoPlaceholder: 'https://github.com/owner/repo',
         toolsConnected: n => `${n} 個のツールを接続しました`,
-        skillsReady: names => (names.length === 1 ? `スキル ${names[0]} の準備ができました` : `${names.length} 個のスキルの準備ができました`),
+        skillsReady: names =>
+          names.length === 1 ? `スキル ${names[0]} の準備ができました` : `${names.length} 個のスキルの準備ができました`,
         nextChat: 'ほかのツールは次のチャットで使えます',
-        serverNotConnected: (server, reason) => `MCP サーバー ${server} は接続されていません${reason ? `: ${reason}` : '。'}`
+        serverNotConnected: (server, reason) =>
+          `MCP サーバー ${server} は接続されていません${reason ? `: ${reason}` : '。'}`
       }
     },
     closeSettings: '設定を閉じる',
@@ -3643,6 +3645,7 @@ export const ja = defineLocale({
       'sudo パスワードを入力する前にコマンドを確認してください。パスワードは実行するエージェントに送信され、このセッション中キャッシュされます。',
     sudoCommandUnavailable:
       'エージェントからコマンドが提供されていません。会話で確認できない場合はキャンセルしてください。',
+    sudoInstallDesc: 'Bot Screen のパッケージ（TigerVNC + Xfce）をゲートウェイホストにインストールするため、sudo パスワードが必要です。そのホストにのみ送信されます。',
     sudoPlaceholder: 'sudo パスワード',
     secretTitle: 'シークレットが必要です',
     secretDesc: 'Hermes は続行するための認証情報が必要です。',

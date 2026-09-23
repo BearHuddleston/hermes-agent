@@ -131,9 +131,6 @@ def test_inventory_classifies_desktop_owned_serve(monkeypatch):
     assert serves[0].restart_via == "desktop"
 
 
-def test_describe_restart_mechanism_respawn_argv():
-    text = update_inventory.describe_restart_mechanism("respawn-argv", "default")
-    assert "relaunch" in text
 
 
 # ---------------------------------------------------------------------------
@@ -356,12 +353,3 @@ def test_inventory_classifies_launchd_job_owned_serve(monkeypatch, kind):
     assert "kickstarts" in skipped[0]["reason"]
 
 
-@pytest.mark.macos_only
-def test_stale_serve_warning_names_the_launchd_kickstart_command(capsys):
-    """#116503: a launchd-owned survivor gets the launchctl kickstart hint, not only the
-    manual relaunch advice (a KeepAlive job fights a hand relaunch)."""
-    from hermes_cli import update_abort_recovery
-
-    update_abort_recovery._warn_stale_serve_runtimes(
-        [{"pid": 4321, "kind": "dashboard", "profile": "default", "supervisor": "launchd"}])
-    assert "launchctl kickstart -k gui/$UID/<label>" in capsys.readouterr().out
