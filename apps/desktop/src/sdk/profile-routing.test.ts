@@ -659,6 +659,47 @@ describe('profile-aware plugin session opens', () => {
     expect($focusedStoredSessionId.get()).toBeNull()
   })
 
+  it('shows the wake overlay while a cold cross-connection Bot dial is still pending', async () => {
+    let releaseDial: (() => void) | undefined
+
+    vi.mocked(openGatewayForAgent).mockImplementationOnce(
+      () =>
+        new Promise<void>(resolve => {
+          releaseDial = resolve
+        })
+    )
+
+    const opening = host.openSession('cold-remote-bot-chat', {
+      awaitHydration: true,
+      expectHistory: true,
+      hydrationTimeoutMs: 1_000,
+      intent: 'tab',
+      route: {
+        connectionId: 'source-a',
+        mode: 'remote',
+        profile: 'writer',
+        targetProfile: 'writer'
+      },
+      workspaceMode: 'bots',
+      workspaceOwnerKey: 'bot:source-a::writer'
+    })
+
+    await new Promise(resolve => setTimeout(resolve, 0))
+
+    // The dial has not settled (SSH bootstrap + remote spawn in the field),
+    // yet the click must already read as "waking up", not a frozen window.
+    expect(releaseDial).toBeDefined()
+    expect(openSessionCore).not.toHaveBeenCalled()
+    expect($gatewaySwapTarget.get()).toBe('writer')
+
+    // Superseding the wake mid-dial still clears the overlay it raised.
+    setWorkspaceScope('sessions')
+    releaseDial?.()
+
+    await expect(opening).rejects.toThrow(/superseded/i)
+    expect($gatewaySwapTarget.get()).toBeNull()
+  })
+
   it('strands a late Bot wake when the user returns to Sessions', async () => {
     let releaseDial: (() => void) | undefined
 

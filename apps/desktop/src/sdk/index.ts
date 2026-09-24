@@ -1043,6 +1043,16 @@ export const host = {
             ? () => openGatewayForProfile(plan.dialWithoutSwitching as string, { spawnPriority: 'foreground' })
             : null
 
+      if (dial && options.awaitHydration) {
+        // Acknowledge the click before the dial. A cold target (an SSH bot
+        // with no running backend) spends seconds on tunnel bootstrap, remote
+        // spawn and boot here; raising the overlay only after it left the
+        // window looking frozen for that whole stretch. Re-asserted below:
+        // the profile-door dial clears the same atom when its own swap settles.
+        $gatewaySwapTarget.set(targetProfile)
+        gatewaySwapTargetOwnerGeneration = generation
+      }
+
       if (dial) {
         // Bounded only on the hydration contract, which is where a budget and a
         // Retry surface both already exist. A plain open never asked for a
