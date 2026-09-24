@@ -29,9 +29,12 @@ def test_lifespan_owns_scheduler_without_adopting_native_gateway(
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     if desktop:
+        # Desktop ownership = the flag plus the per-spawn credential the app mints.
         monkeypatch.setenv("HERMES_DESKTOP", "1")
+        monkeypatch.setenv("HERMES_DASHBOARD_SESSION_TOKEN", "desktop-spawn-token")
     else:
         monkeypatch.delenv("HERMES_DESKTOP", raising=False)
+        monkeypatch.delenv("HERMES_DASHBOARD_SESSION_TOKEN", raising=False)
 
     started = threading.Event()
     stopped = threading.Event()

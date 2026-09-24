@@ -9,6 +9,7 @@ import json
 import os
 import shutil
 import socket
+import stat
 import sys
 import tarfile
 import types
@@ -216,6 +217,44 @@ class TestCreateProfile:
         assert cloned_config["model"] == "test"
         assert (profile_dir / ".env").read_text().strip() == "KEY=val"
         assert (profile_dir / "SOUL.md").read_text() == "Be helpful."
+
+    def test_clone_config_copies_only_the_active_memory_providers_config(self, profile_env):
+        """#120115: --clone carried ``memory.provider: hindsight`` but not hindsight's own config,
+        so the clone booted with memory silently unavailable. Only the ACTIVE provider's
+        ``<provider>/`` dir / ``<provider>.json`` travels; another provider's leftovers stay behind."""
+        tmp_path = profile_env
+        default_home = tmp_path / ".hermes"
+        (default_home / "config.yaml").write_text("memory:\n  provider: hindsight\n")
+        (default_home / "hindsight").mkdir()
+        payload = '{"mode": "local_embedded", "bank_id": "hermes", "apiKey": "hs-secret"}'
+        (default_home / "hindsight" / "config.json").write_text(payload)
+        (default_home / "mem0.json").write_text('{"agent_id": "hermes"}')
+
+        profile_dir = create_profile("coder", clone_config=True, no_alias=True)
+
+        cloned = profile_dir / "hindsight" / "config.json"
+        assert cloned.read_text() == payload
+        if os.name != "nt":
+            assert stat.S_IMODE(cloned.stat().st_mode) == 0o600
+        assert not (profile_dir / "mem0.json").exists()
+
+    @pytest.mark.parametrize("provider", ["../outside", "a/b", "..", "hind sight"])
+    def test_clone_config_ignores_unsafe_memory_provider_names(self, profile_env, provider):
+        """A hand-edited ``memory.provider`` must never aim the copy outside the source profile."""
+        tmp_path = profile_env
+        default_home = tmp_path / ".hermes"
+        (default_home / "config.yaml").write_text(f"memory:\n  provider: {provider!r}\n")
+        (tmp_path / "outside").mkdir()
+        (tmp_path / "outside" / "config.json").write_text("{}")
+        (default_home / "a").mkdir()
+        (default_home / "a" / "b").mkdir()
+        (default_home / "a" / "b" / "config.json").write_text("{}")
+
+        profile_dir = create_profile("coder", clone_config=True, no_alias=True)
+
+        assert not (profile_dir / "a").exists()
+        assert not (profile_dir.parent / "outside").exists()
+        assert not (profile_dir / "hind sight").exists()
 
     def test_clone_sync_imports_carries_manifest_but_never_links_profiles(self, profile_env):
         """--sync-imports copies import-sync.json (a pointer at EXTERNAL agent trees) and nothing
@@ -1989,3 +2028,29 @@ class TestCloneAllExcludesRuntimeTrees:
             assert not (clone / name).exists(), name
         assert (clone / "skills" / "greet" / "SKILL.md").is_file()
         assert (clone / "config.yaml").is_file()
+
+
+def test_count_skills_publishes_timestamp_after_the_walk(tmp_path, monkeypatch):
+    """A scan longer than the TTL must not publish an already-expired cache entry (#107151):
+    the cached timestamp is taken after _walk_skill_count returns, not before it starts."""
+    from hermes_cli import profiles as mod
+
+    skills_dir = tmp_path / "skills"
+    skills_dir.mkdir()
+    monkeypatch.setattr(mod, "_SKILL_COUNT_CACHE", {})
+    monkeypatch.setattr(mod, "_SKILL_COUNT_SCAN_LOCKS", {}, raising=False)
+    clock = {"now": 1000.0}
+    monkeypatch.setattr(mod.time, "time", lambda: clock["now"])
+
+    def slow_walk(_dir):
+        clock["now"] += mod._SKILL_COUNT_TTL_SECONDS + 5  # walk outlives the TTL
+        return 3
+
+    monkeypatch.setattr(mod, "_walk_skill_count", slow_walk)
+    assert mod._count_skills(tmp_path) == 3
+    _sig, stamped, count = mod._SKILL_COUNT_CACHE[str(skills_dir)]
+    assert count == 3
+    assert stamped >= clock["now"], "published timestamp must be >= scan end"
+    # Entry is fresh: a second call within the TTL must not walk again.
+    monkeypatch.setattr(mod, "_walk_skill_count", lambda _d: pytest.fail("re-walked a fresh entry"))
+    assert mod._count_skills(tmp_path) == 3

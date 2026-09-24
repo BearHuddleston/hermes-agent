@@ -32,6 +32,7 @@ import { $reactionsEnabled, setReactionsEnabled } from '@/store/reactions-enable
 import { $reasoningCollapsedByDefault, setReasoningCollapsedByDefault } from '@/store/reasoning-disclosure'
 import { $sessionListDensity, type SessionListDensity, setSessionListDensity } from '@/store/session-list-density'
 import { $tabStripDefault, setTabStripDefault, type TabStripDefault } from '@/store/tabstrip-prefs'
+import { $textDirection, setTextDirection, TEXT_DIRECTIONS, type TextDirection } from '@/store/text-direction'
 import { $hideThreadTimeline, setHideThreadTimeline } from '@/store/thread-timeline'
 import { $spentTipCount, $tipsEnabled, resetTips, setTipsEnabled } from '@/store/tips'
 import {
@@ -434,6 +435,7 @@ export function AppearanceSettings({ subpage }: AppearanceSettingsProps = {}) {
   const translucency = useStore($translucency)
   const glassMode = translucency.mode === 'glass' && GLASS_SUPPORTED
   const userBubbleTransparency = useStore($userBubbleTransparency)
+  const textDirection = useStore($textDirection)
   const reactionsEnabled = useStore($reactionsEnabled)
   const tipsEnabled = useStore($tipsEnabled)
   const toursEnabled = useStore($toursEnabled)
@@ -539,6 +541,11 @@ export function AppearanceSettings({ subpage }: AppearanceSettingsProps = {}) {
     { id: 'right', label: a.appActionsRight },
     { id: 'left', label: a.appActionsLeft }
   ] as const satisfies readonly { id: TitlebarAppActionsSide; label: string }[]
+
+  const textDirectionOptions = TEXT_DIRECTIONS.map(id => ({
+    id,
+    label: a.textDirection[id]
+  })) satisfies readonly { id: TextDirection; label: string }[]
 
   const embedOptions = [
     { id: 'ask', label: a.embedsAsk },
@@ -879,6 +886,24 @@ export function AppearanceSettings({ subpage }: AppearanceSettingsProps = {}) {
               description={a.userBubbleDesc}
               id={appearanceSettingElementId(APPEARANCE_SETTING_IDS.userBubble)}
               title={a.userBubbleTitle}
+            />
+          )}
+
+          {show('chat-display') && (
+            <ListRow
+              action={
+                <SegmentedControl
+                  onChange={id => {
+                    triggerHaptic('selection')
+                    setTextDirection(id)
+                  }}
+                  options={textDirectionOptions}
+                  value={textDirection}
+                />
+              }
+              description={a.textDirectionDesc}
+              id={appearanceSettingElementId(APPEARANCE_SETTING_IDS.textDirection)}
+              title={a.textDirectionTitle}
             />
           )}
 
