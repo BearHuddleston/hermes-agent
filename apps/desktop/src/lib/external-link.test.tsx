@@ -2,6 +2,7 @@ import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/re
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { IS_MAC } from '@/lib/keybinds/combo'
+import { setAlwaysExternalLinks } from '@/store/external-links'
 import { $previewTabs, closeRightRail } from '@/store/preview'
 import { $connection } from '@/store/session'
 
@@ -44,6 +45,7 @@ afterEach(() => {
   closeRightRail()
   $connection.set(null)
   globalThis.document.documentElement.removeAttribute('data-hermes-desktop-host')
+  setAlwaysExternalLinks(false)
   vi.restoreAllMocks()
   cleanup()
 
@@ -125,18 +127,22 @@ describe('external link helpers', () => {
     await waitFor(() => expect($previewTabs.get().at(-1)?.target.url).toBe('https://example.com/path/to/resource'))
   })
 
-  it('opens a Webapp web link externally within the click gesture without adding a preview', () => {
-    globalThis.document.documentElement.dataset.hermesDesktopHost = 'browser'
-    const openExternal = vi.fn().mockResolvedValue(undefined)
-    installDesktopBridge({ openExternal })
+  it.each([false, true])(
+    'opens a Webapp web link synchronously without adding a preview when always external is %s',
+    alwaysExternal => {
+      globalThis.document.documentElement.dataset.hermesDesktopHost = 'browser'
+      setAlwaysExternalLinks(alwaysExternal)
+      const openExternal = vi.fn().mockResolvedValue(undefined)
+      installDesktopBridge({ openExternal })
 
-    render(<ExternalLink href="https://example.com/path/to/resource">Example link</ExternalLink>)
+      render(<ExternalLink href="https://example.com/path/to/resource">Example link</ExternalLink>)
 
-    fireEvent.click(screen.getByRole('link', { name: 'Example link' }))
+      fireEvent.click(screen.getByRole('link', { name: 'Example link' }))
 
-    expect(openExternal).toHaveBeenCalledExactlyOnceWith('https://example.com/path/to/resource')
-    expect($previewTabs.get()).toHaveLength(0)
-  })
+      expect(openExternal).toHaveBeenCalledExactlyOnceWith('https://example.com/path/to/resource')
+      expect($previewTabs.get()).toHaveLength(0)
+    }
+  )
 
   // Platform-specific on purpose (same rule as terminal links / middle-click):
   // ⌘ on macOS, Ctrl elsewhere. The suite runs as non-mac.
@@ -151,6 +157,23 @@ describe('external link helpers', () => {
     expect(openExternal).toHaveBeenCalledWith('https://example.com/path/to/resource')
     expect($previewTabs.get()).toHaveLength(0)
   })
+
+  it.each(['local', 'remote'] as const)(
+    'sends an Electron plain click to the OS browser when always external is on with a %s connection',
+    mode => {
+      $connection.set({ mode } as never)
+      const openExternal = vi.fn().mockResolvedValue(undefined)
+      installDesktopBridge({ openExternal: openExternal as unknown as Window['hermesDesktop']['openExternal'] })
+      setAlwaysExternalLinks(true)
+
+      render(<ExternalLink href="https://example.com/path/to/resource">Example link</ExternalLink>)
+
+      fireEvent.click(screen.getByRole('link', { name: 'Example link' }))
+
+      expect(openExternal).toHaveBeenCalledExactlyOnceWith('https://example.com/path/to/resource')
+      expect($previewTabs.get()).toHaveLength(0)
+    }
+  )
 
   it('treats only the HUD renderer as a native-link surface', () => {
     expect(hudForcesNativeLinks('')).toBe(false)

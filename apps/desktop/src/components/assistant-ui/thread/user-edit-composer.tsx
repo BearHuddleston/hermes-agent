@@ -16,6 +16,7 @@ import {
 import { ComposerDirectiveActions } from '@/app/chat/composer/directive-actions'
 import { COMPOSER_DROP_ACTIVE_CLASS, COMPOSER_DROP_FADE_CLASS } from '@/app/chat/composer/drop-affordance'
 import {
+  ackComposerInsert,
   type ComposerInsertMode,
   focusComposerInput,
   markActiveComposer,
@@ -189,11 +190,11 @@ export const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sess
   }, [])
 
   const appendExternalText = useCallback(
-    (text: string, mode: ComposerInsertMode) => {
+    (text: string, mode: ComposerInsertMode): boolean => {
       const value = text.trim()
 
       if (!value) {
-        return
+        return false
       }
 
       rememberInitialDraft()
@@ -212,6 +213,8 @@ export const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sess
       }
 
       setFocusRequestId(id => id + 1)
+
+      return true
     },
     [aui, rememberInitialDraft]
   )
@@ -249,9 +252,11 @@ export const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sess
       }
     })
 
-    const offInsert = onComposerInsertRequest(({ mode, target, text }) => {
+    const offInsert = onComposerInsertRequest(({ mode, target, text, token }) => {
       if (target === 'edit') {
-        appendExternalText(text, mode)
+        // Tokened inserts come from the plugin SDK: acknowledge whether the
+        // text landed instead of reporting success unconditionally.
+        ackComposerInsert(token, appendExternalText(text, mode))
       }
     })
 

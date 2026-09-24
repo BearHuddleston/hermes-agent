@@ -1,10 +1,40 @@
 import { afterEach, expect, it, vi } from 'vitest'
 
+import { setApiRequestConnection, setApiRequestProfile } from '@/api/client'
 import { $notifications, clearNotifications } from '@/store/notifications'
 import { $connection } from '@/store/session'
 
 import { installBrowserDesktopBridge } from './browser-desktop-bridge'
 import { BROWSER_IMAGE_DOWNLOAD_MAX_BYTES, BROWSER_IMAGE_DOWNLOAD_TIMEOUT_MS } from './browser-image-download'
+import { captureGatewayFileDownload } from './media'
+
+it('keeps a captured download on its owning browser profile after a foreground switch', async () => {
+  win.__HERMES_SESSION_TOKEN__ = 'served-token'
+  const fetchMock = vi.fn().mockResolvedValue(new Response(null, { status: 200 }))
+  vi.stubGlobal('fetch', fetchMock)
+  const downloads: HTMLAnchorElement[] = []
+  vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(function (this: HTMLAnchorElement) {
+    downloads.push(this)
+  })
+  expect(installBrowserDesktopBridge()).toBe(true)
+  setApiRequestConnection('local')
+  setApiRequestProfile('file-owner')
+  const download = captureGatewayFileDownload()
+  setApiRequestProfile('foreground')
+  $connection.set({ connectionId: 'local', mode: 'remote', profile: 'foreground' } as never)
+
+  await download('file://nas/share/report.pdf', 'report.pdf')
+
+  const [requestUrl, init] = fetchMock.mock.calls[0] as [URL, RequestInit]
+  expect(init.method).toBe('HEAD')
+  expect(requestUrl.searchParams.get('profile')).toBe('file-owner')
+  expect(requestUrl.searchParams.get('path')).toBe('file://nas/share/report.pdf')
+  expect(downloads).toHaveLength(1)
+  const url = new URL(downloads[0].href)
+  expect(url.searchParams.get('profile')).toBe('file-owner')
+  expect(url.searchParams.get('path')).toBe('file://nas/share/report.pdf')
+  expect(downloads[0].download).toBe('report.pdf')
+})
 
 it.each([
   { name: 'exact byte ceiling', oversized: false, declaredLength: null },
@@ -177,6 +207,8 @@ afterEach(() => {
   Reflect.deleteProperty(win, 'hermesDesktop')
   document.documentElement.removeAttribute('data-hermes-desktop-host')
   window.history.replaceState(null, '', '/#/')
+  setApiRequestConnection(null)
+  setApiRequestProfile(null)
   $connection.set(null)
   clearNotifications()
   window.dispatchEvent(new Event('beforeunload'))
