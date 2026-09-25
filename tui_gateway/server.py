@@ -235,12 +235,18 @@ def _prepend_tool_paths(env: dict[str, str]) -> dict[str, str]:
 class _SlashWorker:
     """Persistent HermesCLI subprocess for slash commands."""
 
-    def __init__(self, session_key: str, model: str, profile_home: str | None = None):
+    def __init__(self, session_key: str, model: str, profile_home: str | None = None,
+                 provider: str | None = None):
         self._lock = threading.Lock()
         self._seq = 0
         self.stderr_tail: list[str] = []
         self.stdout_queue: queue.Queue[dict | None] = queue.Queue()
-        argv = [sys.executable, "-m", "tui_gateway.slash_worker", "--session-key", session_key] + (["--model", model] if model else [])
+        # ``--provider`` pins the child to the parent agent's virtual provider: without it the
+        # worker re-resolves provider from config, so a MoA session (provider=moa, model=<preset>)
+        # dispatched its preset NAME to the configured real provider and 402/503'd (#57283).
+        argv = [sys.executable, "-m", "tui_gateway.slash_worker", "--session-key", session_key] \
+            + (["--model", model] if model else []) \
+            + (["--provider", provider] if provider else [])
         self._closed = False
         from hermes_cli._subprocess_compat import windows_hide_flags
         # slash_worker runs the Hermes agent → needs provider credentials. Tier-1 secrets
@@ -2082,7 +2088,8 @@ def _restart_slash_worker(sid: str, session: dict):
         worker.close()
     try:
         new_worker = _SlashWorker(session["session_key"], getattr(session.get("agent"), "model", _resolve_model()),
-                                  profile_home=session.get("profile_home"))
+                                  profile_home=session.get("profile_home"),
+                                  provider=getattr(session.get("agent"), "provider", None) or None)
     except Exception:
         session["slash_worker"] = None
         return
@@ -3456,8 +3463,8 @@ def _skill_usage_lookup():
     "hub" / "bundled" / "local" (``/api/skills`` ``provenance``, "local" spelled "agent"). Failure → 0 / "local"."""
     try:
         from tools.skill_usage import (
-            _read_bundled_manifest_names, _read_hub_installed_names, activity_count, load_usage)
-        records, bundled, hub = load_usage(), _read_bundled_manifest_names(), _read_hub_installed_names()
+            _read_bundled_names, _read_hub_installed_names, activity_count, load_usage)
+        records, bundled, hub = load_usage(), _read_bundled_names(), _read_hub_installed_names()
     except Exception as e:
         logger.debug("skill usage lookup unavailable: %s", e)
         return (lambda _name: 0), (lambda _name: "local")

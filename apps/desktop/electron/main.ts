@@ -114,12 +114,14 @@ import { provisionCliLinks } from './cli-provision'
 import { closeStopFailureMessage, finishWindowsCloseStop, type RuntimeLock } from './close-stop-kill'
 import { shouldAttemptCloudBootCascade } from './cloud-boot-cascade'
 import { discoverWithTeamFallback } from './cloud-discovery'
+import { createCloudSessionRecovery } from './cloud-session-recovery'
 import { installCommandScreenshot } from './command-screenshot'
 import { writeComposerPaste } from './composer-paste'
 import { applyConnectionChange, teardownSshState } from './connection-apply'
 import {
   connectionInstallIds,
   evictConnectionCaches,
+  rosterSourceErrors,
   sshInventoryAttemptedAt,
   sshRosterCache
 } from './connection-caches'
@@ -306,6 +308,7 @@ import { CHROMIUM_LOG_FILENAME, enableLinuxCrashDiagnostics, linuxCrashDiagnosti
 import { notifyLauncherWindowRevealed } from './linux-launcher-ready'
 import { decideNvidiaEglFallback, parseNvidiaDriverMajor } from './linux-nvidia-egl-fallback'
 import { createLocalBackendLifecycle, waitForTeardown } from './local-backend-lifecycle'
+import { resolveIpcFileReadPath, resolveMediaRequestPath, resolvePreviewTargetPath } from './local-read-path'
 import { localSkinProfileKey, readLocalSkinPayload } from './local-skin'
 import { ACTIVE_LOG_POLL_MS, planLogRotation, reclaimActiveLogIfOversized } from './log-rotation'
 import { registerMachineProfile } from './machine-profile'
@@ -421,9 +424,12 @@ import {
   fetchRemoteProfileSessions,
   findRemoteOwnerProfileForSession,
   mergeProfileSessionWindow,
+  pathWithRemoteOwnerScope,
   type RegistrySessionSource,
+  remoteProfileQueryScope,
   spliceRegistrySessionRows,
-  tagRegistrySessionResponse
+  tagRegistrySessionResponse,
+  tagRemoteSessionRows
 } from './profile-session-routing'
 import { createQuickEntryShortcut, quickEntryWindowBounds, sanitizeQuickEntrySettings } from './quick-entry'
 import { createQuitFinalization } from './quit-finalization'
@@ -453,6 +459,7 @@ import { planLaunchSwitches, readDesktopLaunchConfig } from './renderer-heap-fla
 import { loadRendererLoadErrorPage } from './renderer-load-error-page'
 import { attachRendererConsoleCapture, formatRendererBoundaryReport } from './renderer-log'
 import { fetchRosterSourceData } from './roster-source-fetch'
+import { rosterSourceStatus } from './roster-source-status'
 import {
   classifyStoredSecret,
   readSecretStoragePolicy,
@@ -1509,7 +1516,12 @@ function registerMediaProtocol(): void {
       })
     },
     resolveLocalFile: async filePath => {
-      const { resolvedPath } = await resolveReadableFileForIpc(filePath, { purpose: 'Media stream' })
+      // On a Windows host with a WSL backend the media path arrives as a
+      // WSL/POSIX path (`/home/...`, `/mnt/c/...`) the Windows fs can't open
+      // as-is; bridge it to a UNC/drive form first, same as directory reads.
+      const { resolvedPath } = await resolveReadableFileForIpc(resolveMediaRequestPath(filePath), {
+        purpose: 'Media stream'
+      })
 
       return resolvedPath
     },
@@ -5944,7 +5956,10 @@ async function previewFileTarget(rawTarget, baseDir) {
   const raw = String(rawTarget || '').trim()
   const base = baseDir ? path.resolve(expandUserPath(baseDir)) : resolveHermesCwd()
 
-  let resolved = resolveRequestedPathForIpc(/^file:/i.test(raw) ? raw : expandUserPath(raw), {
+  // A plain backend target is a WSL/POSIX path; bridge it to a Windows-
+  // accessible form before resolving so the existence checks below (and the
+  // final read) hit the real file rather than a drive-relative C:\home\... miss.
+  let resolved = resolveRequestedPathForIpc(resolvePreviewTargetPath(raw, expandUserPath), {
     baseDir: base,
     purpose: 'Preview target'
   })
@@ -7441,7 +7456,7 @@ async function clearOauthSession(baseUrl) {
 //     ``/auth/login`` → portal ``/oauth/authorize`` (auto-approves org members)
 //     → ``/auth/callback``, which sets the gateway cookie with NO interactive
 //     prompt. This is the per-agent cloud cascade (decisions.md Q5).
-function openOauthLoginWindow(baseUrl, { silent = false } = {}) {
+function openOauthLoginWindow(baseUrl, { silent = false, background = false } = {}) {
   return new Promise((resolve, reject) => {
     if (!app.isReady()) {
       reject(new Error('Desktop is not ready to start an OAuth login.'))
@@ -7461,6 +7476,7 @@ function openOauthLoginWindow(baseUrl, { silent = false } = {}) {
     let win = null
     let pollTimer = null
     let revealTimer = null
+    let deadlineTimer = null
 
     const finish = err => {
       if (settled) {
@@ -7475,6 +7491,10 @@ function openOauthLoginWindow(baseUrl, { silent = false } = {}) {
 
       if (revealTimer) {
         clearTimeout(revealTimer)
+      }
+
+      if (deadlineTimer) {
+        clearTimeout(deadlineTimer)
       }
 
       try {
@@ -7513,7 +7533,7 @@ function openOauthLoginWindow(baseUrl, { silent = false } = {}) {
         // only reveal it as a fallback if the cascade DOESN'T complete quickly
         // (e.g. the portal session lapsed and the gate fell through to the
         // interactive chooser) — see the reveal timer below.
-        show: !silent,
+        show: !silent && !background,
         webPreferences: {
           contextIsolation: true,
           nodeIntegration: false,
@@ -7545,7 +7565,7 @@ function openOauthLoginWindow(baseUrl, { silent = false } = {}) {
     // loop-guard tripped, etc.) and the window is now showing an interactive
     // page. Reveal it so the user can complete sign-in manually rather than
     // staring at nothing. Cleared on finish().
-    if (silent && win) {
+    if (silent && win && !background) {
       revealTimer = setTimeout(() => {
         try {
           if (!settled && win && !win.isDestroyed() && !win.isVisible()) {
@@ -7555,6 +7575,10 @@ function openOauthLoginWindow(baseUrl, { silent = false } = {}) {
           // window torn down
         }
       }, 2500)
+    }
+
+    if (background) {
+      deadlineTimer = setTimeout(() => finish(new Error('Cloud session recovery requires sign-in.')), 12_000)
     }
 
     win.on('closed', () => {
@@ -7576,6 +7600,14 @@ function openOauthLoginWindow(baseUrl, { silent = false } = {}) {
       `OAuth login: attaching ${Object.keys(loginHeaders).length} extra gateway header(s) to ${new URL(normalizedBase).host}`
     )
     win.loadURL(loginUrl, oauthLoginLoadUrlOptions(loginHeaders)).catch(error => {
+      // Callback navigation can abort the original load after setting cookies.
+      // Keep the bounded hidden recovery alive long enough to observe them.
+      if (background && (Number(error?.code) === -3 || /\bERR_ABORTED\b/.test(String(error?.message)))) {
+        void checkCookie()
+
+        return
+      }
+
       finish(error instanceof Error ? error : new Error(String(error)))
     })
   })
@@ -7876,20 +7908,40 @@ async function readGatewayFileDataUrl(connection: GatewayFileConnection, request
   return dataUrl
 }
 
-// Mint a single-use WS ticket for a gated gateway. Native bearer first (one
-// forced rotation on a confirmed 401, #95701), OAuth cookie partition second.
-// Transient transport blips (brief host unreachable, 5xx, timeouts) are retried
-// a few times before failing — those 1-3s flaps were promoting into the
-// full-screen "couldn't start" lockout on reconnect. Ticket POSTs are
-// replay-safe; arbitrary REST mutations never use this retry loop.
-async function mintGatewayWsTicket(baseUrl: string, headers: Record<string, string> = {}): Promise<string> {
-  return withTransientRetries(
-    (): Promise<string> =>
-      mintOauthGatewayWsTicket(baseUrl, { ensureNativeAccessToken, fetchJson, fetchJsonViaOauthSession }, headers),
-    {
-      isRetryable: (error: Error): boolean =>
-        !(error instanceof NativeAuthChangedError) && !isGatewayAuthRejection(error)
+// Recover a Cloud cookie only after a confirmed cookie-auth ticket 401.
+// Each caller still mints its own single-use ticket after the shared recovery.
+const recoverCloudCookieSession = createCloudSessionRecovery({
+  hasNativeSession,
+  onRecovered: baseUrl => rememberLog(`[cloud] saved gateway session recovered for ${hostLabelFromBaseUrl(baseUrl)}`),
+  restoreCookieSession: async baseUrl => {
+    // The saved portal identity is the authority for cookie agent sessions.
+    // Roster polling must never reveal an interactive sign-in window.
+    if (!(await hasLivePortalSession())) {
+      return false
     }
+
+    if (!(await hasPortalAccessToken()) && !(await renewPortalAccessSilently())) {
+      return false
+    }
+
+    await openOauthLoginWindow(baseUrl, { silent: true, background: true })
+
+    return true
+  }
+})
+
+// Native bearer first (including one forced 401 rotation), OAuth cookie second.
+// Transient ticket POST failures keep their bounded retry before Cloud recovery.
+async function mintGatewayWsTicket(baseUrl: string, headers: Record<string, string> = {}): Promise<string> {
+  return recoverCloudCookieSession(baseUrl, () =>
+    withTransientRetries(
+      (): Promise<string> =>
+        mintOauthGatewayWsTicket(baseUrl, { ensureNativeAccessToken, fetchJson, fetchJsonViaOauthSession }, headers),
+      {
+        isRetryable: (error: Error): boolean =>
+          !(error instanceof NativeAuthChangedError) && !isGatewayAuthRejection(error)
+      }
+    )
   )
 }
 
@@ -15706,7 +15758,7 @@ ipcMain.handle('hermes:connections:test', async (_event, id) => {
 // would spawn tunnels the user never asked for); once dialed, their pooled
 // descriptor serves the enumeration like any remote. Last-known SSH profile
 // lists are reused so switching the window back to local does not empty Bot Mode.
-// These three live in ./connection-caches, which states (and tests) the invariant they share:
+// Connection caches live in ./connection-caches, which states (and tests) the invariant they share:
 // each is keyed by connection id and is only valid while that id names the same machine, so
 // removing a connection or re-pointing it must evict them (`evictConnectionCaches`).
 const SSH_INVENTORY_RETRY_MS = 60_000
@@ -15837,9 +15889,12 @@ async function enumerateRegistryAgentSources(registry = readDesktopConnectionsRe
 
   return Promise.all(
     registry.connections.map(async connection => {
+      let sourceFailureDetail = ''
+
       let raw: {
         connection: typeof connection
         error?: string
+        needsSignIn?: boolean
         installId?: string
         profiles: null | string[]
         profileMetadata?: Record<string, RosterProfileMetadata>
@@ -15953,7 +16008,26 @@ async function enumerateRegistryAgentSources(registry = readDesktopConnectionsRe
           }
         }
       } catch (error: any) {
-        raw = { connection, profiles: null, error: String(error?.message || error) }
+        sourceFailureDetail = [error?.statusCode, error?.cause?.message].filter(Boolean).join(' | ')
+        raw = {
+          connection,
+          profiles: null,
+          error: redactSecrets(String(error?.message || error)),
+          needsSignIn: isReauthRequiredError(error)
+        }
+      }
+
+      if (raw.error && raw.error !== 'connect-on-demand') {
+        const diagnostic = redactSecrets([raw.error, sourceFailureDetail].filter(Boolean).join(' | '))
+          .replace(/[\r\n]+/g, ' ')
+          .slice(0, 800)
+
+        if (rosterSourceErrors.get(connection.id) !== diagnostic) {
+          rememberLog(`[fleet-roster] ${connection.id}: ${diagnostic}`)
+          rosterSourceErrors.set(connection.id, diagnostic)
+        }
+      } else if (raw.profiles && rosterSourceErrors.delete(connection.id)) {
+        rememberLog(`[fleet-roster] ${connection.id}: connection recovered`)
       }
 
       if (raw.profiles && raw.profiles.length > 0) {
@@ -15965,6 +16039,7 @@ async function enumerateRegistryAgentSources(registry = readDesktopConnectionsRe
       return {
         connection,
         ...remembered,
+        ...(raw.needsSignIn ? { needsSignIn: true } : {}),
         ...(raw.installId ? { installId: raw.installId } : {}),
         ...(raw.profileMetadata ? { profileMetadata: raw.profileMetadata } : {})
       }
@@ -15984,13 +16059,12 @@ ipcMain.handle('hermes:agents:roster', async () => {
     // instead of appending duplicates (remote-only desktops doubled every
     // bot otherwise; see #88344).
     primaryConnectionId: registry.primary,
-    sources: enumerations.map(({ connection, error, installId, profiles }) => ({
+    sources: enumerations.map(({ connection, error, installId, profiles, needsSignIn }) => ({
       connectionId: connection.id,
       label: connection.label,
       kind: connection.kind,
-      reachable: profiles !== null,
-      ...(installId ? { installId } : {}),
-      ...(error ? { error } : {})
+      ...rosterSourceStatus({ profiles, error, needsSignIn }),
+      ...(installId ? { installId } : {})
     }))
   }
 })
@@ -16552,14 +16626,26 @@ async function interceptSessionRequestForRemote(request) {
     const passthroughQuery = passthroughParams.toString()
 
     if (profileHasRemoteOverride(profile)) {
+      // #64999: the override's remote can be a multi-profile backend — an
+      // unscoped read opens its launch-profile state.db, so a resume 4007s
+      // even though the row exists under its real owner. Scope the read the
+      // same way the list fetch does; a legacy single-profile scope ('')
+      // keeps the path bare.
+      const ownerScope =
+        remoteProfileQueryScope(profile, profileSshOverride(readDesktopConnectionConfig(), profile)?.remoteProfile) ||
+        profile
+
       if (method === 'GET') {
-        return fetchJsonForProfile(profile, passthroughQuery ? `${pathname}?${passthroughQuery}` : pathname)
+        return fetchJsonForProfile(
+          profile,
+          pathWithRemoteOwnerScope(passthroughQuery ? `${pathname}?${passthroughQuery}` : pathname, ownerScope)
+        )
       }
 
       const body = request.body && typeof request.body === 'object' ? { ...request.body } : request.body
 
-      if (body) {
-        delete body.profile
+      if (body && ownerScope) {
+        ;(body as Record<string, unknown>).profile = ownerScope
       }
 
       return requestJsonForProfile(profile, pathname, method, body)
@@ -16587,17 +16673,17 @@ async function interceptSessionRequestForRemote(request) {
 
 const rowsOf = data => (Array.isArray(data?.sessions) ? data.sessions : [])
 
-// A remote profile's session list, read from its remote host and tagged with the
-// desktop-facing profile name (the remote's /api/sessions doesn't know it).
+// A remote profile's session list. The fetch itself is profile-scoped
+// (fetchRemoteProfileSessions, #64999); the remote's own stamps carry the
+// authoritative identity — never relabel rows with the Desktop scope name.
 async function remoteSessionList(profile, searchParams) {
-  const data = await fetchRemoteProfileSessions(profile, searchParams, fetchJsonForProfile)
+  const sshOverride = profileSshOverride(readDesktopConnectionConfig(), profile)
+  const data = await fetchRemoteProfileSessions(profile, searchParams, fetchJsonForProfile, {
+    remoteProfileAlias: sshOverride?.remoteProfile
+  })
+  const rows = tagRemoteSessionRows(rowsOf(data), remoteProfileQueryScope(profile, sshOverride?.remoteProfile) || profile)
 
-  for (const s of rowsOf(data)) {
-    s.profile = profile
-    s.is_default_profile = false
-  }
-
-  return { ...(data as any), sessions: rowsOf(data) }
+  return { ...(data as any), sessions: rows }
 }
 
 // #85834: find which remote profile owns a session id when the caller gave no
@@ -17030,9 +17116,13 @@ ipcMain.handle('hermes:data-url-read-max:set', (_event, maxMb) => {
 })
 
 ipcMain.handle('hermes:readFileDataUrl', async (_event, filePath) => {
-  return readFileDataUrlForIpc(filePath, {
+  // Backend-reported paths are WSL/POSIX (`/home/...`, `/mnt/c/...`); on a
+  // Windows host bridge them to a UNC/drive form, same as directory reads.
+  const bridgedPath = resolveIpcFileReadPath(filePath)
+
+  return readFileDataUrlForIpc(bridgedPath, {
     maxBytes: dataUrlReadMaxBytesFromMb(dataUrlReadMaxMb),
-    mimeType: mimeTypeForPath(resolveRequestedPathForIpc(filePath, { purpose: 'File preview' })),
+    mimeType: mimeTypeForPath(resolveRequestedPathForIpc(bridgedPath, { purpose: 'File preview' })),
     purpose: 'File preview'
   })
 })
@@ -17042,15 +17132,17 @@ ipcMain.handle('hermes:readFileDataUrl', async (_event, filePath) => {
 // can exceed the default 16 MiB preview ceiling (and still fit the gateway
 // WebSocket frame limit after base64 expansion).
 ipcMain.handle('hermes:readFileDataUrlForAttach', async (_event, filePath) => {
-  return readFileDataUrlForIpc(filePath, {
+  const bridgedPath = resolveIpcFileReadPath(filePath)
+
+  return readFileDataUrlForIpc(bridgedPath, {
     maxBytes: ATTACHMENT_UPLOAD_DEFAULT_MAX_BYTES,
-    mimeType: mimeTypeForPath(resolveRequestedPathForIpc(filePath, { purpose: 'Attachment upload' })),
+    mimeType: mimeTypeForPath(resolveRequestedPathForIpc(bridgedPath, { purpose: 'Attachment upload' })),
     purpose: 'Attachment upload'
   })
 })
 
 ipcMain.handle('hermes:readFileText', async (_event, filePath) => {
-  const { resolvedPath, stat } = await resolveReadableFileForIpc(filePath, {
+  const { resolvedPath, stat } = await resolveReadableFileForIpc(resolveIpcFileReadPath(filePath), {
     maxBytes: TEXT_PREVIEW_SOURCE_MAX_BYTES,
     purpose: 'Text preview'
   })

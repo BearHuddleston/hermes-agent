@@ -21870,6 +21870,18 @@
             ],
             "default": null,
             "title": "Max"
+          },
+          "allow_shortcut": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Allow Shortcut"
           }
         },
         "required": [
@@ -24118,6 +24130,11 @@
           "isKanban": {
             "default": false,
             "title": "Iskanban",
+            "type": "boolean"
+          },
+          "isGit": {
+            "default": true,
+            "title": "Isgit",
             "type": "boolean"
           },
           "sessions": {

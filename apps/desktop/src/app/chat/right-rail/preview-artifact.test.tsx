@@ -127,4 +127,21 @@ describe('ArtifactPreview', () => {
 
     expect(screen.queryByTitle('Dashboard')).toBeNull()
   })
+
+  it('gives the missing-artifact state a Close that closes its tab', async () => {
+    const { artifactId } = register('Dashboard', 'html', '<h1>gone</h1>')
+    const record = $artifactRegistry.get()['session-1']!.find(item => item.id === artifactId)!
+    const target = artifactPreviewTarget(record)
+    const onClose = vi.fn()
+
+    $artifactRegistry.set({})
+
+    await act(async () => {
+      render(<ArtifactPreview onClose={onClose} target={target} />)
+    })
+
+    expect(screen.getByText('Artifact unavailable')).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: 'Close' }))
+    expect(onClose).toHaveBeenCalledOnce()
+  })
 })

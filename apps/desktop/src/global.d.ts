@@ -1178,6 +1178,7 @@ export interface DesktopAgentRoster {
     kind: DesktopConnectionKind
     reachable: boolean
     error?: string
+    needsSignIn?: boolean
     // Stable backend identity (/api/status install_id) when known.
     installId?: string
   }[]
