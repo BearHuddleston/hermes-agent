@@ -31,6 +31,8 @@ CMDLINES = [
     # Entry tokens in another program's arguments are data, not execution targets.
     ("python -c 'import time; time.sleep(60)' hermes webapp", None, False, False),
     ("python -uc 'pass' -m hermes_cli.main serve " + LOOPBACK, None, False, False),
+    ("python -X utf8 -c 'pass' 14980 python -m hermes_cli.main gateway run", None, False, False),
+    ("python -uWignore -Xdev -c 'pass' -m hermes_cli.main webapp", None, False, False),
     ("python observer.py -m hermes_cli.main serve " + LOOPBACK, None, False, False),
     ("python -m other hermes dashboard", None, False, False),
     ("python - hermes webapp", None, False, False),
