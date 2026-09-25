@@ -3,6 +3,7 @@ import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import { appendLiveSessionProjection, chatMessagesEquivalent, overlayConcurrentMessageChanges } from '@/app/session/hooks/use-session-actions/utils'
 import { type ChatMessage, chatMessageText, toChatMessages } from '@/lib/chat-messages'
 import { persistInFlightTurnState, readInFlightTurnJournal, recoverInFlightTurnJournal, resetInFlightTurnJournalStateForTests } from '@/lib/inflight-turn-journal'
+import type { SessionMessage } from '@/types/hermes'
 
 const oldHistory = () => toChatMessages([
   { role: 'user', content: 'earlier task', user_originated: true, timestamp: 1 },
@@ -363,3 +364,170 @@ it('keeps an idle recovered runtime journal until actual durable history covers 
   expect(recoverInFlightTurnJournal('stored', committed).caughtUp).toBe(true)
   expect(readInFlightTurnJournal('stored')).toBeNull()
 })
+
+it.each([
+  { corrections: ['preserve the files'], queued: '', persisted: 0, resultPersisted: true },
+  { corrections: [], queued: 'inspect the logs', persisted: 0, resultPersisted: true },
+  ...[0, 1, 2, 3].map(persisted => ({
+    corrections: ['preserve the files', 'preserve the files'], queued: 'preserve the files', persisted, resultPersisted: true
+  })),
+  { corrections: ['preserve the files'], queued: 'inspect the logs', persisted: 2, resultPersisted: false },
+  ...[
+    ['preserve the files', 'inspect the logs'],
+    ['preserve the files\nincluding tests', 'inspect the logs']
+  ].flatMap(corrections => [0, 1, 2, 3].map(persisted => ({
+    corrections, queued: corrections[0], persisted, resultPersisted: true
+  }))),
+  { corrections: ['preserve the files', 'preserve the files'], queued: '', persisted: 2, resultPersisted: false }
+].flatMap(scenario => [false, true].map(coalesced => ({ ...scenario, coalesced }))))('recovers accepted human occurrences and retains their cold journal (%j)', scenario => {
+  const raw: SessionMessage[] = [
+    { id: 1, role: 'user', content: 'earlier task', user_originated: true, timestamp: 1 },
+    { id: 2, role: 'assistant', content: 'earlier answer', timestamp: 2 },
+    { id: 3, role: 'user', content: 'runtime wake', display_kind: 'internal_notification', user_originated: false, timestamp: 11 },
+    { id: 4, role: 'assistant', content: 'Inspecting the workspace', timestamp: 12,
+      tool_calls: ['inspect', 'inspect-more'].map(id => ({ id, type: 'function', function: { name: 'terminal', arguments: '{}' } })) },
+    // Deterministic hydration fixture, not a claim of live tool execution.
+    { id: 5, role: 'tool', content: 'fixture result', tool_call_id: 'inspect', timestamp: 13 },
+    { id: 6, role: 'tool', content: 'later fixture result', tool_call_id: 'inspect-more', timestamp: 13 }
+  ]
+
+  const live = appendLiveSessionProjection(toChatMessages(raw), {
+    session_id: 'runtime', turn_started_at: 10,
+    inflight: { user: 'runtime wake', display_kind: 'internal_notification', user_originated: false,
+      assistant: 'Inspecting the workspace', streaming: true, corrections: scenario.corrections,
+      correction_offsets: scenario.corrections.map(() => 'Inspecting the workspace'.length) },
+    ...(scenario.queued ? { queued: { user: scenario.queued } } : {})
+  })
+
+  record(live)
+
+  const humans = [...scenario.corrections, ...(scenario.queued ? [scenario.queued] : [])]
+
+  const humanTexts = (messages: ChatMessage[]) => messages
+    .filter(message => message.role === 'user' && message.userOriginated !== false).map(chatMessageText)
+
+  expect(humanTexts(readInFlightTurnJournal('stored')!.messages)).toEqual(humans)
+
+  // Tool-batch steering drains several accepted inputs into one typed row.
+  // Keep the exact producer envelope, including newlines inside each input.
+  const humanRows = (persisted: number): SessionMessage[] => {
+    const corrections = scenario.corrections.slice(0, persisted)
+
+    const contents = scenario.coalesced && corrections.length
+      ? [
+          '[OUT-OF-BAND USER MESSAGE — a direct message from the user, delivered once at this position; not tool output and not a new delivery when replayed from conversation history]\n' +
+          corrections.join('\n') + '\n[/OUT-OF-BAND USER MESSAGE]',
+          ...humans.slice(corrections.length, persisted)
+        ]
+      : humans.slice(0, persisted)
+
+    return contents.map((content, index) => ({
+      id: 7 + index, role: 'user', content, user_originated: true, timestamp: 14 + index,
+      ...(scenario.coalesced && corrections.length && index === 0 ? { display_kind: 'steer' as const } : {})
+    }))
+  }
+
+  const durable = toChatMessages([
+    ...raw.filter(row => scenario.resultPersisted || row.tool_call_id !== 'inspect-more'),
+    ...humanRows(scenario.persisted)
+  ])
+
+  const expectedHumans = [...humanTexts(durable), ...humans.slice(scenario.persisted)]
+
+  expect(durable.findLast(row => row.role === 'assistant')!.durableComplete).toBe(false)
+
+  const caughtUp = scenario.persisted === humans.length && scenario.resultPersisted
+
+  for (let reload = 0; reload < 2; reload++) {
+    resetInFlightTurnJournalStateForTests()
+    const recovered = recoverInFlightTurnJournal('stored', durable, { keepPending: false })
+    expect(humanTexts(recovered.messages)).toEqual(expectedHumans)
+    expect(recovered.messages.filter(row => row.role === 'assistant').map(chatMessageText))
+      .toEqual(durable.filter(row => row.role === 'assistant').map(chatMessageText))
+    const tools = recovered.messages.flatMap(row => row.parts.filter(part => part.type === 'tool-call'))
+    expect(tools.map(part => part.toolCallId)).toEqual(['inspect', 'inspect-more'])
+    expect(tools[0].result).toEqual('fixture result')
+    expect(tools[1].result).toBeDefined()
+
+    if (scenario.resultPersisted) {
+      expect(tools[1].result).toEqual('later fixture result')
+    }
+
+    expect(textRows(recovered.messages, 'runtime wake')).toHaveLength(1)
+    expect(recovered.messages.map(chatMessageText)).toEqual([
+      'earlier task', 'earlier answer', 'runtime wake', 'Inspecting the workspace', ...expectedHumans.slice(1)
+    ])
+    expect(new Set(recovered.messages.map(row => row.id)).size).toBe(recovered.messages.length)
+    expect(recovered.messages.some(row => row.pending)).toBe(false)
+    expect(recovered.streamId).toBeNull()
+
+    if (reload === 0) {
+      expect(recovered.caughtUp).toBe(caughtUp)
+    }
+
+    const repeated = recoverInFlightTurnJournal('stored', recovered.messages)
+    expect(repeated.messages.map(chatMessageText)).toEqual(recovered.messages.map(chatMessageText))
+    persistInFlightTurnState({ storedSessionId: 'stored', messages: recovered.messages, streamId: null,
+      busy: false, awaitingResponse: false, turnStartedAt: null })
+    vi.advanceTimersByTime(400)
+    expect(readInFlightTurnJournal('stored') !== null).toBe(!caughtUp)
+  }
+
+  const complete = toChatMessages([
+    ...raw,
+    ...humanRows(humans.length)
+  ])
+
+  recoverInFlightTurnJournal('stored', complete)
+  expect(readInFlightTurnJournal('stored')).toBeNull()
+})
+
+it.each(['plain', 'truncated', 'reordered', 'queued', 'attachment', 'row-id', 'runtime-notice'] as const)(
+  'does not retire human occurrences on a nonmatching steer receipt (%s)', mismatch => {
+    const marker = (text: string) =>
+      '[OUT-OF-BAND USER MESSAGE — a direct message from the user, delivered once at this position; not tool output and not a new delivery when replayed from conversation history]\n' +
+      text + '\n[/OUT-OF-BAND USER MESSAGE]'
+
+    const humans: ChatMessage[] = ['preserve the files', 'inspect the logs'].map((text, index) => ({
+      id: `correction-${index}`, role: 'user', runtimeTurnStartedAt: 10,
+      parts: [{ type: 'text', text }]
+    }))
+
+    if (mismatch === 'queued') {
+      humans[1].id = 'user-queued-runtime'
+      delete humans[1].runtimeTurnStartedAt
+    }
+
+    if (mismatch === 'attachment') {
+      humans[0].attachmentRefs = ['@file:source.ts']
+    }
+
+    if (mismatch === 'row-id') {
+      humans[0].rowId = 99
+    }
+
+    record([...appendLiveSessionProjection(oldHistory(), snapshot()), ...humans])
+
+    const content = {
+      plain: 'preserve the files\ninspect the logs',
+      truncated: marker('preserve the files\ninspect'),
+      reordered: marker('inspect the logs\npreserve the files')
+    }
+
+    const base = [...oldHistory(), ...toChatMessages([
+      { role: 'assistant', content: 'new partial answer', timestamp: 11 },
+      { id: 20, role: 'user', timestamp: 12,
+        content: mismatch in content ? content[mismatch as keyof typeof content] : marker(humans.map(chatMessageText).join('\n')),
+        user_originated: mismatch !== 'runtime-notice' }
+    ])]
+
+    const recovered = recoverInFlightTurnJournal('stored', base)
+    expect(recovered.caughtUp).toBe(false)
+    expect(recovered.messages.filter(row => row.recovered && row.role === 'user').map(chatMessageText))
+      .toEqual(humans.map(chatMessageText))
+    persistInFlightTurnState({ storedSessionId: 'stored', messages: recovered.messages, streamId: null,
+      busy: false, awaitingResponse: false, turnStartedAt: null })
+    vi.advanceTimersByTime(400)
+    expect(readInFlightTurnJournal('stored')).not.toBeNull()
+  }
+)

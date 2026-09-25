@@ -540,15 +540,67 @@ function attachmentSignature(message: ChatMessage): string {
   return (message.attachmentRefs ?? []).join('\n')
 }
 
-function userMessagesMatch(left: ChatMessage, right: ChatMessage): boolean {
+function userMessageIdentityMatches(left: ChatMessage, right: ChatMessage): boolean {
   return (
     left.role === 'user' &&
     right.role === 'user' &&
     (left.userOriginated === undefined || right.userOriginated === undefined || left.userOriginated === right.userOriginated) &&
     (left.rowId === undefined || right.rowId === undefined || left.rowId === right.rowId) &&
-    normalizedText(chatMessageText(left)) === normalizedText(chatMessageText(right)) &&
     attachmentSignature(left) === attachmentSignature(right)
   )
+}
+
+function userMessagesMatch(left: ChatMessage, right: ChatMessage): boolean {
+  return userMessageIdentityMatches(left, right) &&
+    normalizedText(chatMessageText(left)) === normalizedText(chatMessageText(right))
+}
+
+/** Tool steering persists a newline-joined batch inside this exact envelope
+ * (agent/prompt_builder.py::steer_user_row). ChatMessage does not retain
+ * display_kind, so never infer a batch from arbitrary multiline user prose. */
+const STEER_OPEN = '[OUT-OF-BAND USER MESSAGE — a direct message from the user, delivered once at this position; not tool output and not a new delivery when replayed from conversation history]\n'
+const STEER_CLOSE = '\n[/OUT-OF-BAND USER MESSAGE]'
+
+function coveredHumanOccurrences(candidate: ChatMessage, humans: ChatMessage[], start: number): number {
+  const first = humans[start]
+
+  if (!first) {
+    return 0
+  }
+
+  if (userMessagesMatch(candidate, first)) {
+    return 1
+  }
+
+  const text = chatMessageText(candidate)
+
+  if (candidate.userOriginated === false || !text.startsWith(STEER_OPEN) || !text.endsWith(STEER_CLOSE)) {
+    return 0
+  }
+
+  const body = text.slice(STEER_OPEN.length, -STEER_CLOSE.length)
+  const inputs: string[] = []
+
+  for (const human of humans.slice(start)) {
+    // A next-turn queue is not part of the tool-steer drain. Retain the usual
+    // provenance, durable-id and attachment guards for every grouped input.
+    if (human.id.startsWith('user-queued-') || !userMessageIdentityMatches(candidate, human)) {
+      return 0
+    }
+
+    inputs.push(chatMessageText(human).trim())
+    const joined = inputs.join('\n')
+
+    if (body === joined) {
+      return inputs.length
+    }
+
+    if (!body.startsWith(`${joined}\n`)) {
+      return 0
+    }
+  }
+
+  return 0
 }
 
 function partHasRecoverableContent(part: ChatMessagePart): boolean {
@@ -704,6 +756,12 @@ function overlayProjectionRow(projection: ChatMessage, journalRow: ChatMessage):
     ...journalRow,
     id: projection.id,
     pending: projection.pending,
+    // The journal deliberately bounds tool payloads. A matching backend result
+    // is richer, even when another result in this same bubble is still missing.
+    parts: journalRow.parts.map(part => part.type === 'tool-call'
+      ? projection.parts.find(candidate => candidate.type === 'tool-call' &&
+          part.toolCallId !== undefined && candidate.toolCallId === part.toolCallId && candidate.result !== undefined) ?? part
+      : part),
     ...(error ? { error } : {})
   }
 
@@ -730,7 +788,7 @@ function overlayProjectionRow(projection: ChatMessage, journalRow: ChatMessage):
   const parts: ChatMessagePart[] = []
   let textReplaced = false
 
-  for (const part of journalRow.parts) {
+  for (const part of merged.parts) {
     if (part.type !== 'text') {
       parts.push(part)
     } else if (!textReplaced) {
@@ -826,10 +884,10 @@ function mergeRuntimeTurn(
   const boundary = journal.findIndex(message => message.runtimeTurnStartedAt === startedAt)
   const anchor = journal[boundary - 1]
   let tail = journal.slice(boundary)
-  const first = baseMessages.findIndex(message => message.runtimeTurnStartedAt === startedAt)
-  const last = baseMessages.findLastIndex(message => message.runtimeTurnStartedAt === startedAt)
+  let first = baseMessages.findIndex(message => message.runtimeTurnStartedAt === startedAt)
+  let last = baseMessages.findLastIndex(message => message.runtimeTurnStartedAt === startedAt)
   const anchorIndex = anchor ? baseMessages.findLastIndex(message => sameRuntimeAnchor(message, anchor)) : -1
-  const baseTurn = first < 0 ? [] : baseMessages.slice(first, last + 1)
+  let baseTurn = first < 0 ? [] : baseMessages.slice(first, last + 1)
 
   const currentRuntimeAssistant = baseMessages.findLastIndex(message =>
     message.role === 'assistant' && message.pending === true && message.runtimeTurnStartedAt === startedAt
@@ -847,7 +905,7 @@ function mergeRuntimeTurn(
   // journal rather than guessing that a global same-text reply committed it.
   let committedCandidates = baseTurn
 
-  if (first < 0 && anchorIndex >= 0) {
+  if (anchorIndex >= 0 && (first < 0 || anchorIndex < first)) {
     committedCandidates = []
     const corrections = tail.filter(message => message.role === 'user' && message.userOriginated !== false)
     let correction = 0
@@ -858,16 +916,48 @@ function mergeRuntimeTurn(
       }
 
       if (message.role === 'user' && message.userOriginated !== false) {
-        if (!corrections[correction] || !userMessagesMatch(message, corrections[correction])) {
+        const covered = coveredHumanOccurrences(message, corrections, correction)
+
+        if (!covered) {
           break
         }
 
-        correction += 1
+        correction += covered
       }
 
       committedCandidates.push(message)
     }
+
+    // Reconcile against this same proven interval, not an empty marked turn.
+    // Otherwise partial coverage appends the already durable humans again.
+    if (committedCandidates.length) {
+      first = anchorIndex + 1
+      last = anchorIndex + committedCandidates.length
+      baseTurn = committedCandidates
+    }
   }
+
+  const humans = tail.filter(message => message.role === 'user' && message.userOriginated !== false)
+
+  const durableHumans = committedCandidates.filter(message => message.role === 'user' &&
+    message.userOriginated !== false && !message.recovered && message.pending !== true &&
+    (message.rowId !== undefined || message.timestamp !== undefined))
+
+  // A receipt for one occurrence cannot cover a later identical correction or
+  // queued prompt. Assistant/tool persistence says nothing about these rows.
+  let committedHumanCount = 0
+
+  for (const message of durableHumans) {
+    const covered = coveredHumanOccurrences(message, humans, committedHumanCount)
+
+    if (!covered) {
+      break
+    }
+
+    committedHumanCount += covered
+  }
+
+  const humansCommitted = committedHumanCount === humans.length
 
   const committed = committedCandidates.filter(message => message.role === 'assistant' &&
     message.pending !== true && !message.interim && !message.recovered &&
@@ -902,14 +992,19 @@ function mergeRuntimeTurn(
       : message.parts.some(part => part.type === 'tool-call' || part.type === 'reasoning') && structureCommitted
   })
 
-  if (contentCommitted && structureCommitted) {
+  if (humansCommitted && contentCommitted && structureCommitted) {
     return { applied: false, caughtUp: true, messages: baseMessages, streamId: null, turnStartedAt: null }
   }
 
   // Occurrence reconciliation may already have split durable tool rounds from
   // the live suffix. Consume that proven prefix before overlaying the journal,
   // just as human-turn recovery does, without consuming runtime/correction rows.
+  if (contentCommitted && structureCommitted) {
+    tail = tail.filter(message => message.role !== 'assistant')
+  }
+
   const firstAssistant = tail.findIndex(message => message.role === 'assistant')
+  const beforeCoverage = tail
 
   if (firstAssistant >= 0) {
     tail = [
@@ -926,22 +1021,44 @@ function mergeRuntimeTurn(
   const keepRuntimePending = keepPending && !otherLiveAssistant
   const usedIds = new Set(baseMessages.map(message => message.id))
   const merged: ChatMessage[] = []
+  const groupedHumans = new Set<ChatMessage>()
   let cursor = 0
 
   for (const [tailIndex, row] of tail.entries()) {
+    if (groupedHumans.has(row)) {
+      continue
+    }
+
+    const humanIndex = humans.indexOf(row)
+
     const match = row === lastJournalAssistant && lastLiveAssistant >= cursor
       ? lastLiveAssistant
       : baseTurn.findIndex((candidate, index) =>
-          index >= cursor && candidate.runtimeTurnStartedAt === startedAt && candidate.role === row.role &&
+          index >= cursor && candidate.role === row.role &&
           (candidate.id === row.id ||
-            (row.role === 'user' ? userMessagesMatch(candidate, row)
+            (row.rowId !== undefined && candidate.rowId === row.rowId) ||
+            (row.role === 'user' ? (humanIndex >= 0
+              ? coveredHumanOccurrences(candidate, humans, humanIndex) > 0 : userMessagesMatch(candidate, row))
               : normalizedText(chatMessageText(candidate)) === normalizedText(chatMessageText(row))))
         )
 
     if (match >= 0) {
       merged.push(...baseTurn.slice(cursor, match))
       const candidate = baseTurn[match]
-      merged.push(row.role === 'assistant' ? overlayProjectionRow(candidate, row) : candidate)
+
+      if (humanIndex >= 0) {
+        const covered = coveredHumanOccurrences(candidate, humans, humanIndex)
+        humans.slice(humanIndex + 1, humanIndex + covered).forEach(human => groupedHumans.add(human))
+      }
+
+      // A remainder can be just an unflushed result of this very same durable
+      // bubble. Overlay its full journal row, not a prefix-subtracted fragment
+      // that would erase the already covered text/tools.
+      const overlay = candidate.id === row.id || (row.rowId !== undefined && candidate.rowId === row.rowId)
+        ? beforeCoverage.find(original => original.id === row.id) ?? row
+        : row
+
+      merged.push(row.role === 'assistant' ? overlayProjectionRow(candidate, overlay) : candidate)
       cursor = match + 1
 
       continue
@@ -952,6 +1069,13 @@ function mergeRuntimeTurn(
     if (row.id.startsWith('user-queued-') && baseMessages.some(candidate =>
       candidate.id.startsWith('user-queued-') && userMessagesMatch(candidate, row))) {
       continue
+    }
+
+    // The covered assistant prefix precedes the first missing correction.
+    // Removing it from the journal must not move that correction above it.
+    if (row.role === 'user' && contentCommitted && structureCommitted) {
+      merged.push(...baseTurn.slice(cursor))
+      cursor = baseTurn.length
     }
 
     // An old runtime tail may collide with a later human turn's reused stream
@@ -965,7 +1089,8 @@ function mergeRuntimeTurn(
     }
 
     usedIds.add(id)
-    merged.push({ ...row, id, pending: row.role === 'assistant' && keepRuntimePending && row.pending === true })
+    merged.push({ ...row, id, pending: row.role === 'assistant' && keepRuntimePending && row.pending === true,
+      ...(!keepRuntimePending ? { recovered: true } : {}) })
   }
 
   merged.push(...baseTurn.slice(cursor))
@@ -1233,20 +1358,33 @@ export function persistInFlightTurnState(state: JournalableSessionState): void {
     return
   }
 
-  // `some(recovered)` is a cheap pre-check: this runs on every idle commit of
-  // every cached session, and recovered rows are rare.
-  if (
-    !state.busy &&
-    !state.awaitingResponse &&
-    !state.streamId &&
-    !(
-      state.messages.some(message => message.recovered) &&
-      recoverableTail(state.messages, null).some(message => message.recovered)
-    )
-  ) {
-    clearInFlightTurnJournal(storedSessionId)
+  if (!state.busy && !state.awaitingResponse && !state.streamId) {
+    // Recovery can leave only human rows uncommitted after the assistant/tool
+    // prefix persisted. Keep the original journal (and its durable anchor),
+    // rather than rewriting it from that smaller display tail on idle commits.
+    if (state.messages.some(message => message.recovered)) {
+      const snapshot = readInFlightTurnJournal(storedSessionId)
 
-    return
+      const runtimeStartedAt = snapshot?.messages.find(message =>
+        message.runtimeTurnStartedAt !== undefined)?.runtimeTurnStartedAt
+
+      const recoveredRuntime = runtimeStartedAt !== undefined && state.messages.some(message =>
+        message.recovered && (message.runtimeTurnStartedAt === runtimeStartedAt ||
+          snapshot?.messages.some(journaled => journaled.id === message.id)))
+
+      if (recoveredRuntime) {
+        cancelPendingPersist(storedSessionId)
+
+        return
+      }
+    }
+
+    if (!(state.messages.some(message => message.recovered) &&
+      recoverableTail(state.messages, null).some(message => message.recovered))) {
+      clearInFlightTurnJournal(storedSessionId)
+
+      return
+    }
   }
 
   persistLatest.set(storedSessionId, state)
@@ -1327,6 +1465,11 @@ export function clearInFlightTurnJournal(storedSessionId: null | string): void {
     return
   }
 
+  cancelPendingPersist(storedSessionId)
+  removeSnapshot(storedSessionId)
+}
+
+function cancelPendingPersist(storedSessionId: string): void {
   const timer = persistTimers.get(storedSessionId)
 
   if (timer) {
@@ -1335,6 +1478,4 @@ export function clearInFlightTurnJournal(storedSessionId: null | string): void {
   }
 
   persistLatest.delete(storedSessionId)
-
-  removeSnapshot(storedSessionId)
 }
