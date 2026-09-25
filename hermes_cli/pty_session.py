@@ -251,7 +251,11 @@ class PtySessionRegistry:
         await self._spawn_lock.acquire()
         admission = asyncio.create_task(self._attach_or_spawn(key, spawn=spawn))
         try:
-            result = await asyncio.shield(admission)
+            # wait() leaves admission running on caller cancellation without
+            # shield() reporting its late exception (Python 3.14). The registry's
+            # discard task owns that result once the caller disconnects.
+            await asyncio.wait({admission})
+            result = admission.result()
         except asyncio.CancelledError:
             cleanup = asyncio.create_task(self._discard_admission(admission))
             self._spawn_cleanup.add(cleanup)

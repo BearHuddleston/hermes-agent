@@ -246,6 +246,28 @@ async def test_cancelled_spawn_retains_capacity_until_cleanup(spawn_fails):
 
 
 @pytest.mark.asyncio
+async def test_spawn_failure_reaches_caller_and_releases_capacity():
+    reg = PtySessionRegistry(ttl=30, max_sessions=1, buffer_cap=32, read_timeout=0.01)
+    failure = OSError("fork failed with caller still connected")
+    bridge = Bridge()
+
+    def spawn():
+        raise failure
+
+    try:
+        with pytest.raises(OSError) as caught:
+            await reg.attach_or_spawn("k", spawn=spawn)
+        assert caught.value is failure
+        session, made = await asyncio.wait_for(
+            reg.attach_or_spawn("k", spawn=lambda: bridge), 2,
+        )
+        assert made and session.bridge is bridge
+    finally:
+        await reg.close_all()
+    assert bridge.closed
+
+
+@pytest.mark.asyncio
 async def test_supersede_cancels_inflight_input_before_replacement_writes():
     entered, release = asyncio.Event(), asyncio.Event()
 
