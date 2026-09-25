@@ -1,12 +1,17 @@
 """Browser builds must leave the native workspace installation untouched."""
 from pathlib import Path
-from types import SimpleNamespace
 import json
 import shutil
 
 import pytest
 
 from hermes_cli import webapp
+
+
+def _stub_npm(monkeypatch, run_npm):
+    monkeypatch.setattr(webapp, "_build_env", lambda: {"PATH": "/node"})
+    monkeypatch.setattr(webapp, "_npm_command", lambda _root, _env: ["node", "npm-cli.js"])
+    monkeypatch.setattr(webapp, "_run_npm", run_npm)
 
 
 def test_webapp_installs_and_builds_in_a_private_workspace(tmp_path, monkeypatch):
@@ -33,15 +38,20 @@ def test_webapp_installs_and_builds_in_a_private_workspace(tmp_path, monkeypatch
     from hermes_constants import get_scratch_dir
     scratch = get_scratch_dir()
 
-    def install(_npm, cwd, **_kwargs):
+    def run_npm(argv, label, *, cwd, env):
+        if "run" in argv:
+            return build(argv, cwd=cwd, env=env)
+        return install(argv, cwd=cwd, env=env)
+
+    def install(_argv, *, cwd, env):
         roots.append(cwd)
+        assert env["npm_config_ignore_scripts"] == "true"
         assert cwd.parent == scratch
         # Model npm ci's destructive removal at the actual requested destination.
         shutil.rmtree(cwd / "node_modules", ignore_errors=True)
         assert (cwd / ".npmrc").read_text() == "engine-strict=true\n"
         assert (cwd / "package-lock.json").read_text() == "locked"
         assert (cwd / "apps/shared/source.ts").read_text() == "shared"
-        return SimpleNamespace(returncode=0)
 
     def build(argv, *, cwd, env):
         assert cwd == roots[0]
@@ -50,11 +60,8 @@ def test_webapp_installs_and_builds_in_a_private_workspace(tmp_path, monkeypatch
         staging = Path(argv[-1])
         staging.mkdir()
         (staging / "index.html").write_text("browser renderer", encoding="utf-8")
-        return SimpleNamespace(returncode=0)
 
-    monkeypatch.setattr(webapp, "_resolve_node_runtime_npm", lambda: "npm")
-    monkeypatch.setattr(webapp, "_run_npm_install_deterministic", install)
-    monkeypatch.setattr(webapp, "_run_with_idle_timeout", build)
+    _stub_npm(monkeypatch, run_npm)
     monkeypatch.setattr(webapp, "_write_stamp", lambda _root: None)
 
     result = webapp.prepare_webapp_renderer(project, force=True)
@@ -78,13 +85,12 @@ def test_failed_webapp_install_does_not_change_native_dependencies(tmp_path, mon
     binary.write_bytes(b"native")
     roots = []
 
-    def fail_install(_npm, cwd, **_kwargs):
+    def fail_install(_argv, label, *, cwd, env):
         roots.append(cwd)
         shutil.rmtree(cwd / "node_modules", ignore_errors=True)
-        return SimpleNamespace(returncode=1)
+        raise webapp.WebappBuildError(f"{label} failed (exit 1)")
 
-    monkeypatch.setattr(webapp, "_resolve_node_runtime_npm", lambda: "npm")
-    monkeypatch.setattr(webapp, "_run_npm_install_deterministic", fail_install)
+    _stub_npm(monkeypatch, fail_install)
     with pytest.raises(webapp.WebappBuildError, match="dependency install failed"):
         webapp.prepare_webapp_renderer(project, force=True)
     assert binary.read_bytes() == b"native"

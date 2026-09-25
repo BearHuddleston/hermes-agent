@@ -467,6 +467,8 @@ function readyBootProgress(): DesktopBootProgress {
 function readyBootstrapState(): DesktopBootstrapState {
   return {
     active: false,
+    // A browser host never runs an in-app bundled payload.
+    bundled: false,
     completedAt: Date.now(),
     error: null,
     log: [],
@@ -739,6 +741,8 @@ export function installBrowserDesktopBridge(): boolean {
     getConnection,
     getConnectionFor,
     getRecentLogs: async () => ({ lines: [], path: '' }),
+    // Venv/plugin receipts live on the server host; a browser tab has none of its own.
+    getSyncStatus: async () => null,
     getProfileRoutes: async (profiles: string[]) => {
       const available = new Set(await getProfiles())
 
@@ -1002,6 +1006,8 @@ export function installBrowserDesktopBridge(): boolean {
       run: async () => ({ error: 'Run `hermes uninstall` on the server host', ok: false }),
       summary: async () => ({
         agent_installed: true,
+        // Package removal belongs to the server host, never this browser tab.
+        code_removal_allowed: false,
         gui_installed: true,
         hermes_home: '',
         packaged_app_paths: [],

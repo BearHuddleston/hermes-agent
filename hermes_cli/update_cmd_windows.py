@@ -264,34 +264,6 @@ def _hermes_holder_subcommand(cmdline: str) -> str | None:
     return None
 
 
-def _format_venv_python_holders_message(matches: list[tuple[int, str, str]]) -> str:
-    """Explain which venv processes block the update and how to clear them.
-
-    Labels come from the parsed SUBCOMMAND, never substring: a standalone ``hermes dashboard`` must not be
-    called the Desktop backend, ``--preserve-cache`` must not match "serve". Unknown argv gets no hint.
-
-    See #90778.
-    """
-    hint_by_subcommand = {
-        "serve": "  ← Hermes backend (if the Desktop app is open, close it)",
-        "dashboard": "  ← hermes dashboard (stop it: hermes dashboard stop, or close that terminal)",
-        "gateway": "  ← gateway",
-    }
-    lines = ["✗ Other Hermes processes are running from this install's venv:"]
-    for pid, name, cmdline in matches[:6]:
-        hint = hint_by_subcommand.get(_hermes_holder_subcommand(cmdline) or "", "")
-        lines.append(f"  PID {pid}  {name}  {cmdline[:120]}{hint}")
-    if len(matches) > 6:
-        lines.append(f"  ... and {len(matches) - 6} more")
-    lines.append(
-        "\n  On Windows these keep native extension files (.pyd) locked, so the\n"
-        "  dependency update would fail partway and leave a broken install.\n"
-        "  Close the Hermes desktop app / other Hermes terminals, then re-run:\n    hermes update\n"
-        "  (or use `hermes update --force-venv` to proceed anyway at your own risk)"
-    )
-    return "\n".join(lines)
-
-
 def _venv_launcher_ancestors(pids: list[int]) -> list[int]:
     """Venv-interpreter parents of *pids* that hold the install open; never raises.
 
@@ -467,25 +439,6 @@ def _relaunch_stopped_serves(token: dict) -> None:
         "serve_relaunch", not failed and not skipped,
         f"relaunched={len(commands) - len(failed)} failed={len(failed)} skipped={skipped}",
     )
-
-
-def _pause_manual_web_servers(matches: list[tuple[int, str, str]]) -> dict | None:
-    """Stop ledger-identified manual web servers and arm exact relaunch."""
-    from hermes_cli.update_cmd import _m, _record_update_step
-    entries = _ledger_manual_serve_holders(matches)
-    if not entries:
-        return None
-    print(
-        f"  ⚠ {len(entries)} manual serve/dashboard/webapp backend(s) hold "
-        "the venv; stopping them for the update (they will be relaunched on "
-        "their recorded endpoints)"
-    )
-    _m()._stop_process_trees([int(entry["pid"]) for entry in entries])
-    token = {"pending": True, "entries": entries}
-    _record_update_step("serve_pause", True, f"stopped={len(entries)}")
-    import atexit
-    atexit.register(_relaunch_stopped_serves, token)
-    return token
 
 
 def _is_backend_argv(argv_low: str) -> bool:
@@ -679,7 +632,7 @@ def _desktop_owns_gateway_lifecycle() -> bool:
         if any(e.get("purpose") in _WEB_SERVER_PURPOSES and spawner_is_dead(e) is False for e in ledger_entries()):
             return True
     psutil = _psutil()
-    for pid, _name, cmdline in _try_call(_m()._detect_venv_python_processes, "Desktop-lifecycle holder scan failed: %s") or []:
+    for pid, _name, cmdline in _try_call(_detect_venv_python_processes, "Desktop-lifecycle holder scan failed: %s") or []:
         if not _looks_like_desktop_control_plane(cmdline):
             continue
         if psutil is None:
@@ -1353,82 +1306,3 @@ def _resume_windows_gateways_and_merge_outcome(outcome, _windows_gateway_resume,
             failed_units=outcome.failed_or_stale_units, incomplete=outcome.incomplete or bool(outcome.failed_or_stale_units),
             phase_error="; ".join(outcome.phase_errors) or None,
         )
-
-
-def _reap_and_rescan(message: str, pids, stop=None) -> list[tuple[int, str, str]]:
-    """Announce *message*, stop *pids* (tree-kill unless *stop* given), settle 1s, re-scan venv holders."""
-    from hermes_cli.update_cmd import _m
-    print(message)
-    (stop or _m()._stop_process_trees)(pids)
-    _time.sleep(1.0)
-    return _m()._detect_venv_python_processes()
-
-
-def _terminate_leftover_gateways(pids) -> None:
-    """Force-stop leftover gateways one by one; a failure is logged, never raised."""
-    from gateway.status import get_process_start_time, terminate_pid
-    for _pid in pids:
-        _try_call(lambda p=int(_pid): terminate_pid(p, force=True, expected_start_time=get_process_start_time(p)),
-                  "Could not stop leftover gateway %s: %s", _pid)
-
-
-def _in_handoff_without_live_shim(args) -> bool:
-    """GUI hand-off gate: ``--gateway`` + update-incomplete marker AND no live ``hermes.exe`` shim.
-
-    Fail closed: unverifiable marker or shim state reads as "not a hand-off" / "live shim"."""
-    from hermes_cli.update_cmd import _m
-    try:
-        if not (bool(getattr(args, "gateway", False)) and _m()._update_marker_path().exists()):
-            return False
-        scripts_dir = _m()._venv_scripts_dir()
-        return scripts_dir is not None and not _m()._detect_concurrent_hermes_instances(scripts_dir)
-    except Exception:
-        return False
-
-
-def _clear_windows_venv_holders_or_exit(args, gateway_mode: bool, _windows_gateway_resume):
-    """Windows: stop every venv-python holder we can positively identify, else resume paused gateways and exit 2.
-
-    Rungs in order: leftover pausable gateways -> ledger orphaned backends -> orphaned Desktop backends ->
-    ledger manual serve (relaunched at exit on the same bind) -> GUI hand-off leaks. Remaining holders are
-    refused (the sync would corrupt against a locked .pyd)."""
-    from hermes_cli.update_cmd import _m, _record_update_step, _refuse_gateway_ancestor_tree_kill
-
-    def _resume_and_exit():
-        _m()._resume_windows_gateways_after_update(_windows_gateway_resume)
-        sys.exit(2)
-
-    holders = _m()._detect_venv_python_processes()
-    # Gateways the pause machinery owns (respawned in the pause->guard window or unmapped
-    # spawn path): stop and re-check; post-update resume brings them back.
-    if holders and (gateway_holders := _m()._leftover_pausable_gateway_pids(holders)) is not None:
-        if _refuse_gateway_ancestor_tree_kill(gateway_holders, gateway_mode=gateway_mode):
-            _resume_and_exit()
-        holders = _reap_and_rescan(
-            f"  ⚠ {len(gateway_holders)} gateway process(es) still hold the venv after the pause; stopping them",
-            gateway_holders, stop=_terminate_leftover_gateways,
-        )
-    # Tree-reap rungs. Ledger rung = positive identity in any context (self-registered backend, spawner
-    # provably dead; no PPID archaeology). Orphan rung = Desktop `serve` whose app is GONE (nothing
-    # respawns an orphan); live-Desktop backends return None and keep the refusal.
-    for classifier, message in (
-        (_m()._ledger_reapable_backend_pids, "ledger-identified orphaned Hermes backend process(es) hold the venv"),
-        (_m()._orphaned_desktop_backend_pids, "orphaned Desktop backend process(es) still hold the venv"),
-    ):
-        if holders and (backends := classifier(holders)):
-            holders = _reap_and_rescan(f"  ⚠ {len(backends)} {message}; stopping their trees", backends)
-    # Ledger-identified manual web servers relaunch on the same host/port/profile
-    # on both success and rollback; live Desktop supervisors retain ownership.
-    if holders and _pause_manual_web_servers(holders):
-        _time.sleep(1.0)
-        holders = _m()._detect_venv_python_processes()
-    # Final rung: in a GUI hand-off the Desktop is contractually gone; surviving `serve` backends are leaks
-    # even with a live parent (which made the orphan-only rung bail and hang) — reap by cmdline.
-    if holders and _in_handoff_without_live_shim(args) and (handoff_backends := _m()._handoff_reapable_backend_pids(holders)):
-        holders = _reap_and_rescan(
-            f"  ⚠ {len(handoff_backends)} Hermes backend process(es) "
-            "still hold the venv after the Desktop hand-off; stopping their trees", handoff_backends,
-        )
-    if holders:
-        print(_format_venv_python_holders_message(holders))
-        _resume_and_exit()

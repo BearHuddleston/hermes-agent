@@ -97,31 +97,31 @@ def _assert_waiter_deadlines_and_busy_error(profile_pair, monkeypatch):
         assert ensure_profile_incarnation(alpha) == token
 
 
-@pytest.mark.linux_only
+@pytest.mark.platforms("linux")
 def test_unrelated_profile_db_opens_on_linux(profile_pair, monkeypatch):
     _assert_unrelated_profile_db_opens(profile_pair, monkeypatch)
 
 
-@pytest.mark.macos_only
+@pytest.mark.platforms("macos")
 def test_unrelated_profile_db_opens_on_macos(profile_pair, monkeypatch):
     _assert_unrelated_profile_db_opens(profile_pair, monkeypatch)
 
 
-@pytest.mark.windows_only
+@pytest.mark.platforms("windows")
 def test_unrelated_profile_db_opens_on_windows(profile_pair, monkeypatch):
     _assert_unrelated_profile_db_opens(profile_pair, monkeypatch)
 
 
-@pytest.mark.linux_only
+@pytest.mark.platforms("linux")
 def test_waiter_deadlines_and_busy_error_on_linux(profile_pair, monkeypatch):
     _assert_waiter_deadlines_and_busy_error(profile_pair, monkeypatch)
 
 
-@pytest.mark.macos_only
+@pytest.mark.platforms("macos")
 def test_waiter_deadlines_and_busy_error_on_macos(profile_pair, monkeypatch):
     _assert_waiter_deadlines_and_busy_error(profile_pair, monkeypatch)
 
 
-@pytest.mark.windows_only
+@pytest.mark.platforms("windows")
 def test_waiter_deadlines_and_busy_error_on_windows(profile_pair, monkeypatch):
     _assert_waiter_deadlines_and_busy_error(profile_pair, monkeypatch)

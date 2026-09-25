@@ -55,7 +55,7 @@ async def test_overlapping_lifespans_close_only_their_owned_registry(older_first
     assert restarted._closed
 
 
-@pytest.mark.linux_only
+@pytest.mark.platforms("linux")
 @pytest.mark.parametrize("older_first", [True, False])
 def test_real_shells_remain_owned_after_overlapping_lifespan_exit(tmp_path, monkeypatch, older_first):
     import psutil

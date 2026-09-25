@@ -49,7 +49,7 @@ def output_until(ws, marker):
     return output
 
 
-@pytest.mark.linux_only
+@pytest.mark.platforms("linux")
 @pytest.mark.parametrize("persistent", [False, True])
 @pytest.mark.parametrize("named_launch", [False, True])
 def test_shell_scopes_passthrough_after_eager_activation(
@@ -114,7 +114,7 @@ def test_shell_scopes_passthrough_after_eager_activation(
         secret_scope.get_secret(passthrough)
 
 
-@pytest.mark.linux_only
+@pytest.mark.platforms("linux")
 def test_real_shell_survives_disconnect_and_explicit_close(host_app, tmp_path):
     import shlex
     import sys
@@ -165,7 +165,7 @@ def test_real_shell_survives_disconnect_and_explicit_close(host_app, tmp_path):
             assert expired.value.code == 4410
 
 
-@pytest.mark.linux_only
+@pytest.mark.platforms("linux")
 @pytest.mark.parametrize("spawn_fails", [False, True])
 def test_route_cancelled_spawn_is_owned_through_lifespan(host_app, monkeypatch, spawn_fails):
     import threading
@@ -303,7 +303,7 @@ def test_identity_profile_incarnation_and_auth_gate(host_app, fake_bridges, tmp_
         assert fake_bridges[0].closed.wait(3)  # live reaper retires stale generations
 
 
-@pytest.mark.linux_only
+@pytest.mark.platforms("linux")
 def test_real_profile_a_b_a_and_process_exit_never_respawns(host_app, tmp_path):
     homes = {}
     for name in ("alpha", "beta"):

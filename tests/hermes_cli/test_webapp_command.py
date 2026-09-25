@@ -1,15 +1,13 @@
 from __future__ import annotations
 
 import argparse
-from contextlib import contextmanager
 import os
 from pathlib import Path
-from types import SimpleNamespace
 
 import pytest
 
 from hermes_cli import main as cli_main
-from hermes_cli import dashboard_procs, main_dashboard, main_desktop, main_web_build, webapp
+from hermes_cli import dashboard_procs, main_dashboard, webapp
 
 
 def _args(**overrides):
@@ -64,10 +62,10 @@ def test_desktop_content_hash_tracks_shared_source(tmp_path: Path):
     desktop_source.write_text("desktop", encoding="utf-8")
     shared_source.write_text("shared-v1", encoding="utf-8")
 
-    before = main_desktop._compute_desktop_content_hash(tmp_path)
+    before = webapp._compute_desktop_content_hash(tmp_path)
     shared_source.write_text("shared-v2", encoding="utf-8")
 
-    assert main_desktop._compute_desktop_content_hash(tmp_path) != before
+    assert webapp._compute_desktop_content_hash(tmp_path) != before
 
 
 def _assert_build_lock_excludes_second_open(tmp_path: Path):
@@ -86,7 +84,7 @@ def test_webapp_build_lock_excludes_a_second_open(tmp_path: Path):
     _assert_build_lock_excludes_second_open(tmp_path)
 
 
-@pytest.mark.windows_only
+@pytest.mark.platforms("windows")
 def test_webapp_build_lock_excludes_a_second_open_on_windows(tmp_path: Path):
     _assert_build_lock_excludes_second_open(tmp_path)
 
@@ -151,55 +149,43 @@ def test_browser_build_uses_locked_closure_and_never_replaces_native_dist(
     native_index.parent.mkdir()
     native_index.write_text("native-electron", encoding="utf-8")
     stamp = tmp_path / "stamp.json"
-    install_calls = []
-    build_calls = []
+    calls = []
 
-    def install(npm, cwd, **kwargs):
-        install_calls.append((npm, cwd, kwargs))
-        return SimpleNamespace(returncode=0)
+    def run_npm(argv, label, *, cwd, env):
+        calls.append((argv, cwd, env))
+        if "run" in argv:
+            staging = Path(argv[-1])
+            staging.mkdir()
+            (staging / "index.html").write_text("webapp", encoding="utf-8")
 
-    def build(argv, *, cwd, env):
-        build_calls.append((argv, cwd, env))
-        staging = Path(argv[-1])
-        staging.mkdir()
-        (staging / "index.html").write_text("webapp", encoding="utf-8")
-        return SimpleNamespace(returncode=0)
-
-    fake_main = SimpleNamespace(
-        _compute_desktop_content_hash=lambda _root: "content-hash",
-        _npm_lifecycle_env=lambda env: dict(env),
-        _resolve_node_runtime_npm=lambda: "/node/npm",
-        _run_npm_install_deterministic=install,
-        _run_with_idle_timeout=build,
-    )
-    for name, implementation in vars(fake_main).items():
-        monkeypatch.setattr(webapp, name, implementation)
+    monkeypatch.setattr(webapp, "_build_env", lambda: {"PATH": "/node"})
+    monkeypatch.setattr(webapp, "_npm_command", lambda _root, _env: ["/node/node", "npm-cli.js"])
+    monkeypatch.setattr(webapp, "_run_npm", run_npm)
+    monkeypatch.setattr(webapp, "_compute_desktop_content_hash", lambda _root: "content-hash")
     monkeypatch.setattr(webapp, "_stamp_path", lambda: stamp)
-    monkeypatch.setattr(
-        "hermes_constants.with_hermes_node_path", lambda: {"PATH": "/node"}
-    )
 
     result = webapp.prepare_webapp_renderer(tmp_path, force=True)
 
     assert result == tmp_path / "apps" / "desktop" / "dist-webapp"
     assert native_index.read_text(encoding="utf-8") == "native-electron"
-    assert install_calls[0][0] == "/node/npm"
-    assert install_calls[0][1] != tmp_path
-    assert build_calls[0][1] == install_calls[0][1]
-    install_args = install_calls[0][2]["extra_args"]
-    assert "--ignore-scripts" in install_args
-    assert "--no-save" in install_args
-    assert "--workspaces" in install_args
-    assert "--include-workspace-root" in install_args
-    assert build_calls[0][0] == [
-        "/node/npm",
+    (install_argv, install_cwd, install_env), (build_argv, build_cwd, build_env) = calls
+    assert install_argv[:3] == ["/node/node", "npm-cli.js", "ci"]
+    assert install_cwd != tmp_path
+    assert build_cwd == install_cwd
+    assert install_env["npm_config_ignore_scripts"] == "true"
+    assert "npm_config_ignore_scripts" not in build_env
+    for flag in ("--ignore-scripts", "--workspaces", "--include-workspace-root", "--include=dev"):
+        assert flag in install_argv
+    assert build_argv == [
+        "/node/node",
+        "npm-cli.js",
         "run",
         "--workspace",
         "apps/desktop",
         "build:webapp",
         "--",
         "--outDir",
-        build_calls[0][0][-1],
+        build_argv[-1],
     ]
     assert (tmp_path / "package-lock.json").read_text(encoding="utf-8") == "locked\n"
     assert stamp.is_file()
@@ -441,45 +427,18 @@ def test_webapp_process_table_fallback_uses_structured_command_identity(monkeypa
     ]
 
 
-def test_dashboard_and_webapp_builds_enter_the_same_workspace_lock(tmp_path: Path, monkeypatch):
+def test_dashboard_and_webapp_builds_share_the_workspace_lock(tmp_path: Path):
+    """A Webapp build excludes the Dashboard builder's lock on the same checkout."""
+    from pm.filesystem import lock_fd
+
     _workspace_tree(tmp_path)
-    dist = tmp_path / "apps" / "desktop" / "dist-webapp"
-    dist.mkdir()
-    (dist / "index.html").write_text("ready", encoding="utf-8")
-    lock_paths = []
-
-    @contextmanager
-    def record_lock(path):
-        lock_paths.append(path)
-        yield
-
-    monkeypatch.setattr(webapp, "_exclusive_build_lock", record_lock)
-    monkeypatch.setattr(webapp, "_try_file_lock", lambda _handle: False)
-    monkeypatch.setattr(main_web_build, "_do_build_web_ui", lambda *_args, **_kwargs: True)
-
-    assert webapp.prepare_webapp_renderer(tmp_path, skip_build=True) == dist
-    assert main_web_build._build_web_ui(tmp_path / "web") is True
-    assert lock_paths == [
-        tmp_path / ".web_ui_build.lock",
-        tmp_path / ".web_ui_build.lock",
-    ]
-
-
-def test_dashboard_serves_existing_dist_while_shared_workspace_lock_is_busy(
-    tmp_path: Path, monkeypatch
-):
-    _workspace_tree(tmp_path)
-    dashboard_index = tmp_path / "hermes_cli" / "web_dist" / "index.html"
-    dashboard_index.parent.mkdir(parents=True)
-    dashboard_index.write_text("existing", encoding="utf-8")
-    monkeypatch.setattr(webapp, "_try_file_lock", lambda _handle: False)
-    monkeypatch.setattr(
-        main_web_build,
-        "_do_build_web_ui",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("must not build")),
-    )
-
-    assert main_web_build._build_web_ui(tmp_path / "web") is True
+    lock_path = tmp_path / webapp._LOCK_NAME
+    assert webapp._LOCK_NAME == ".web_ui_build.lock"
+    with webapp._exclusive_build_lock(lock_path):
+        with lock_path.open("ab") as contender:
+            assert lock_fd(contender.fileno(), wait=False) is False
+    with lock_path.open("ab") as contender:
+        assert lock_fd(contender.fileno(), wait=False) is True
 
 
 def test_webapp_help_describes_its_scoped_lifecycle(capsys):

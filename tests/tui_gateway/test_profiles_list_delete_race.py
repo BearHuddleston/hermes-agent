@@ -450,7 +450,7 @@ def test_attachment_write_holds_profile_lifecycle_lease(
     _assert_attachment_write_holds_profile_lifecycle_lease(home, monkeypatch)
 
 
-@pytest.mark.macos_only
+@pytest.mark.platforms("macos")
 def test_macos_attachment_write_holds_profile_lifecycle_lease(
     home: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -458,7 +458,7 @@ def test_macos_attachment_write_holds_profile_lifecycle_lease(
     _assert_attachment_write_holds_profile_lifecycle_lease(home, monkeypatch)
 
 
-@pytest.mark.windows_only
+@pytest.mark.platforms("windows")
 def test_windows_attachment_write_holds_profile_lifecycle_lease(
     home: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -526,7 +526,7 @@ def test_sessiondb_bind_holds_profile_lifecycle_lease(
     _assert_sessiondb_bind_holds_profile_lifecycle_lease(home, monkeypatch)
 
 
-@pytest.mark.macos_only
+@pytest.mark.platforms("macos")
 def test_macos_sessiondb_bind_holds_profile_lifecycle_lease(
     home: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -534,7 +534,7 @@ def test_macos_sessiondb_bind_holds_profile_lifecycle_lease(
     _assert_sessiondb_bind_holds_profile_lifecycle_lease(home, monkeypatch)
 
 
-@pytest.mark.windows_only
+@pytest.mark.platforms("windows")
 def test_windows_sessiondb_bind_holds_profile_lifecycle_lease(
     home: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1050,7 +1050,7 @@ def test_profile_mutation_lock_is_cross_process(home: Path) -> None:
     _assert_profile_mutation_lock_is_cross_process(home)
 
 
-@pytest.mark.windows_only
+@pytest.mark.platforms("windows")
 def test_windows_profile_mutation_lock_uses_native_byte_range_lock(home: Path) -> None:
     _assert_profile_mutation_lock_is_cross_process(home)
 

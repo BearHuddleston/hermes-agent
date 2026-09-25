@@ -226,7 +226,7 @@ def test_browser_upload_client_isolated_from_previous_server_bind(
     assert response.status_code == 200, response.text
 
 
-@pytest.mark.linux_only
+@pytest.mark.platforms("linux")
 def test_browser_upload_stages_owner_only_file_on_posix(tmp_path: Path, monkeypatch):
     with _client(tmp_path, monkeypatch) as client:
         response = client.post(
@@ -446,7 +446,7 @@ def test_browser_file_upload_cannot_publish_into_recreated_profile(
     )
 
 
-@pytest.mark.macos_only
+@pytest.mark.platforms("macos")
 def test_macos_browser_file_upload_cannot_publish_into_recreated_profile(
     tmp_path: Path, monkeypatch
 ):
@@ -456,7 +456,7 @@ def test_macos_browser_file_upload_cannot_publish_into_recreated_profile(
     )
 
 
-@pytest.mark.windows_only
+@pytest.mark.platforms("windows")
 def test_windows_browser_file_upload_cannot_publish_into_recreated_profile(
     tmp_path: Path, monkeypatch
 ):
@@ -590,7 +590,7 @@ def test_browser_image_upload_cannot_publish_into_recreated_profile(
     )
 
 
-@pytest.mark.macos_only
+@pytest.mark.platforms("macos")
 def test_macos_browser_image_upload_cannot_publish_into_recreated_profile(
     tmp_path: Path, monkeypatch
 ):
@@ -600,7 +600,7 @@ def test_macos_browser_image_upload_cannot_publish_into_recreated_profile(
     )
 
 
-@pytest.mark.windows_only
+@pytest.mark.platforms("windows")
 def test_windows_browser_image_upload_cannot_publish_into_recreated_profile(
     tmp_path: Path, monkeypatch
 ):

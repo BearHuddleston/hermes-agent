@@ -270,7 +270,7 @@ async def test_supersede_cancels_inflight_input_before_replacement_writes():
     await session.close()
 
 
-@pytest.mark.linux_only
+@pytest.mark.platforms("linux")
 @pytest.mark.asyncio
 async def test_superseded_input_cancellation_wins_completed_readiness(monkeypatch):
     import errno

@@ -4,7 +4,7 @@ import threading
 from types import SimpleNamespace
 
 import pytest
-import yaml
+import hermes_yaml as yaml
 
 
 @pytest.mark.parametrize("explicit_profile", [None, "default"])

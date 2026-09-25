@@ -246,8 +246,9 @@ describe('preview path resolution', () => {
       await expect(normalizeOrLocalPreviewTarget(path, cwd)).resolves.toMatchObject({ path })
     }
 
+    // Relative targets join through the separator-normalizing resolver.
     await expect(normalizeOrLocalPreviewTarget('source.py', cwd)).resolves.toMatchObject({
-      path: `${cwd}/source.py`
+      path: 'C:/work tree/source.py'
     })
   })
 })

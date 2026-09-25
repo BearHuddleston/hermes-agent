@@ -344,7 +344,7 @@ def test_stream_file_uri_uses_host_resolution_without_bypassing_policy(
     assert client.get("/api/files/stream", params=params).status_code == 413
 
 
-@pytest.mark.windows_only
+@pytest.mark.platforms("windows")
 @pytest.mark.parametrize("uri,expected", [
     ("file:///C:/Users/Alice/video%20clip.mp4", "C:/Users/Alice/video clip.mp4"),
     ("file://127.0.0.1/hermes-media-test/video%20clip.mp4", "//127.0.0.1/hermes-media-test/video clip.mp4"),

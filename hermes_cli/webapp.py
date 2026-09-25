@@ -9,18 +9,16 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 from datetime import datetime, timezone
+import hashlib
 import json
 import os
 from pathlib import Path
 import secrets
 import shutil
+import subprocess
 import tempfile
 import time
 
-from hermes_cli.main_desktop import _compute_desktop_content_hash
-from hermes_cli.main_install_repair import _resolve_node_runtime_npm
-from hermes_cli.main_tui_launch import _npm_lifecycle_env
-from hermes_cli.main_web_build import _run_npm_install_deterministic, _run_with_idle_timeout
 
 
 _DIST_NAME = "dist-webapp"
@@ -37,6 +35,48 @@ class WebappBuildError(RuntimeError):
 
 def webapp_dist_dir(project_root: Path) -> Path:
     return project_root / "apps" / "desktop" / _DIST_NAME
+
+
+def _desktop_source_files(project_root: Path):
+    """Renderer inputs in a stable order, pruning ``.gitignore`` matches."""
+    from pathspec import PathSpec
+
+    ignore_file = project_root / ".gitignore"
+    spec = PathSpec.from_lines(
+        "gitignore", ignore_file.read_text(encoding="utf-8").splitlines() if ignore_file.is_file() else []
+    )
+
+    def ignored(path: Path, *, directory: bool = False) -> bool:
+        relative = path.relative_to(project_root).as_posix()
+        return spec.match_file(relative + "/" if directory else relative)
+
+    for name in ("package.json", "package-lock.json"):
+        path = project_root / name
+        if path.is_file() and not ignored(path):
+            yield path
+    for tree in (project_root / "apps" / "desktop", project_root / "apps" / "shared"):
+        for dirpath, dirnames, filenames in os.walk(tree, topdown=True):
+            dirnames[:] = sorted(d for d in dirnames if not ignored(Path(dirpath) / d, directory=True))
+            for filename in sorted(filenames):
+                path = Path(dirpath) / filename
+                if not ignored(path):
+                    yield path
+
+
+def _compute_desktop_content_hash(project_root: Path) -> str:
+    """SHA-256 of Desktop and its shared sources, plus root workspace config."""
+    digest = hashlib.sha256()
+    for path in _desktop_source_files(project_root):
+        digest.update(str(path.relative_to(project_root)).encode())
+        digest.update(b"\0")
+        try:
+            with open(path, "rb") as handle:
+                for chunk in iter(lambda: handle.read(65536), b""):
+                    digest.update(chunk)
+        except OSError:
+            pass
+        digest.update(b"\0")
+    return digest.hexdigest()
 
 
 def _stamp_path() -> Path:
@@ -78,12 +118,46 @@ def _write_stamp(project_root: Path) -> None:
 def _workspace_install_args() -> tuple[str, ...]:
     """Install the locked workspace graph without native lifecycle scripts."""
     return (
+        "ci",
         "--workspaces",
         "--include-workspace-root",
+        "--include=dev",
         "--ignore-scripts",
-        "--no-save",
+        "--no-audit",
+        "--no-fund",
         "--prefer-offline",
     )
+
+
+def _build_env() -> dict[str, str]:
+    """PM-provided Node/npm environment shared with the source builders."""
+    from hermes_cli.source_build import source_build_env
+
+    try:
+        env = source_build_env()
+    except (OSError, RuntimeError) as exc:
+        raise WebappBuildError(f"Hermes Webapp needs Node.js/npm to build its Desktop renderer: {exc}") from exc
+    env["ELECTRON_SKIP_BINARY_DOWNLOAD"] = "1"
+    return env
+
+
+def _npm_command(project_root: Path, env: dict[str, str]) -> list[str]:
+    """npm through the shared resolver, which runs its JS entrypoint without a shell."""
+    node = shutil.which("node", path=env.get("PATH", ""))
+    if not node:
+        raise WebappBuildError("Hermes Webapp needs Node.js/npm to build its Desktop renderer")
+    return [node, str(project_root / "scripts" / "build" / "node-deps.mjs"), "--npm"]
+
+
+def _run_npm(argv: list[str], label: str, *, cwd: Path, env: dict[str, str]) -> None:
+    from pm.progress import run_contained
+
+    try:
+        run_contained(argv, label, indent="  ", cwd=cwd, env=env)
+    except subprocess.CalledProcessError as exc:
+        raise WebappBuildError(f"{label} failed (exit {exc.returncode})") from exc
+    except OSError as exc:
+        raise WebappBuildError(f"{label} failed: {exc}") from exc
 
 
 def _try_file_lock(handle) -> bool:
@@ -238,54 +312,26 @@ def _do_build(project_root: Path, *, force: bool) -> Path:
     if not (desktop_dir / "package.json").is_file():
         raise WebappBuildError(f"Desktop workspace not found at {desktop_dir}")
 
-    npm = _resolve_node_runtime_npm()
-    if not npm:
-        raise WebappBuildError(
-            "Hermes Webapp needs Node.js/npm to build its Desktop renderer"
-        )
-
-    from hermes_constants import with_hermes_node_path
-
-    install_env = _npm_lifecycle_env(with_hermes_node_path())
-    install_env["ELECTRON_SKIP_BINARY_DOWNLOAD"] = "1"
-    install_env["npm_config_ignore_scripts"] = "true"
+    env = _build_env()
+    npm = _npm_command(project_root, env)
+    install_env = dict(env, npm_config_ignore_scripts="true")
     staging = desktop_dir / f".dist-webapp-build-{os.getpid()}-{secrets.token_hex(4)}"
     try:
         with _private_build_workspace(project_root) as workspace:
-            print("→ Installing browser-renderer dependencies in a private workspace...")
-            installed = _run_npm_install_deterministic(
-                npm,
-                workspace,
-                extra_args=_workspace_install_args(),
-                capture_output=False,
+            _run_npm(
+                [*npm, *_workspace_install_args()],
+                "Browser-renderer dependency install",
+                cwd=workspace,
                 env=install_env,
             )
-            if installed.returncode != 0:
-                raise WebappBuildError(
-                    f"Browser-renderer dependency install failed (exit {installed.returncode})"
-                )
-
-            build_env = dict(install_env)
-            build_env.pop("npm_config_ignore_scripts", None)
-            print("→ Building the Hermes Desktop renderer for the browser...")
-            built = _run_with_idle_timeout(
-                [
-                    npm,
-                    "run",
-                    "--workspace",
-                    "apps/desktop",
-                    "build:webapp",
-                    "--",
-                    "--outDir",
-                    str(staging),
-                ],
+            _run_npm(
+                [*npm, "run", "--workspace", "apps/desktop", "build:webapp", "--", "--outDir", str(staging)],
+                "Browser-hosted Desktop build",
                 cwd=workspace,
-                env=build_env,
+                env=env,
             )
-            if built.returncode != 0 or not (staging / "index.html").is_file():
-                raise WebappBuildError(
-                    f"Browser-hosted Desktop build failed (exit {built.returncode})"
-                )
+            if not (staging / "index.html").is_file():
+                raise WebappBuildError("Browser-hosted Desktop build produced no index.html")
         _publish_dist(staging, dist)
     finally:
         if staging.exists():

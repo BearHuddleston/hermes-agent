@@ -65,17 +65,17 @@ def _assert_concurrent_process_backfill(
         results.join_thread()
 
 
-@pytest.mark.linux_only
+@pytest.mark.platforms("linux")
 def test_concurrent_process_backfill_on_linux(tmp_path: Path, monkeypatch) -> None:
     _assert_concurrent_process_backfill(tmp_path, monkeypatch)
 
 
-@pytest.mark.macos_only
+@pytest.mark.platforms("macos")
 def test_concurrent_process_backfill_on_macos(tmp_path: Path, monkeypatch) -> None:
     _assert_concurrent_process_backfill(tmp_path, monkeypatch)
 
 
-@pytest.mark.windows_only
+@pytest.mark.platforms("windows")
 def test_concurrent_process_backfill_on_windows(tmp_path: Path, monkeypatch) -> None:
     _assert_concurrent_process_backfill(tmp_path, monkeypatch)
 
@@ -186,7 +186,7 @@ def _assert_resource_lease_timeout_fails_closed(
     assert result.returncode == 0, result.stdout + result.stderr
 
 
-@pytest.mark.linux_only
+@pytest.mark.platforms("linux")
 def test_legacy_backfill_excludes_profile_recreation_on_linux(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -194,7 +194,7 @@ def test_legacy_backfill_excludes_profile_recreation_on_linux(
     _assert_legacy_backfill_excludes_profile_recreation(tmp_path, monkeypatch)
 
 
-@pytest.mark.macos_only
+@pytest.mark.platforms("macos")
 def test_legacy_backfill_excludes_profile_recreation_on_macos(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -202,7 +202,7 @@ def test_legacy_backfill_excludes_profile_recreation_on_macos(
     _assert_legacy_backfill_excludes_profile_recreation(tmp_path, monkeypatch)
 
 
-@pytest.mark.windows_only
+@pytest.mark.platforms("windows")
 def test_legacy_backfill_excludes_profile_recreation_on_windows(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -210,7 +210,7 @@ def test_legacy_backfill_excludes_profile_recreation_on_windows(
     _assert_legacy_backfill_excludes_profile_recreation(tmp_path, monkeypatch)
 
 
-@pytest.mark.linux_only
+@pytest.mark.platforms("linux")
 def test_resource_lease_timeout_fails_closed_on_linux(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -218,7 +218,7 @@ def test_resource_lease_timeout_fails_closed_on_linux(
     _assert_resource_lease_timeout_fails_closed(tmp_path, monkeypatch)
 
 
-@pytest.mark.macos_only
+@pytest.mark.platforms("macos")
 def test_resource_lease_timeout_fails_closed_on_macos(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -226,7 +226,7 @@ def test_resource_lease_timeout_fails_closed_on_macos(
     _assert_resource_lease_timeout_fails_closed(tmp_path, monkeypatch)
 
 
-@pytest.mark.windows_only
+@pytest.mark.platforms("windows")
 def test_resource_lease_timeout_fails_closed_on_windows(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

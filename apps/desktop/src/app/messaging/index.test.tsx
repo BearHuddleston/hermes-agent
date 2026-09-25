@@ -7,6 +7,14 @@ import { $changeEventsAvailable, $pairingChangeTick, $platformsChangeTick } from
 import { $settingsScopeOverride } from '@/store/settings-scope'
 import type { MessagingPlatformInfo } from '@/types/hermes'
 
+import { MessagingView } from './index'
+
+// Imports are static on purpose: `await import(...)` inside test bodies ran
+// against the test timer, and a cold evaluate of the MessagingView graph blew
+// the 15s timeout — the timed-out first test then left the DOM empty for
+// every later test. vi.mock calls below are hoisted above these imports, so
+// the mocks still apply.
+
 const getMessagingPlatforms = vi.fn()
 const updateMessagingPlatform = vi.fn()
 const getPairing = vi.fn()
@@ -97,12 +105,12 @@ afterEach(() => {
   vi.clearAllMocks()
 })
 
-// Import at module scope (after the hoisted vi.mock calls) so the heavy
-// component-tree transform is paid during collection, not billed against the
-// first test's testTimeout — inside a test body it exceeded the budget on
+// Static import at module scope (after the hoisted vi.mock calls) so the
+// heavy component-tree transform is paid during collection, not billed against
+// the first test's testTimeout — inside a test body it exceeded the budget on
 // loaded CI runners and cascaded the whole file (main runs 34599517793,
 // 34600757569, 34601269252). Same pattern as chat/index.test.tsx.
-const { MessagingView } = await import('./index')
+void import('./index')
 
 async function renderMessaging() {
   let result: ReturnType<typeof render>

@@ -94,7 +94,7 @@ def test_disjoint_mutations_preserve_shared_file_updates(root, monkeypatch, oper
         assert all((root / "profiles" / name).is_dir() for name in ("gamma", "delta"))
 
 
-@pytest.mark.linux_only
+@pytest.mark.platforms("linux")
 def test_lifecycle_directories_preserve_group_inheritance(root):
     directory = root / "profiles"
     directory.mkdir(mode=0o2770)
