@@ -65,25 +65,86 @@ def _prepare_connection_retirement():
 # every POSIX advisory lock this process holds on the file, dropping the writer's WAL-mode DMS
 # shared lock (see hermes_cli/sqlite_safe_read.py) so another process can treat this writer as
 # dead and rerun WAL-index recovery underneath it.  So the probe preads through a per-path fd
-# cached for the life of the process (opening never cancels locks).  When the path is re-pointed
-# at a new inode (the very replacement this probe detects) the stale fd is RETIRED, never closed
-# — closing it would cancel the live connection's locks.  Replacements are rare and halt writes.
+# cached while SQLite owns that inode (opening never cancels locks). A replaced inode's probe
+# stays retired until its SQLite descriptors disappear too. Cleanup runs under the connection
+# lifecycle lock AFTER close, never in the lockguard release -> SQLite close handoff.
 _HEADER_PROBE_LOCK = threading.Lock()
 _HEADER_PROBE_FDS: "dict[str, tuple[int, int, int]]" = {}  # key -> (fd, dev, ino)
-_RETIRED_HEADER_PROBE_FDS: "list[int]" = []  # intentionally never closed
+_RETIRED_HEADER_PROBE_FDS: "list[int]" = []
 _FTS_TABLE_NAMES = ("messages_fts", "messages_fts_trigram", "messages_fts_cjk")
 
 
+def _retire_unused_header_probes() -> None:
+    """Release only probes with no other descriptor on their inode.
+
+    Caller holds sqlite_safe_read._live_lock; lock order is lifecycle -> probe.
+    Every state-db opener (including readers) must use connect_tracked: fd
+    enumeration protects existing owners, not new opens after the snapshot.
+    A zero tracked count is insufficient: sqlite3_close_v2 can defer the real
+    close for a cursor, and aliases or quarantined connections can still own
+    the inode. Failed fd enumeration retains the probes, never guesses safety.
+    """
+    with _HEADER_PROBE_LOCK:
+        probes = {entry[0] for entry in _HEADER_PROBE_FDS.values()}
+        probes.update(_RETIRED_HEADER_PROBE_FDS)
+        if not probes:
+            return
+        for directory in ("/proc/self/fd", "/dev/fd"):
+            try:
+                names = os.listdir(directory)
+                break
+            except OSError:
+                continue
+        else:
+            return
+        occupied = set()
+        for name in names:
+            if not name.isdigit() or int(name) in probes:
+                continue
+            try:
+                st = os.fstat(int(name))
+            except OSError as exc:
+                if exc.errno == errno.EBADF:  # a concurrent close (or listdir's own fd)
+                    continue
+                return
+            occupied.add((st.st_dev, st.st_ino))
+        released = set()
+        for fd in probes:
+            try:
+                st = os.fstat(fd)
+            except OSError:
+                continue
+            if (st.st_dev, st.st_ino) not in occupied:
+                os.close(fd)
+                released.add(fd)
+        for key, entry in list(_HEADER_PROBE_FDS.items()):
+            if entry[0] in released:
+                del _HEADER_PROBE_FDS[key]
+        _RETIRED_HEADER_PROBE_FDS[:] = [
+            fd for fd in _RETIRED_HEADER_PROBE_FDS if fd not in released
+        ]
+
+
 def _pread_db_range(db_path: Path, offset: int, length: int) -> "Optional[bytes]":
-    """Lock-safe raw read of a possibly-live SQLite database: POSIX preads from a cached,
-    never-closed fd (rebound when the path names a new inode); Windows reads plainly, since
-    advisory-lock cancellation is a POSIX-only hazard."""
+    """Read through an inode-owned probe; offline reads release it before returning."""
+    from hermes_cli.sqlite_safe_read import _live_lock, has_live_connection
     from hermes_state import _IS_WINDOWS
     if _IS_WINDOWS:
         with contextlib.suppress(OSError), db_path.open("rb") as handle:
             handle.seek(offset)
             return handle.read(length)
         return None
+    # Serialize probe use/retirement with tracked opens and the actual SQLite
+    # close, including a read that races the final owner's close.
+    with _live_lock:
+        try:
+            return _pread_db_range_cached(db_path, offset, length)
+        finally:
+            if not has_live_connection(db_path):
+                _retire_unused_header_probes()
+
+
+def _pread_db_range_cached(db_path: Path, offset: int, length: int) -> "Optional[bytes]":
     key = str(db_path)
     try:
         st = os.stat(db_path)
@@ -92,7 +153,7 @@ def _pread_db_range(db_path: Path, offset: int, length: int) -> "Optional[bytes]
     with _HEADER_PROBE_LOCK:
         cached = _HEADER_PROBE_FDS.get(key)
         if cached is not None and (cached[1], cached[2]) != (st.st_dev, st.st_ino):
-            # Path re-pointed at a new file. Retire (never close) the old fd.
+            # The old inode may still belong to a live/quarantined connection.
             _RETIRED_HEADER_PROBE_FDS.append(_HEADER_PROBE_FDS.pop(key)[0])
             cached = None
         if cached is None:

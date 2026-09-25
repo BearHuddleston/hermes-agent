@@ -73,7 +73,14 @@ def _track_key(key: str, delta: int = 1) -> None:
 def untrack_connection(path: Path | str) -> None:
     """Record that one connection to *path* has been closed."""
     with _live_lock:
-        _track_key(_key(path), -1)
+        key = _key(path)
+        _track_key(key, -1)
+        if key not in _live_connections:
+            from hermes_state_dbfile import _retire_unused_header_probes
+
+            # Keep opens excluded through probe cleanup. The owner also checks
+            # actual inode holders (aliases, deferred closes, pinned handles).
+            _retire_unused_header_probes()
 
 
 def has_live_connection(path: Path | str) -> bool:
@@ -133,8 +140,10 @@ def connect_tracked(
 ) -> sqlite3.Connection:
     """``sqlite3.connect`` that registers the connection for the lifetime of the fd (released on
     ``close()``). Use for any database that might be byte-probed (``state.db``, ``kanban.db``).
-    Open and registration happen together under ``_live_lock`` so a concurrent
-    :func:`read_header_bytes_preopen` cannot slip between them and cancel this connection's locks."""
+    Readers must participate too: even a read-only schema query owns SQLite locks.
+    Open and registration happen together under ``_live_lock`` so raw reads and
+    cached-header retirement cannot cancel a new connection's locks after their
+    descriptor inventory. An inventory alone cannot exclude a concurrent opener."""
     opener = connect_fn if connect_fn is not None else sqlite3.connect
     kwargs["factory"] = _tracking_factory(kwargs.get("factory", sqlite3.Connection))
 

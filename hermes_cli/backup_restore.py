@@ -97,9 +97,11 @@ def _safe_restore_db(src: Path, dst: Path) -> bool:
     under a live holder is the #90950 split-brain, so that branch fails
     closed (returns ``False``) and the caller reports the file as skipped.
     """
+    from hermes_cli.sqlite_safe_read import connect_tracked
+
     dst_conn: Optional[sqlite3.Connection] = None
     try:
-        dst_conn = sqlite3.connect(str(dst))
+        dst_conn = connect_tracked(dst)
         try:
             # Force a WAL checkpoint so the backup starts from a clean
             # state rather than writing on top of a deep WAL.
@@ -377,10 +379,12 @@ def _count_session_rows(path: Path) -> Optional[Tuple[int, int]]:
     database would mask the very loss this count exists to surface.  Same
     contract as :func:`_count_cron_jobs`.
     """
+    from hermes_cli.sqlite_safe_read import connect_tracked
+
     if not path.is_file():
         return None
     try:
-        conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+        conn = connect_tracked(f"file:{path}?mode=ro", uri=True)
     except sqlite3.Error:
         return None
     try:

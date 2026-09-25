@@ -744,8 +744,10 @@ def state_db_has_structural_damage(db_path: Path) -> bool:
     reporting (a torn page under the walk) is structural too: no FTS-only fixture does that
     while ``messages``/``sessions`` read cleanly, and the FTS rebuild ladder cannot help.
     Cannot-open / locked stays False so the caller keeps the FTS path."""
+    from hermes_cli.sqlite_safe_read import connect_tracked
+
     try:
-        conn = sqlite3.connect(read_only_db_uri(db_path), uri=True, timeout=1.0)
+        conn = connect_tracked(read_only_db_uri(db_path), uri=True, timeout=1.0)
     except sqlite3.Error:
         return False
     try:
