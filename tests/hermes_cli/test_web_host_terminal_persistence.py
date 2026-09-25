@@ -332,6 +332,86 @@ def test_real_profile_a_b_a_and_process_exit_never_respawns(host_app, tmp_path):
         assert set(host_app.state.host_terminals._sessions) <= set(tokens.values())
 
 
+@pytest.mark.platforms("linux")
+@pytest.mark.parametrize("persistent", [False, True])
+@pytest.mark.parametrize("retirement", ["delete", "replace"])
+def test_real_shell_rejects_input_after_profile_retirement(
+    host_app, tmp_path, persistent, retirement,
+):
+    import os
+    import shlex
+    import subprocess
+    import sys
+
+    profile = tmp_path / ".hermes" / "profiles" / "alpha"
+    profile.mkdir(parents=True)
+    (profile / "config.yaml").write_text("{}", encoding="utf-8")
+    before, after = tmp_path / "before", tmp_path / "after"
+    endpoint = url("&profile=alpha")
+    if not persistent:
+        endpoint = endpoint.replace("&persistent=1", "")
+    with TestClient(host_app) as client:
+        with client.websocket_connect(endpoint) as ws:
+            metadata(ws)
+            ws.send_bytes((
+                f"stty -echo; printf before > {shlex.quote(str(before))}; printf 'REA%s\\n' DY\n"
+            ).encode())
+            output_until(ws, b"READY")
+            assert before.read_text(encoding="utf-8-sig") == "before"
+            # A different process cannot notify the serving process's registry.
+            subprocess.run([
+                sys.executable, "-c",
+                "import sys; from hermes_cli.profile_lifecycle import profile_lifecycle_lease, mark_profile_deleting; "
+                "from hermes_cli.profile_incarnation import read_profile_incarnation, write_fresh_profile_incarnation; "
+                "\nwith profile_lifecycle_lease(sys.argv[1]):\n"
+                " if sys.argv[2] == 'delete': mark_profile_deleting(sys.argv[1], read_profile_incarnation(sys.argv[1]))\n"
+                " else: write_fresh_profile_incarnation(sys.argv[1])\n",
+                str(profile), retirement,
+            ], env={**os.environ, "HOME": str(tmp_path)}, check=True, timeout=10)
+            ws.send_bytes((
+                f"printf executed > {shlex.quote(str(after))}; printf 'STA%s\\n' LE\n"
+            ).encode())
+            with pytest.raises(WebSocketDisconnect) as error:
+                output_until(ws, b"STALE")
+            assert error.value.code == 4410
+        assert not after.exists()
+
+
+@pytest.mark.platforms("linux")
+def test_nonpersistent_shell_disconnect_closes_child(host_app, monkeypatch):
+    import threading
+
+    bridges = []
+    closed = threading.Event()
+    spawn = web_server_chat.PtyBridge.spawn
+
+    def capture_spawn(*args, **kwargs):
+        bridge = spawn(*args, **kwargs)
+        original_close = bridge.close
+
+        def close():
+            original_close()
+            closed.set()
+
+        bridge.close = close
+        bridges.append(bridge)
+        return bridge
+
+    monkeypatch.setattr(web_server_chat.PtyBridge, "spawn", capture_spawn)
+    with TestClient(host_app) as client:
+        endpoint = url().replace("&persistent=1", "")
+        with client.websocket_connect(endpoint) as ws:
+            assert metadata(ws) == {"shell": "sh"}
+            ws.send_bytes(b"printf 'REA%s\\n' DY\n")
+            output_until(ws, b"READY")
+            assert bridges[0].is_alive()
+        assert closed.wait(5)
+        assert not bridges[0].is_alive()
+        assert not host_app.state.host_terminals._sessions
+        rejection(client, endpoint + "&attach=" + "x" * 43, 4403)
+        assert len(bridges) == 1
+
+
 def test_capacity_expiry_close_idempotence_and_lifespan(host_app, fake_bridges):
     with TestClient(host_app) as client:
         registry = host_app.state.host_terminals

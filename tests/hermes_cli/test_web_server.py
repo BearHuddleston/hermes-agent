@@ -4578,6 +4578,14 @@ class TestPtyWebSocket:
         return f"/api/pty?{urlencode(q)}"
 
     def test_webapp_shell_mode_uses_host_terminal_transport(self, monkeypatch, tmp_path):
+        from fastapi import FastAPI
+        from starlette.testclient import TestClient
+        from hermes_cli.web_host_terminal_sessions import host_terminal_lifespan
+        from hermes_cli.web_routers.chat_ws import router
+
+        app = FastAPI(lifespan=host_terminal_lifespan)
+        app.include_router(router)
+
         async def fail_chat_resolution(**_kwargs):
             raise AssertionError("browser terminal must not launch Hermes TUI")
 
@@ -4616,7 +4624,7 @@ class TestPtyWebSocket:
             raising=False,
         )
 
-        with self.client.websocket_connect(
+        with TestClient(app) as client, client.websocket_connect(
             self._url(
                 mode="shell",
                 cwd=str(tmp_path),

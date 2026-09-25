@@ -439,10 +439,7 @@ async def _pty_fail(ws: WebSocket, exc: BaseException, *, surface: str = "Chat")
 async def pty_ws(ws: WebSocket) -> None:
     from hermes_cli.web_server_chat import PTY_REGISTRY, PtyBridge, PtyUnavailableError, _PTY_BRIDGE_AVAILABLE, _RESIZE_RE
     from pm.package import InstallError
-    from hermes_cli.web_server_chat import (
-        _HOST_TERMINAL_META_PREFIX, _host_terminal_request_allowed,
-        _resolve_host_terminal_argv)
-    from hermes_cli.web_host_terminal import query_dimension as _pty_query_dimension
+    from hermes_cli.web_server_chat import _host_terminal_request_allowed
     host_terminal = (ws.query_params.get("mode") or "").strip().lower() == "shell"
     label = "Terminal" if host_terminal else "Chat"
     gate = await _ws_gate(ws, "pty")
@@ -464,74 +461,64 @@ async def pty_ws(ws: WebSocket) -> None:
         await _pty_fail(ws, PtyUnavailableError("Pseudo-terminal support is not installed on this host."), surface=label)
         return
 
-    if persistent_shell:
-        from hermes_cli.web_host_terminal_sessions import persistent_host_terminal
-        await persistent_host_terminal(ws)
+    if host_terminal:
+        from hermes_cli.web_host_terminal_sessions import host_terminal as serve_host_terminal
+        await serve_host_terminal(ws, persistent=persistent_shell)
         return
 
     profile = ws.query_params.get("profile") or None
     raw_resume = resume = None
     active_session_file: Optional[Path] = None
-    shell_name = ""
-    if host_terminal:
-        try:
-            argv, cwd, env, shell_name = await asyncio.to_thread(
-                _resolve_host_terminal_argv, profile=profile,
-                requested_cwd=ws.query_params.get("cwd") or None)
-        except HTTPException as exc:
-            await _pty_fail(ws, exc, surface=label)
-            return
-    else:
-        raw_resume = ws.query_params.get("resume") or None
-        resume = raw_resume
-        channel = _channel_or_close_code(ws)
-        sidecar_url = _build_sidecar_url(channel) if channel else None
-        force_fresh = (ws.query_params.get("fresh") or "").strip().lower() in {"1", "true", "yes", "on"}
+    raw_resume = ws.query_params.get("resume") or None
+    resume = raw_resume
+    channel = _channel_or_close_code(ws)
+    sidecar_url = _build_sidecar_url(channel) if channel else None
+    force_fresh = (ws.query_params.get("fresh") or "").strip().lower() in {"1", "true", "yes", "on"}
 
-        if channel:
-            active_session_file = _active_session_file_for_channel(ws.app, channel)
-            if force_fresh:
-                resume = None
-                try:
-                    active_session_file.unlink(missing_ok=True)
-                except OSError:
-                    pass
-            elif not resume:
-                resume = _read_active_session_file(active_session_file)
-                if resume:
-                    # The client only pins the viewport to the bottom when it asked
-                    # for `?resume=`; announce the implicit active-session replay so
-                    # it gets the same follow-scroll treatment.
-                    # See #93518.
-                    await ws.send_json({"type": "resume", "id": resume})
-
-        resolve_kwargs = {"resume": resume, "sidecar_url": sidecar_url, "profile": profile}
-        if active_session_file is not None:
-            resolve_kwargs["active_session_file"] = str(active_session_file)
-        # A picked workspace only applies to a FRESH chat; a resumed session keeps its own cwd.
-        if not resume:
-            from hermes_cli.web_routers.chat_workspaces import resolve_chat_cwd
+    if channel:
+        active_session_file = _active_session_file_for_channel(ws.app, channel)
+        if force_fresh:
+            resume = None
             try:
-                workspace_cwd = resolve_chat_cwd(ws.query_params.get("cwd"))
-            except HTTPException as exc:  # dead/relative path: fail closed, never the launch dir
-                await _pty_fail(ws, exc)
-                return
-            if workspace_cwd:
-                resolve_kwargs["workspace_cwd"] = workspace_cwd
+                active_session_file.unlink(missing_ok=True)
+            except OSError:
+                pass
+        elif not resume:
+            resume = _read_active_session_file(active_session_file)
+            if resume:
+                # The client only pins the viewport to the bottom when it asked
+                # for `?resume=`; announce the implicit active-session replay so
+                # it gets the same follow-scroll treatment.
+                # See #93518.
+                await ws.send_json({"type": "resume", "id": resume})
 
+    resolve_kwargs = {"resume": resume, "sidecar_url": sidecar_url, "profile": profile}
+    if active_session_file is not None:
+        resolve_kwargs["active_session_file"] = str(active_session_file)
+    # A picked workspace only applies to a FRESH chat; a resumed session keeps its own cwd.
+    if not resume:
+        from hermes_cli.web_routers.chat_workspaces import resolve_chat_cwd
         try:
-            argv, cwd, env = await _resolve_chat_argv_async(**resolve_kwargs)
-        except HTTPException as exc:  # unknown/invalid profile
+            workspace_cwd = resolve_chat_cwd(ws.query_params.get("cwd"))
+        except HTTPException as exc:  # dead/relative path: fail closed, never the launch dir
             await _pty_fail(ws, exc)
             return
-        except SystemExit as exc:  # _make_tui_argv sys.exit(1)s when node/npm is missing
-            await _pty_fail(ws, exc)
-            return
-        except InstallError as exc:  # PM could not provide node; its remedy names the fix
-            await _pty_fail(ws, exc)
-            return
+        if workspace_cwd:
+            resolve_kwargs["workspace_cwd"] = workspace_cwd
 
-    attach_token = None if host_terminal else (ws.query_params.get("attach") or None)
+    try:
+        argv, cwd, env = await _resolve_chat_argv_async(**resolve_kwargs)
+    except HTTPException as exc:  # unknown/invalid profile
+        await _pty_fail(ws, exc)
+        return
+    except SystemExit as exc:  # _make_tui_argv sys.exit(1)s when node/npm is missing
+        await _pty_fail(ws, exc)
+        return
+    except InstallError as exc:  # PM could not provide node; its remedy names the fix
+        await _pty_fail(ws, exc)
+        return
+
+    attach_token = ws.query_params.get("attach") or None
     registry_resume = raw_resume
     if raw_resume and env:
         registry_resume = env.get("HERMES_TUI_RESUME") or raw_resume
@@ -540,11 +527,6 @@ async def pty_ws(ws: WebSocket) -> None:
         attach_token = f"{attach_token}\0{profile or ''}\0{registry_resume or ''}"
 
     def _spawn():
-        if host_terminal:
-            return PtyBridge.spawn(
-                argv, cwd=cwd, env=env,
-                cols=_pty_query_dimension(ws.query_params.get("cols"), 80, 2000),
-                rows=_pty_query_dimension(ws.query_params.get("rows"), 24, 1000))
         return PtyBridge.spawn(argv, cwd=cwd, env=env)
 
     if attach_token is None:
@@ -557,13 +539,6 @@ async def pty_ws(ws: WebSocket) -> None:
         except (FileNotFoundError, OSError) as exc:
             await _pty_fail(ws, exc, surface=label)
             return
-        if host_terminal:
-            try:
-                await ws.send_text(
-                    _HOST_TERMINAL_META_PREFIX + json.dumps({"shell": shell_name}, separators=(",", ":")))
-            except Exception:
-                await asyncio.to_thread(bridge.close)
-                return
         await _legacy_pump(ws, bridge)
         return
 
