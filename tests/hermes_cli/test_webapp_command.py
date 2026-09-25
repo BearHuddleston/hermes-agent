@@ -396,13 +396,13 @@ def test_webapp_process_identity_uses_the_existing_web_server_lifecycle(monkeypa
 
     monkeypatch.setattr(
         "hermes_cli.process_identity.ledger_entries",
-        lambda: [
+        lambda *, verified_only: [
             {
                 "argv": "python -m hermes_cli.main webapp --no-open",
                 "pid": 4242,
                 "purpose": "webapp",
             }
-        ],
+        ] if verified_only else [],
     )
     assert _ledger_web_server_processes() == {
         4242: "python -m hermes_cli.main webapp --no-open --port 0"

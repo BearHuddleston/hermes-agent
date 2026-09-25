@@ -28,6 +28,25 @@ CMDLINES = [
     ("hermes gateway run --replace", "gateway", False, False),
     ("hermes chat --model serve", "chat", False, False),
     ("python observer.py serve " + LOOPBACK, None, False, False),
+    # Entry tokens in another program's arguments are data, not execution targets.
+    ("python -c 'import time; time.sleep(60)' hermes webapp", None, False, False),
+    ("python -uc 'pass' -m hermes_cli.main serve " + LOOPBACK, None, False, False),
+    ("python observer.py -m hermes_cli.main serve " + LOOPBACK, None, False, False),
+    ("python -m other hermes dashboard", None, False, False),
+    ("python - hermes webapp", None, False, False),
+    ("vim hermes serve " + LOOPBACK, None, False, False),
+    ("bash -c 'hermes serve " + LOOPBACK + "'", None, False, False),
+    # Python flags belong to the interpreter; Hermes flags belong to its target.
+    ("python3.14 -uI -W ignore -X dev -m hermes_cli.main --model serve webapp", "webapp", False, True),
+    ("python --check-hash-based-pycs always -m hermes_cli.main -p webapp serve " + LOOPBACK,
+     "serve", True, True),
+    ("python -Wignore -Xdev -- /venv/bin/hermes --reasoning high dashboard", "dashboard", False, False),
+    (r'"C:\Program Files\Python\pythonw.exe" -u "C:\Hermes App\hermes_cli\main.py" webapp',
+     "webapp", False, False),
+    ("python /venv/bin/hermes --model='serve' webapp", "webapp", False, False),
+    ("python -mhermes_cli.main webapp", "webapp", False, True),
+    ("python -X hermes serve", None, False, False),
+    ("hermes serve --model hermes_cli.main " + LOOPBACK, "serve", True, False),
 ]
 
 
@@ -38,13 +57,31 @@ def test_kill_and_relaunch_predicates_agree_with_the_canonical_holder_matcher(
     # Desktop-local reap (a KILL path): serve + loopback + ephemeral port, decided by tokens.
     assert _is_desktop_local_serve_cmdline(cmdline) is reapable
     # Windows updater backend classifier (taskkill /T on orphans): canonical subcommand AND Desktop spawn shape.
-    assert _is_backend_argv(cmdline.lower()) is desktop_backend
+    assert _is_backend_argv(cmdline) is desktop_backend
 
 
 def test_desktop_local_serve_spares_fixed_port_and_remote_hosts():
     assert not _is_desktop_local_serve_cmdline("hermes serve --host 100.106.105.2 --port 9119 --skip-build")
     assert not _is_desktop_local_serve_cmdline("hermes serve --host 127.0.0.1 --port 9119")
     assert _is_desktop_local_serve_cmdline("hermes serve --host localhost --port 0")
+
+
+@pytest.mark.parametrize("argv,expected,desktop", [
+    ([r"C:\Program Files\Python\python.exe", "-W", "ignore", "-m", "hermes_cli.main", "webapp"], "webapp", True),
+    ([r"C:\Python Home\python.exe", r"C:\Hermes App\hermes_cli\main.py", "dashboard"], "dashboard", False),
+    (["/Python Home/bin/python", "/Hermes App/hermes", "serve"], "serve", False),
+    (["/Python Home/bin/python", "-c", "import time; time.sleep(60)", "hermes", "webapp"], None, False),
+])
+def test_live_argv_preserves_executable_and_script_boundaries(argv, expected, desktop):
+    from types import SimpleNamespace
+    from hermes_cli.update_cmd_windows import _cmdline_or_empty, _live_argv
+
+    process = SimpleNamespace(cmdline=lambda: argv)
+    psutil = SimpleNamespace(Process=lambda pid: process)
+    for command in (_cmdline_or_empty(process), _live_argv(psutil, 1, "")):
+        assert command is not None
+        assert _hermes_holder_subcommand(command) == expected
+        assert _is_backend_argv(command) is desktop
 
 
 def test_profile_liveness_is_the_shared_ladder(tmp_path, monkeypatch):

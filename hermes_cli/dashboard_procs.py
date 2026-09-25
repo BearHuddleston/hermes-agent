@@ -59,11 +59,19 @@ def _iter_process_table() -> list[tuple[int, str]]:
                 _append_row(rows, line[len("ProcessId=") :], current_cmd)
         return rows
     # ps, not `pgrep -f "hermes.*dashboard"` (greedy regex; consistent with gateway pid scan).
-    result = subprocess.run(["ps", "-A", "-o", "pid=,command="], timeout=10, **_PS_RUN_KWARGS)
+    result = subprocess.run(["ps", "-Aww", "-o", "pid=,command="], timeout=10, **_PS_RUN_KWARGS)
     if result.returncode == 0:
+        from hermes_cli.update_cmd_windows import _cmdline_or_empty, _psutil
+
+        psutil = _psutil()
         for line in getattr(result, "stdout", "").split("\n"):
             parts = line.strip().split(None, 1)
             if len(parts) == 2 and "grep" not in line:
+                # ps loses argv boundaries, including executable paths with spaces.
+                # Prefer live structured argv; keep ps as the unavailable-reader fallback.
+                if psutil is not None:
+                    with contextlib.suppress(Exception):
+                        parts[1] = _cmdline_or_empty(psutil.Process(int(parts[0]))) or parts[1]
                 _append_row(rows, parts[0], parts[1])
     return rows
 
@@ -100,7 +108,7 @@ def _ledger_web_server_processes() -> dict[int, str]:
     try:
         from hermes_cli.process_identity import ledger_entries
 
-        entries = ledger_entries()
+        entries = ledger_entries(verified_only=True)
     except Exception:
         return {}
 
@@ -112,6 +120,10 @@ def _ledger_web_server_processes() -> dict[int, str]:
         if not isinstance(pid, int) or pid <= 0:
             continue
         command = str(entry.get("argv") or "")
+        if not _is_hermes_web_server_command(command):
+            # Ledger argv is display-only and may have lost quoting or been truncated.
+            # Preserve its verified process purpose instead of reparsing that lossy prefix.
+            command = f"hermes {entry['purpose']}"
         # register_self intentionally records only a bounded argv prefix. When
         # the process table is unreadable, treat the positive identity as an
         # ephemeral port so status reports the live process without guessing a
