@@ -57,10 +57,11 @@ def _ensure_directory(
         for link in links:
             if not link.is_dir():
                 raise FileNotFoundError(f"Directory link is unavailable: {link}")
-        if create:
-            path.mkdir(parents=parents, exist_ok=True)
-        elif not path.is_dir():
-            raise FileNotFoundError(f"Required directory does not exist: {path}")
+        if not path.is_dir():
+            if create:
+                path.mkdir(parents=parents, exist_ok=True)
+            else:
+                raise FileNotFoundError(f"Required directory does not exist: {path}")
         # The operator owns permissions beyond a link, including logs/curator.
         if secure and not _operator_owned_links(links, home):
             _secure_dir(path)

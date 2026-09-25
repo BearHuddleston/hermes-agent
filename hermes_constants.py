@@ -867,6 +867,12 @@ def _chown_to_hermes_uid(path) -> None:
     if uid is None and gid is None:
         return
     try:
+        current = os.stat(path)
+    except OSError:
+        current = None
+    if current is not None and (uid is None or current.st_uid == uid) and (gid is None or current.st_gid == gid):
+        return
+    try:
         os.chown(path, uid if uid is not None else -1, gid if gid is not None else -1)
     except (OSError, AttributeError, NotImplementedError):
         pass
@@ -901,8 +907,15 @@ def apply_secure_dir_policy(path, *, home: str | Path | None = None) -> None:
         mode = int(explicit_mode or "700", 8)
     except ValueError:
         mode = 0o700
+    # Tokenless profile homes must revalidate on every read. Avoid changing
+    # metadata when the current directory already satisfies the policy.
     try:
-        os.chmod(path, mode)
+        current_mode = stat.S_IMODE(os.stat(path).st_mode)
+    except OSError:
+        current_mode = None
+    try:
+        if current_mode != mode:
+            os.chmod(path, mode)
     except (OSError, NotImplementedError):
         pass
     _chown_to_hermes_uid(path)

@@ -1,6 +1,8 @@
 """A reused directory identity must not skip named-profile initialization."""
 
+import os
 import shutil
+import stat
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -57,13 +59,22 @@ def test_recreated_named_home_initializes_when_stat_identity_is_reused(
     assert all((home / subdir).is_dir() for subdir in config._HERMES_HOME_SUBDIRS)
     shutil.rmtree(home)
     home.mkdir()
+    soul = home / "SOUL.md"
+    soul.write_text("Replacement personality.", encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME_MODE", "700")
+    if os.name == "posix":
+        home.chmod(0o755)
     if with_marker:
         write_fresh_profile_incarnation(home)
 
     config.ensure_hermes_home()
 
     assert all((home / subdir).is_dir() for subdir in config._HERMES_HOME_SUBDIRS)
-    assert (home / "SOUL.md").is_file()
+    assert soul.read_text(encoding="utf-8") == "Replacement personality."
+    if os.name == "posix":
+        assert stat.S_IMODE(home.stat().st_mode) == 0o700
+    if not with_marker:
+        assert str(home) not in config._HERMES_HOME_ENSURED
 
 
 @pytest.mark.parametrize("initially_marked", (False, True), ids=("legacy", "marked"))
@@ -123,6 +134,58 @@ def test_legacy_home_initialization_does_not_backfill_or_lock(named_home, monkey
 
     assert all((named_home / subdir).is_dir() for subdir in config._HERMES_HOME_SUBDIRS)
     assert not (named_home / profile_incarnation.PROFILE_INCARNATION_FILENAME).exists()
+
+
+@pytest.mark.platforms("posix")
+def test_warm_legacy_homes_revalidate_without_directory_mutations(named_home, monkeypatch):
+    from hermes_cli import profile_incarnation
+
+    def unexpected_lease(*args, **kwargs):
+        pytest.fail("Config initialization must not take the lifecycle lock")
+
+    monkeypatch.setattr(profile_incarnation, "_profile_mutation_lease", unexpected_lease)
+    monkeypatch.setenv("HERMES_MANAGED", "false")
+    monkeypatch.setenv("HERMES_HOME_MODE", "700")
+    monkeypatch.setenv("HERMES_UID", str(os.getuid()))
+    monkeypatch.setenv("HERMES_GID", str(os.getgid()))
+    sibling = named_home.with_name("sibling")
+    sibling.mkdir()
+    homes = (named_home, sibling)
+
+    def ensure(home):
+        token = set_hermes_home_override(home)
+        try:
+            config.ensure_hermes_home()
+        finally:
+            reset_hermes_home_override(token)
+
+    for home in homes:
+        ensure(home)
+    mutations = []
+
+    def observe(name):
+        original = getattr(os, name)
+
+        def observed(path, *args, **kwargs):
+            if not isinstance(path, int):
+                target = Path(path)
+                if any(target == home or home in target.parents for home in homes):
+                    mutations.append((name, target))
+            return original(path, *args, **kwargs)
+
+        monkeypatch.setattr(os, name, observed)
+
+    for name in ("mkdir", "chmod", "chown"):
+        observe(name)
+    for home in (named_home, sibling, named_home):
+        ensure(home)
+
+    assert mutations == []
+    for home in homes:
+        assert all((home / subdir).is_dir() for subdir in config._HERMES_HOME_SUBDIRS)
+        assert stat.S_IMODE(home.stat().st_mode) == 0o700
+        assert not (home / profile_incarnation.PROFILE_INCARNATION_FILENAME).exists()
+        assert str(home) not in config._HERMES_HOME_ENSURED
 
 
 def test_malformed_marker_cannot_reuse_cached_initialization(named_home):
