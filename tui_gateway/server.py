@@ -564,9 +564,6 @@ def _profile_home(profile: str | None) -> Path | None:
         if _profile_home_rejected(home):
             raise ProfileUnavailableError(f"Profile '{canon}' is missing or being deleted.")
         return None
-    with _sessions_lock:
-        if _profile_lifecycle.key(home) in _profile_lifecycle.retired_homes:
-            raise ProfileUnavailableError(f"Profile '{canon}' is missing or being deleted.")
     if profiles_mod.profile_home_is_tombstoned(home):
         raise ProfileUnavailableError(f"Profile '{canon}' is missing or being deleted.")
     if not profiles_mod.profile_exists(canon):

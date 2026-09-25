@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Callable, MutableMapping
 from contextlib import contextmanager
 from pathlib import Path
+import threading
 from typing import Any, Iterator
 
 from hermes_cli.profile_incarnation import (
@@ -23,7 +24,10 @@ class ProfileLifecycleFence:
     """Track retired paths and incarnations inside one gateway process."""
 
     def __init__(self) -> None:
+        # Never acquire a disk lease while holding this short in-memory lock.
+        self._lock = threading.RLock()
         self.retired_homes: set[str] = set()
+        self._retired_home_incarnations: dict[str, str | None] = {}
         self.retired_incarnations: set[tuple[str, str]] = set()
 
     @staticmethod
@@ -36,7 +40,29 @@ class ProfileLifecycleFence:
     def capture(self, profile_home: Path | str | None) -> str | None:
         if profile_home is None:
             return None
-        return ensure_profile_incarnation(profile_home)
+        with profile_incarnation_lease(profile_home):
+            # Never backfill a missing marker to bypass a local retirement.
+            self._check_retirement(profile_home, read_profile_incarnation(profile_home))
+            return ensure_profile_incarnation(profile_home)
+
+    def _check_retirement(
+        self, profile_home: Path | str, expected_incarnation: str | None,
+    ) -> None:
+        """Reconcile a published successor while holding its disk lifecycle lease."""
+        key = self.key(profile_home)
+        with self._lock:
+            if expected_incarnation is not None and (key, expected_incarnation) in self.retired_incarnations:
+                raise FileNotFoundError(f"Profile incarnation is retired: {profile_home}")
+            if key not in self.retired_homes:
+                return
+            current = read_profile_incarnation(profile_home)
+            if (current is None or (key, current) in self.retired_incarnations
+                    or self._retired_home_incarnations.get(key) is None):
+                raise FileNotFoundError(f"Profile home is retired: {profile_home}")
+            # Another process can publish without calling allow() in this server.
+            # Drop only the pathname fence; old captured tokens stay rejected.
+            self.retired_homes.discard(key)
+            self._retired_home_incarnations.pop(key, None)
 
     @contextmanager
     def lease(
@@ -52,14 +78,7 @@ class ProfileLifecycleFence:
             expected_incarnation,
             require_incarnation=require_incarnation,
         ) as home:
-            key = self.key(home)
-            if key in self.retired_homes or (
-                expected_incarnation is not None
-                and (key, expected_incarnation) in self.retired_incarnations
-            ):
-                raise FileNotFoundError(
-                    f"Profile incarnation is stale or home is unavailable: {home}"
-                )
+            self._check_retirement(home, expected_incarnation)
             yield home
 
     def rejected(
@@ -70,22 +89,34 @@ class ProfileLifecycleFence:
         require_incarnation: bool = False,
     ) -> bool:
         key = self.key(profile_home)
-        if key in self.retired_homes:
-            return True
+        with self._lock:
+            # Old callbacks need no disk lease (and may hold the sessions lock
+            # while a deleting thread owns the disk lease and waits for it).
+            if expected_incarnation is not None and (key, expected_incarnation) in self.retired_incarnations:
+                return True
+            retired = key in self.retired_homes
         try:
             named_marker = profile_deletion_marker_path(profile_home)
             if named_profile_home_is_unavailable(profile_home):
                 return True
         except Exception:
             return True
+        if retired:
+            try:
+                with self.lease(profile_home, expected_incarnation,
+                                require_incarnation=require_incarnation):
+                    return False
+            except (OSError, RuntimeError):
+                return True
         if named_marker is None:
             return False
         if expected_incarnation is None:
             if require_incarnation:
                 return True
             return False
-        if (key, expected_incarnation) in self.retired_incarnations:
-            return True
+        with self._lock:
+            if (key, expected_incarnation) in self.retired_incarnations:
+                return True
         return not profile_incarnation_matches(profile_home, expected_incarnation)
 
     def retire(
@@ -94,14 +125,16 @@ class ProfileLifecycleFence:
         incarnation: str | None = None,
     ) -> None:
         key = self.key(profile_home)
-        self.retired_homes.add(key)
         if incarnation is None:
             try:
                 incarnation = read_profile_incarnation(profile_home)
             except (OSError, RuntimeError):
                 incarnation = None
-        if incarnation is not None:
-            self.retired_incarnations.add((key, incarnation))
+        with self._lock:
+            self.retired_homes.add(key)
+            self._retired_home_incarnations[key] = incarnation
+            if incarnation is not None:
+                self.retired_incarnations.add((key, incarnation))
 
     def allow(
         self,
@@ -109,7 +142,6 @@ class ProfileLifecycleFence:
         incarnation: str | None = None,
     ) -> None:
         key = self.key(profile_home)
-        self.retired_homes.discard(key)
         if incarnation is None:
             try:
                 incarnation = read_profile_incarnation(profile_home)
@@ -118,8 +150,11 @@ class ProfileLifecycleFence:
         # Rollback of a failed delete admits the unchanged generation.  A
         # same-name recreate has a fresh token, so its call leaves the retired
         # predecessor tuple intact.
-        if incarnation is not None:
-            self.retired_incarnations.discard((key, incarnation))
+        with self._lock:
+            self.retired_homes.discard(key)
+            self._retired_home_incarnations.pop(key, None)
+            if incarnation is not None:
+                self.retired_incarnations.discard((key, incarnation))
 
     def retire_sessions(
         self,
