@@ -257,7 +257,7 @@ def test_prompt_submit_dispatches_to_compute_host_when_turn_isolation_enabled(mo
             self.frames = []
             self.callback = None
 
-        def submit_turn(self, frame, *, on_complete=None):
+        def submit_turn(self, frame, *, on_complete=None, settlement=None):
             self.frames.append(frame)
             self.callback = on_complete
             return frame["request_id"]
@@ -322,7 +322,7 @@ def test_prompt_submit_dispatches_to_compute_host_when_turn_isolation_enabled(mo
 
 def test_compute_host_explicit_images_do_not_clear_later_attachment(monkeypatch):
     class _Supervisor:
-        def submit_turn(self, _frame, *, on_complete=None):
+        def submit_turn(self, _frame, *, on_complete=None, settlement=None):
             session["attached_images"].append("/tmp/c.png")
 
     session = _session(attached_images=[])
@@ -371,7 +371,7 @@ def test_prompt_submit_unknown_session_logs_warning(caplog):
 
 def test_prompt_submit_fails_open_inline_when_compute_host_dispatch_breaks(monkeypatch):
     class _BrokenSupervisor:
-        def submit_turn(self, frame, *, on_complete=None):
+        def submit_turn(self, frame, *, on_complete=None, settlement=None):
             if on_complete is not None:
                 on_complete(
                     {
@@ -710,7 +710,7 @@ def test_prompt_submit_golden_transcript_matches_flag_off_and_on(monkeypatch):
         monkeypatch.setattr(server, "_load_cfg", lambda: {"dashboard": {"turn_isolation": True}})
 
         class _FakeSupervisor:
-            def submit_turn(self, frame, *, on_complete=None):
+            def submit_turn(self, frame, *, on_complete=None, settlement=None):
                 sid = frame["sid"]
                 server._emit("message.start", sid)
                 server._emit("message.delta", sid, {"text": "hi"})
