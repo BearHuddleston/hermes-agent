@@ -219,34 +219,78 @@ def _metadata(token, owner, session, registry, *, reconnected):
     }, separators=(",", ":"))
 
 
-async def host_terminal(ws: WebSocket) -> None:
-    """Called only after both the existing WS gate and host policy have passed."""
-    from hermes_cli.web_server_chat import _RESIZE_RE, _pty_fail
+async def _send_closed(ws: WebSocket, token: str) -> None:
+    await ws.send_text(META_PREFIX + json.dumps({"terminalId": token, "closed": True}))
+    await ws.close(code=1000)
+
+
+async def _admit(ws: WebSocket, registry: HostTerminalRegistry):
+    """Authorize the request and return ``(token, session, owner)`` to attach.
+
+    Returns None once a ``close`` request has been served. Raises the ``Terminal*``
+    errors ``host_terminal`` maps to close codes.
+    """
     token = ws.query_params.get("attach")
     action = ws.query_params.get("action")
+    identity = _request_identity(ws)
+    if action not in (None, "close") or (action == "close" and token is None):
+        raise TerminalDenied()
+    if token is not None and not TOKEN_RE.fullmatch(token):
+        raise TerminalExpired()
+    if action == "close" and token not in registry._sessions:
+        # Missing is idempotent, but never bypass auth/host policy.
+        await _send_closed(ws, token)
+        return None
+    if token is None:
+        session, owner = await registry.create(ws, identity)
+        return session.key, session, owner
+    session, owner = await registry.resolve(token, ws, identity, closing=action == "close")
+    if action == "close":
+        await registry.remove(token)
+        await _send_closed(ws, token)
+        return None
+    return token, session, owner
+
+
+async def _pump_input(ws: WebSocket, registry: HostTerminalRegistry, token: str,
+                      session: PtySession, owner: HostOwner) -> None:
+    """Forward keystrokes and resizes while ``ws`` is the attached viewer."""
+    from hermes_cli.web_server_chat import _RESIZE_RE
+    # No Ctrl-L/redraw input: arbitrary foreground shell programs own stdin.
+    while session._ws is ws and session.alive:
+        try:
+            msg = await ws.receive()
+        except RuntimeError:  # a superseding/drain task already closed us
+            return
+        if msg.get("type") == "websocket.disconnect":
+            return
+        if not owner.current():
+            await registry.remove(token)
+            return
+        raw = msg.get("bytes")
+        if raw is None:
+            raw = (msg.get("text") or "").encode("utf-8")
+        if not raw:
+            continue
+        match = _RESIZE_RE.fullmatch(raw)
+        if match:
+            session.resize(ws, cols=int(match[1]), rows=int(match[2]))
+        elif not await session.write(ws, raw):
+            if session._ws is ws:
+                await registry.remove(token)
+            return
+
+
+async def host_terminal(ws: WebSocket) -> None:
+    """Called only after both the existing WS gate and host policy have passed."""
+    from hermes_cli.web_server_chat import _pty_fail
     session = None
     try:
         registry = get_host_terminals(ws.app)
-        identity = _request_identity(ws)
-        if action not in (None, "close") or (action == "close" and token is None):
-            raise TerminalDenied()
-        if token is not None and not TOKEN_RE.fullmatch(token):
-            raise TerminalExpired()
-        if action == "close" and token not in registry._sessions:
-            # Missing is idempotent, but never bypass auth/host policy.
-            await ws.send_text(META_PREFIX + json.dumps({"terminalId": token, "closed": True}))
-            await ws.close(code=1000)
+        admitted = await _admit(ws, registry)
+        if admitted is None:
             return
-        if token is None:
-            session, owner = await registry.create(ws, identity)
-            token = session.key
-        else:
-            session, owner = await registry.resolve(token, ws, identity, closing=action == "close")
-        if action == "close":
-            await registry.remove(token)
-            await ws.send_text(META_PREFIX + json.dumps({"terminalId": token, "closed": True}))
-            await ws.close(code=1000)
-            return
+        token, session, owner = admitted
         initial_text = _metadata(
             token, owner, session, registry, reconnected=ws.query_params.get("attach") is not None)
         if not await session.attach(ws, initial_text=initial_text):
@@ -254,29 +298,7 @@ async def host_terminal(ws: WebSocket) -> None:
                 with suppress(Exception):
                     await ws.close(code=1011, reason="Terminal replay interrupted; reconnect")
             return
-        # No Ctrl-L/redraw input: arbitrary foreground shell programs own stdin.
-        while session._ws is ws and session.alive:
-            try:
-                msg = await ws.receive()
-            except RuntimeError:  # a superseding/drain task already closed us
-                break
-            if msg.get("type") == "websocket.disconnect":
-                break
-            if not owner.current():
-                await registry.remove(token)
-                break
-            raw = msg.get("bytes")
-            if raw is None:
-                raw = (msg.get("text") or "").encode("utf-8")
-            if not raw:
-                continue
-            match = _RESIZE_RE.fullmatch(raw)
-            if match:
-                session.resize(ws, cols=int(match[1]), rows=int(match[2]))
-            elif not await session.write(ws, raw):
-                if session._ws is ws:
-                    await registry.remove(token)
-                break
+        await _pump_input(ws, registry, token, session, owner)
     except TerminalDenied:
         await ws.close(code=4403, reason="Terminal belongs to another identity or profile")
     except (TerminalExpired, FileNotFoundError, HTTPException):
