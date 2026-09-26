@@ -4,12 +4,12 @@ import { type ChatMessage, chatMessageText } from '@/lib/chat-messages'
 import {
   clearInFlightTurnJournal,
   type JournalableSessionState,
-  mergeInFlightMessages,
   persistInFlightTurnState,
   readInFlightTurnJournal,
   recoverInFlightTurnJournal,
   resetInFlightTurnJournalStateForTests
 } from '@/lib/inflight-turn-journal'
+import { mergeInFlightMessages } from '@/lib/inflight-turn-merge'
 
 const STORAGE_KEY = 'hermes.desktop.inflightTurnJournal.v1'
 const STORAGE_PREFIX = 'hermes.desktop.inflightTurnJournal.v2:'
