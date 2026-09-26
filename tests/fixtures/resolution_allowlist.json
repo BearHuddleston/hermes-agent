@@ -446,12 +446,6 @@
     "kind": "bare_which"
   },
   {
-    "path": "hermes_cli/webapp.py",
-    "symbol": "_npm_command",
-    "kind": "bare_which",
-    "reason": "Resolves node inside the PATH that source_build_env()/pm.ensure('npm') just composed, matching source_build.run_source_script."
-  },
-  {
     "path": "hermes_constants.py",
     "symbol": "find_node_executable",
     "kind": "bare_which"

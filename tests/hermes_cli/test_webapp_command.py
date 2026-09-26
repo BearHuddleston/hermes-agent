@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import os
 from pathlib import Path
+import subprocess
 
 import pytest
 
@@ -55,19 +56,6 @@ def test_skip_build_requires_the_separate_webapp_bundle(tmp_path: Path):
         webapp.prepare_webapp_renderer(tmp_path, skip_build=True)
 
 
-def test_desktop_content_hash_tracks_shared_source(tmp_path: Path):
-    _workspace_tree(tmp_path)
-    desktop_source = tmp_path / "apps" / "desktop" / "src.ts"
-    shared_source = tmp_path / "apps" / "shared" / "src.ts"
-    desktop_source.write_text("desktop", encoding="utf-8")
-    shared_source.write_text("shared-v1", encoding="utf-8")
-
-    before = webapp._compute_desktop_content_hash(tmp_path)
-    shared_source.write_text("shared-v2", encoding="utf-8")
-
-    assert webapp._compute_desktop_content_hash(tmp_path) != before
-
-
 def _assert_build_lock_excludes_second_open(tmp_path: Path):
     from pm.filesystem import lock_fd
 
@@ -91,106 +79,60 @@ def test_webapp_build_lock_excludes_a_second_open_on_windows(tmp_path: Path):
     _assert_build_lock_excludes_second_open(tmp_path)
 
 
-def test_failed_renderer_publish_restores_previous_generation(tmp_path: Path, monkeypatch):
-    dist = tmp_path / "dist-webapp"
-    staging = tmp_path / "staging"
-    dist.mkdir()
-    staging.mkdir()
-    (dist / "index.html").write_text("old", encoding="utf-8")
-    (staging / "index.html").write_text("new", encoding="utf-8")
-    real_replace = os.replace
+def test_launch_rebuilds_only_stale_or_forced_renderers(tmp_path: Path, monkeypatch):
+    from hermes_cli import source_build
 
-    def fail_staging_publish(source, destination):
-        if Path(source) == staging:
-            raise OSError("simulated publish failure")
-        return real_replace(source, destination)
-
-    monkeypatch.setattr(webapp.os, "replace", fail_staging_publish)
-
-    with pytest.raises(webapp.WebappBuildError, match="publish"):
-        webapp._publish_dist(staging, dist)
-
-    assert (dist / "index.html").read_text(encoding="utf-8") == "old"
-
-
-def test_failed_renderer_restore_preserves_last_known_good_backup(
-    tmp_path: Path, monkeypatch
-):
-    dist = tmp_path / "dist-webapp"
-    staging = tmp_path / "staging"
-    dist.mkdir()
-    staging.mkdir()
-    (dist / "index.html").write_text("old", encoding="utf-8")
-    (staging / "index.html").write_text("new", encoding="utf-8")
-    real_replace = os.replace
-    calls = 0
-
-    def fail_publish_and_restore(source, destination):
-        nonlocal calls
-        calls += 1
-        if calls in {2, 3}:
-            raise OSError("simulated replace failure")
-        return real_replace(source, destination)
-
-    monkeypatch.setattr(webapp.os, "replace", fail_publish_and_restore)
-
-    with pytest.raises(webapp.WebappBuildError, match="backup preserved at"):
-        webapp._publish_dist(staging, dist)
-
-    backups = list(tmp_path.glob(".dist-webapp-backup-*"))
-    assert not dist.exists()
-    assert len(backups) == 1
-    assert (backups[0] / "index.html").read_text(encoding="utf-8") == "old"
-
-
-def test_browser_build_uses_locked_closure_and_never_replaces_native_dist(
-    tmp_path: Path, monkeypatch
-):
     _workspace_tree(tmp_path)
-    native_index = tmp_path / "apps" / "desktop" / "dist" / "index.html"
-    native_index.parent.mkdir()
-    native_index.write_text("native-electron", encoding="utf-8")
-    stamp = tmp_path / "stamp.json"
-    calls = []
+    receipt_current = True
+    builds = []
+    monkeypatch.setattr(source_build, "source_product_current", lambda *_a: receipt_current)
+    monkeypatch.setattr(source_build, "source_build_env", lambda *, explicit=False: {})
+    monkeypatch.setattr(source_build, "build_source_webapp", lambda _root, *, env, explicit: builds.append(explicit))
 
-    def run_npm(argv, label, *, cwd, env):
-        calls.append((argv, cwd, env))
-        if "run" in argv:
-            staging = Path(argv[-1])
-            staging.mkdir()
-            (staging / "index.html").write_text("webapp", encoding="utf-8")
+    dist = webapp.prepare_webapp_renderer(tmp_path)
+    assert dist == tmp_path / "apps" / "desktop" / "dist-webapp"
+    assert builds == []
+    webapp.prepare_webapp_renderer(tmp_path, force=True, explicit=True)
+    receipt_current = False
+    webapp.prepare_webapp_renderer(tmp_path)
+    assert builds == [True, False]
 
-    monkeypatch.setattr(webapp, "_build_env", lambda: {"PATH": "/node"})
-    monkeypatch.setattr(webapp, "_npm_command", lambda _root, _env: ["/node/node", "npm-cli.js"])
-    monkeypatch.setattr(webapp, "_run_npm", run_npm)
-    monkeypatch.setattr(webapp, "_compute_desktop_content_hash", lambda _root: "content-hash")
-    monkeypatch.setattr(webapp, "_stamp_path", lambda: stamp)
 
-    result = webapp.prepare_webapp_renderer(tmp_path, force=True)
+@pytest.mark.parametrize("failure", [
+    PermissionError("workspace node_modules is locked"),
+    subprocess.CalledProcessError(1, ["node", "build-webapp.mjs"]),
+    RuntimeError("npm is unavailable and lazy installs are disabled"),
+])
+def test_renderer_build_failures_are_reported_not_raised_raw(tmp_path: Path, monkeypatch, failure):
+    from hermes_cli import source_build
 
-    assert result == tmp_path / "apps" / "desktop" / "dist-webapp"
-    assert native_index.read_text(encoding="utf-8") == "native-electron"
-    (install_argv, install_cwd, install_env), (build_argv, build_cwd, build_env) = calls
-    assert install_argv[:3] == ["/node/node", "npm-cli.js", "ci"]
-    assert install_cwd != tmp_path
-    assert build_cwd == install_cwd
-    assert install_env["npm_config_ignore_scripts"] == "true"
-    assert "npm_config_ignore_scripts" not in build_env
-    for flag in ("--ignore-scripts", "--workspaces", "--include-workspace-root", "--include=dev"):
-        assert flag in install_argv
-    assert build_argv == [
-        "/node/node",
-        "npm-cli.js",
-        "run",
-        "--workspace",
-        "apps/desktop",
-        "build:webapp",
-        "--",
-        "--outDir",
-        build_argv[-1],
-    ]
-    assert (tmp_path / "package-lock.json").read_text(encoding="utf-8") == "locked\n"
-    assert stamp.is_file()
+    _workspace_tree(tmp_path)
+
+    def fail(*_a, **_k):
+        raise failure
+
+    monkeypatch.setattr(source_build, "source_product_current", lambda *_a: False)
+    monkeypatch.setattr(source_build, "source_build_env", lambda *, explicit=False: {})
+    monkeypatch.setattr(source_build, "build_source_webapp", fail)
+
+    with pytest.raises(webapp.WebappBuildError, match="build failed"):
+        webapp.prepare_webapp_renderer(tmp_path)
+
+
+def test_only_requested_builds_may_install_renderer_dependencies(tmp_path: Path, monkeypatch):
+    """A plain launch honors disabled lazy installs; --build-only / --force-build ask explicitly."""
+    requests = []
+    monkeypatch.setattr(cli_main, "PROJECT_ROOT", tmp_path)
+    monkeypatch.setattr(
+        webapp, "prepare_webapp_renderer",
+        lambda *_a, **kwargs: requests.append(kwargs["explicit"]) or tmp_path / "dist-webapp")
+    monkeypatch.setattr(cli_main, "cmd_dashboard", lambda _args: None)
+    monkeypatch.setenv("HERMES_WEB_DIST", "restore-after-test")
+
+    cli_main.cmd_webapp(_args())
+    cli_main.cmd_webapp(_args(build_only=True))
+    cli_main.cmd_webapp(_args(force_build=True))
+    assert requests == [False, True, True]
 
 
 def test_webapp_selects_its_dist_without_leaking_headless_mode(tmp_path: Path, monkeypatch):

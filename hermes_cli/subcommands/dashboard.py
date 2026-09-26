@@ -159,7 +159,7 @@ def build_dashboard_parser(
     webapp_parser.add_argument(
         "--force-build",
         action="store_true",
-        help="Rebuild the browser-hosted Desktop renderer even when its content stamp matches",
+        help="Rebuild the browser-hosted Desktop renderer even when its build receipt is current",
     )
     webapp_parser.set_defaults(
         func=cmd_webapp,

@@ -126,10 +126,15 @@ inject a redraw keystroke into the running shell or foreground program.
 Useful build/lifecycle flags:
 
 - `--skip-build` reuses `apps/desktop/dist-webapp`.
-- `--force-build` rebuilds even when the content stamp matches.
+- `--force-build` rebuilds even when the renderer's build receipt is current.
 - `--build-only` prepares the renderer without starting a server.
 - `--status` and `--stop` inspect or stop Webapp processes only; they do not
   stop the native Desktop app's headless `hermes serve` backend.
+
+The renderer's npm dependencies install into `.build/webapp-workspace` in the
+checkout, separate from the native Desktop install, and are reinstalled only
+when the lockfile changes. When lazy installs are disabled, a plain
+`hermes webapp` will not install them; `--build-only` or `--force-build` will.
 
 ## What's in the app
 

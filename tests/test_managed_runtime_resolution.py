@@ -61,6 +61,7 @@ _EXEMPT_DIRS = (
     "evals",
     "website",
     "node_modules",
+    ".build",
     ".cache",
     ".git",
     ".venv",
@@ -97,10 +98,6 @@ _ALLOWED: dict[tuple[str, str], str] = {
     ),
     ("hermes_cli/source_build.py", "npm"): (
         "Same PM-composed build context as the node lookup above."
-    ),
-    ("hermes_cli/webapp.py", "node"): (
-        "Webapp renderer build resolves node inside the PM-composed "
-        "source_build_env() PATH, like source_build.run_source_script."
     ),
     ("hermes_cli/main_desktop.py", "npm"): (
         "Desktop build resolves npm inside the PM-prepared build_env PATH."

@@ -807,11 +807,13 @@ def cmd_webapp(args):
             PROJECT_ROOT,
             force=getattr(args, "force_build", False),
             skip_build=getattr(args, "skip_build", False),
+            explicit=getattr(args, "force_build", False) or getattr(args, "build_only", False),
         )
     except WebappBuildError as exc:
         print(f"✗ {exc}")
-        print("  Retry without --skip-build, or build manually:")
-        print("    npm run --workspace apps/desktop build:webapp")
+        # A requested build may install the renderer's dependencies even when lazy installs are off.
+        print("  Build it explicitly:")
+        print("    hermes webapp --build-only")
         raise SystemExit(1) from exc
 
     if getattr(args, "build_only", False):

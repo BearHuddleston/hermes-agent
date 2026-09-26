@@ -1879,7 +1879,7 @@ secret URL, to the OS browser launcher.
 | `--host` | `127.0.0.1` | Bind address; non-loopback binds always require an auth provider |
 | `--no-open` | — | Don't open a browser automatically |
 | `--skip-build` | off | Reuse `apps/desktop/dist-webapp` without building |
-| `--force-build` | off | Rebuild even when the Desktop content stamp matches |
+| `--force-build` | off | Rebuild even when the renderer's build receipt is current |
 | `--build-only` | off | Build the renderer but do not start the server |
 | `--isolated` | off | Keep a named-profile launch scoped to that profile instead of routing to the machine server |
 | `--stop` | — | Stop browser-hosted Desktop Webapp processes and exit (native Desktop `serve` backends are not touched) |
