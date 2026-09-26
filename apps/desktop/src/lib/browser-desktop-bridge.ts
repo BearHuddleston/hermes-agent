@@ -1,630 +1,21 @@
-import { buildHermesWebSocketUrl, LOCAL_CONNECTION_ID, normalizeBasePath } from '@hermes/shared'
-
-import type {
-  DesktopBootProgress,
-  DesktopBootstrapState,
-  HermesApiRequest,
-  HermesConnection,
-  HermesSelectPathsOptions,
-  HermesStagedUpload
-} from '@/global'
-import { translateNow } from '@/i18n'
-import { bytesToBase64 } from '@/lib/base64'
-import { fetchBrowserImage } from '@/lib/browser-image-download'
-import { consumeWebappSession, watchWebappLaunchLink, WEBAPP_LAUNCH_REQUIRED } from '@/lib/browser-launch-session'
+import type { HermesApiRequest } from '@/global'
+import { BROWSER_BRIDGE_STUBS } from '@/lib/browser-bridge-stubs'
+import { createBrowserClipboardBridge } from '@/lib/browser-clipboard'
+import { createBrowserConnectionBridge, requireBrowserConnection } from '@/lib/browser-connection'
+import { createBrowserFilesBridge } from '@/lib/browser-files'
+import { watchWebappLaunchLink } from '@/lib/browser-launch-session'
 import { createBrowserProfileBridge } from '@/lib/browser-profile'
 import { createBrowserTerminal } from '@/lib/browser-terminal'
-import { createBrowserWindowOpener } from '@/lib/browser-window'
+import {
+  authenticatedWebsocketUrl,
+  browserApi,
+  browserBootstrap,
+  type BrowserBootstrapWindow
+} from '@/lib/browser-transport'
+import { createBrowserUploadsBridge } from '@/lib/browser-uploads'
+import { createBrowserWindowOpener, sessionWindowTarget } from '@/lib/browser-window'
 import { createBrowserZoom } from '@/lib/browser-zoom'
-import { hasBrowserHostBootstrap } from '@/lib/platform'
-import { notifyError } from '@/store/notifications'
 import { $connection } from '@/store/session'
-import { windowProfileOverride } from '@/store/windows'
-
-interface BrowserBootstrapWindow {
-  __HERMES_AUTH_REQUIRED__?: boolean
-  __HERMES_BASE_PATH__?: string
-  __HERMES_SESSION_TOKEN__?: string
-  __HERMES_UI_SURFACE__?: string
-  hermesDesktop?: Window['hermesDesktop']
-}
-
-interface BrowserBootstrap {
-  authRequired: boolean
-  basePath: string
-  /** Webapp on an unauthenticated bind: the operator's launch link is the only credential source. */
-  privateSession: boolean
-  token: string
-  stagedUploads: Map<string, HermesStagedUpload>
-}
-
-const SESSION_HEADER = 'X-Hermes-Session-Token'
-const DEFAULT_TIMEOUT_MS = 30_000
-const STAGED_UPLOAD_CACHE_LIMIT = 256
-const REAUTH_EVENT = 'hermes:browser-reauth-required'
-
-class BrowserReauthRequiredError extends Error {
-  readonly loginUrl: string
-  readonly needsOauthLogin = true
-
-  constructor(message: string, loginUrl: string) {
-    super(message)
-    this.name = 'BrowserReauthRequiredError'
-    this.loginUrl = loginUrl
-  }
-}
-
-const IMAGE_MIME_BY_EXTENSION: Record<string, string> = {
-  '.bmp': 'image/bmp',
-  '.gif': 'image/gif',
-  '.jpeg': 'image/jpeg',
-  '.jpg': 'image/jpeg',
-  '.png': 'image/png',
-  '.tif': 'image/tiff',
-  '.tiff': 'image/tiff',
-  '.webp': 'image/webp'
-}
-
-const IMAGE_EXTENSION_BY_MIME: Record<string, string> = Object.fromEntries(
-  Object.entries(IMAGE_MIME_BY_EXTENSION).map(([extension, mime]) => [mime, extension])
-)
-
-function normalizedExtension(value: string): string {
-  const clean = String(value || '').trim().toLowerCase()
-
-  if (!clean) {return ''}
-
-  return clean.startsWith('.') ? clean : `.${clean}`
-}
-
-function bytesToDataUrl(bytes: Uint8Array, mimeType: string): string {
-  return `data:${mimeType};base64,${bytesToBase64(bytes)}`
-}
-
-function noopUnsubscribe(): () => void {
-  return () => undefined
-}
-
-function browserBootstrap(): BrowserBootstrap | null {
-  if (!hasBrowserHostBootstrap()) {return null}
-
-  const win = window as unknown as BrowserBootstrapWindow
-  const authRequired = win.__HERMES_AUTH_REQUIRED__ === true
-  const basePath = normalizeBasePath(win.__HERMES_BASE_PATH__)
-  const privateSession = !authRequired && win.__HERMES_UI_SURFACE__ === 'webapp'
-  const token = authRequired ? '' : privateSession ? consumeWebappSession(basePath) : String(win.__HERMES_SESSION_TOKEN__ || '').trim()
-
-  return {
-    authRequired,
-    basePath,
-    privateSession,
-    token,
-    stagedUploads: new Map()
-  }
-}
-
-function endpointUrl(path: string, basePath: string, profile?: null | string): URL {
-  const suffix = path.startsWith('/') ? path : `/${path}`
-  const normalizedBase = normalizeBasePath(basePath)
-  const url = new URL(`${normalizedBase}${suffix}`, window.location.origin)
-
-  if (url.origin !== window.location.origin) {
-    throw new Error('Hermes API paths must remain on the Webapp origin')
-  }
-
-  if (
-    normalizedBase &&
-    url.pathname !== normalizedBase &&
-    !url.pathname.startsWith(`${normalizedBase}/`)
-  ) {
-    throw new Error('Hermes API paths must remain inside the configured base path')
-  }
-
-  if (profile && !url.searchParams.has('profile')) {
-    url.searchParams.set('profile', profile)
-  }
-
-  return url
-}
-
-function authenticatedEndpointUrl(bootstrap: BrowserBootstrap, path: string, profile?: null | string): URL {
-  const url = endpointUrl(path, bootstrap.basePath, profile)
-
-  // Downloads and media elements cannot set the session header. Gated hosts
-  // use their same-origin cookie; loopback hosts use the injected token.
-  if (bootstrap.token) {url.searchParams.set('token', bootstrap.token)}
-
-  return url
-}
-
-function websocketUrl(
-  basePath: string,
-  path: string,
-  credential: { ticket?: string; token?: string },
-  profile?: null | string
-): string {
-  const authParam = credential.ticket
-    ? (['ticket', credential.ticket] as const)
-    : credential.token
-      ? (['token', credential.token] as const)
-      : undefined
-
-  return buildHermesWebSocketUrl({
-    authParam,
-    basePath,
-    params: profile ? { profile } : undefined,
-    path
-  })
-}
-
-function sandboxedHtmlBlob(bytes: Uint8Array): Blob {
-  const source = bytesToDataUrl(bytes, 'text/html;charset=utf-8')
-
-  const wrapper = [
-    '<!doctype html>',
-    '<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">',
-    '<style>html,body,iframe{box-sizing:border-box;width:100%;height:100%;margin:0;border:0}</style>',
-    '</head><body>',
-    `<iframe sandbox="allow-scripts" referrerpolicy="no-referrer" src="${source}"></iframe>`,
-    '</body></html>'
-  ].join('')
-
-  return new Blob([wrapper], { type: 'text/html;charset=utf-8' })
-}
-
-function reauthError(
-  bootstrap: BrowserBootstrap,
-  response: Response,
-  text: string
-): BrowserReauthRequiredError | null {
-  if (!bootstrap.authRequired || response.status !== 401) {return null}
-
-  let payload: { detail?: unknown; error?: unknown; login_url?: unknown } = {}
-
-  try {
-    payload = JSON.parse(text) as typeof payload
-  } catch {
-    return null
-  }
-
-  if (
-    !['session_expired', 'unauthenticated'].includes(String(payload.error || '')) ||
-    typeof payload.login_url !== 'string'
-  ) {
-    return null
-  }
-
-  let target: URL
-
-  try {
-    target = new URL(payload.login_url, window.location.origin)
-  } catch {
-    return null
-  }
-
-  if (target.origin !== window.location.origin) {return null}
-
-  return new BrowserReauthRequiredError(
-    `${String(payload.error)}: ${String(payload.detail || 'Unauthorized')}`,
-    target.href
-  )
-}
-
-function navigateToBrowserLogin(error: BrowserReauthRequiredError): void {
-  const event = new CustomEvent(REAUTH_EVENT, {
-    cancelable: true,
-    detail: { loginUrl: error.loginUrl }
-  })
-
-  if (window.dispatchEvent(event)) {window.location.assign(error.loginUrl)}
-}
-
-interface BrowserFetchRequest {
-  body?: BodyInit
-  headers?: HeadersInit
-  method?: string
-  path: string
-  profile?: null | string
-  timeoutMs?: number
-}
-
-async function browserFetch(
-  bootstrap: BrowserBootstrap,
-  request: BrowserFetchRequest
-): Promise<{ response: Response; text: string }> {
-  if (!bootstrap.authRequired && !bootstrap.token) {throw new Error(WEBAPP_LAUNCH_REQUIRED)}
-
-  const controller = request.timeoutMs === undefined ? null : new AbortController()
-  const timeout = controller ? window.setTimeout(() => controller.abort(), request.timeoutMs) : null
-  const headers = new Headers(request.headers)
-
-  if (bootstrap.token) {headers.set(SESSION_HEADER, bootstrap.token)}
-
-  try {
-    const response = await fetch(endpointUrl(request.path, bootstrap.basePath, request.profile), {
-      body: request.body,
-      credentials: 'same-origin',
-      headers,
-      method: request.method || 'GET',
-      signal: controller?.signal
-    })
-
-    const text = await response.text()
-
-    if (!response.ok) {
-      if (!bootstrap.authRequired && response.status === 401) {throw new Error(WEBAPP_LAUNCH_REQUIRED)}
-
-      const authError = reauthError(bootstrap, response, text)
-
-      if (authError) {
-        navigateToBrowserLogin(authError)
-        throw authError
-      }
-    }
-
-    return { response, text }
-  } finally {
-    if (timeout !== null) {window.clearTimeout(timeout)}
-  }
-}
-
-async function browserApi<T>(bootstrap: BrowserBootstrap, request: HermesApiRequest): Promise<T> {
-  const headers = new Headers()
-  let body: BodyInit | undefined
-
-  if (request.upload) {
-    const form = new FormData()
-
-    const blob = new Blob([request.upload.bytes], {
-      type: request.upload.contentType || 'application/octet-stream'
-    })
-
-    form.append('file', blob, request.upload.filename || 'file')
-    body = form
-  } else if (request.body !== undefined) {
-    headers.set('Content-Type', 'application/json')
-    body = JSON.stringify(request.body)
-  }
-
-  const { response, text } = await browserFetch(bootstrap, {
-    body,
-    headers,
-    method: request.method,
-    path: request.path,
-    profile: request.profile,
-    timeoutMs: request.timeoutMs ?? DEFAULT_TIMEOUT_MS
-  })
-
-  if (!response.ok) {
-    throw new Error(`${response.status}: ${text || response.statusText}`)
-  }
-
-  if (!text) {return null as T}
-
-  if (/^\s*<(?:!doctype|html)/i.test(text)) {
-    throw new Error(`Hermes API returned HTML for ${request.path}`)
-  }
-
-  return JSON.parse(text) as T
-}
-
-async function stageBrowserFile(
-  bootstrap: BrowserBootstrap,
-  file: File,
-  profile?: null | string
-): Promise<string> {
-  const form = new FormData()
-  form.append('file', file, file.name || 'attachment')
-
-  const { response, text } = await browserFetch(bootstrap, {
-    body: form,
-    method: 'POST',
-    path: '/api/chat/file-upload',
-    profile
-  })
-
-  const payload = JSON.parse(text) as { detail?: string; path?: string; staged_upload?: HermesStagedUpload }
-
-  if (!response.ok || !payload.path) {
-    throw new Error(payload.detail || `File upload failed (${response.status})`)
-  }
-
-  // Keep the existing string-path bridge for pickers and drops. Composer chips
-  // carry this small source descriptor so draft cloning and retries retain it.
-  if (payload.staged_upload?.path === payload.path) {
-    bootstrap.stagedUploads.set(payload.path, payload.staged_upload)
-
-    // Chips retain their own descriptors. Bound the string-path compatibility
-    // cache without consuming lookups shared by multiple attachment occurrences.
-    if (bootstrap.stagedUploads.size > STAGED_UPLOAD_CACHE_LIMIT) {
-      const oldest = bootstrap.stagedUploads.keys().next().value
-
-      if (oldest !== undefined) { bootstrap.stagedUploads.delete(oldest) }
-    }
-  }
-
-  return payload.path
-}
-
-function selectBrowserFiles(
-  bootstrap: BrowserBootstrap,
-  options?: HermesSelectPathsOptions,
-  fallbackProfile?: null | string
-): Promise<string[]> {
-  if (options?.directories) {return Promise.resolve([])}
-
-  return new Promise<string[]>((resolve, reject) => {
-    const input = document.createElement('input')
-    input.type = 'file'
-    input.multiple = Boolean(options?.multiple)
-    input.style.display = 'none'
-
-    const extensions = (options?.filters || []).flatMap(filter => filter.extensions || [])
-
-    if (extensions.length) {
-      input.accept = extensions.map(extension => `.${extension.replace(/^\./, '')}`).join(',')
-    }
-
-    const finish = () => input.remove()
-    input.addEventListener(
-      'cancel',
-      () => {
-        finish()
-        resolve([])
-      },
-      { once: true }
-    )
-    input.addEventListener(
-      'change',
-      () => {
-        const files = Array.from(input.files || [])
-        finish()
-
-        const profile = options?.profile?.trim() || fallbackProfile || null
-
-        void Promise.all(files.map(file => stageBrowserFile(bootstrap, file, profile))).then(resolve, reject)
-      },
-      { once: true }
-    )
-    document.body.append(input)
-    input.click()
-  })
-}
-
-async function authenticatedWebsocketUrl(
-  bootstrap: BrowserBootstrap,
-  path: '/api/host-terminal' | '/api/ws',
-  profile?: null | string
-): Promise<string> {
-  if (!bootstrap.authRequired) {
-    if (!bootstrap.token) {throw new Error(WEBAPP_LAUNCH_REQUIRED)}
-
-    return websocketUrl(bootstrap.basePath, path, { token: bootstrap.token }, profile)
-  }
-
-  const result = await browserApi<{ ticket?: string }>(bootstrap, {
-    method: 'POST',
-    path: '/api/auth/ws-ticket'
-  })
-
-  const ticket = String(result.ticket || '').trim()
-
-  if (!ticket) {throw new Error('Hermes did not return a WebSocket ticket')}
-
-  return websocketUrl(bootstrap.basePath, path, { ticket }, profile)
-}
-
-function connectionFor(bootstrap: BrowserBootstrap, profile?: null | string): HermesConnection {
-  if (!bootstrap.authRequired && !bootstrap.token) {throw new Error(WEBAPP_LAUNCH_REQUIRED)}
-
-  const baseUrl = `${window.location.origin}${bootstrap.basePath}`
-
-  return {
-    authMode: bootstrap.authRequired ? 'oauth' : 'token',
-    baseUrl,
-    isFullscreen: Boolean(document.fullscreenElement),
-    logs: [],
-    mode: 'remote',
-    nativeOverlayWidth: 0,
-    profile: profile || undefined,
-    remoteHost: window.location.host,
-    remoteKind: 'url',
-    sharedPrimary: Boolean(profile),
-    source: 'settings',
-    token: bootstrap.token,
-    windowButtonPosition: null,
-    wsUrl: bootstrap.authRequired
-      ? ''
-      : websocketUrl(bootstrap.basePath, '/api/ws', { token: bootstrap.token }, profile)
-  }
-}
-
-function readyBootProgress(): DesktopBootProgress {
-  return {
-    error: null,
-    fakeMode: false,
-    message: 'Hermes browser-hosted desktop is ready',
-    phase: 'runtime.ready',
-    progress: 100,
-    running: false,
-    timestamp: Date.now()
-  }
-}
-
-function readyBootstrapState(): DesktopBootstrapState {
-  return {
-    active: false,
-    // A browser host never runs an in-app bundled payload.
-    bundled: false,
-    completedAt: Date.now(),
-    error: null,
-    log: [],
-    manifest: null,
-    setupChoice: null,
-    stages: {},
-    startedAt: null,
-    unsupportedPlatform: null
-  }
-}
-
-function browserConnectionConfig(bootstrap: BrowserBootstrap, profile?: null | string) {
-  return {
-    cloudOrg: '',
-    envOverride: false,
-    mode: 'remote' as const,
-    profile: profile || null,
-    remoteAuthMode: bootstrap.authRequired ? ('oauth' as const) : ('token' as const),
-    remoteOauthConnected: bootstrap.authRequired,
-    remoteTokenPlainText: false,
-    remoteTokenPreview: null,
-    remoteTokenSet: Boolean(bootstrap.token),
-    secureTokenStorage: false,
-    remoteUrl: `${window.location.origin}${bootstrap.basePath}`,
-    sshHost: '',
-    sshKeyPath: '',
-    sshPort: null,
-    sshRemoteHermesPath: '',
-    sshRemoteProfile: '',
-    sshUser: ''
-  }
-}
-
-function browserUnsupported(feature: string): Error {
-  return new Error(`${feature} is not available in the browser-hosted Desktop`)
-}
-
-function queryPath(route: string, values: Record<string, boolean | null | string | undefined>) {
-  const query = new URLSearchParams()
-
-  for (const [key, value] of Object.entries(values)) {
-    if (value !== null && value !== undefined) {query.set(key, String(value))}
-  }
-
-  return `${route}?${query.toString()}`
-}
-
-// Bridge members that need no per-install state: native-only capabilities
-// answered with a fixed browser result, a refusal, or a no-op.
-const BROWSER_BRIDGE_STUBS = {
-  applyConnectionConfig: async () => {
-    throw browserUnsupported('Gateway reconfiguration')
-  },
-  cancelBootstrap: async () => ({ cancelled: false, ok: true }),
-  // Rendering an untrusted link must not contact its destination. PrettyLink
-  // uses the URL slug when no title is available; Electron keeps its resolver.
-  fetchLinkTitle: async () => '',
-  claimAmbientCue: async () => true,
-  cloud: {
-    agentSignIn: async (dashboardUrl: string) => ({ baseUrl: dashboardUrl, connected: false }),
-    discover: async () => ({ agents: [] }),
-    login: async () => ({ ok: false, portalBaseUrl: '', signedIn: false }),
-    logout: async () => ({ ok: true, portalBaseUrl: '', signedIn: false }),
-    status: async () => ({ portalBaseUrl: '', signedIn: false })
-  },
-  continueBootstrapLocal: async () => ({ ok: true }),
-  getBootProgress: async () => readyBootProgress(),
-  getBootstrapState: async () => readyBootstrapState(),
-  // Electron owns the pool; a browser host must not report a successful native
-  // settings write.
-  getPoolLimits: async () => {
-    throw browserUnsupported('Desktop backend pool sizing')
-  },
-  setPoolLimits: async () => {
-    throw browserUnsupported('Desktop backend pool sizing')
-  },
-  getRecentLogs: async () => ({ lines: [], path: '' }),
-  // Venv/plugin receipts live on the server host; a browser tab has none of its own.
-  getSyncStatus: async () => null,
-  getRemoteDisplayReason: async () => 'Browser-hosted Desktop uses this server as its backend',
-  getVersion: async () => ({
-    appVersion: 'browser-hosted',
-    electronVersion: '',
-    hermesRoot: '',
-    nodeVersion: '',
-    platform: 'browser'
-  }),
-  // Browser pages have no native window compositor. Keep these explicit so
-  // capability consumers do not fall back to the host OS (for example,
-  // Windows) before the browser-host marker is available.
-  glassSupported: false,
-  translucencySupported: false,
-  windowControls: {
-    custom: false,
-    minimize: () => { throw browserUnsupported('Native window controls') },
-    toggleMaximize: () => { throw browserUnsupported('Native window controls') },
-    close: () => { throw browserUnsupported('Native window controls') }
-  },
-  getPathForFile: () => '',
-  normalizePreviewTarget: async () => null,
-  onBackendExit: noopUnsubscribe,
-  onBootProgress: noopUnsubscribe,
-  onBootstrapEvent: noopUnsubscribe,
-  onFoundInPage: noopUnsubscribe,
-  onPreviewFileChanged: noopUnsubscribe,
-  probeConnectionConfig: async (remoteUrl: string) => ({
-    authMode: 'unknown' as const,
-    baseUrl: remoteUrl,
-    error: 'Gateway reconfiguration is unavailable in browser-hosted Desktop',
-    providers: [],
-    reachable: false,
-    version: null
-  }),
-  revealLogs: async () => ({
-    error: 'Native log reveal is unavailable in browser-hosted Desktop',
-    ok: false,
-    path: ''
-  }),
-  repairBootstrap: async () => ({ ok: true }),
-  resetBootstrap: async () => ({ ok: true }),
-  revalidateConnection: async () => ({ ok: true, rebuilt: false }),
-  saveConnectionConfig: async () => {
-    throw browserUnsupported('Gateway reconfiguration')
-  },
-  sanitizeWorkspaceCwd: async (cwd?: null | string) => ({ cwd: cwd || '', sanitized: false }),
-  settings: {
-    getDefaultProjectDir: async () => ({ defaultLabel: 'Server workspace', dir: null, resolvedCwd: '' }),
-    pickDefaultProjectDir: async () => ({ canceled: true, dir: null }),
-    setDefaultProjectDir: async (dir: null | string) => ({ dir })
-  },
-  sshConfigHosts: async () => ({ hosts: [] }),
-  sshResolveHost: async () => ({ hostname: null, identityFile: null, port: null, user: null }),
-  setActiveWork: () => undefined,
-  setKeepAwake: () => undefined,
-  setNativeTheme: () => undefined,
-  setPreviewShortcutActive: () => undefined,
-  setTitleBarTheme: () => undefined,
-  setTranslucency: () => undefined,
-  stopFindInPage: async () => undefined,
-  stopPreviewFileWatch: async () => true,
-  themes: {
-    fetchMarketplace: async (id: string) => ({ displayName: id, extensionId: id, themes: [] }),
-    searchMarketplace: async () => []
-  },
-  touchBackend: async () => ({ ok: true }),
-  uninstall: {
-    run: async () => ({ error: 'Run `hermes uninstall` on the server host', ok: false }),
-    summary: async () => ({
-      agent_installed: true,
-      // Package removal belongs to the server host, never this browser tab.
-      code_removal_allowed: false,
-      gui_installed: true,
-      hermes_home: '',
-      packaged_app_paths: [],
-      platform: 'browser',
-      source_built_artifacts: [],
-      userdata_dir: '',
-      userdata_exists: true
-    })
-  },
-  updates: {
-    apply: async () => ({ command: 'hermes update', manual: true, message: 'Run `hermes update` on the server host', ok: false }),
-    check: async () => ({ message: 'Use `hermes update` on the server host', reason: 'browser-hosted', supported: false }),
-    getBranch: async () => ({ branch: '' }),
-    onProgress: noopUnsubscribe,
-    setBranch: async (branch: string) => ({ branch })
-  },
-  watchPreviewFile: async (url: string) => ({ id: `browser:${url}`, path: url })
-} satisfies Partial<Window['hermesDesktop']>
 
 /**
  * Install a capability-limited Desktop bridge when the real renderer is served
@@ -649,46 +40,21 @@ export function installBrowserDesktopBridge(): boolean {
     watchWebappLaunchLink(() => window.location.reload())
   }
 
-  // Reconnect belongs to the window, not whichever secondary profile is active.
-  // Explicit null still selects the default backend.
-  const getConnection = async (profile: null | string = windowProfileOverride()) => connectionFor(bootstrap, profile)
-
-  const requireBrowserConnection = (connectionId?: null | string) => {
-    const requested = connectionId?.trim() || LOCAL_CONNECTION_ID
-
-    if (requested !== LOCAL_CONNECTION_ID) {
-      throw new Error(`No connection with id "${requested}"`)
-    }
-  }
-
-  const getConnectionFor = async (payload: { connectionId?: null | string; profile?: null | string }) => {
-    requireBrowserConnection(payload.connectionId)
-
-    return {
-      ...connectionFor(bootstrap, payload.profile),
-      connectionId: LOCAL_CONNECTION_ID,
-      registryScoped: true,
-      sharedPrimary: false,
-      sharedRemote: Boolean(payload.profile)
-    }
-  }
-
-  const transientObjectUrls = new Set<string>()
-  const nativeWriteClipboard = navigator.clipboard?.writeText?.bind(navigator.clipboard)
-
-  const openExternal = async (url: string) => {
-    window.open(url, '_blank', 'noopener,noreferrer')
-  }
-
-  const writeClipboard = async (text: string) => {
-    if (!nativeWriteClipboard) {return false}
-
-    await nativeWriteClipboard(text)
-
-    return true
-  }
-
   const api = <T>(request: HermesApiRequest) => browserApi<T>(bootstrap, request)
+
+  const currentProfile = () =>
+    $connection.get()?.profile?.trim() || new URLSearchParams(window.location.search).get('profile')
+
+  const objectUrls = new Set<string>()
+
+  window.addEventListener(
+    'beforeunload',
+    () => {
+      objectUrls.forEach(url => URL.revokeObjectURL(url))
+      objectUrls.clear()
+    },
+    { once: true }
+  )
 
   const openWindow = createBrowserWindowOpener({
     api,
@@ -696,182 +62,30 @@ export function installBrowserDesktopBridge(): boolean {
     privateSession: bootstrap.privateSession
   })
 
-  window.addEventListener(
-    'beforeunload',
-    () => {
-      transientObjectUrls.forEach(url => URL.revokeObjectURL(url))
-      transientObjectUrls.clear()
-    },
-    { once: true }
-  )
-
-  const browserProfile = () =>
-    $connection.get()?.profile?.trim() || new URLSearchParams(window.location.search).get('profile')
-
-  const saveBuffer = async (data: ArrayBuffer | Uint8Array, ext: string) => {
-    const source = data instanceof Uint8Array ? data : new Uint8Array(data)
-    const bytes = new Uint8Array(source.byteLength)
-    bytes.set(source)
-
-    const extension = normalizedExtension(ext)
-    const imageMime = IMAGE_MIME_BY_EXTENSION[extension]
-
-    if (imageMime) {
-      const uploaded = await api<{ path?: string }>({
-        body: {
-          data_url: bytesToDataUrl(bytes, imageMime),
-          filename: `desktop-upload${extension}`
-        },
-        method: 'POST',
-        path: '/api/chat/image-upload',
-        profile: browserProfile()
-      })
-
-      return uploaded.path || ''
-    }
-
-    const blob = extension === '.htm' || extension === '.html'
-      ? sandboxedHtmlBlob(bytes)
-      : new Blob([bytes.buffer], { type: 'application/octet-stream' })
-
-    const url = URL.createObjectURL(blob)
-    transientObjectUrls.add(url)
-
-    return url
+  const openExternal = async (url: string) => {
+    window.open(url, '_blank', 'noopener,noreferrer')
   }
 
-  const terminal = createBrowserTerminal({
-    basePath: bootstrap.basePath,
-    currentProfile: browserProfile,
-    websocketUrl: profile => authenticatedWebsocketUrl(bootstrap, '/api/host-terminal', profile),
-    defaultCwd: async profile => (await api<{ cwd?: string }>({ path: '/api/fs/default-cwd', profile })).cwd || ''
-  })
-
-  const fsGet = <T>(route: string, path: string) =>
-    api<T>({ path: queryPath(`/api/fs/${route}`, { path }), profile: browserProfile() })
-
-  const readDataUrl = async (path: string) => (await fsGet<{ dataUrl: string }>('read-data-url', path)).dataUrl
-
-  const downloadUrl = async (url: string, filename = '') => {
-    const target = new URL(url, window.location.href)
-    let downloadHref = target.href
-
-    // Cross-origin anchors ignore download and navigate the current tab.
-    // Fetch without Hermes credentials; CORS denial must not fall back to navigation.
-    if (target.origin !== window.location.origin && !['blob:', 'data:'].includes(target.protocol)) {
-      downloadHref = URL.createObjectURL(await fetchBrowserImage(target))
-      transientObjectUrls.add(downloadHref)
-      window.setTimeout(() => {
-        URL.revokeObjectURL(downloadHref)
-        transientObjectUrls.delete(downloadHref)
-      }, 60_000)
-    }
-
-    const anchor = document.createElement('a')
-    anchor.href = downloadHref
-    anchor.download = filename
-    anchor.rel = 'noopener'
-    anchor.style.display = 'none'
-    document.body.append(anchor)
-    anchor.click()
-    anchor.remove()
-
-    return true
-  }
-
-  const getGatewayWsUrl = async (profile?: null | string) => {
-    try {
-      return {
-        ok: true as const,
-        wsUrl: await authenticatedWebsocketUrl(bootstrap, '/api/ws', profile)
-      }
-    } catch (error) {
-      if (error instanceof BrowserReauthRequiredError) {
-        return {
-          error: error.message,
-          needsOauthLogin: true,
-          ok: false as const
-        }
-      }
-
-      throw error
-    }
-  }
-
-  const getProfiles = async () => {
-    const result = await api<{ profiles?: { name?: string }[] }>({ path: '/api/profiles' })
-
-    return [...new Set((result.profiles || []).map(profile => String(profile.name || '').trim()).filter(Boolean))]
-  }
+  const uploads = createBrowserUploadsBridge({ api, bootstrap, currentProfile, objectUrls })
 
   const bridge: Window['hermesDesktop'] = {
     ...BROWSER_BRIDGE_STUBS,
+    ...createBrowserClipboardBridge({ saveBuffer: uploads.saveImageBuffer }),
+    ...createBrowserConnectionBridge({ api, bootstrap }),
+    ...createBrowserFilesBridge({
+      api,
+      bootstrap,
+      currentProfile,
+      objectUrls,
+      requireConnection: requireBrowserConnection
+    }),
+    ...uploads,
     api,
     findInPage: async (query: string) => {
       const find = (window as Window & { find?: (value: string) => boolean }).find
 
       return { count: query && find?.call(window, query) ? 1 : 0 }
     },
-    getConnectionConfig: async (profile?: null | string) => browserConnectionConfig(bootstrap, profile),
-    getConnection,
-    getConnectionFor,
-    getProfileRoutes: async (profiles: string[]) => {
-      const available = new Set(await getProfiles())
-
-      return [...new Set(profiles.map(profile => profile.trim() || 'default'))]
-        .filter(profile => available.has(profile))
-        .map(profile => ({
-          connectionId: LOCAL_CONNECTION_ID,
-          mode: 'local' as const,
-          profile,
-          targetProfile: profile
-        }))
-    },
-    getAgentRoster: async () => {
-      const profiles = await getProfiles()
-      const connectionLabel = window.location.host
-
-      return {
-        agents: profiles.map(profile => ({
-          connectionId: LOCAL_CONNECTION_ID,
-          connectionKind: 'local' as const,
-          connectionLabel,
-          handle: profile === 'default' ? 'hermes' : profile,
-          profile,
-          targetProfile: profile
-        })),
-        primaryConnectionId: LOCAL_CONNECTION_ID,
-        sources: [{
-          connectionId: LOCAL_CONNECTION_ID,
-          kind: 'local' as const,
-          label: connectionLabel,
-          reachable: true
-        }]
-      }
-    },
-    getGatewayWsUrl,
-    getGatewayWsUrlFor: async (payload: { connectionId?: null | string; profile?: null | string }) => {
-      requireBrowserConnection(payload.connectionId)
-
-      return getGatewayWsUrl(payload.profile)
-    },
-    getGatewayFileStreamUrl: async payload => {
-      requireBrowserConnection(payload.connectionId)
-
-      return authenticatedEndpointUrl(
-        bootstrap,
-        queryPath('/api/files/stream', { path: payload.path }),
-        payload.profile ?? browserProfile()
-      ).href
-    },
-    stageFileForAttach: (file: File) => stageBrowserFile(bootstrap, file, browserProfile()),
-    getStagedFileForAttach: (path: string) => bootstrap.stagedUploads.get(path),
-    readDir: (path: string) =>
-      fsGet<Awaited<ReturnType<Window['hermesDesktop']['readDir']>>>('list', path),
-    readFileDataUrl: readDataUrl,
-    readFileDataUrlForAttach: readDataUrl,
-    readFileText: (path: string) =>
-      fsGet<Awaited<ReturnType<Window['hermesDesktop']['readFileText']>>>('read-text', path),
     notify: async ({ title, body }: { title?: string; body?: string }) => {
       if (!('Notification' in window)) {return false}
 
@@ -884,114 +98,11 @@ export function installBrowserDesktopBridge(): boolean {
     },
     openExternal,
     openPreviewInBrowser: openExternal,
-    openSessionWindow: async (
-      sessionId: string,
-      opts?: { profile?: null | string; watch?: boolean }
-    ) => {
-      const id = sessionId.trim()
+    openSessionWindow: async (sessionId, opts) => {
+      const target = sessionWindowTarget(window.location.href, sessionId, opts)
 
-      if (!id) {return { error: 'invalid_session_id', ok: false }}
-      const target = new URL(window.location.href)
-      target.searchParams.set('win', 'secondary')
-
-      const profile = opts?.profile?.trim()
-
-      if (profile === 'default') {
-        target.searchParams.delete('profile')
-      } else if (profile) {
-        target.searchParams.set('profile', profile)
-      }
-
-      if (opts?.watch) {
-        target.searchParams.set('watch', '1')
-      } else {
-        target.searchParams.delete('watch')
-      }
-
-      target.hash = `/${encodeURIComponent(id)}`
-
-      return openWindow(target)
+      return target ? openWindow(target) : { error: 'invalid_session_id', ok: false }
     },
-    ...createBrowserProfileBridge({
-      basePath: bootstrap.basePath,
-      currentProfile: browserProfile,
-      openWindow,
-      requireConnection: requireBrowserConnection
-    }),
-    oauthLoginConnectionConfig: async (remoteUrl: string) => {
-      const target = new URL(`${bootstrap.basePath}/login`, window.location.origin)
-      target.searchParams.set('next', `${window.location.pathname}${window.location.search}${window.location.hash}`)
-      navigateToBrowserLogin(new BrowserReauthRequiredError('Sign in required', target.href))
-
-      return { baseUrl: remoteUrl, connected: false, ok: false }
-    },
-    oauthLogoutConnectionConfig: async () => {
-      const response = await fetch(endpointUrl('/auth/logout', bootstrap.basePath), {
-        credentials: 'same-origin',
-        method: 'POST'
-      })
-
-      if (!response.ok) {
-        throw new Error(`Sign out failed (${response.status})`)
-      }
-
-      const login = new URL(`${bootstrap.basePath}/login`, window.location.origin)
-      navigateToBrowserLogin(new BrowserReauthRequiredError('Signed out', login.href))
-
-      return { connected: false, ok: true }
-    },
-    readClipboard: async () => navigator.clipboard?.readText?.() || '',
-    saveClipboardImage: async () => {
-      const clipboard = navigator.clipboard as Clipboard & {
-        read?: () => Promise<ClipboardItems>
-      }
-
-      if (!clipboard?.read) {return ''}
-
-      const items = await clipboard.read()
-
-      for (const item of items) {
-        const mimeType = item.types.find(type => type.startsWith('image/'))
-
-        if (!mimeType) {continue}
-
-        const blob = await item.getType(mimeType)
-        const extension = IMAGE_EXTENSION_BY_MIME[mimeType] || '.png'
-
-        return saveBuffer(await blob.arrayBuffer(), extension)
-      }
-
-      return ''
-    },
-    saveImageBuffer: saveBuffer,
-    saveGatewayFile: async payload => {
-      requireBrowserConnection(payload.connectionId)
-      const path = queryPath('/api/files/download', { path: payload.path, session_id: payload.sessionId })
-      const profile = payload.profile ?? browserProfile()
-
-      // Validate before handing the transfer to the browser so missing or
-      // denied files surface in the chat without navigating away. HEAD keeps
-      // large downloads out of renderer memory.
-      await api({ method: 'HEAD', path, profile })
-
-      return {
-        saved: await downloadUrl(authenticatedEndpointUrl(bootstrap, path, profile).href, payload.suggestedName)
-      }
-    },
-    saveImageFromUrl: async (url: string) => {
-      try {
-        return await downloadUrl(url)
-      } catch (error) {
-        // Context-menu consumers fire and forget; surface failures here.
-        notifyError(error, translateNow('fileMenu.downloadFailed'))
-
-        return false
-      }
-    },
-    savePastedText: (text: string) => stageBrowserFile(
-      bootstrap, new File([text], 'pasted.txt', { type: 'text/plain' }), browserProfile()
-    ),
-    selectPaths: options => selectBrowserFiles(bootstrap, options, browserProfile()),
     requestMicrophoneAccess: async () => {
       if (!navigator.mediaDevices?.getUserMedia) {return false}
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
@@ -999,14 +110,18 @@ export function installBrowserDesktopBridge(): boolean {
 
       return true
     },
-    testConnectionConfig: async () => ({
-      baseUrl: `${window.location.origin}${bootstrap.basePath}`,
-      ok: true,
-      reachable: true,
-      version: null
+    terminal: createBrowserTerminal({
+      basePath: bootstrap.basePath,
+      currentProfile,
+      websocketUrl: profile => authenticatedWebsocketUrl(bootstrap, '/api/host-terminal', profile),
+      defaultCwd: async profile => (await api<{ cwd?: string }>({ path: '/api/fs/default-cwd', profile })).cwd || ''
     }),
-    terminal,
-    writeClipboard,
+    ...createBrowserProfileBridge({
+      basePath: bootstrap.basePath,
+      currentProfile,
+      openWindow,
+      requireConnection: requireBrowserConnection
+    }),
     zoom: createBrowserZoom(bootstrap.basePath)
   }
 

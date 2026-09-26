@@ -63,3 +63,34 @@ export function createBrowserWindowOpener({ api, basePath, privateSession }: Bro
     })
   }
 }
+
+/** The secondary-window URL showing one session, or null for an empty session id. */
+export function sessionWindowTarget(
+  currentHref: string,
+  sessionId: string,
+  opts?: { profile?: null | string; watch?: boolean }
+): URL | null {
+  const id = sessionId.trim()
+
+  if (!id) {return null}
+  const target = new URL(currentHref)
+  target.searchParams.set('win', 'secondary')
+
+  const profile = opts?.profile?.trim()
+
+  if (profile === 'default') {
+    target.searchParams.delete('profile')
+  } else if (profile) {
+    target.searchParams.set('profile', profile)
+  }
+
+  if (opts?.watch) {
+    target.searchParams.set('watch', '1')
+  } else {
+    target.searchParams.delete('watch')
+  }
+
+  target.hash = `/${encodeURIComponent(id)}`
+
+  return target
+}
