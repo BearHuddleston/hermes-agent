@@ -1754,16 +1754,16 @@ def _print_delete_summary(canon: str, profile_dir: Path, gw_running: bool, wrapp
         print("  ⚠ Gateway is running — it will be stopped.")
 
 
-def _profile_directory_identity(profile_dir: Path) -> tuple[int, int, int, str | None]:
+def _profile_directory_identity(profile_dir: Path) -> tuple[int, int, str | None]:
+    # The generation, not its contents: every create/import/clone mints a fresh incarnation,
+    # while ctime moves on each create/rename/unlink in the root (a live gateway's atomic state
+    # writes, SQLite -wal/-shm) and would refuse every delete of a running profile.
     stat_result = profile_dir.stat()
-    return (
-        stat_result.st_dev, stat_result.st_ino, stat_result.st_ctime_ns,
-        read_profile_incarnation(profile_dir),
-    )
+    return stat_result.st_dev, stat_result.st_ino, read_profile_incarnation(profile_dir)
 
 
 @serialized_profile_mutation("profile_dir")
-def _profile_delete_confirmation_identity(profile_dir: Path) -> tuple[int, int, int, str | None]:
+def _profile_delete_confirmation_identity(profile_dir: Path) -> tuple[int, int, str | None]:
     # Backfill live legacy homes while briefly holding the mutation lease, then
     # release it before prompting. Never mint an identity behind a deletion fence.
     if not profile_home_is_tombstoned(profile_dir):
@@ -1798,7 +1798,7 @@ def delete_profile(name: str, yes: bool = False) -> Path:
         raise ValueError("Cannot delete the default profile (~/.hermes).\nTo remove everything, use: hermes uninstall")
     canon, profile_dir = _existing_profile_dir(canon)
     confirmed_identity = _profile_delete_confirmation_identity(profile_dir)
-    if not yes and confirmed_identity[3] is None:
+    if not yes and confirmed_identity[2] is None:
         raise RuntimeError(
             f"Profile '{canon}' has a legacy deletion fence without a generation; "
             "retry deletion with --yes."
@@ -1825,7 +1825,7 @@ def delete_profile(name: str, yes: bool = False) -> Path:
 def _delete_profile_confirmed(
     canon: str,
     profile_dir: Path,
-    confirmed_identity: tuple[int, int, int, str | None],
+    confirmed_identity: tuple[int, int, str | None],
 ) -> Path:
     """Execute an already-confirmed delete under the lifecycle locks."""
     if not profile_dir.is_dir():

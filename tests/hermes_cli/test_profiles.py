@@ -519,6 +519,42 @@ class TestDeleteProfile:
         finally:
             db.close()
 
+    def test_confirmation_binds_the_generation_not_its_contents(self, profile_env, monkeypatch):
+        """Typing the name authorizes deleting the generation that was summarized, nothing else.
+
+        A running profile's gateway is stopped only after confirmation, so while the user types
+        it keeps atomically rewriting root files and SQLite creates/removes its -wal/-shm. That
+        churn must not refuse the delete; a delete+recreate under the same name still must.
+        """
+        profile_dir = create_profile("coder", no_alias=True)
+
+        def recreate() -> None:
+            shutil.rmtree(profile_dir)
+            create_profile("coder", no_alias=True)
+            (profile_dir / "replacement").write_text("new", encoding="utf-8")
+
+        def live_gateway_writes() -> None:
+            staged = profile_dir / "gateway_state.json.tmp"
+            staged.write_text("{}", encoding="utf-8")
+            os.replace(staged, profile_dir / "gateway_state.json")
+            (profile_dir / "state.db-wal").write_bytes(b"")
+            (profile_dir / "state.db-wal").unlink()
+
+        during_prompt = iter((recreate, live_gateway_writes))
+
+        def confirm(_prompt: str) -> str:
+            next(during_prompt)()
+            return "coder"
+
+        monkeypatch.setattr("builtins.input", confirm)
+        with patch("hermes_cli.profiles._cleanup_gateway_service"):
+            with pytest.raises(RuntimeError, match="changed while deletion was being confirmed"):
+                delete_profile("coder")
+            assert (profile_dir / "replacement").read_text(encoding="utf-8") == "new"
+
+            assert delete_profile("coder") == profile_dir
+        assert not profile_dir.exists()
+
     def test_delete_purges_profile_keyed_identity(self, profile_env):
         """A deleted profile must not keep routing/heartbeat/delivery identity (#111926, delete side).
 
