@@ -1870,8 +1870,11 @@ open its `?profile=<name>` URL in an already authorized tab, or add that query
 **before** the original launch link's `#` fragment. If you lost the link, restart
 that Webapp to print a new one. Restarting invalidates old links. Authenticated
 remote Webapps continue to use OAuth cookies and single-use WebSocket tickets.
-Automatic local browser launch passes an owner-only redirect file, not the
-secret URL, to the OS browser launcher.
+Automatic local browser launch never hands the secret URL to the OS browser
+launcher (whose command line other local users may read). It opens a one-use
+launch URL instead, valid for 60 seconds, which the browser exchanges for the
+session; on Linux only a connection owned by your own OS user can redeem it. A
+second use shows instructions instead of granting access.
 
 | Option | Default | Description |
 |--------|---------|-------------|

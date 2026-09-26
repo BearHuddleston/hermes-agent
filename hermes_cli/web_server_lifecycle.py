@@ -216,28 +216,6 @@ def _write_dashboard_ready_file(actual_port: int) -> None:
         _log.warning("Failed to write dashboard ready file %r: %s", target, exc)
 
 
-def _private_browser_launch_file(url: str) -> str:
-    """Keep the credential out of browser/xdg-open argv; the file is owner-only."""
-    import atexit
-    import html
-    import tempfile
-    from hermes_constants import get_scratch_dir
-
-    # NamedTemporaryFile creates with 0600 (and Windows inherits the user's
-    # private profile ACL). Retain until exit: browser dispatch is asynchronous.
-    with tempfile.NamedTemporaryFile(
-        mode="w", encoding="utf-8", suffix=".html", prefix="webapp-launch-",
-        dir=get_scratch_dir(), delete=False,
-    ) as stream:
-        stream.write(
-            '<!doctype html><meta name="referrer" content="no-referrer">'
-            f'<meta http-equiv="refresh" content="0;url={html.escape(url, quote=True)}">'
-        )
-    path = Path(stream.name)
-    atexit.register(path.unlink, missing_ok=True)
-    return path.as_uri()
-
-
 def _maybe_open_browser(host: str, actual_port: int, open_browser: bool, initial_profile: str) -> None:
     """Open the dashboard URL in the user's browser if appropriate.
 
@@ -246,14 +224,14 @@ def _maybe_open_browser(host: str, actual_port: int, open_browser: bool, initial
     """
     from hermes_cli.web_server import app
     from hermes_cli.web_server_surface import private_launch
-    from urllib.parse import quote
+    from urllib.parse import quote, urlencode
 
     display_host = host if host not in ("0.0.0.0", "::") else "127.0.0.1"
     if ":" in display_host:
         display_host = f"[{display_host}]"
-    _open_url = f"http://{display_host}:{actual_port}"
-    if initial_profile:
-        _open_url += f"/?profile={quote(initial_profile, safe='')}"
+    origin = f"http://{display_host}:{actual_port}"
+    query = f"?profile={quote(initial_profile, safe='')}" if initial_profile else ""
+    _open_url = f"{origin}/{query}" if query else origin
     private = private_launch(app.state)
     if private:
         from hermes_cli.web_server import _SESSION_TOKEN
@@ -279,9 +257,15 @@ def _maybe_open_browser(host: str, actual_port: int, open_browser: bool, initial
     def _open():
         try:
             time.sleep(1.0)
-            # Browser launchers put their URL in argv (visible to other OS
-            # users). Pass only an owner-readable redirect FILE, never the token.
-            target = _private_browser_launch_file(_open_url) if private else _open_url
+            target = _open_url
+            if private:
+                # Browser launchers put their URL in argv (world-readable on Linux), so it
+                # carries a one-use launch ticket, never the token. A URL rather than a local
+                # redirect file, which snap/Flatpak browsers cannot read under hidden dirs.
+                from hermes_cli.web_routers.webapp import mint_launch_ticket
+
+                fragment = urlencode({"ticket": mint_launch_ticket(app.state), "query": query})
+                target = f"{origin}/webapp/launch#{fragment}"
             webbrowser.open(target)
         except Exception:
             pass
