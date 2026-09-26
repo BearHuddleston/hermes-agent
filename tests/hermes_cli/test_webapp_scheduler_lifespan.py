@@ -23,7 +23,7 @@ def test_lifespan_owns_scheduler_without_adopting_native_gateway(
     monkeypatch, tmp_path, surface, desktop, owns_scheduler
 ):
     from cron import scheduler_provider
-    from hermes_cli import gateway, web_server
+    from hermes_cli import gateway, web_server, web_server_lifespan
     from hermes_cli.local_runtime import bootstrap
     from tui_gateway import methods_groups
 
@@ -73,7 +73,7 @@ def test_lifespan_owns_scheduler_without_adopting_native_gateway(
         app.state.ui_surface = surface
 
     async def exercise():
-        async with web_server._lifespan(app):
+        async with web_server_lifespan._lifespan(app):
             if owns_scheduler:
                 assert started.wait(2), "standalone surface never started its scheduler"
                 assert len(starts) == 1
