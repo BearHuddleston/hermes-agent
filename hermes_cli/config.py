@@ -578,11 +578,12 @@ def _hermes_home_identity(
         value = home.stat()
         incarnation = None
         if named_profile:
-            from hermes_cli.profile_incarnation import read_profile_incarnation
+            from hermes_cli.profile_incarnation import PROFILE_INCARNATION_FILENAME, read_incarnation_marker
 
-            incarnation = read_profile_incarnation(home)
-            # Legacy homes remain usable, but cannot prove a reusable cache identity.
-            # Do not backfill here: config reads must not acquire the lifecycle lock.
+            # Callers already derived named_profile, so read the marker directly (this runs on
+            # every load). A tokenless home cannot prove a reusable cache identity until
+            # initialize_home adopts a marker, which it does whenever the lifecycle lease is free.
+            incarnation = read_incarnation_marker(home / PROFILE_INCARNATION_FILENAME)
             if incarnation is None:
                 return None
     except OSError:

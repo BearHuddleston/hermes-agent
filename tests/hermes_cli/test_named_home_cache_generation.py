@@ -3,6 +3,7 @@
 import os
 import shutil
 import stat
+import time
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -73,8 +74,6 @@ def test_recreated_named_home_initializes_when_stat_identity_is_reused(
     assert soul.read_text(encoding="utf-8") == "Replacement personality."
     if os.name == "posix":
         assert stat.S_IMODE(home.stat().st_mode) == 0o700
-    if not with_marker:
-        assert str(home) not in config._HERMES_HOME_ENSURED
 
 
 @pytest.mark.parametrize("initially_marked", (False, True), ids=("legacy", "marked"))
@@ -122,26 +121,59 @@ def test_stable_marked_home_keeps_fast_path_without_lifecycle_lock(named_home, m
     config.ensure_hermes_home()
 
 
-def test_legacy_home_initialization_does_not_backfill_or_lock(named_home, monkeypatch):
-    from hermes_cli import profile_incarnation
+def test_legacy_home_initialization_never_waits_for_a_busy_lease(
+    named_home, monkeypatch, busy_profile_lease,
+):
+    from hermes_cli import profile_incarnation, profile_lifecycle
 
     def unexpected_lease(*args, **kwargs):
-        pytest.fail("Config initialization must not take the lifecycle lock")
+        pytest.fail("Config initialization must not wait on a busy lifecycle lease")
 
     monkeypatch.setattr(profile_incarnation, "_profile_mutation_lease", unexpected_lease)
+    # A regression that waits gives up after this, not the production 120 s.
+    monkeypatch.setattr(profile_lifecycle, "_PROFILE_LIFECYCLE_LOCK_TIMEOUT_SECONDS", 5.0)
+    busy_profile_lease(named_home)
+    started = time.monotonic()
     config.ensure_hermes_home()
     config.ensure_hermes_home()
+    waited = time.monotonic() - started
 
+    assert waited < 2, f"config initialization waited {waited:.1f}s on the lifecycle lease"
     assert all((named_home / subdir).is_dir() for subdir in config._HERMES_HOME_SUBDIRS)
     assert not (named_home / profile_incarnation.PROFILE_INCARNATION_FILENAME).exists()
 
 
+def test_legacy_named_home_initializes_once_yet_retirement_still_raises(named_home, monkeypatch):
+    """Regression: a marker-less named home re-ran initialize_home on every load_config()."""
+    from hermes_cli import config_home
+    from hermes_cli.profile_lifecycle import mark_profile_deleting
+
+    (named_home / "config.yaml").write_text("model:\n  provider: auto\n", encoding="utf-8")
+    initialized = []
+    initialize = config_home.initialize_home
+
+    def counted(*args):
+        initialized.append(args[0])
+        initialize(*args)
+
+    monkeypatch.setattr(config_home, "initialize_home", counted)
+    for _ in range(5):
+        config.load_config()
+    assert initialized == [named_home]
+
+    mark_profile_deleting(named_home)
+    with pytest.raises(FileNotFoundError, match="missing or being deleted"):
+        config.load_config()
+
+
 @pytest.mark.platforms("posix")
-def test_warm_legacy_homes_revalidate_without_directory_mutations(named_home, monkeypatch):
+def test_warm_legacy_homes_revalidate_without_directory_mutations(
+    named_home, monkeypatch, busy_profile_lease,
+):
     from hermes_cli import profile_incarnation
 
     def unexpected_lease(*args, **kwargs):
-        pytest.fail("Config initialization must not take the lifecycle lock")
+        pytest.fail("Config initialization must not wait on a busy lifecycle lease")
 
     monkeypatch.setattr(profile_incarnation, "_profile_mutation_lease", unexpected_lease)
     monkeypatch.setenv("HERMES_MANAGED", "false")
@@ -151,6 +183,8 @@ def test_warm_legacy_homes_revalidate_without_directory_mutations(named_home, mo
     sibling = named_home.with_name("sibling")
     sibling.mkdir()
     homes = (named_home, sibling)
+    # A busy lease keeps both homes tokenless: the revalidation path is what's under test.
+    busy_profile_lease(*homes)
 
     def ensure(home):
         token = set_hermes_home_override(home)

@@ -72,7 +72,7 @@ def test_initialization_preserves_external_directory_modes(tmp_path, monkeypatch
 @pytest.mark.parametrize("with_marker", (False, True), ids=("legacy", "marked"))
 @pytest.mark.parametrize("linked", ("home", "root"))
 def test_named_home_link_modes_survive_resolution_and_recreation(
-    tmp_path, monkeypatch, with_marker, linked,
+    tmp_path, monkeypatch, with_marker, linked, busy_profile_lease,
 ):
     from hermes_cli import profile_incarnation
     from hermes_constants import profile_deletion_marker_path
@@ -92,9 +92,11 @@ def test_named_home_link_modes_survive_resolution_and_recreation(
     assert profile_deletion_marker_path(home.resolve()) is not None
 
     def unexpected_lease(*args, **kwargs):
-        pytest.fail("Config initialization must not take the lifecycle lock")
+        pytest.fail("Config initialization must not wait on a busy lifecycle lease")
 
     monkeypatch.setattr(profile_incarnation, "_profile_mutation_lease", unexpected_lease)
+    # A busy lease keeps a legacy home tokenless, so every spelling revalidates.
+    busy_profile_lease(home, home.resolve())
     owned_paths = (target, target / "logs", target / "logs" / "curator")
     for path in owned_paths:
         path.mkdir(exist_ok=True)

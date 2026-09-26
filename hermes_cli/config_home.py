@@ -1,6 +1,7 @@
 """Directory initialization and storage diagnostics for the active Hermes home."""
 
 import os
+from contextlib import suppress
 from pathlib import Path
 
 
@@ -74,6 +75,20 @@ def _ensure_directory(path: Path, *, create: bool, secure: bool, home: Path) -> 
         ) from exc
 
 
+def _adopt_profile_incarnation(home: Path) -> None:
+    """Give a pre-marker named home the generation marker its memo identity needs.
+
+    Only TRIES the lifecycle lease: config loads run under gateway locks that
+    lease holders take next, so a busy lease leaves this pass unmemoized (the
+    next load retries) instead of waiting. Tombstoned homes are never backfilled.
+    """
+    from hermes_cli.profile_incarnation import ensure_profile_incarnation
+    from hermes_cli.profile_lifecycle import profile_lifecycle_lease
+
+    with suppress(OSError, RuntimeError), profile_lifecycle_lease(home, timeout=0):
+        ensure_profile_incarnation(home)
+
+
 def initialize_home(
     home: Path, subdirs: tuple[str, ...], ensured: dict[str, tuple[int, int, str | None]],
 ) -> None:
@@ -83,6 +98,8 @@ def initialize_home(
     named_profile = profile_deletion_marker_path(home) is not None
     if named_profile and not home.is_dir():
         raise FileNotFoundError(f"Named profile home disappeared during initialization: {home}")
+    if named_profile and _hermes_home_identity(home, named_profile=True) is None:
+        _adopt_profile_incarnation(home)
     aliases = (home, home.resolve())
     initial_identities = {
         alias: _hermes_home_identity(alias, named_profile=True)
