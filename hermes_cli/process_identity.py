@@ -364,6 +364,30 @@ def ledger_entries(
     ]
 
 
+def reapable_ledger_identities() -> dict[int, float]:
+    """``{pid: create_time}`` of this install's live ledger entries with a reapable purpose.
+
+    Only positive identity counts: an entry without a recorded create time cannot rule out PID
+    reuse, so it is left out. ``{}`` when the ledger can't be read, so a caller acts on nothing
+    rather than guessing from argv.
+    """
+    identities: dict[int, float] = {}
+    try:
+        for entry in ledger_entries():
+            pid, created = entry.get("pid"), entry.get("create_time")
+            if (
+                entry.get("purpose") in REAPABLE_PURPOSES
+                and isinstance(pid, int)
+                and pid > 0
+                and isinstance(created, (int, float))
+                and not isinstance(created, bool)
+            ):
+                identities[pid] = float(created)
+    except Exception:
+        return {}
+    return identities
+
+
 def spawner_is_dead(entry: dict) -> Optional[bool]:
     """Is the recorded spawner of this entry provably gone? ``None`` when unrecorded/unprovable."""
     spawner_pid = entry.get("spawner_pid")

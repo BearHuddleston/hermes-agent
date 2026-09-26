@@ -1544,23 +1544,9 @@ def _profile_bound_backend_pids(canon: str, profile_dir: Path) -> list[tuple[int
         import psutil  # type: ignore
     except Exception:
         return []
-    try:
-        from hermes_cli.process_identity import REAPABLE_PURPOSES, ledger_entries
+    from hermes_cli.process_identity import reapable_ledger_identities
 
-        identified: dict[int, float] = {}
-        for entry in ledger_entries():
-            pid = entry.get("pid")
-            created = entry.get("create_time")
-            if (
-                entry.get("purpose") in REAPABLE_PURPOSES
-                and isinstance(pid, int)
-                and pid > 0
-                and isinstance(created, (int, float))
-                and not isinstance(created, bool)
-            ):
-                identified[pid] = float(created)
-    except Exception:
-        return []
+    identified = reapable_ledger_identities()
     if not identified:
         return []
 
