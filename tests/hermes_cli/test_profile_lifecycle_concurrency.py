@@ -125,3 +125,48 @@ def test_waiter_deadlines_and_busy_error_on_macos(profile_pair, monkeypatch):
 @pytest.mark.platforms("windows")
 def test_waiter_deadlines_and_busy_error_on_windows(profile_pair, monkeypatch):
     _assert_waiter_deadlines_and_busy_error(profile_pair, monkeypatch)
+
+
+def test_clone_copy_never_queues_source_readers_nor_publishes_a_replaced_source(tmp_path, monkeypatch):
+    """A --clone-all can copy GBs (workspace/, home/, browser data); the source's cold
+    SessionDB opens (roster polls, ``hermes -p work sessions list``, agent builds) must not wait
+    on it, and a source deleted and recreated mid-copy must still never be published as a clone."""
+    home = tmp_path / ".hermes"
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setattr(profiles, "_cleanup_gateway_service", lambda *_: None)
+    work = profiles.create_profile("work", no_alias=True, no_skills=True)
+    with SessionDB(db_path=work / "state.db") as db:
+        db.create_session("work-session", "test")
+    # A reader queued behind the copy now fails in 2s instead of 120s.
+    monkeypatch.setattr(profile_lifecycle, "_PROFILE_LIFECYCLE_LOCK_TIMEOUT_SECONDS", 2)
+
+    copied, finish_copy = threading.Event(), threading.Event()
+    real_copy = profiles._copytree_keep_junctions
+
+    def paused_copy(src, dst, ignore, dirs_exist_ok=False):
+        real_copy(src, dst, ignore, dirs_exist_ok)
+        if Path(src) == work:
+            copied.set()
+            if not finish_copy.wait(30):
+                raise TimeoutError("test did not release the paused copy")
+
+    monkeypatch.setattr(profiles, "_copytree_keep_junctions", paused_copy)
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        clone = pool.submit(profiles.create_profile, "copy", clone_from="work", clone_all=True, no_alias=True)
+        try:
+            assert copied.wait(10)
+            for read_only in (True, False):
+                with SessionDB(db_path=work / "state.db", read_only=read_only) as db:
+                    assert db.get_session("work-session") is not None
+            profiles.delete_profile("work", yes=True)
+            profiles.create_profile("work", no_alias=True, no_skills=True)
+        finally:
+            finish_copy.set()
+        with pytest.raises(FileNotFoundError, match="while it was being cloned"):
+            clone.result(timeout=30)
+
+    target = home / "profiles" / "copy"
+    assert not target.exists()
+    assert profile_lifecycle.profile_home_is_tombstoned(target) is False
+    assert profiles.profile_exists("work")

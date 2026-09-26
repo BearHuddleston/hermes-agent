@@ -127,10 +127,13 @@ def profile_lifecycle_lease(
 ) -> Iterator[None]:
     """Exclude mutation of these names; default/custom/staging homes stay lock-free.
 
-    Acquire all clone/rename homes together in sorted order, then gateway
+    Acquire all rename homes together in sorted order, then gateway
     session/resource locks. Re-entry for already held homes is allowed; adding
     a lower-ordered name is rejected instead of deadlocking. One deadline covers
     the entire acquisition, including contention with threads in this process.
+    Every cold SessionDB open takes its name's lease, so never hold one across
+    unbounded work: a clone leases only its target and pins the source by
+    incarnation, re-checked before publication.
     """
     paths = [path for home in (profile_home, *other_homes)
              if (path := _profile_lock_path(home)) is not None]

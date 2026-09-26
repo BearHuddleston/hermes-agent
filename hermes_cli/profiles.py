@@ -18,7 +18,7 @@ from typing import Callable, Dict, List, Optional, Tuple
 
 from hermes_cli.archive_safe import archive_root_dirs, make_targz, normalize_archive_parts, safe_extract_targz
 from hermes_cli.profile_incarnation import (
-    PROFILE_INCARNATION_FILENAME, ensure_profile_incarnation, profile_incarnation_lease,
+    PROFILE_INCARNATION_FILENAME, ensure_profile_incarnation, profile_incarnation_matches,
     read_profile_deletion_incarnation, read_profile_incarnation, write_fresh_profile_incarnation)
 from hermes_cli.profile_lifecycle import (
     begin_profile_retirement,
@@ -37,7 +37,7 @@ from hermes_cli.home_data_layout import PM_RUNTIME_ROOT_DIRS
 from hermes_cli.process_identity import WEB_SERVER_PURPOSES
 from hermes_constants import (
     LOCAL_RUNTIME_ROOT_DIRS, PROFILE_ID_RE, named_profile_has_identity,
-    named_profile_is_deleted, named_profile_is_live,
+    named_profile_home_is_unavailable, named_profile_is_deleted, named_profile_is_live,
 )
 
 logger = logging.getLogger(__name__)
@@ -1399,6 +1399,23 @@ def _finish_profile_layout(profile_dir: Path, *, no_skills: bool, clone_all: boo
         write_profile_meta(profile_dir, description=description.strip(), description_auto=False)
 
 
+def _assert_clone_source_unchanged(source_dir: Path, incarnation: str) -> None:
+    """Refuse to publish a clone whose copy overlapped a delete, rename or replacement of its source.
+
+    Lock-free: only the target name is leased here (taking the source now could invert the name
+    order). Delete and rename tombstone the source before removing or moving anything, and only a
+    rollback that removed nothing or a published generation lifts it; so checking the tombstone
+    first and the incarnation second proves nothing of ``incarnation`` went away mid-copy.
+    """
+    if named_profile_home_is_unavailable(source_dir) or not profile_incarnation_matches(
+        source_dir, incarnation,
+    ):
+        raise FileNotFoundError(
+            f"Source profile '{source_dir.name}' was deleted, renamed or replaced while it was "
+            "being cloned; retry the clone."
+        )
+
+
 def create_profile(
     name: str,
     clone_from: Optional[str] = None,
@@ -1417,23 +1434,27 @@ def create_profile(
     profile_dir = get_profile_dir(canon)
     cloning = clone_from is not None or clone_all or clone_config
     source_dir = _resolve_clone_source(clone_from) if cloning else None
-    homes = (profile_dir, source_dir) if source_dir is not None else (profile_dir,)
-    with profile_lifecycle_lease(*homes):
-        # Validate the source after acquiring BOTH names: a clone must never
-        # read through a concurrent source retirement or replacement.
-        with contextlib.ExitStack() as source_lease:
-            if source_dir is not None:
-                source_lease.enter_context(profile_incarnation_lease(source_dir))
-            _prepare_profile_creation_target(canon, profile_dir)
+    # Pin the source GENERATION (a short lease; legacy homes are backfilled), never hold its name
+    # across the copy: every cold SessionDB open of the source takes that lease, and a --clone-all
+    # copy is unbounded. None = default/custom source, which is not a reusable lifecycle object.
+    source_incarnation = ensure_profile_incarnation(source_dir) if source_dir is not None else None
+    with profile_lifecycle_lease(profile_dir):
+        _prepare_profile_creation_target(canon, profile_dir)
 
-            def initialize(staging_dir: Path) -> None:
+        def initialize(staging_dir: Path) -> None:
+            try:
                 _initialize_profile(
                     canon, staging_dir, source_dir, clone_from=clone_from, clone_all=clone_all,
                     clone_config=clone_config, no_skills=no_skills, description=description,
                     clone_channels=clone_channels, sync_imports=sync_imports,
                 )
+            finally:
+                # Also on failure: a copy racing the source's rmtree fails with one
+                # shutil.Error entry per vanished file; report the cause instead.
+                if source_incarnation is not None:
+                    _assert_clone_source_unchanged(source_dir, source_incarnation)
 
-            create_profile_generation(canon, profile_dir, _get_profiles_root(), initialize)
+        create_profile_generation(canon, profile_dir, _get_profiles_root(), initialize)
         _maybe_register_gateway_service(canon)
         # A running multiplexer enumerates profiles/ at boot: ask it to serve this one now (it also
         # rescans periodically, so a missed signal only delays serving).
