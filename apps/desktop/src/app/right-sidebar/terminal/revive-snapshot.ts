@@ -47,7 +47,7 @@ function readEscapeSequence(data: string, index: number) {
   return data.slice(index, Math.min(index + 2, data.length))
 }
 
-export function stripEscapeSequences(data: string) {
+function stripEscapeSequences(data: string) {
   let index = 0
   let text = ''
 
@@ -68,7 +68,7 @@ export function stripEscapeSequences(data: string) {
 // Keep only the ANSI escape sequences from a chunk, dropping printable text. Lets
 // us apply control codes (e.g. a clear-screen) while discarding boot spacers and
 // zsh's reverse-video "%" partial-line marker.
-export function keepEscapeSequences(data: string) {
+function keepEscapeSequences(data: string) {
   let index = 0
   let out = ''
 
@@ -90,7 +90,7 @@ export function keepEscapeSequences(data: string) {
   return out
 }
 
-export function stripInitialPromptGap(data: string) {
+function stripInitialPromptGap(data: string) {
   let index = 0
   let prefix = ''
 
@@ -108,6 +108,33 @@ export function stripInitialPromptGap(data: string) {
   }
 
   return prefix
+}
+
+// While armed, strip leading blank rows so the first prompt lands at the very
+// top (no starship `add_newline` gap). Returns the text to write, or null to
+// write nothing. This only filters renderer output: never inject Ctrl-L or
+// other cleanup keystrokes into the user's shell.
+export function createBootGapFilter(): (data: string) => string | null {
+  let stripLeading = true
+
+  return data => {
+    if (!stripLeading) {
+      return data
+    }
+
+    const next = stripInitialPromptGap(data)
+    const visible = stripEscapeSequences(next).replace(/[\s%]/g, '')
+
+    if (!visible) {
+      // Spacer / lone clear-screen / zsh `%` marker: apply control codes but
+      // drop the blank text and stay armed so the prompt still lands at top.
+      return keepEscapeSequences(next) || null
+    }
+
+    stripLeading = false
+
+    return next
+  }
 }
 
 // A row's content with ANSI escapes and all whitespace stripped — '' for a
