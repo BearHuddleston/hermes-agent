@@ -4868,6 +4868,31 @@ def test_host_terminal_resolver_uses_real_macos_shell(tmp_path, monkeypatch):
     assert shell_name == "sh"
 
 
+@pytest.mark.platforms("posix")
+def test_host_terminal_relative_shell_override_never_reaches_argv(tmp_path, monkeypatch):
+    """The PTY chdirs into the workspace before exec, so the shell it runs is the one checked only if argv[0] is absolute."""
+    from hermes_cli import web_host_terminal
+    from hermes_constants import get_hermes_home
+
+    server_cwd = tmp_path / "server"
+    workspace = tmp_path / "workspace"
+    (server_cwd / "bin").mkdir(parents=True)
+    workspace.mkdir()
+    planted = server_cwd / "bin" / "sh"
+    planted.write_text("#!/bin/sh\n", encoding="utf-8")
+    planted.chmod(0o755)
+    monkeypatch.chdir(server_cwd)
+    monkeypatch.setenv("HERMES_DESKTOP_SHELL", "bin/sh")
+
+    argv, cwd, _env, _shell_name = web_host_terminal.resolve_argv(
+        home=get_hermes_home(), requested_cwd=str(workspace)
+    )
+
+    assert cwd == str(workspace.resolve())
+    assert os.path.isabs(argv[0])
+    assert Path(argv[0]).resolve() != planted.resolve()
+
+
 @pytest.mark.platforms("windows")
 def test_host_terminal_resolver_uses_real_windows_shell(tmp_path, monkeypatch):
     monkeypatch.delenv("HERMES_DESKTOP_SHELL", raising=False)

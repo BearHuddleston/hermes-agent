@@ -425,12 +425,6 @@
     "kind": "bare_which"
   },
   {
-    "path": "hermes_cli/web_host_terminal.py",
-    "symbol": "shell_command",
-    "kind": "bare_which",
-    "reason": "Interactive shells are user-selected executables, not managed runtimes or catalogued applications; preserve literal PATH lookup after validating explicit paths."
-  },
-  {
     "path": "hermes_cli/web_routers/audio.py",
     "symbol": "_ffmpeg_s16le_mono",
     "kind": "bare_which"

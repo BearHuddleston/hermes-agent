@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import os
-import shutil
 from pathlib import Path
 from typing import Optional
 
@@ -23,19 +22,16 @@ def request_allowed() -> bool:
 
 
 def shell_command(candidate: str) -> Optional[str]:
-    """Return an executable shell path for ``candidate``, or None."""
+    """Return an executable shell path for ``candidate``, or None.
+
+    A relative path is refused: the PTY chdirs into the workspace before exec,
+    so it would name a different file than the one checked here.
+    """
+    from hermes_platform.resolver import locate_command
+
     raw = (candidate or "").strip()
-    if not raw:
-        return None
-    path = Path(raw).expanduser()
-    try:
-        if path.is_absolute() and path.is_file() and (
-            os.name == "nt" or os.access(path, os.X_OK)
-        ):
-            return str(path)
-    except OSError:
-        pass
-    return shutil.which(raw)
+    found = locate_command(raw).command if raw else ()
+    return found[0] if found else None
 
 
 def shell_spec() -> tuple[list[str], str]:
