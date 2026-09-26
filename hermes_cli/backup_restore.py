@@ -18,6 +18,7 @@ import zipfile
 from pathlib import Path
 from typing import List, Optional, Tuple
 
+from hermes_state_holders import read_only_db_uri
 from utils import (
     _preserve_file_mode, _preserve_file_owner, _restore_file_mode, _restore_file_owner, atomic_replace,
 )
@@ -96,8 +97,19 @@ def _safe_restore_db(src: Path, dst: Path) -> bool:
     process or in-process connection holds the file: replacing the inode
     under a live holder is the #90950 split-brain, so that branch fails
     closed (returns ``False``) and the caller reports the file as skipped.
+    It also returns ``False``, without touching *dst*, when *src* fails the
+    SQLite integrity check.
     """
+    from hermes_cli.backup import verify_sqlite_integrity
     from hermes_cli.sqlite_safe_read import connect_tracked
+
+    # backup() copies pages without validating their contents; its fallback
+    # copies bytes even when SQLite rejected the source. Neither may touch the
+    # destination until the snapshot passes the existing bounded integrity policy.
+    source_check = verify_sqlite_integrity(src)
+    if not source_check["valid"]:
+        logger.error("Refusing SQLite restore from %s: %s", src, source_check["message"])
+        return False
 
     dst_conn: Optional[sqlite3.Connection] = None
     try:
@@ -108,7 +120,7 @@ def _safe_restore_db(src: Path, dst: Path) -> bool:
             dst_conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
         except Exception:
             pass
-        src_conn = sqlite3.connect(f"file:{src}?mode=ro", uri=True)
+        src_conn = sqlite3.connect(read_only_db_uri(src), uri=True)
         try:
             src_conn.backup(dst_conn)
         finally:
@@ -384,7 +396,7 @@ def _count_session_rows(path: Path) -> Optional[Tuple[int, int]]:
     if not path.is_file():
         return None
     try:
-        conn = connect_tracked(f"file:{path}?mode=ro", uri=True)
+        conn = connect_tracked(read_only_db_uri(path), uri=True)
     except sqlite3.Error:
         return None
     try:
@@ -455,6 +467,15 @@ def _import_db_member(
             dst.flush()
             os.fsync(dst.fileno())
         if not _safe_restore_db(Path(tmp_name), target):
+            from hermes_cli.backup import verify_sqlite_integrity
+
+            # Re-check only on failure so the user gets the real cause; the
+            # detailed integrity message was already logged by _safe_restore_db.
+            if not verify_sqlite_integrity(Path(tmp_name))["valid"]:
+                raise OSError(
+                    "the archived database failed its integrity check; the existing "
+                    "database was left untouched."
+                )
             raise OSError(
                 "live-safe restore refused or failed; the existing database was "
                 "left untouched. Stop the gateway/dashboard processes holding it "
