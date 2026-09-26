@@ -7,7 +7,6 @@ import type { IMarker } from '@xterm/xterm'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { CSSProperties } from 'react'
 
-import { writeClipboardText } from '@/components/ui/copy-button'
 import { markRightPanePerf } from '@/debug/right-pane-events'
 import { triggerHaptic } from '@/lib/haptics'
 import { isComposerChord } from '@/lib/keybinds/chords'
@@ -18,34 +17,28 @@ import { $terminalInjection } from '../store'
 
 import { observeActiveTerminalResize } from './active-resize'
 import { makeTerminalReader, registerTerminalReader } from './buffer'
-import { mirrorSelection, terminalClipboardIntent } from './clipboard'
+import { mirrorSelection } from './clipboard'
+import { trackTerminalCwd } from './cwd-tracking'
 import { terminalLinkHandler, terminalWebLinksAddon } from './links'
 import {
-  isMacPlatform,
-  resolveSurfaceColor,
-  terminalSelectionAnchor,
-  terminalSelectionLabel,
-  terminalTheme
-} from './selection'
-import { registerTerminalContextMenu } from './terminal-context-menu'
+  keepEscapeSequences,
+  mergeReviveSnapshot,
+  PERSISTENT_SESSION_SCROLLBACK,
+  resolveLiveSnapshotWindow,
+  stripEscapeSequences,
+  stripInitialPromptGap
+} from './revive-snapshot'
+import { resolveSurfaceColor, terminalSelectionAnchor, terminalSelectionLabel, terminalTheme } from './selection'
+import { bindTerminalDrop } from './terminal-drop'
 import { prepareTerminalFontFamily } from './terminal-font'
-import { $terminals, markTerminalPersistent, removeExitedTerminal, updateTerminalRestoreCwd, updateTerminalReviveBuffer } from './terminals'
+import { bindTerminalActivity, bindTerminalClipboard } from './terminal-input-bindings'
+import { $terminals, markTerminalPersistent, removeExitedTerminal, updateTerminalReviveBuffer } from './terminals'
 import { useTerminalFontController } from './use-terminal-font'
-
-// How many scrollback lines to serialize for relaunch restore. Mirrors VS Code's
-// terminal.integrated.persistentSessionScrollback default; the store caps the
-// resulting string so a long line-wrapped buffer can't blow the storage budget.
-const PERSISTENT_SESSION_SCROLLBACK = 200
 
 // Leading-edge throttle window for capturing history. The first output after an
 // idle gap persists almost immediately (so `cmd; quit` is on disk before the
 // renderer tears down), then at most once per window while output streams.
 const SNAPSHOT_THROTTLE_MS = 750
-
-// Minimum gap between main-side PTY cwd probes. The probe spawns lsof on macOS,
-// so keep it well throttled — cwd only changes on a `cd`, which the reporter
-// already reads off the next output snapshot anyway.
-const CWD_PROBE_THROTTLE_MS = 2000
 
 // Status line written when a persistent PTY stream ends, keyed by exit signal.
 const TERMINAL_EXIT_MESSAGES: Record<string, string> = {
@@ -87,216 +80,6 @@ function previewSelectionLabel(): string {
   return source.split(/[\\/]/).filter(Boolean).pop() || target?.label?.trim() || ''
 }
 
-const HERMES_PATHS_MIME = 'application/x-hermes-paths'
-
-function readEscapeSequence(data: string, index: number) {
-  if (data.charCodeAt(index) !== 0x1b || index + 1 >= data.length) {
-    return null
-  }
-
-  const kind = data[index + 1]
-
-  if (kind === '[') {
-    for (let i = index + 2; i < data.length; i += 1) {
-      const code = data.charCodeAt(i)
-
-      if (code >= 0x40 && code <= 0x7e) {
-        return data.slice(index, i + 1)
-      }
-    }
-  }
-
-  if (kind === ']') {
-    for (let i = index + 2; i < data.length; i += 1) {
-      if (data.charCodeAt(i) === 0x07) {
-        return data.slice(index, i + 1)
-      }
-
-      if (data.charCodeAt(i) === 0x1b && data[i + 1] === '\\') {
-        return data.slice(index, i + 2)
-      }
-    }
-  }
-
-  // Character-set and other short ESC forms are three bytes (e.g. ESC ( B).
-  // Treating only ESC+( as a sequence leaves the final selector ("B") as
-  // printable text, which disarms the initial prompt-gap stripper before it can
-  // eat the shell's leading newline.
-  if (['(', ')', '*', '+', '-', '.', '/'].includes(kind) && index + 2 < data.length) {
-    return data.slice(index, index + 3)
-  }
-
-  return data.slice(index, Math.min(index + 2, data.length))
-}
-
-function stripEscapeSequences(data: string) {
-  let index = 0
-  let text = ''
-
-  while (index < data.length) {
-    const sequence = readEscapeSequence(data, index)
-
-    if (sequence) {
-      index += sequence.length
-    } else {
-      text += data[index]
-      index += 1
-    }
-  }
-
-  return text
-}
-
-// Keep only the ANSI escape sequences from a chunk, dropping printable text. Lets
-// us apply control codes (e.g. a clear-screen) while discarding boot spacers and
-// zsh's reverse-video "%" partial-line marker.
-function keepEscapeSequences(data: string) {
-  let index = 0
-  let out = ''
-
-  while (index < data.length) {
-    if (data.charCodeAt(index) === 0x1b) {
-      const sequence = readEscapeSequence(data, index)
-
-      if (sequence) {
-        out += sequence
-        index += sequence.length
-
-        continue
-      }
-    }
-
-    index += 1
-  }
-
-  return out
-}
-
-function stripInitialPromptGap(data: string) {
-  let index = 0
-  let prefix = ''
-
-  while (index < data.length) {
-    const sequence = readEscapeSequence(data, index)
-
-    if (sequence) {
-      prefix += sequence
-      index += sequence.length
-    } else if (data[index] === '\r' || data[index] === '\n') {
-      index += 1
-    } else {
-      return prefix + data.slice(index)
-    }
-  }
-
-  return prefix
-}
-
-// A row's content with ANSI escapes and all whitespace stripped — '' for a
-// spacer / prompt-gap / zsh `%` marker row.
-const visibleText = (line: string) => stripEscapeSequences(line).replace(/[\s%]/g, '')
-
-const FISH_WELCOME = 'Welcometofish,thefriendlyinteractiveshell'
-const FISH_HELP = 'Typehelpforinstructionsonhowtousefish'
-
-const isFishShell = (shell: string) => shell.split(/[\\/]/).pop()?.toLowerCase() === 'fish'
-
-// This function receives only PTY output produced after the restore boundary,
-// so the leading greeting belongs to the fresh Fish process. Historical command
-// output is held separately and never enters this classifier.
-function stripLiveFishGreeting(lines: string[]): string[] {
-  if (visibleText(lines[0] ?? '') !== FISH_WELCOME || visibleText(lines[1] ?? '') !== FISH_HELP) {
-    return lines
-  }
-
-  return lines.slice(2)
-}
-
-// Trim the shell's trailing idle prompt from a serialized snapshot before it's
-// persisted. Without it, the saved buffer ends in the old prompt, so the next
-// launch replays it directly above the fresh shell's prompt ("double bar").
-//
-// An interactive shell always reprints its prompt after a command finishes, so
-// the tail of an idle buffer is the prompt, never real history. Two prompt
-// shapes exist:
-//   - Spaced/multi-line (starship add_newline, powerline): a blank line sits
-//     just above the prompt, so the short block after the last blank is dropped.
-//   - Single-line (default PowerShell `PS C:\..>`, bash `user@host:~$`): no blank
-//     separator, so the final line itself is the prompt and is dropped.
-// The fresh shell reprints the current prompt on boot either way, so only the
-// redundant idle prompt is removed — command output is preserved.
-export function cleanReviveSnapshot(serialized: string, shell = '', startsAtLiveBoundary = true): string {
-  const fish = isFishShell(shell)
-
-  const lines =
-    fish && startsAtLiveBoundary ? stripLiveFishGreeting(serialized.split(/\r?\n/)) : serialized.split(/\r?\n/)
-
-  while (lines.length && !visibleText(lines[lines.length - 1])) {
-    lines.pop()
-  }
-
-  if (lines.length === 0) {
-    return ''
-  }
-
-  if (fish) {
-    // The live boundary proves which greeting belongs to this new Fish process,
-    // but plain terminal rows cannot prove whether a prompt-looking tail is a
-    // prompt or command output. Preserve the tail rather than guessing away data.
-    return lines.join('\r\n')
-  }
-
-  const lastBlank = lines.findLastIndex(line => !visibleText(line))
-  const spacedPrompt = lastBlank >= 0 && lines.length - 1 - lastBlank <= 3
-
-  // Spaced prompt (starship/powerline): drop the block after the blank
-  // separator. Otherwise the last line is the single-line prompt itself.
-  lines.length = spacedPrompt ? lastBlank : lines.length - 1
-
-  return lines.join('\r\n')
-}
-
-// Keep restored history byte-for-byte and append only the cleaned output emitted
-// by the new PTY. This provenance boundary is what makes greeting/prompt cleanup
-// safe: legacy scrollback is never reclassified by its visible text.
-export function mergeReviveSnapshot(
-  restored: string,
-  live: string,
-  shell = '',
-  startsAtLiveBoundary = true
-): string {
-  const cleanedLive = cleanReviveSnapshot(live, shell, startsAtLiveBoundary)
-
-  if (!restored) {
-    return cleanedLive
-  }
-
-  if (!cleanedLive) {
-    return restored
-  }
-
-  return `${restored}\r\n${cleanedLive}`
-}
-
-export function resolveLiveSnapshotWindow(
-  markerLine: number,
-  end: number,
-  cursorLine: number,
-  maxRows = PERSISTENT_SESSION_SCROLLBACK,
-  markerRegistered = true
-): { keepRestored: boolean; start: number } | null {
-  // xterm reset paths can leave the marker object numerically valid after it was
-  // removed from `term.markers`, or restart the cursor above it. Only a currently
-  // registered marker at/before the cursor can still delimit live output.
-  if (!markerRegistered || markerLine < 0 || markerLine > end || markerLine > cursorLine) {
-    return null
-  }
-
-  const start = Math.max(markerLine, end - maxRows + 1)
-
-  return { keepRestored: start === markerLine, start }
-}
-
 interface UseTerminalSessionOptions {
   /** Renderer-side terminal id (the tab handle), used to key the agent reader. */
   id: string
@@ -313,137 +96,12 @@ interface UseTerminalSessionOptions {
   onShell?: (shell: string) => void
 }
 
-// Parse a working directory out of a cwd-reporting OSC payload. Covers OSC 7
-// (`file://host/path`, emitted by many bash/zsh integrations) and OSC 9;9
-// (`9;<path>`, ConEmu/Windows-Terminal style some PowerShell profiles emit).
-// Returns null for anything unrecognized so callers can ignore it.
-export function parseOscCwd(code: 7 | 9, payload: string): string | null {
-  if (code === 9) {
-    // OSC 9;9;<path> — the leading "9;" selects the cwd sub-command.
-    if (!payload.startsWith('9;')) {
-      return null
-    }
-
-    const raw = payload.slice(2).trim().replace(/^"|"$/g, '')
-
-    return raw || null
-  }
-
-  // OSC 7 — a file URI. Strip the scheme + authority and percent-decode.
-  const match = /^file:\/\/[^/]*(\/.*)$/.exec(payload.trim())
-
-  if (!match) {
-    return null
-  }
-
-  let raw = match[1]
-
-  try {
-    raw = decodeURIComponent(raw)
-  } catch {
-    // Keep the undecoded path if it isn't valid percent-encoding.
-  }
-
-  // Windows file URIs carry a leading slash before the drive (`/C:/Users`).
-  const windows = /^\/[A-Za-z]:[\\/]/.exec(raw)
-
-  return (windows ? raw.slice(1) : raw) || null
-}
-
 // Bind the palette to the live skin surface so the terminal blends with the app
 // (and the contrast clamp has a real background to work against).
 function withSurface(theme: ReturnType<typeof terminalTheme>) {
   const surface = resolveSurfaceColor(theme.background ?? '#ffffff')
 
   return { ...theme, background: surface, cursorAccent: surface }
-}
-
-function transferHasDropCandidates(t: DataTransfer): boolean {
-  if (t.types?.includes(HERMES_PATHS_MIME)) {
-    return true
-  }
-
-  if ((t.files?.length ?? 0) > 0) {
-    return true
-  }
-
-  for (let i = 0; i < (t.items?.length ?? 0); i += 1) {
-    if (t.items[i]?.kind === 'file') {
-      return true
-    }
-  }
-
-  return false
-}
-
-function collectDroppedPaths(t: DataTransfer): string[] {
-  const seen = new Set<string>()
-
-  const push = (value: unknown) => {
-    if (typeof value !== 'string') {
-      return
-    }
-
-    const path = value.trim()
-
-    if (path) {
-      seen.add(path)
-    }
-  }
-
-  try {
-    const raw = t.getData(HERMES_PATHS_MIME)
-
-    if (raw) {
-      for (const entry of JSON.parse(raw) as { path?: unknown }[]) {
-        push(entry?.path)
-      }
-    }
-  } catch {
-    // Malformed in-app drag payload — fall through to OS files.
-  }
-
-  const getPath = window.hermesDesktop?.getPathForFile
-
-  const addFile = (file: File | null) => {
-    if (!file || !getPath) {
-      return
-    }
-
-    try {
-      push(getPath(file))
-    } catch {
-      // File handle unavailable.
-    }
-  }
-
-  for (let i = 0; i < (t.files?.length ?? 0); i += 1) {
-    addFile(t.files.item(i))
-  }
-
-  for (let i = 0; i < (t.items?.length ?? 0); i += 1) {
-    const item = t.items[i]
-
-    if (item?.kind === 'file') {
-      addFile(item.getAsFile())
-    }
-  }
-
-  return [...seen]
-}
-
-function quotePathForShell(path: string, shellName: string): string {
-  const shell = shellName.toLowerCase()
-
-  if (shell.includes('powershell') || shell.includes('pwsh')) {
-    return `'${path.replace(/'/g, "''")}'`
-  }
-
-  if (shell.includes('cmd')) {
-    return `"${path.replace(/"/g, '""')}"`
-  }
-
-  return `'${path.replace(/'/g, "'\\''")}'`
 }
 
 export function useTerminalSession({
@@ -665,49 +323,14 @@ export function useTerminalSession({
 
     cleanup.push(() => liveStartMarker?.dispose())
 
-    // Track the shell's working directory so a reopened tab restarts where the
-    // user last `cd`'d. Two independent signals feed it: cwd-reporting OSC
-    // sequences (immediate, for shells configured to emit them) and a periodic
-    // PTY cwd probe on the main side (shell-agnostic on POSIX). The store
-    // updater de-dupes, so both feeding it is harmless.
-    const recordCwd = (next: string | null | undefined) => {
-      const value = (next ?? '').trim()
+    const cwdTracker = trackTerminalCwd(id, {
+      getSessionId: () => sessionIdRef.current,
+      lastObservedCwdRef,
+      term,
+      terminalApi
+    })
 
-      if (!value || value === lastObservedCwdRef.current) {
-        return
-      }
-
-      lastObservedCwdRef.current = value
-      updateTerminalRestoreCwd(id, value)
-    }
-
-    const cwdOscHandlers = ([7, 9] as const).map(code =>
-      term.parser.registerOscHandler(code, payload => {
-        recordCwd(parseOscCwd(code, payload))
-
-        return false // let the sequence propagate; we only observe it
-      })
-    )
-
-    cleanup.push(() => cwdOscHandlers.forEach(handler => handler.dispose()))
-
-    let cwdProbeAt = 0
-
-    const probeCwd = () => {
-      const sessionId = sessionIdRef.current
-
-      if (!sessionId || !terminalApi.cwd || Date.now() - cwdProbeAt < CWD_PROBE_THROTTLE_MS) {
-        return
-      }
-
-      cwdProbeAt = Date.now()
-      void terminalApi
-        .cwd(sessionId)
-        .then(recordCwd)
-        .catch(() => {
-          // Best-effort: no cwd probe on this platform (e.g. Windows).
-        })
-    }
+    cleanup.push(cwdTracker.dispose)
 
     // Capture the buffer on a leading-edge throttle and persist synchronously via
     // the store. No unload hook: by the time the user quits, a recent snapshot is
@@ -786,7 +409,7 @@ export function useTerminalSession({
       }
 
       // A user command may have `cd`'d; refresh the persisted cwd (throttled).
-      probeCwd()
+      cwdTracker.probe()
     }
 
     const scheduleSnapshot = () => {
@@ -814,45 +437,19 @@ export function useTerminalSession({
       }
     })
 
-    const onDragOver = (e: DragEvent) => {
-      if (!e.dataTransfer || !transferHasDropCandidates(e.dataTransfer)) {
-        return
-      }
-
-      e.preventDefault()
-      e.stopPropagation()
-      e.dataTransfer.dropEffect = 'copy'
-    }
-
-    const onDrop = (e: DragEvent) => {
-      const id = sessionIdRef.current
-
-      if (!id || !e.dataTransfer || !transferHasDropCandidates(e.dataTransfer)) {
-        return
-      }
-
-      e.preventDefault()
-      e.stopPropagation()
-      const paths = collectDroppedPaths(e.dataTransfer)
-
-      if (!paths.length) {
-        return
-      }
-
+    const markActivity = () => {
       hasSessionActivityRef.current = true
-      void terminalApi.write(id, `${paths.map(p => quotePathForShell(p, shellNameRef.current)).join(' ')} `)
-      term.focus()
-      triggerHaptic('selection')
     }
 
-    host.addEventListener('dragenter', onDragOver)
-    host.addEventListener('dragover', onDragOver)
-    host.addEventListener('drop', onDrop)
-    cleanup.push(() => {
-      host.removeEventListener('dragenter', onDragOver)
-      host.removeEventListener('dragover', onDragOver)
-      host.removeEventListener('drop', onDrop)
-    })
+    cleanup.push(
+      bindTerminalDrop(host, {
+        getSessionId: () => sessionIdRef.current,
+        getShellName: () => shellNameRef.current,
+        markActivity,
+        term,
+        terminalApi
+      })
+    )
 
     // While armed, strip leading blank rows so the first prompt lands at the
     // very top (no starship `add_newline` gap). Do this only on renderer output:
@@ -907,33 +504,7 @@ export function useTerminalSession({
 
     fitRef.current = fitAndResize
 
-    // `onData` also carries xterm-generated replies to DSR/CPR/DA queries during
-    // shell startup. Treat only real key events (plus explicit paste/drop/inject
-    // paths below) as user activity, or an untouched refresh re-saves boot rows.
-    const keyDisposable = term.onKey(() => {
-      hasSessionActivityRef.current = true
-    })
-
-    const markActivity = () => {
-      hasSessionActivityRef.current = true
-    }
-
-    const onPointerActivity = (event: PointerEvent) => {
-      if (event.button === 1 || term.modes.mouseTrackingMode !== 'none') {
-        hasSessionActivityRef.current = true
-      }
-    }
-
-    const onWheelActivity = () => {
-      if (term.modes.mouseTrackingMode !== 'none') {
-        hasSessionActivityRef.current = true
-      }
-    }
-
-    host.addEventListener('beforeinput', markActivity)
-    host.addEventListener('compositionstart', markActivity)
-    host.addEventListener('pointerdown', onPointerActivity)
-    host.addEventListener('wheel', onWheelActivity)
+    cleanup.push(bindTerminalActivity(term, host, markActivity))
 
     const dataDisposable = term.onData(data => {
       if (replayWrites) {return}
@@ -953,14 +524,7 @@ export function useTerminalSession({
       }
     })
 
-    cleanup.push(
-      () => keyDisposable.dispose(),
-      () => dataDisposable.dispose(),
-      () => host.removeEventListener('beforeinput', markActivity),
-      () => host.removeEventListener('compositionstart', markActivity),
-      () => host.removeEventListener('pointerdown', onPointerActivity),
-      () => host.removeEventListener('wheel', onWheelActivity)
-    )
+    cleanup.push(() => dataDisposable.dispose())
 
     const selectionDisposable = term.onSelectionChange(() => {
       const next = term.getSelection()
@@ -976,59 +540,7 @@ export function useTerminalSession({
 
     cleanup.push(() => selectionDisposable.dispose())
 
-    // The app context menu resolves right-clicks on this host through the
-    // registered handle: xterm's selection is not a DOM selection, so the
-    // DOM resolver would see nothing here.
-    cleanup.push(
-      registerTerminalContextMenu(host, {
-        getSelection: () => term.getSelection(),
-        paste: text => {
-          hasSessionActivityRef.current = true
-          term.focus()
-          term.paste(text)
-        },
-        selectAll: () => term.selectAll()
-      })
-    )
-
-    // Copy/paste chords. Returning false stops xterm from also sending the key
-    // to the PTY; every path that doesn't copy or paste returns true, so plain
-    // Ctrl+C with no selection still interrupts the running process.
-    term.attachCustomKeyEventHandler(event => {
-      const intent = terminalClipboardIntent(event, {
-        hasSelection: Boolean(term.getSelection()),
-        isMac: isMacPlatform()
-      })
-
-      if (!intent) {
-        return true
-      }
-
-      event.preventDefault()
-
-      if (intent === 'copy') {
-        const text = term.getSelection()
-        // Write through the main process: the renderer's clipboard API throws
-        // "Write permission denied" whenever the document isn't focused.
-        void writeClipboardText(text).catch(() => {
-          // Clipboard unavailable — the selection stays put so the user can retry.
-        })
-        term.clearSelection()
-        triggerHaptic('selection')
-
-        return false
-      }
-      void (async () => {
-        const text = (await window.hermesDesktop?.readClipboard?.()) ?? ''
-
-        if (text) {
-          hasSessionActivityRef.current = true
-          term.paste(text)
-        }
-      })()
-
-      return false
-    })
+    cleanup.push(bindTerminalClipboard(term, host, markActivity))
 
     let cleanupAttempt: (() => void) | null = null
 
