@@ -49,11 +49,17 @@ def _http_origin(value: str) -> tuple[str, str, int] | None:
 
 
 def cookie_origin_is_allowed(request: Request) -> bool:
-    """Cookie writes require exact scheme/host/port, not just SameSite.
+    """Cookie writes must come from the dashboard's own origin, not just its site.
 
-    Use the same public-URL authority as OAuth, otherwise the request's Host
-    and ASGI scheme (uvicorn applies *trusted* proxy headers). Never trust raw
-    forwarded headers here or reuse WS's opaque/non-HTTP Origin exemption.
+    ``SameSite=Lax`` keeps cross-site pages from sending the session cookies but
+    still admits same-site siblings (another port or subdomain). The browser's
+    ``Sec-Fetch-Site`` verdict decides when present: pages cannot set it, and the
+    browser computes it against the URL it actually addressed, so it stays right
+    behind a TLS-terminating or Host-rewriting proxy where this server's view of
+    its own URL differs. Only a browser without Fetch Metadata falls back to
+    comparing Origin with the OAuth public-URL authority, otherwise the request's
+    Host and ASGI scheme (uvicorn applies *trusted* proxy headers). Never trust
+    raw forwarded headers here or reuse WS's opaque/non-HTTP Origin exemption.
     """
     from hermes_cli.dashboard_auth.prefix import resolve_public_url
     from hermes_cli.web_server import _is_accepted_host
@@ -68,6 +74,9 @@ def cookie_origin_is_allowed(request: Request) -> bool:
         getattr(request.app.state, "trusted_public_hosts", frozenset()),
     ):
         return False
+    fetch_sites = request.headers.getlist("sec-fetch-site")
+    if fetch_sites:
+        return fetch_sites == ["same-origin"]
     target = urlsplit(resolve_public_url() or str(request.url))
     return origin == _http_origin(f"{target.scheme}://{target.netloc}")
 

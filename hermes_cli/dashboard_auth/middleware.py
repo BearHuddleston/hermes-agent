@@ -185,7 +185,8 @@ async def gated_auth_middleware(
     provider_hint = read_session_provider(request)
     if (at or _rt) and request.method not in {"GET", "HEAD", "OPTIONS", "TRACE"} and not cookie_origin_is_allowed(request):
         return JSONResponse(status_code=403, content={
-            "detail": "Cookie-authenticated writes require a same-origin Origin header"})
+            "detail": "Cookie-authenticated writes must come from the dashboard's own origin. "
+                      "Behind a reverse proxy, set dashboard.public_url to the URL the browser uses."})
     if cookie_logout:
         return await call_next(request)
     if not at and not _rt:
