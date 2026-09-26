@@ -98,18 +98,11 @@ _tearing_down: Dict[Path, _TeardownBarrier] = {}
 _path_lifecycle_locks: Dict[Path, threading.Lock] = {}
 
 
-def _open_session_db(path: Path, expected_profile_incarnation: Optional[str] = None) -> "SessionDB":
+def _open_session_db(path: Path, expected_profile_incarnation: Optional[str]) -> "SessionDB":
     """Construct the SessionDB for *path* (call-time import avoids cycles; tests patch this)."""
     from hermes_state import SessionDB
 
-    if expected_profile_incarnation is None:
-        # Keep the historical ``SessionDB(db_path=...)`` call shape: tests and embedders stub
-        # ``hermes_state.SessionDB`` with one-argument fakes.
-        return SessionDB(db_path=path)
-    return SessionDB(
-        db_path=path,
-        expected_profile_incarnation=expected_profile_incarnation,
-    )
+    return SessionDB(db_path=path, expected_profile_incarnation=expected_profile_incarnation)
 
 
 def _assert_expected_profile_incarnation(
@@ -294,12 +287,7 @@ def _acquire_at_path(path: Path, expected_profile_incarnation: Optional[str]) ->
         # serialising other files, the lifecycle mutex keeps the open off a same-path close.
         try:
             with lifecycle_lock:
-                if expected_profile_incarnation is None:
-                    # Keep the historical one-argument seam for tests and embedders that
-                    # patch the opener; incarnation-scoped calls use the extended form.
-                    db = _open_session_db(path)
-                else:
-                    db = _open_session_db(path, expected_profile_incarnation)
+                db = _open_session_db(path, expected_profile_incarnation)
                 db._shared_registry_owned = True
                 identity = _stat_db_file_identity(path)
         except BaseException:
@@ -543,8 +531,8 @@ def release_or_close(db: "SessionDB") -> None:
 def close_shared_session_dbs() -> int:
     return close_all()
 
-def get_shared_session_db(db_path: Optional[Path] = None, expected_profile_incarnation: Optional[str] = None) -> "SessionDB":
-    return acquire(db_path, expected_profile_incarnation)
+def get_shared_session_db(db_path: Optional[Path] = None) -> "SessionDB":
+    return acquire(db_path)
 
 def release_shared_session_db(db: "SessionDB") -> bool:
     return release(db)

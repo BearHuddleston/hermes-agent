@@ -144,7 +144,7 @@ class TestInodeReplacement:
 
         calls = {"n": 0}
 
-        def _fail_open(path):
+        def _fail_open(path, expected_profile_incarnation):
             calls["n"] += 1
             raise OSError("disk temporarily gone")
 
@@ -160,7 +160,7 @@ class TestInodeReplacement:
         monkeypatch.setattr(
             registry,
             "_open_session_db",
-            lambda path: _make_session_db(path),
+            lambda path, expected_profile_incarnation: _make_session_db(path),
         )
         fresh = registry.acquire(db_path)
         assert fresh is not old
@@ -209,7 +209,7 @@ class TestTeardownOutsideLock:
             def close(self):
                 self.closed = True
 
-        def _blocked_open(path):
+        def _blocked_open(path, expected_profile_incarnation):
             nonlocal open_calls
             with count_lock:
                 open_calls += 1
@@ -258,7 +258,7 @@ class TestTeardownOutsideLock:
             def close(self):
                 pass
 
-        def _fail_then_open(path):
+        def _fail_then_open(path, expected_profile_incarnation):
             nonlocal open_calls
             open_calls += 1
             if open_calls == 1:
@@ -484,8 +484,8 @@ class TestAcquireSingleFlight:
         gate = threading.Event()
         opened = []
 
-        def _gated_open(path):
-            db = real_open(path)
+        def _gated_open(path, expected_profile_incarnation):
+            db = real_open(path, expected_profile_incarnation)
             opened.append(db)
             # Hold the first open so a second thread can race in.
             if len(opened) == 1:
