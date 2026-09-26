@@ -338,3 +338,16 @@ test('TUI freshness invalidates source, configuration and compiler inputs and da
   writeFileSync(entry, 'damaged output')
   expect(current()).toBe(false)
 })
+
+test('a browser renderer publish never invalidates the native Desktop inputs', async () => {
+  const { sourceHash } = await import('../scripts/build/freshness.mjs')
+  const source = fixture()
+  put(source, 'apps/desktop/package.json', '{}')
+  put(source, 'apps/desktop/src/main.ts', 'export {}')
+  const before = sourceHash(source, 'desktop')
+  put(source, 'apps/desktop/dist-webapp/index.html', 'browser renderer')
+  put(source, 'apps/desktop/.dist-webapp-build-1/product/index.html', 'staged renderer')
+  expect(sourceHash(source, 'desktop')).toBe(before)
+  put(source, 'apps/desktop/src/main.ts', 'export const changed = true')
+  expect(sourceHash(source, 'desktop')).not.toBe(before)
+})
