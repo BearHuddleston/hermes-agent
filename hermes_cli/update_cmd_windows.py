@@ -235,6 +235,8 @@ def _hermes_holder_subcommand(cmdline: str, *, module_only: bool = False) -> str
     script/module's arguments, or a shell carrying a Hermes command is not a backend. Console-script
     wrappers and direct main.py launches remain valid; CLI value flags come from the real parser.
     ``module_only`` restricts Desktop-owned callers to their ``-m hermes_cli.main`` spawn shape.
+    Interpreter options are walked by the canonical ``hermes_state_holders`` helpers, never a local
+    copy of Python's option table.
     """
     if not cmdline:
         return None
@@ -253,41 +255,15 @@ def _hermes_holder_subcommand(cmdline: str, *, module_only: bool = False) -> str
     entry_idx = 0
     module_target = False
     if not _is_script(tokens[0]):
-        executable = tokens[0].lower().replace("\\", "/").rsplit("/", 1)[-1]
-        if not re.fullmatch(r"(?:pythonw?|pypy)(?:\d+(?:\.\d+)*)?(?:\.exe)?", executable):
-            return None
-        entry_idx = 1
+        from hermes_state_holders import _looks_like_python_executable, _python_execution_target
 
-        while entry_idx < len(tokens):
-            token = tokens[entry_idx]
-            if token == "--":
-                entry_idx += 1
-                break
-            if token == "--check-hash-based-pycs":
-                entry_idx += 2
-                continue
-            if not token.startswith("-"):
-                break
-            # Python permits clustered switches and attached -c/-m/-W/-X values. Stop at
-            # the first execution target; never search its payload or application argv.
-            option = re.fullmatch(r"-[bBdEiIOPqRsSuvx]*(?:([cmWX])(.*))?", token)
-            if option is None or token == "-":
-                return None
-            flag, value = option.groups()
-            if flag == "c":
-                return None
-            if flag == "m":
-                if not value:
-                    entry_idx += 1
-                    value = tokens[entry_idx] if entry_idx < len(tokens) else ""
-                if value != "hermes_cli.main":
-                    return None
-                module_target = True
-                break
-            entry_idx += 2 if flag in {"W", "X"} and not value else 1
-        else:
+        target = _python_execution_target(tokens) if _looks_like_python_executable(tokens[0]) else None
+        if target is None:
             return None
-        if entry_idx >= len(tokens) or not (module_target or _is_script(tokens[entry_idx])):
+        kind, value, entry_idx = target
+        module_target = kind == "module"
+        # Hermes' other entry points (hermes-agent, hermes-acp, run_agent.py) have no subcommands.
+        if not (value == "hermes_cli.main" if module_target else _is_script(value)):
             return None
     if module_only and not module_target:
         return None

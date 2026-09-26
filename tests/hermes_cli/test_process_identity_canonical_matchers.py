@@ -4,10 +4,17 @@ defer to the canonical matchers instead of argv substrings (root AGENTS.md proce
 
 from __future__ import annotations
 
+import subprocess
+
 import pytest
 
 from hermes_cli.dashboard_procs import _is_desktop_local_serve_cmdline
 from hermes_cli.update_cmd_windows import _hermes_holder_subcommand, _is_backend_argv
+from hermes_state_holders import (
+    _PYTHON_LONG_OPTIONS_WITH_OPERANDS,
+    _PYTHON_SHORT_OPTIONS_WITH_OPERANDS,
+    _looks_like_hermes,
+)
 
 LOOPBACK = "--host 127.0.0.1 --port 0"
 
@@ -60,6 +67,16 @@ def test_kill_and_relaunch_predicates_agree_with_the_canonical_holder_matcher(
     assert _is_desktop_local_serve_cmdline(cmdline) is reapable
     # Windows updater backend classifier (taskkill /T on orphans): canonical subcommand AND Desktop spawn shape.
     assert _is_backend_argv(cmdline) is desktop_backend
+
+
+@pytest.mark.parametrize("flag", sorted(
+    {f"-{letter}" for letter in _PYTHON_SHORT_OPTIONS_WITH_OPERANDS} | _PYTHON_LONG_OPTIONS_WITH_OPERANDS))
+def test_holder_matcher_and_state_holder_scan_share_the_interpreter_operand_table(flag):
+    """A flag the canonical table says takes an operand never ends the option block, in either
+    matcher: the operand ``x`` is not a script, the ``-m`` target behind it is."""
+    argv = ["python", flag, "x", "-m", "hermes_cli.main", "serve"]
+    assert _looks_like_hermes(argv)
+    assert _hermes_holder_subcommand(subprocess.list2cmdline(argv)) == "serve"
 
 
 def test_desktop_local_serve_spares_fixed_port_and_remote_hosts():
