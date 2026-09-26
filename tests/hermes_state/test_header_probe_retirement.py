@@ -285,3 +285,53 @@ def _assert_concurrent_opener_keeps_locks(path, monkeypatch, opener):
         if opener in ("readiness", "doctor"):
             assert results == ([{"status": "ok"}] if opener == "readiness" else [0])
     assert not has_live_connection(path) and _foreign_exclusive(path)
+
+
+@pytest.mark.platforms("posix")
+def test_descriptor_scan_skips_unprobed_closes_and_never_blocks_tracked_opens(tmp_path, monkeypatch):
+    """Probe release enumerates every descriptor, so it must be off the connection hot path:
+    closing a database that has no probe never scans, and the scan never runs under the
+    lifecycle lock that every tracked open needs."""
+    state, other = tmp_path / "state.db", tmp_path / "kanban.db"
+    owner = connect_tracked(state, check_same_thread=False, isolation_level=None)
+    owner.execute("CREATE TABLE items(value)")
+    assert _pread_db_header(state, 16) == b"SQLite format 3\x00"  # the live owner's probe
+    scans, scanning, resume, pause = [], threading.Event(), threading.Event(), threading.Event()
+    real_listdir = os.listdir
+
+    def listdir(directory):
+        if os.fspath(directory) in ("/proc/self/fd", "/dev/fd"):
+            scans.append(directory)
+            if pause.is_set():
+                scanning.set()
+                assert resume.wait(15)
+        return real_listdir(directory)
+
+    monkeypatch.setattr(os, "listdir", listdir)
+    for _ in range(5):
+        with close_connection(connect_tracked(other)) as conn:
+            conn.execute("SELECT 1")
+    assert not scans, "closing a database without a header probe enumerated every descriptor"
+
+    opened = []
+
+    def open_other():
+        with close_connection(connect_tracked(other, check_same_thread=False)) as conn:
+            opened.append(conn.execute("SELECT 1").fetchone())
+
+    pause.set()
+    closer = threading.Thread(target=owner.close)  # the probe owner's last close scans
+    opener = threading.Thread(target=open_other)
+    closer.start()
+    try:
+        assert scanning.wait(10), "the probe owner's last close never looked for other holders"
+        opener.start()
+        opener.join(10)
+        assert opened == [(1,)], "a tracked open waited behind another close's descriptor scan"
+    finally:
+        resume.set()
+        closer.join(15)
+        if opener.ident is not None:
+            opener.join(15)
+        owner.close()
+    assert not closer.is_alive() and not has_live_connection(state)
