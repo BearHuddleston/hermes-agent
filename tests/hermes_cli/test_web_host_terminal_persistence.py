@@ -222,6 +222,7 @@ class IdleBridge:
     def __init__(self):
         import threading
         self.closed = threading.Event()
+        self.wrote = threading.Event()
         self.writes = []
         self.resizes = []
 
@@ -231,6 +232,7 @@ class IdleBridge:
 
     async def write(self, data):
         self.writes.append(data)
+        self.wrote.set()
         return True
 
     def resize(self, cols, rows):
@@ -407,8 +409,98 @@ def test_simultaneous_viewer_supersedes_without_respawn(host_app, fake_bridges):
                     old.receive_bytes()
                 assert error.value.code == 4409
                 new.send_bytes(b"current")
+                assert fake_bridges[0].wrote.wait(3)
         assert len(fake_bridges) == 1
         assert fake_bridges[0].writes == [b"current"]
+
+
+def test_ownership_checks_never_block_the_event_loop(host_app, fake_bridges, tmp_path, monkeypatch):
+    """Ownership reads the profile's home, tombstone and incarnation marker; on a
+    slow disk that stalls every socket the process serves. Create, reattach,
+    input and the reaper all check off-loop, and a retired generation still
+    loses its attached shell."""
+    import asyncio
+    from hermes_cli.profile_incarnation import write_fresh_profile_incarnation
+    from hermes_cli.profile_lifecycle import profile_lifecycle_lease
+    from hermes_cli.web_host_terminal_sessions import HostOwner
+
+    profile = tmp_path / ".hermes" / "profiles" / "alpha"
+    profile.mkdir(parents=True)
+    (profile / "config.yaml").write_text("{}", encoding="utf-8")
+    checks = []
+    original = HostOwner.current
+
+    def current(owner):
+        try:
+            asyncio.get_running_loop()
+            checks.append("loop")
+        except RuntimeError:
+            checks.append("thread")
+        return original(owner)
+
+    monkeypatch.setattr(HostOwner, "current", current)
+    with TestClient(host_app) as client:
+        with client.websocket_connect(url("&profile=alpha")) as ws:
+            token = metadata(ws)["terminalId"]
+        with client.websocket_connect(url("&profile=alpha&attach=" + token)) as ws:
+            assert metadata(ws)["reconnected"]
+            ws.send_bytes(b"input")
+            assert fake_bridges[0].wrote.wait(3)
+            with profile_lifecycle_lease(profile):
+                write_fresh_profile_incarnation(profile)
+            with pytest.raises(WebSocketDisconnect) as error:
+                while True:
+                    ws.receive_bytes()
+            assert error.value.code == 4410
+        assert fake_bridges[0].closed.wait(3)
+        assert fake_bridges[0].writes == [b"input"]
+    assert checks and set(checks) == {"thread"}
+
+
+def test_input_frames_that_arrive_together_share_one_ownership_check():
+    """A paste lands as many frames. One off-loop check covers every frame that
+    arrived before it began, and a retired generation still receives none."""
+    import asyncio
+    from types import SimpleNamespace
+    from hermes_cli.web_host_terminal_sessions import _pump_input
+
+    frames = [f"line {i}\n".encode() for i in range(40)]
+
+    class Socket:
+        def __init__(self):
+            # Every frame is already buffered when the pump starts reading.
+            self.inbound = [{"type": "websocket.receive", "bytes": frame} for frame in frames]
+            self.inbound.append({"type": "websocket.disconnect"})
+
+        async def receive(self):
+            return self.inbound.pop(0)
+
+    async def pump(live):
+        checks, written, removed = [], [], []
+
+        class Owner:
+            def current(self):
+                try:
+                    asyncio.get_running_loop()
+                    checks.append("loop")
+                except RuntimeError:
+                    checks.append("thread")
+                return live
+
+        async def write(_ws, data):
+            written.append(data)
+            return True
+
+        async def remove(token):
+            removed.append(token)
+
+        ws = Socket()
+        session = SimpleNamespace(_ws=ws, alive=True, write=write, resize=lambda *args, **kwargs: None)
+        await _pump_input(ws, SimpleNamespace(remove=remove), "terminal", session, Owner())
+        return checks, written, removed
+
+    assert asyncio.run(pump(True)) == (["thread"], frames, [])
+    assert asyncio.run(pump(False)) == (["thread"], [], ["terminal"])
 
 
 def test_cross_process_retirement_closes_attached_shell(host_app, fake_bridges, tmp_path):

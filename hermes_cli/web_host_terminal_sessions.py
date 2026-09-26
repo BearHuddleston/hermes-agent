@@ -25,6 +25,8 @@ from hermes_constants import get_hermes_home, named_profile_home_is_unavailable
 
 # No survival across backend restart. Disconnects retain a bounded ANSI tail.
 RETENTION_SECONDS = 15 * 60
+# Inbound frames buffered while one batch is checked and written (backpressure bound).
+_INPUT_BATCH_FRAMES = 64
 TOKEN_RE = re.compile(r"^[A-Za-z0-9_-]{43}$")
 
 
@@ -45,6 +47,7 @@ class HostOwner:
     cwd: str
 
     def current(self) -> bool:
+        """Blocking filesystem reads (home, tombstone, incarnation marker): call off-loop."""
         return (
             self.home.is_dir()
             and not named_profile_home_is_unavailable(self.home)
@@ -113,7 +116,7 @@ class HostTerminalRegistry(PtySessionRegistry):
         session, _ = await self.attach_or_spawn(token, spawn=spawn)
         assert owner is not None  # spawn completed under the incarnation lease
         self.owners[token] = owner
-        if not owner.current():
+        if not await asyncio.to_thread(owner.current):
             await self.remove(token)
             raise TerminalExpired()
         return session, owner
@@ -135,8 +138,9 @@ class HostTerminalRegistry(PtySessionRegistry):
                     raise TerminalExpired()
 
         await asyncio.to_thread(validate)
-        # No await between the final check and the caller's attach claim.
-        if (self._sessions.get(token) is not session or not owner.current()
+        # No await between the final check and the caller's attach claim. The
+        # generation was just checked off-loop; input re-checks it before any write.
+        if (self._sessions.get(token) is not session
                 or (not closing and (not session.alive or self.expired(session)))):
             raise TerminalExpired()
         return session, owner
@@ -160,9 +164,12 @@ class HostTerminalRegistry(PtySessionRegistry):
     async def reap_idle(self, now=None):
         # Durable tombstones/incarnations also detect retirement by a different
         # process; attached viewers do not exempt retired profile generations.
-        for token, owner in list(self.owners.items()):
+        # One thread hop per tick keeps every shell's marker reads off the loop.
+        owners = list(self.owners.items())
+        retired = await asyncio.to_thread(lambda: {token for token, owner in owners if not owner.current()})
+        for token, owner in owners:
             session = self._sessions.get(token)
-            if session is not None and (not owner.current() or not session.alive or self.expired(session, now)):
+            if session is not None and (token in retired or not session.alive or self.expired(session, now)):
                 await self.remove(token)
         for token in list(self.owners):
             if token not in self._sessions:
@@ -252,33 +259,64 @@ async def _admit(ws: WebSocket, registry: HostTerminalRegistry):
     return token, session, owner
 
 
+async def _read_frames(ws: WebSocket, inbox: asyncio.Queue) -> None:
+    """Queue inbound frames. The last item is None, or the error that ended reading
+    (re-raised by ``_pump_input`` so the route's handlers still see it)."""
+    end = None
+    try:
+        while (msg := await ws.receive()).get("type") != "websocket.disconnect":
+            await inbox.put(msg)
+    except RuntimeError:  # a superseding/drain task already closed us
+        pass
+    except Exception as exc:
+        end = exc
+    await inbox.put(end)
+
+
 async def _pump_input(ws: WebSocket, registry: HostTerminalRegistry, token: str,
                       session: PtySession, owner: HostOwner) -> None:
-    """Forward keystrokes and resizes while ``ws`` is the attached viewer."""
+    """Forward keystrokes and resizes while ``ws`` is the attached viewer.
+
+    A frame is written only after an ownership check that began once it had
+    arrived, so input sent after a profile generation retires never reaches the
+    shell. The check reads files, so it runs off the loop, once per batch: the
+    frames that queued while the previous batch was checked or written. A paste
+    of many frames costs a few checks, not one each.
+    """
     from hermes_cli.web_server_chat import _RESIZE_RE
-    # No Ctrl-L/redraw input: arbitrary foreground shell programs own stdin.
-    while session._ws is ws and session.alive:
-        try:
-            msg = await ws.receive()
-        except RuntimeError:  # a superseding/drain task already closed us
-            return
-        if msg.get("type") == "websocket.disconnect":
-            return
-        if not owner.current():
-            await registry.remove(token)
-            return
-        raw = msg.get("bytes")
-        if raw is None:
-            raw = (msg.get("text") or "").encode("utf-8")
-        if not raw:
-            continue
-        match = _RESIZE_RE.fullmatch(raw)
-        if match:
-            session.resize(ws, cols=int(match[1]), rows=int(match[2]))
-        elif not await session.write(ws, raw):
-            if session._ws is ws:
+    inbox: asyncio.Queue = asyncio.Queue(maxsize=_INPUT_BATCH_FRAMES)
+    reader = asyncio.create_task(_read_frames(ws, inbox))
+    try:
+        # No Ctrl-L/redraw input: arbitrary foreground shell programs own stdin.
+        while session._ws is ws and session.alive:
+            batch = [await inbox.get()]
+            while not inbox.empty():
+                batch.append(inbox.get_nowait())
+            frames = [msg for msg in batch if isinstance(msg, dict)]
+            if frames and not await asyncio.to_thread(owner.current):
                 await registry.remove(token)
-            return
+                return
+            for msg in frames:
+                raw = msg.get("bytes")
+                if raw is None:
+                    raw = (msg.get("text") or "").encode("utf-8")
+                if not raw:
+                    continue
+                match = _RESIZE_RE.fullmatch(raw)
+                if match:
+                    session.resize(ws, cols=int(match[1]), rows=int(match[2]))
+                elif not await session.write(ws, raw):
+                    if session._ws is ws:
+                        await registry.remove(token)
+                    return
+            if len(frames) < len(batch):
+                if isinstance(batch[-1], Exception):
+                    raise batch[-1]
+                return
+    finally:
+        reader.cancel()
+        with suppress(asyncio.CancelledError):
+            await reader
 
 
 async def host_terminal(ws: WebSocket) -> None:
