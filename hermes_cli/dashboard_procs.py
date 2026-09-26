@@ -13,6 +13,7 @@ import sys
 from pathlib import Path
 
 from hermes_cli._startup_fast import is_desktop_ssh_backend_argv
+from hermes_cli.process_identity import WEB_SERVER_PURPOSES
 
 _PS_RUN_KWARGS = dict(capture_output=True, text=True, encoding="utf-8", errors="replace")
 
@@ -95,12 +96,9 @@ def _is_dashboard_lifecycle_probe(command: str) -> bool:
 
 def _is_hermes_web_server_command(command: str) -> bool:
     """True only when argv structurally invokes a Hermes web-server command."""
-    try:
-        from hermes_cli.update_cmd_windows import _hermes_holder_subcommand
+    from hermes_cli.update_cmd_windows import _hermes_holder_subcommand
 
-        return _hermes_holder_subcommand(command) in {"dashboard", "serve", "webapp"}
-    except Exception:
-        return False
+    return _hermes_holder_subcommand(command) in WEB_SERVER_PURPOSES
 
 
 def _ledger_web_server_processes() -> dict[int, str]:
@@ -114,7 +112,7 @@ def _ledger_web_server_processes() -> dict[int, str]:
 
     processes: dict[int, str] = {}
     for entry in entries:
-        if entry.get("purpose") not in {"dashboard", "serve", "webapp"}:
+        if entry.get("purpose") not in WEB_SERVER_PURPOSES:
             continue
         pid = entry.get("pid")
         if not isinstance(pid, int) or pid <= 0:
@@ -234,7 +232,7 @@ def _hermes_home_for_pid(pid: int) -> str | None:
 
 
 def _dashboard_subcommand_index(argv: list[str]) -> int | None:
-    return next((i for i, tok in enumerate(argv) if tok in ("serve", "dashboard", "webapp")), None)
+    return next((i for i, tok in enumerate(argv) if tok in WEB_SERVER_PURPOSES), None)
 
 
 def _profile_flag_value(argv: list[str]) -> str | None:

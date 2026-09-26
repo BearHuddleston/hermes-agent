@@ -19,8 +19,6 @@ from hermes_cli.update_cmd_common import _best_effort
 
 logger = logging.getLogger("hermes_cli.update_cmd")  # log-record parity with the origin module
 
-_WEB_SERVER_PURPOSES = ("serve", "dashboard", "webapp")
-
 
 def _try_call(fn, log_message: str, *log_args, default=None):
     """``fn()``, or *default* after logging the exception at debug (``log_message`` gets ``*log_args, exc``)."""
@@ -340,10 +338,11 @@ def _venv_holder_kind(cmdline: str) -> str:
     Derived from the same classifiers the refusal path uses so automation stops exactly what the
     guard would refuse on."""
     from hermes_cli._scan_venv_blockers import _is_pausable_gateway
+    from hermes_cli.process_identity import WEB_SERVER_PURPOSES
     if _is_pausable_gateway(cmdline):
         return "gateway"
     subcommand = _hermes_holder_subcommand(cmdline)
-    if subcommand in _WEB_SERVER_PURPOSES:
+    if subcommand in WEB_SERVER_PURPOSES:
         return "backend"
     if subcommand:
         return f"hermes:{subcommand}"
@@ -425,13 +424,13 @@ def _ledger_manual_serve_holders(matches: list[tuple[int, str, str]]) -> list[di
     NOT alive (a Desktop-owned backend keeps its live Electron spawner and must keep the refusal — the app would
     respawn what we kill). Full entries let the relauncher rebuild from host/port/profile, not argv."""
     try:
-        from hermes_cli.process_identity import ledger_entries, spawner_is_dead
+        from hermes_cli.process_identity import WEB_SERVER_PURPOSES, ledger_entries, spawner_is_dead
     except Exception:
         return []
     holder_pids = {int(pid) for pid, _name, _cmd in matches}
     return [
         entry for entry in ledger_entries()
-        if entry.get("purpose") in _WEB_SERVER_PURPOSES and isinstance(entry.get("pid"), int) and entry["pid"] in holder_pids
+        if entry.get("purpose") in WEB_SERVER_PURPOSES and isinstance(entry.get("pid"), int) and entry["pid"] in holder_pids
         and spawner_is_dead(entry) is not False  # False = live Desktop supervisor owns it; keep refusing
     ]
 
@@ -660,7 +659,8 @@ def _looks_like_desktop_control_plane(cmdline: str) -> bool:
     A cmdline whose subcommand cannot be determined is NOT a control plane — callers must not guess
     ownership. See #90778, #91869.
     """
-    return _hermes_holder_subcommand(cmdline, module_only=True) in _WEB_SERVER_PURPOSES
+    from hermes_cli.process_identity import WEB_SERVER_PURPOSES
+    return _hermes_holder_subcommand(cmdline, module_only=True) in WEB_SERVER_PURPOSES
 
 
 def _desktop_owns_gateway_lifecycle() -> bool:
@@ -674,8 +674,8 @@ def _desktop_owns_gateway_lifecycle() -> bool:
     """
     from hermes_cli.update_cmd import _m
     with _best_effort('Desktop-lifecycle ledger probe failed: %s'):
-        from hermes_cli.process_identity import ledger_entries, spawner_is_dead
-        if any(e.get("purpose") in _WEB_SERVER_PURPOSES and spawner_is_dead(e) is False for e in ledger_entries()):
+        from hermes_cli.process_identity import WEB_SERVER_PURPOSES, ledger_entries, spawner_is_dead
+        if any(e.get("purpose") in WEB_SERVER_PURPOSES and spawner_is_dead(e) is False for e in ledger_entries()):
             return True
     psutil = _psutil()
     for pid, _name, cmdline in _try_call(_detect_venv_python_processes, "Desktop-lifecycle holder scan failed: %s") or []:

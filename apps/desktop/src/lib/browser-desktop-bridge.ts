@@ -1,4 +1,4 @@
-import { buildHermesWebSocketUrl, LOCAL_CONNECTION_ID } from '@hermes/shared'
+import { buildHermesWebSocketUrl, LOCAL_CONNECTION_ID, normalizeBasePath } from '@hermes/shared'
 
 import type {
   DesktopBootProgress,
@@ -16,7 +16,7 @@ import { createBrowserProfileBridge } from '@/lib/browser-profile'
 import { createBrowserTerminal } from '@/lib/browser-terminal'
 import { createBrowserWindowOpener } from '@/lib/browser-window'
 import { createBrowserZoom } from '@/lib/browser-zoom'
-import { createGitRestBridge } from '@/lib/git-rest'
+import { hasBrowserHostBootstrap } from '@/lib/platform'
 import { notifyError } from '@/store/notifications'
 import { $connection } from '@/store/session'
 import { windowProfileOverride } from '@/store/windows'
@@ -83,21 +83,14 @@ function noopUnsubscribe(): () => void {
   return () => undefined
 }
 
-function normalizedBasePath(value: string | undefined): string {
-  if (!value) {return ''}
-  const leading = value.startsWith('/') ? value : `/${value}`
-
-  return leading.replace(/\/+$/, '')
-}
-
 function browserBootstrap(): BrowserBootstrap | null {
+  if (!hasBrowserHostBootstrap()) {return null}
+
   const win = window as unknown as BrowserBootstrapWindow
   const authRequired = win.__HERMES_AUTH_REQUIRED__ === true
-  const basePath = normalizedBasePath(win.__HERMES_BASE_PATH__)
+  const basePath = normalizeBasePath(win.__HERMES_BASE_PATH__)
   const webapp = win.__HERMES_UI_SURFACE__ === 'webapp'
   const token = authRequired ? '' : webapp ? consumeWebappSession(basePath) : String(win.__HERMES_SESSION_TOKEN__ || '').trim()
-
-  if (!token && !authRequired && !webapp) {return null}
 
   return {
     authRequired,
@@ -109,7 +102,7 @@ function browserBootstrap(): BrowserBootstrap | null {
 
 function endpointUrl(path: string, basePath: string, profile?: null | string): URL {
   const suffix = path.startsWith('/') ? path : `/${path}`
-  const normalizedBase = normalizedBasePath(basePath)
+  const normalizedBase = normalizeBasePath(basePath)
   const url = new URL(`${normalizedBase}${suffix}`, window.location.origin)
 
   if (url.origin !== window.location.origin) {
@@ -384,18 +377,9 @@ function selectBrowserFiles(
         const files = Array.from(input.files || [])
         finish()
 
-        const stageSelected = async () => {
-          const paths: string[] = []
-          const profile = options?.profile?.trim() || fallbackProfile || null
+        const profile = options?.profile?.trim() || fallbackProfile || null
 
-          for (const file of files) {
-            paths.push(await stageBrowserFile(bootstrap, file, profile))
-          }
-
-          return paths
-        }
-
-        void stageSelected().then(resolve, reject)
+        void Promise.all(files.map(file => stageBrowserFile(bootstrap, file, profile))).then(resolve, reject)
       },
       { once: true }
     )
@@ -515,6 +499,129 @@ function queryPath(route: string, values: Record<string, boolean | null | string
 
   return `${route}?${query.toString()}`
 }
+
+// Bridge members that need no per-install state: native-only capabilities
+// answered with a fixed browser result, a refusal, or a no-op.
+const BROWSER_BRIDGE_STUBS = {
+  applyConnectionConfig: async () => {
+    throw browserUnsupported('Gateway reconfiguration')
+  },
+  cancelBootstrap: async () => ({ cancelled: false, ok: true }),
+  // Rendering an untrusted link must not contact its destination. PrettyLink
+  // uses the URL slug when no title is available; Electron keeps its resolver.
+  fetchLinkTitle: async () => '',
+  claimAmbientCue: async () => true,
+  cloud: {
+    agentSignIn: async (dashboardUrl: string) => ({ baseUrl: dashboardUrl, connected: false }),
+    discover: async () => ({ agents: [] }),
+    login: async () => ({ ok: false, portalBaseUrl: '', signedIn: false }),
+    logout: async () => ({ ok: true, portalBaseUrl: '', signedIn: false }),
+    status: async () => ({ portalBaseUrl: '', signedIn: false })
+  },
+  continueBootstrapLocal: async () => ({ ok: true }),
+  getBootProgress: async () => readyBootProgress(),
+  getBootstrapState: async () => readyBootstrapState(),
+  // Electron owns the pool; a browser host must not report a successful native
+  // settings write.
+  getPoolLimits: async () => {
+    throw browserUnsupported('Desktop backend pool sizing')
+  },
+  setPoolLimits: async () => {
+    throw browserUnsupported('Desktop backend pool sizing')
+  },
+  getRecentLogs: async () => ({ lines: [], path: '' }),
+  // Venv/plugin receipts live on the server host; a browser tab has none of its own.
+  getSyncStatus: async () => null,
+  getRemoteDisplayReason: async () => 'Browser-hosted Desktop uses this server as its backend',
+  getVersion: async () => ({
+    appVersion: 'browser-hosted',
+    electronVersion: '',
+    hermesRoot: '',
+    nodeVersion: '',
+    platform: 'browser'
+  }),
+  // Browser pages have no native window compositor. Keep these explicit so
+  // capability consumers do not fall back to the host OS (for example,
+  // Windows) before the browser-host marker is available.
+  glassSupported: false,
+  translucencySupported: false,
+  windowControls: {
+    custom: false,
+    minimize: () => { throw browserUnsupported('Native window controls') },
+    toggleMaximize: () => { throw browserUnsupported('Native window controls') },
+    close: () => { throw browserUnsupported('Native window controls') }
+  },
+  getPathForFile: () => '',
+  normalizePreviewTarget: async () => null,
+  onBackendExit: noopUnsubscribe,
+  onBootProgress: noopUnsubscribe,
+  onBootstrapEvent: noopUnsubscribe,
+  onFoundInPage: noopUnsubscribe,
+  onPreviewFileChanged: noopUnsubscribe,
+  probeConnectionConfig: async (remoteUrl: string) => ({
+    authMode: 'unknown' as const,
+    baseUrl: remoteUrl,
+    error: 'Gateway reconfiguration is unavailable in browser-hosted Desktop',
+    providers: [],
+    reachable: false,
+    version: null
+  }),
+  revealLogs: async () => ({
+    error: 'Native log reveal is unavailable in browser-hosted Desktop',
+    ok: false,
+    path: ''
+  }),
+  repairBootstrap: async () => ({ ok: true }),
+  resetBootstrap: async () => ({ ok: true }),
+  revalidateConnection: async () => ({ ok: true, rebuilt: false }),
+  saveConnectionConfig: async () => {
+    throw browserUnsupported('Gateway reconfiguration')
+  },
+  sanitizeWorkspaceCwd: async (cwd?: null | string) => ({ cwd: cwd || '', sanitized: false }),
+  settings: {
+    getDefaultProjectDir: async () => ({ defaultLabel: 'Server workspace', dir: null, resolvedCwd: '' }),
+    pickDefaultProjectDir: async () => ({ canceled: true, dir: null }),
+    setDefaultProjectDir: async (dir: null | string) => ({ dir })
+  },
+  sshConfigHosts: async () => ({ hosts: [] }),
+  sshResolveHost: async () => ({ hostname: null, identityFile: null, port: null, user: null }),
+  setActiveWork: () => undefined,
+  setKeepAwake: () => undefined,
+  setNativeTheme: () => undefined,
+  setPreviewShortcutActive: () => undefined,
+  setTitleBarTheme: () => undefined,
+  setTranslucency: () => undefined,
+  stopFindInPage: async () => undefined,
+  stopPreviewFileWatch: async () => true,
+  themes: {
+    fetchMarketplace: async (id: string) => ({ displayName: id, extensionId: id, themes: [] }),
+    searchMarketplace: async () => []
+  },
+  touchBackend: async () => ({ ok: true }),
+  uninstall: {
+    run: async () => ({ error: 'Run `hermes uninstall` on the server host', ok: false }),
+    summary: async () => ({
+      agent_installed: true,
+      // Package removal belongs to the server host, never this browser tab.
+      code_removal_allowed: false,
+      gui_installed: true,
+      hermes_home: '',
+      packaged_app_paths: [],
+      platform: 'browser',
+      source_built_artifacts: [],
+      userdata_dir: '',
+      userdata_exists: true
+    })
+  },
+  updates: {
+    apply: async () => ({ command: 'hermes update', manual: true, message: 'Run `hermes update` on the server host', ok: false }),
+    check: async () => ({ message: 'Use `hermes update` on the server host', reason: 'browser-hosted', supported: false }),
+    getBranch: async () => ({ branch: '' }),
+    onProgress: noopUnsubscribe,
+    setBranch: async (branch: string) => ({ branch })
+  },
+  watchPreviewFile: async (url: string) => ({ id: `browser:${url}`, path: url })
+} satisfies Partial<Window['hermesDesktop']>
 
 /**
  * Install a capability-limited Desktop bridge when the real renderer is served
@@ -640,11 +747,7 @@ export function installBrowserDesktopBridge(): boolean {
   const fsGet = <T>(route: string, path: string) =>
     api<T>({ path: queryPath(`/api/fs/${route}`, { path }), profile: browserProfile() })
 
-  const gitGet = <T>(route: string, values: Record<string, boolean | null | string | undefined>) =>
-    api<T>({ path: queryPath(`/api/git/${route}`, values), profile: browserProfile() })
-
-  const gitPost = <T>(route: string, body: Record<string, unknown>) =>
-    api<T>({ body, method: 'POST', path: `/api/git/${route}`, profile: browserProfile() })
+  const readDataUrl = async (path: string) => (await fsGet<{ dataUrl: string }>('read-data-url', path)).dataUrl
 
   const downloadUrl = async (url: string, filename = '') => {
     const target = new URL(url, window.location.href)
@@ -673,8 +776,6 @@ export function installBrowserDesktopBridge(): boolean {
     return true
   }
 
-  const git = createGitRestBridge({ get: gitGet, post: gitPost })
-
   const getGatewayWsUrl = async (profile?: null | string) => {
     try {
       return {
@@ -700,49 +801,17 @@ export function installBrowserDesktopBridge(): boolean {
     return [...new Set((result.profiles || []).map(profile => String(profile.name || '').trim()).filter(Boolean))]
   }
 
-  // Electron owns the pool; a browser host must not report a successful native
-  // settings write. Keep this separate for older preload contracts without it.
-  const nativePoolLimits = {
-    getPoolLimits: async (): Promise<never> => {
-      throw browserUnsupported('Desktop backend pool sizing')
-    },
-    setPoolLimits: async (): Promise<never> => {
-      throw browserUnsupported('Desktop backend pool sizing')
-    }
-  }
-
   const bridge: Window['hermesDesktop'] = {
-    ...nativePoolLimits,
+    ...BROWSER_BRIDGE_STUBS,
     api,
-    applyConnectionConfig: async () => {
-      throw browserUnsupported('Gateway reconfiguration')
-    },
-    cancelBootstrap: async () => ({ cancelled: false, ok: true }),
-    // Rendering an untrusted link must not contact its destination. PrettyLink
-    // uses the URL slug when no title is available; Electron keeps its resolver.
-    fetchLinkTitle: async () => '',
     findInPage: async (query: string) => {
       const find = (window as Window & { find?: (value: string) => boolean }).find
 
       return { count: query && find?.call(window, query) ? 1 : 0 }
     },
     getConnectionConfig: async (profile?: null | string) => browserConnectionConfig(bootstrap, profile),
-    claimAmbientCue: async () => true,
-    cloud: {
-      agentSignIn: async (dashboardUrl: string) => ({ baseUrl: dashboardUrl, connected: false }),
-      discover: async () => ({ agents: [] }),
-      login: async () => ({ ok: false, portalBaseUrl: '', signedIn: false }),
-      logout: async () => ({ ok: true, portalBaseUrl: '', signedIn: false }),
-      status: async () => ({ portalBaseUrl: '', signedIn: false })
-    },
-    continueBootstrapLocal: async () => ({ ok: true }),
-    getBootProgress: async () => readyBootProgress(),
-    getBootstrapState: async () => readyBootstrapState(),
     getConnection,
     getConnectionFor,
-    getRecentLogs: async () => ({ lines: [], path: '' }),
-    // Venv/plugin receipts live on the server host; a browser tab has none of its own.
-    getSyncStatus: async () => null,
     getProfileRoutes: async (profiles: string[]) => {
       const available = new Set(await getProfiles())
 
@@ -792,35 +861,12 @@ export function installBrowserDesktopBridge(): boolean {
         payload.profile ?? browserProfile()
       ).href
     },
-    getRemoteDisplayReason: async () => 'Browser-hosted Desktop uses this server as its backend',
-    getVersion: async () => ({
-      appVersion: 'browser-hosted',
-      electronVersion: '',
-      hermesRoot: '',
-      nodeVersion: '',
-      platform: 'browser'
-    }),
-    // Browser pages have no native window compositor. Keep these explicit so
-    // capability consumers do not fall back to the host OS (for example,
-    // Windows) before the browser-host marker is available.
-    glassSupported: false,
-    translucencySupported: false,
-    windowControls: {
-      custom: false,
-      minimize: () => { throw browserUnsupported('Native window controls') },
-      toggleMaximize: () => { throw browserUnsupported('Native window controls') },
-      close: () => { throw browserUnsupported('Native window controls') }
-    },
-    git,
-    getPathForFile: () => '',
     stageFileForAttach: (file: File) => stageBrowserFile(bootstrap, file, browserProfile()),
     getStagedFileForAttach: (path: string) => bootstrap.stagedUploads.get(path),
-    gitRoot: async (path: string) => (await fsGet<{ root: null | string }>('git-root', path)).root,
-    normalizePreviewTarget: async () => null,
     readDir: (path: string) =>
       fsGet<Awaited<ReturnType<Window['hermesDesktop']['readDir']>>>('list', path),
-    readFileDataUrl: async (path: string) => (await fsGet<{ dataUrl: string }>('read-data-url', path)).dataUrl,
-    readFileDataUrlForAttach: async (path: string) => (await fsGet<{ dataUrl: string }>('read-data-url', path)).dataUrl,
+    readFileDataUrl: readDataUrl,
+    readFileDataUrlForAttach: readDataUrl,
     readFileText: (path: string) =>
       fsGet<Awaited<ReturnType<Window['hermesDesktop']['readFileText']>>>('read-text', path),
     notify: async ({ title, body }: { title?: string; body?: string }) => {
@@ -833,11 +879,6 @@ export function installBrowserDesktopBridge(): boolean {
 
       return true
     },
-    onBackendExit: noopUnsubscribe,
-    onBootProgress: noopUnsubscribe,
-    onBootstrapEvent: noopUnsubscribe,
-    onFoundInPage: noopUnsubscribe,
-    onPreviewFileChanged: noopUnsubscribe,
     openExternal,
     openPreviewInBrowser: openExternal,
     openSessionWindow: async (
@@ -896,26 +937,7 @@ export function installBrowserDesktopBridge(): boolean {
 
       return { connected: false, ok: true }
     },
-    probeConnectionConfig: async (remoteUrl: string) => ({
-      authMode: 'unknown' as const,
-      baseUrl: remoteUrl,
-      error: 'Gateway reconfiguration is unavailable in browser-hosted Desktop',
-      providers: [],
-      reachable: false,
-      version: null
-    }),
     readClipboard: async () => navigator.clipboard?.readText?.() || '',
-    revealLogs: async () => ({
-      error: 'Native log reveal is unavailable in browser-hosted Desktop',
-      ok: false,
-      path: ''
-    }),
-    repairBootstrap: async () => ({ ok: true }),
-    resetBootstrap: async () => ({ ok: true }),
-    revalidateConnection: async () => ({ ok: true, rebuilt: false }),
-    saveConnectionConfig: async () => {
-      throw browserUnsupported('Gateway reconfiguration')
-    },
     saveClipboardImage: async () => {
       const clipboard = navigator.clipboard as Clipboard & {
         read?: () => Promise<ClipboardItems>
@@ -966,15 +988,7 @@ export function installBrowserDesktopBridge(): boolean {
     savePastedText: (text: string) => stageBrowserFile(
       bootstrap, new File([text], 'pasted.txt', { type: 'text/plain' }), browserProfile()
     ),
-    sanitizeWorkspaceCwd: async (cwd?: null | string) => ({ cwd: cwd || '', sanitized: false }),
     selectPaths: options => selectBrowserFiles(bootstrap, options, browserProfile()),
-    settings: {
-      getDefaultProjectDir: async () => ({ defaultLabel: 'Server workspace', dir: null, resolvedCwd: '' }),
-      pickDefaultProjectDir: async () => ({ canceled: true, dir: null }),
-      setDefaultProjectDir: async (dir: null | string) => ({ dir })
-    },
-    sshConfigHosts: async () => ({ hosts: [] }),
-    sshResolveHost: async () => ({ hostname: null, identityFile: null, port: null, user: null }),
     requestMicrophoneAccess: async () => {
       if (!navigator.mediaDevices?.getUserMedia) {return false}
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
@@ -982,14 +996,6 @@ export function installBrowserDesktopBridge(): boolean {
 
       return true
     },
-    setActiveWork: () => undefined,
-    setKeepAwake: () => undefined,
-    setNativeTheme: () => undefined,
-    setPreviewShortcutActive: () => undefined,
-    setTitleBarTheme: () => undefined,
-    setTranslucency: () => undefined,
-    stopFindInPage: async () => undefined,
-    stopPreviewFileWatch: async () => true,
     testConnectionConfig: async () => ({
       baseUrl: `${window.location.origin}${bootstrap.basePath}`,
       ok: true,
@@ -997,45 +1003,7 @@ export function installBrowserDesktopBridge(): boolean {
       version: null
     }),
     terminal,
-    themes: {
-      fetchMarketplace: async (id: string) => ({ displayName: id, extensionId: id, themes: [] }),
-      searchMarketplace: async () => []
-    },
-    touchBackend: async () => ({ ok: true }),
-    uninstall: {
-      run: async () => ({ error: 'Run `hermes uninstall` on the server host', ok: false }),
-      summary: async () => ({
-        agent_installed: true,
-        // Package removal belongs to the server host, never this browser tab.
-        code_removal_allowed: false,
-        gui_installed: true,
-        hermes_home: '',
-        packaged_app_paths: [],
-        platform: 'browser',
-        source_built_artifacts: [],
-        userdata_dir: '',
-        userdata_exists: true
-      })
-    },
-    updates: {
-      apply: async () => ({ command: 'hermes update', manual: true, message: 'Run `hermes update` on the server host', ok: false }),
-      check: async () => ({ message: 'Use `hermes update` on the server host', reason: 'browser-hosted', supported: false }),
-      getBranch: async () => ({ branch: '' }),
-      onProgress: noopUnsubscribe,
-      setBranch: async (branch: string) => ({ branch })
-    },
-    watchPreviewFile: async (url: string) => ({ id: `browser:${url}`, path: url }),
     writeClipboard,
-    writeTextFile: async (path: string, content: string) => {
-      const result = await api<{ path?: string }>({
-        body: { content, path },
-        method: 'POST',
-        path: '/api/fs/write-text',
-        profile: browserProfile()
-      })
-
-      return { path: result.path || path }
-    },
     zoom: createBrowserZoom(bootstrap.basePath)
   }
 

@@ -20,6 +20,7 @@ from hermes_cli.profile_incarnation import (
     ensure_profile_incarnation, profile_incarnation_lease, profile_incarnation_matches,
 )
 from hermes_cli.pty_session import PtySession, PtySessionRegistry, RegistryFull, run_reaper
+from hermes_cli.web_host_terminal import META_PREFIX
 from hermes_constants import get_hermes_home, named_profile_home_is_unavailable
 
 # No survival across backend restart. Disconnects retain a bounded ANSI tail.
@@ -87,8 +88,8 @@ class HostTerminalRegistry(PtySessionRegistry):
         raise RegistryFull()
 
     async def create(self, ws: WebSocket, identity: tuple[str, str]):
-        from hermes_cli.web_host_terminal import query_dimension
-        from hermes_cli.web_server_chat import PtyBridge, _resolve_host_terminal_argv
+        from hermes_cli.web_host_terminal import query_dimension, resolve_argv
+        from hermes_cli.web_server_chat import PtyBridge
         token = secrets.token_urlsafe(32)
         owner = None
 
@@ -101,10 +102,7 @@ class HostTerminalRegistry(PtySessionRegistry):
                 if not home.is_dir():
                     raise TerminalExpired()
                 incarnation = ensure_profile_incarnation(home)
-                argv, cwd, env, shell = _resolve_host_terminal_argv(
-                    profile=ws.query_params.get("profile"),
-                    requested_cwd=ws.query_params.get("cwd"))
-                env["HERMES_HOME"] = str(home)
+                argv, cwd, env, shell = resolve_argv(home=home, requested_cwd=ws.query_params.get("cwd"))
                 bridge = PtyBridge.spawn(
                     argv, cwd=cwd, env=env,
                     cols=query_dimension(ws.query_params.get("cols"), 80, 2000),
@@ -214,8 +212,7 @@ async def host_terminal_lifespan(app):
 
 
 def _metadata(token, owner, session, registry, *, reconnected):
-    from hermes_cli.web_server_chat import _HOST_TERMINAL_META_PREFIX
-    return _HOST_TERMINAL_META_PREFIX + json.dumps({
+    return META_PREFIX + json.dumps({
         "shell": owner.shell, "terminalId": token, "cwd": owner.cwd,
         "reconnected": reconnected, "retentionSeconds": registry._ttl,
         "truncated": session.buffer.truncated,
@@ -224,7 +221,7 @@ def _metadata(token, owner, session, registry, *, reconnected):
 
 async def host_terminal(ws: WebSocket, *, persistent: bool) -> None:
     """Called only after both the existing WS gate and host policy have passed."""
-    from hermes_cli.web_server_chat import _HOST_TERMINAL_META_PREFIX, _RESIZE_RE
+    from hermes_cli.web_server_chat import _RESIZE_RE
     from hermes_cli.web_routers.chat_ws import _pty_fail
     token = ws.query_params.get("attach")
     action = ws.query_params.get("action")
@@ -238,7 +235,7 @@ async def host_terminal(ws: WebSocket, *, persistent: bool) -> None:
             raise TerminalExpired()
         if action == "close" and token not in registry._sessions:
             # Missing is idempotent, but never bypass auth/host policy.
-            await ws.send_text(_HOST_TERMINAL_META_PREFIX + json.dumps({"terminalId": token, "closed": True}))
+            await ws.send_text(META_PREFIX + json.dumps({"terminalId": token, "closed": True}))
             await ws.close(code=1000)
             return
         if token is None:
@@ -248,7 +245,7 @@ async def host_terminal(ws: WebSocket, *, persistent: bool) -> None:
             session, owner = await registry.resolve(token, ws, identity, closing=action == "close")
         if action == "close":
             await registry.remove(token)
-            await ws.send_text(_HOST_TERMINAL_META_PREFIX + json.dumps({"terminalId": token, "closed": True}))
+            await ws.send_text(META_PREFIX + json.dumps({"terminalId": token, "closed": True}))
             await ws.close(code=1000)
             return
         initial_text = None
@@ -257,7 +254,7 @@ async def host_terminal(ws: WebSocket, *, persistent: bool) -> None:
                 token, owner, session, registry, reconnected=ws.query_params.get("attach") is not None)
         else:
             # One-shot clients have no replay boundary or reusable capability.
-            await ws.send_text(_HOST_TERMINAL_META_PREFIX + json.dumps({"shell": owner.shell}))
+            await ws.send_text(META_PREFIX + json.dumps({"shell": owner.shell}))
         if not await session.attach(ws, initial_text=initial_text):
             if session._ws is None:
                 with suppress(Exception):

@@ -407,6 +407,15 @@ def named_profile_home_is_unavailable(profile_home: Path | str) -> bool:
     return marker is not None and (not home.is_dir() or marker.is_file())
 
 
+def assert_named_profile_home_available(profile_home: Path | str) -> None:
+    """Raise when :func:`named_profile_home_is_unavailable`.
+
+    Exact-home scope; :func:`assert_named_profile_home_live` guards any path under a home.
+    """
+    if named_profile_home_is_unavailable(profile_home):
+        raise FileNotFoundError(f"Named profile home is missing or being deleted: {profile_home}")
+
+
 def _packaged_dir(env_var: str, default: Path | None, subdir: str) -> Path:
     """Resolve a package-manager-relocatable directory.
 

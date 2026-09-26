@@ -1,3 +1,5 @@
+import { isStableOpen, reconnectBackoffDelayMs } from '@hermes/shared'
+
 import type { HermesTerminalExit, HermesTerminalSession, HermesTerminalState } from '@/global'
 
 import { readJson, writeJson } from './storage'
@@ -32,7 +34,7 @@ interface TerminalState {
   status: HermesTerminalState
   retry: number
   retryTimer: number
-  stableTimer: number
+  openedAt: number | null
   cancelDial?: () => void
   started?: Promise<HermesTerminalSession>
   pendingData: Array<{ data: string; replay: boolean }>
@@ -43,7 +45,8 @@ interface TerminalState {
 }
 
 const META = '\u0000HERMES_TERMINAL_META:'
-const RETRY_DELAYS = [500, 1000, 2000, 4000, 8000]
+const MAX_RETRIES = 5
+const RETRY_BACKOFF = { baseDelayMs: 500, capMs: 8000 }
 const START_TIMEOUT = 10_000
 const CLOSE_SIGNALS: Record<number, string> = { 4403: 'denied', 4409: 'superseded', 4410: 'expired', 1013: 'capacity' }
 
@@ -51,6 +54,12 @@ class TerminalConnectionError extends Error {
   constructor(message: string, readonly signal = 'disconnected') {
     super(message)
   }
+}
+
+/** Only an attachment that stayed up resets the retry ladder (shared stable-open rule). */
+function settleOpen(state: TerminalState): void {
+  if (isStableOpen(state.openedAt)) {state.retry = 0}
+  state.openedAt = null
 }
 
 async function closeSavedShell(saved: SavedTerminal, websocketUrl: BrowserTerminalOptions['websocketUrl']): Promise<boolean> {
@@ -201,8 +210,7 @@ async function dialTerminal(state: TerminalState, context: DialContext): Promise
           // Resume query dimensions do not resize an existing server PTY.
           if (resuming) {socket.send(`\u001b[RESIZE:${state.cols};${state.rows}]`)}
           setStatus(state, 'open')
-          window.clearTimeout(state.stableTimer)
-          state.stableTimer = window.setTimeout(() => { state.retry = 0 }, START_TIMEOUT)
+          state.openedAt = Date.now()
 
           if (!settled) {
             settled = true
@@ -235,7 +243,7 @@ async function dialTerminal(state: TerminalState, context: DialContext): Promise
 
     socket.onclose = event => {
       if (!current()) {return}
-      window.clearTimeout(state.stableTimer)
+      settleOpen(state)
       const signal = CLOSE_SIGNALS[event.code] ?? 'disconnected'
 
       if (signal === 'expired') {forget(state)}
@@ -306,7 +314,7 @@ export function createBrowserTerminal(options: BrowserTerminalOptions): Terminal
   const stopSocket = (state: TerminalState) => {
     ++state.generation
     window.clearTimeout(state.retryTimer)
-    window.clearTimeout(state.stableTimer)
+    settleOpen(state)
     state.cancelDial?.()
     state.cancelDial = undefined
     const socket = state.socket
@@ -323,7 +331,6 @@ export function createBrowserTerminal(options: BrowserTerminalOptions): Terminal
   const finish = (state: TerminalState, signal: string | null) => {
     state.stopped = true
     window.clearTimeout(state.retryTimer)
-    window.clearTimeout(state.stableTimer)
     setStatus(state, 'disconnected')
     state.exit = { code: null, signal }
     state.exitListeners.forEach(listener => listener(state.exit!))
@@ -332,7 +339,7 @@ export function createBrowserTerminal(options: BrowserTerminalOptions): Terminal
   const reconnect = (state: TerminalState) => {
     if (paused || state.stopped) {return}
 
-    if (!state.terminalId || state.retry >= RETRY_DELAYS.length) {
+    if (!state.terminalId || state.retry >= MAX_RETRIES) {
       finish(state, 'disconnected')
 
       return
@@ -352,7 +359,7 @@ export function createBrowserTerminal(options: BrowserTerminalOptions): Terminal
           reconnect(state)
         }
       })
-    }, RETRY_DELAYS[state.retry++])
+    }, reconnectBackoffDelayMs(state.retry++, RETRY_BACKOFF))
   }
 
   const dial = (state: TerminalState) => dialTerminal(state, {
@@ -506,7 +513,7 @@ export function createBrowserTerminal(options: BrowserTerminalOptions): Terminal
         cols: Math.max(2, Math.round(startOptions?.cols || 80)),
         rows: Math.max(2, Math.round(startOptions?.rows || 24)),
         socket: null, generation: 0, stopped: false, status: 'reconnecting',
-        retry: 0, retryTimer: 0, stableTimer: 0, pendingData: [],
+        retry: 0, retryTimer: 0, openedAt: null, pendingData: [],
         dataListeners: new Set(), exit: null, exitListeners: new Set(), stateListeners: new Set()
       }
 

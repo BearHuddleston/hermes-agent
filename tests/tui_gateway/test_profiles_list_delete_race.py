@@ -618,7 +618,7 @@ def test_named_launch_home_sessions_capture_the_launch_incarnation(
     assert record["profile_home"] is None
     assert record["profile_incarnation"] == incarnation
     assert srv._profile_home_rejected(None, incarnation) is False
-    assert srv._profile_home_rejected(None, None) is True
+    assert srv._profile_home_rejected(None, None, require_incarnation=True) is True
 
 
 def test_delete_retry_recovers_incarnation_after_partial_rmtree(
@@ -882,13 +882,12 @@ def test_named_profile_sessiondb_never_mkdir_after_validation_race(
     profile_dir.mkdir(parents=True)
     SessionDB(db_path=db_path).close()
 
-    def remove_after_validation(_home: Path) -> bool:
+    def remove_after_validation(_home: Path) -> None:
         shutil.rmtree(profile_dir)
-        return False
 
     monkeypatch.setattr(
         hermes_state,
-        "named_profile_home_is_unavailable",
+        "assert_named_profile_home_available",
         remove_after_validation,
     )
 

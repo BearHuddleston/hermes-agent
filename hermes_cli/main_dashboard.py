@@ -14,7 +14,7 @@ import sys
 from pathlib import Path
 from typing import NoReturn
 from hermes_cli.cli_output import line_input
-from hermes_cli.process_identity import is_desktop_owned_backend as _is_desktop_owned_backend
+from hermes_cli.process_identity import WEB_SERVER_PURPOSES, is_desktop_owned_backend as _is_desktop_owned_backend
 
 _PRE_BUILD_HINT = "  Pre-build first:  npm install --workspace web && npm run build -w web"
 
@@ -44,13 +44,10 @@ def _find_stale_dashboard_pids(*, exclude_pids: set[int] | None = None,
 
 def _parse_dashboard_runtime(command: str) -> tuple[str, str, int] | None:
     """Best-effort parse of a dashboard/server cmdline into mode, host, and port."""
-    try:
-        from hermes_cli.update_cmd_windows import _hermes_holder_subcommand
+    from hermes_cli.update_cmd_windows import _hermes_holder_subcommand
 
-        mode = _hermes_holder_subcommand(command)
-    except Exception:
-        mode = None
-    if mode not in {"dashboard", "webapp", "serve"}:
+    mode = _hermes_holder_subcommand(command)
+    if mode not in WEB_SERVER_PURPOSES:
         return None
 
     port = 9119
@@ -508,7 +505,7 @@ def _report_dashboard_status(*, modes: set[str] | None = None) -> int:
     from gateway.status import _pid_exists
     from hermes_cli.dashboard_procs import _scan_dashboard_processes
 
-    accepted_modes = {"dashboard", "serve", "webapp"} if modes is None else modes
+    accepted_modes = WEB_SERVER_PURPOSES if modes is None else modes
     live: list[tuple[int, str, str]] = []
     for pid, command in _scan_dashboard_processes():
         runtime = _parse_dashboard_runtime(command)
@@ -780,11 +777,15 @@ def cmd_webapp(args):
         from hermes_constants import get_hermes_home
 
         own_home = str(get_hermes_home())
-        webapp_pids = set(_pids_owned_by_hermes_home([
-            pid
-            for pid, command in _scan_dashboard_processes()
-            if (_parse_dashboard_runtime(command) or (None, "", 0))[0] == "webapp"
-        ], own_home))
+
+        def _webapp_pids() -> list[int]:
+            return _pids_owned_by_hermes_home([
+                pid
+                for pid, command in _scan_dashboard_processes()
+                if (_parse_dashboard_runtime(command) or (None, "", 0))[0] == "webapp"
+            ], own_home)
+
+        webapp_pids = set(_webapp_pids())
         if not webapp_pids:
             print("No Hermes Webapp processes running for this profile.")
             raise SystemExit(0)
@@ -793,12 +794,7 @@ def cmd_webapp(args):
             include_pids=webapp_pids,
             scope_home=own_home,
         )
-        remaining = _pids_owned_by_hermes_home([
-            pid
-            for pid, command in _scan_dashboard_processes()
-            if (_parse_dashboard_runtime(command) or (None, "", 0))[0] == "webapp"
-        ], own_home)
-        raise SystemExit(1 if remaining else 0)
+        raise SystemExit(1 if _webapp_pids() else 0)
 
     from hermes_cli.webapp import (
         WebappBuildError,

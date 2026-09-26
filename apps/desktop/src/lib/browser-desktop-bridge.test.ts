@@ -4,6 +4,7 @@ import { reconnectMovedCloudAgent } from '@/app/settings/cloud-team-change'
 import { $connection } from '@/store/session'
 
 import { installBrowserDesktopBridge } from './browser-desktop-bridge'
+import { desktopGit } from './desktop-git'
 import { downloadGatewayMediaFile, resolveMediaPlaybackSrc } from './media'
 
 type MutableWindow = Window & {
@@ -421,7 +422,7 @@ describe('browser-hosted Desktop bridge', () => {
     const win = mutableWindow()
     win.__HERMES_SESSION_TOKEN__ = 'served-token'
     win.__HERMES_BASE_PATH__ = '/hermes'
-    window.history.replaceState(null, '', '/hermes/?profile=launch-profile#/')
+    $connection.set({ profile: 'launch-profile' } as never)
 
     const worktrees = [{ branch: 'main', detached: false, isMain: true, locked: false, path: '/srv/my repo' }]
 
@@ -433,7 +434,7 @@ describe('browser-hosted Desktop bridge', () => {
 
     vi.stubGlobal('fetch', fetchMock)
     expect(installBrowserDesktopBridge()).toBe(true)
-    const git = win.hermesDesktop!.git!
+    const git = desktopGit()!
 
     await expect(git.worktreeList('/srv/my repo')).resolves.toEqual(worktrees)
     const [listUrl, listInit] = fetchMock.mock.calls[0] as [URL, RequestInit]

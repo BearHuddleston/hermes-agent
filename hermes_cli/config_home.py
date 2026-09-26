@@ -76,10 +76,10 @@ def _ensure_directory(
 
 
 def initialize_home(
-    home: Path, subdirs: tuple[str, ...], ensured: dict[str, tuple[int, int, int, str | None]],
+    home: Path, subdirs: tuple[str, ...], ensured: dict[str, tuple[int, int, str | None]],
 ) -> None:
     from hermes_cli.config import _ensure_default_soul_md, _hermes_home_identity, is_managed
-    from hermes_constants import named_profile_home_is_unavailable, profile_deletion_marker_path
+    from hermes_constants import assert_named_profile_home_available, profile_deletion_marker_path
 
     named_profile = profile_deletion_marker_path(home) is not None
     if named_profile and not home.is_dir():
@@ -99,15 +99,15 @@ def initialize_home(
         )
         required = ("cron", "sessions", "logs", "memories") if managed else subdirs
         for subdir in required:
-            if named_profile and named_profile_home_is_unavailable(home):
-                raise FileNotFoundError(f"Named profile home is missing or being deleted: {home}")
+            if named_profile:
+                assert_named_profile_home_available(home)
             # A stale initializer must not recreate a deleted profile's parents.
             _ensure_directory(
                 directory_home / subdir, create=not managed, secure=not managed, home=directory_home, parents=not named_profile,
             )
         if managed:
-            if named_profile and named_profile_home_is_unavailable(home):
-                raise FileNotFoundError(f"Named profile home is missing or being deleted: {home}")
+            if named_profile:
+                assert_named_profile_home_available(home)
             _ensure_directory(
                 directory_home / "logs" / "curator", create=True, secure=False, home=directory_home, parents=not named_profile,
             )
@@ -127,12 +127,10 @@ def initialize_home(
         )
         for alias in aliases
     }
-    # Initialization changes ctime, but must not credit a replacement generation.
+    # Never credit a generation that replaced the home during initialization.
     # A tokenless named home cannot prove completion for either spelling.
     for alias, before in initial_identities.items():
-        after = identities[alias]
-        if (before is None or after is None or before[:2] != after[:2]
-                or before[3] != after[3]):
+        if before is None or before != identities[alias]:
             return
     for alias, identity in identities.items():
         if identity is not None:

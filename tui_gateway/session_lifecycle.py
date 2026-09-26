@@ -547,22 +547,23 @@ def _teardown_popped_session(
     return settled
 
 
-_PROFILE_INCARNATION_UNSET = object()
+def _discard_agent(agent) -> None:
+    """Close a built agent that will not be published; a failing close must not mask the caller's outcome."""
+    if agent is not None:
+        with contextlib.suppress(Exception):
+            agent.close()
 
 
 def _profile_home_rejected(
     profile_home: Path | str | None,
-    profile_incarnation: str | None | object = _PROFILE_INCARNATION_UNSET,
+    profile_incarnation: str | None = None,
+    *,
+    require_incarnation: bool = False,
 ) -> bool:
-    effective_home = profile_home or _hermes_home
-    incarnation_required = profile_incarnation is not _PROFILE_INCARNATION_UNSET
-    expected_incarnation = (
-        profile_incarnation if isinstance(profile_incarnation, str) else None
-    )
     return _profile_lifecycle.rejected(
-        effective_home,
-        expected_incarnation,
-        require_incarnation=incarnation_required,
+        profile_home or _hermes_home,
+        profile_incarnation,
+        require_incarnation=require_incarnation,
     )
 
 

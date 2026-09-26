@@ -17,9 +17,6 @@ import secrets
 import shutil
 import subprocess
 import tempfile
-import time
-
-
 
 _DIST_NAME = "dist-webapp"
 _STAMP_NAME = "desktop-webapp-build-stamp.json"
@@ -27,6 +24,17 @@ _STAMP_NAME = "desktop-webapp-build-stamp.json"
 # Webapp installs dependencies in a private copy; native node_modules stays intact.
 _LOCK_NAME = ".web_ui_build.lock"
 _LOCK_WAIT_SECONDS = 30 * 60
+# Install the locked workspace graph without native lifecycle scripts.
+_WORKSPACE_INSTALL_ARGS = (
+    "ci",
+    "--workspaces",
+    "--include-workspace-root",
+    "--include=dev",
+    "--ignore-scripts",
+    "--no-audit",
+    "--no-fund",
+    "--prefer-offline",
+)
 
 
 class WebappBuildError(RuntimeError):
@@ -37,14 +45,18 @@ def webapp_dist_dir(project_root: Path) -> Path:
     return project_root / "apps" / "desktop" / _DIST_NAME
 
 
-def _desktop_source_files(project_root: Path):
-    """Renderer inputs in a stable order, pruning ``.gitignore`` matches."""
+def _gitignore_spec(project_root: Path):
     from pathspec import PathSpec
 
     ignore_file = project_root / ".gitignore"
-    spec = PathSpec.from_lines(
+    return PathSpec.from_lines(
         "gitignore", ignore_file.read_text(encoding="utf-8").splitlines() if ignore_file.is_file() else []
     )
+
+
+def _desktop_source_files(project_root: Path):
+    """Renderer inputs in a stable order, pruning ``.gitignore`` matches."""
+    spec = _gitignore_spec(project_root)
 
     def ignored(path: Path, *, directory: bool = False) -> bool:
         relative = path.relative_to(project_root).as_posix()
@@ -85,48 +97,27 @@ def _stamp_path() -> Path:
     return get_default_hermes_root() / _STAMP_NAME
 
 
-def _build_needed(project_root: Path, *, force: bool = False) -> bool:
-    dist = webapp_dist_dir(project_root)
-    if force or not (dist / "index.html").is_file():
+def _build_needed(project_root: Path, content_hash: str, *, force: bool = False) -> bool:
+    if force or not (webapp_dist_dir(project_root) / "index.html").is_file():
         return True
-
-    stamp = _stamp_path()
     try:
-        payload = json.loads(stamp.read_text(encoding="utf-8"))
+        payload = json.loads(_stamp_path().read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return True
-
-    saved_hash = str(payload.get("contentHash") or "")
-    return not saved_hash or saved_hash != _compute_desktop_content_hash(
-        project_root
-    )
+    return str(payload.get("contentHash") or "") != content_hash
 
 
-def _write_stamp(project_root: Path) -> None:
+def _write_stamp(content_hash: str) -> None:
     stamp = _stamp_path()
     payload = {
         "builtAt": datetime.now(timezone.utc).isoformat(),
-        "contentHash": _compute_desktop_content_hash(project_root),
+        "contentHash": content_hash,
         "surface": "desktop-webapp",
     }
     stamp.parent.mkdir(parents=True, exist_ok=True)
     pending = stamp.with_suffix(".tmp")
     pending.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
     os.replace(pending, stamp)
-
-
-def _workspace_install_args() -> tuple[str, ...]:
-    """Install the locked workspace graph without native lifecycle scripts."""
-    return (
-        "ci",
-        "--workspaces",
-        "--include-workspace-root",
-        "--include=dev",
-        "--ignore-scripts",
-        "--no-audit",
-        "--no-fund",
-        "--prefer-offline",
-    )
 
 
 def _build_env() -> dict[str, str]:
@@ -160,24 +151,6 @@ def _run_npm(argv: list[str], label: str, *, cwd: Path, env: dict[str, str]) -> 
         raise WebappBuildError(f"{label} failed: {exc}") from exc
 
 
-def _try_file_lock(handle) -> bool:
-    try:
-        handle.seek(0)
-        if os.name == "nt":
-            import msvcrt
-
-            getattr(msvcrt, "locking")(
-                handle.fileno(), getattr(msvcrt, "LK_NBLCK"), 1
-            )
-        else:
-            import fcntl
-
-            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-        return True
-    except (BlockingIOError, OSError):
-        return False
-
-
 def _unlock_file(handle) -> None:
     try:
         handle.seek(0)
@@ -198,34 +171,22 @@ def _unlock_file(handle) -> None:
 @contextmanager
 def _exclusive_build_lock(path: Path):
     """Cross-platform exclusive lock for one renderer generation."""
+    from pm.filesystem import lock_fd
+
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
         handle = path.open("a+b")
     except OSError as exc:
         raise WebappBuildError(f"Could not open Webapp build lock {path}: {exc}") from exc
 
-    windows = os.name == "nt"
-    deadline = time.monotonic() + _LOCK_WAIT_SECONDS
-    announced = False
     try:
-        if windows:
-            handle.seek(0, os.SEEK_END)
-            if handle.tell() == 0:
-                handle.write(b"\0")
-                handle.flush()
-
-        while True:
-            if _try_file_lock(handle):
-                break
-            if time.monotonic() >= deadline:
-                raise WebappBuildError(
-                    f"Timed out waiting for another Webapp build ({path})"
-                )
-            if not announced:
+        try:
+            if not lock_fd(handle.fileno(), wait=False):
                 print("→ Another Hermes Webapp build is running; waiting for it...")
-                announced = True
-            time.sleep(0.1)
-
+                if not lock_fd(handle.fileno(), wait=True, timeout=_LOCK_WAIT_SECONDS):
+                    raise WebappBuildError(f"Timed out waiting for another Webapp build ({path})")
+        except OSError as exc:
+            raise WebappBuildError(f"Could not lock Webapp build {path}: {exc}") from exc
         yield
     finally:
         _unlock_file(handle)
@@ -264,14 +225,10 @@ def _publish_dist(staging: Path, dist: Path) -> None:
 @contextmanager
 def _private_build_workspace(project_root: Path):
     """Copy renderer inputs so npm cannot prune the native installation."""
-    from pathspec import PathSpec
     from hermes_constants import get_scratch_dir
 
     manifest = json.loads((project_root / "package.json").read_text(encoding="utf-8"))
-    ignore_file = project_root / ".gitignore"
-    spec = PathSpec.from_lines(
-        "gitignore", ignore_file.read_text(encoding="utf-8").splitlines() if ignore_file.is_file() else []
-    )
+    spec = _gitignore_spec(project_root)
 
     def ignore(directory, names):
         parent = Path(directory)
@@ -304,7 +261,10 @@ def _private_build_workspace(project_root: Path):
 
 def _do_build(project_root: Path, *, force: bool) -> Path:
     dist = webapp_dist_dir(project_root)
-    if not _build_needed(project_root, force=force):
+    # Stamp the sources this build starts from: outputs are gitignored, so the tree
+    # hashes the same afterwards unless it was edited mid-build.
+    content_hash = _compute_desktop_content_hash(project_root)
+    if not _build_needed(project_root, content_hash, force=force):
         print(f"✓ Hermes Webapp renderer is up to date: {dist}")
         return dist
 
@@ -319,7 +279,7 @@ def _do_build(project_root: Path, *, force: bool) -> Path:
     try:
         with _private_build_workspace(project_root) as workspace:
             _run_npm(
-                [*npm, *_workspace_install_args()],
+                [*npm, *_WORKSPACE_INSTALL_ARGS],
                 "Browser-renderer dependency install",
                 cwd=workspace,
                 env=install_env,
@@ -341,7 +301,7 @@ def _do_build(project_root: Path, *, force: bool) -> Path:
                 pass
 
     try:
-        _write_stamp(project_root)
+        _write_stamp(content_hash)
     except OSError as exc:
         # The artifact is authoritative; a read-only/contended cache directory
         # only means the next launch recomputes its content hash.

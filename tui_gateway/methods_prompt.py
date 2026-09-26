@@ -723,6 +723,7 @@ def _(rid, params: dict) -> dict:
         if _profile_home_rejected(
             profile_home,
             profile_incarnation,
+            require_incarnation=True,
         ) or not _session_images_dir(session).parent.is_dir():
             return _err(
                 rid,

@@ -21,19 +21,18 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Optional, Sequence
 
-from utils import atomic_json_write
-
 logger = logging.getLogger(__name__)
 
 SPAWN_ENV_VAR = "HERMES_SPAWN"
 _TAG_VERSION = "v1"
 LEDGER_FILENAME = "spawn-ledger.json"
 
+#: The one web-server stack's launch surfaces: the ``hermes serve|dashboard|webapp`` subcommand,
+#: its ledger purpose and the server's ``ui_surface`` all use this vocabulary.
+WEB_SERVER_PURPOSES = frozenset({"serve", "dashboard", "webapp"})
 #: Purposes a reaper may treat as "safe to kill when the owner is gone".
 #: Interactive processes (chat, REPLs) are deliberately NOT in this set.
-REAPABLE_PURPOSES = frozenset(
-    {"serve", "dashboard", "webapp", "gateway", "mcp-helper"}
-)
+REAPABLE_PURPOSES = WEB_SERVER_PURPOSES | {"gateway", "mcp-helper"}
 
 _IS_WINDOWS = platform.system() == "Windows"
 
@@ -302,6 +301,7 @@ def _append_entry(entry: LedgerEntry) -> bool:
         pruned.append(asdict(entry))
         try:
             from hermes_constants import mkdir_under_hermes_home
+            from utils import atomic_json_write
             mkdir_under_hermes_home(path.parent)
             # argv may carry surrogate-escaped bytes (non-UTF-8 paths); ensure_ascii keeps the
             # utf-8 text handle from raising UnicodeEncodeError (a ValueError, not an OSError).

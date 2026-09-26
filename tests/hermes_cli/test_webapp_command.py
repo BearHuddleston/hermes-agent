@@ -69,14 +69,16 @@ def test_desktop_content_hash_tracks_shared_source(tmp_path: Path):
 
 
 def _assert_build_lock_excludes_second_open(tmp_path: Path):
+    from pm.filesystem import lock_fd
+
     lock_path = tmp_path / "webapp.lock"
 
     with webapp._exclusive_build_lock(lock_path):
         with lock_path.open("a+b") as contender:
-            assert webapp._try_file_lock(contender) is False
+            assert lock_fd(contender.fileno(), wait=False) is False
 
     with lock_path.open("a+b") as contender:
-        assert webapp._try_file_lock(contender) is True
+        assert lock_fd(contender.fileno(), wait=False) is True
         webapp._unlock_file(contender)
 
 

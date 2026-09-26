@@ -5,7 +5,6 @@ import json
 import logging
 import os
 import re
-import secrets
 import shlex
 import shutil
 import stat
@@ -15,12 +14,12 @@ import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Callable, Dict, List, Optional, Tuple
 
 from hermes_cli.archive_safe import archive_root_dirs, make_targz, normalize_archive_parts, safe_extract_targz
 from hermes_cli.profile_incarnation import (
-    PROFILE_INCARNATION_FILENAME, ensure_profile_incarnation, read_profile_deletion_incarnation,
-    read_profile_incarnation, write_fresh_profile_incarnation)
+    PROFILE_INCARNATION_FILENAME, ensure_profile_incarnation, profile_incarnation_lease,
+    read_profile_deletion_incarnation, read_profile_incarnation, write_fresh_profile_incarnation)
 from hermes_cli.profile_lifecycle import (
     begin_profile_retirement,
     create_profile_generation,
@@ -1320,11 +1319,10 @@ def _prepare_profile_creation_target(canon: str, profile_dir: Path) -> None:
 
 
 def _initialize_profile(
-    name: str, clone_from: Optional[str] = None, clone_all: bool = False, clone_config: bool = False,
-    no_alias: bool = False, no_skills: bool = False, description: Optional[str] = None,
-    clone_channels: bool = False, sync_imports: bool = False,
-    *, _target_dir: Path, source_dir: Optional[Path],
-) -> Path:
+    canon: str, profile_dir: Path, source_dir: Optional[Path], *, clone_from: Optional[str],
+    clone_all: bool, clone_config: bool, no_skills: bool, description: Optional[str],
+    clone_channels: bool, sync_imports: bool,
+) -> None:
     """Initialize a staged profile directory before publication.
 
     ``clone_from`` defaults to the active profile when cloning. ``clone_all`` copies all state;
@@ -1348,12 +1346,6 @@ def _initialize_profile(
     cloning = clone_from is not None or clone_all or clone_config
     if clone_channels and not cloning:
         raise ValueError("--clone-channels only applies to a clone (--clone, --clone-from or --clone-all).")
-    canon = _canon_valid(name)
-    if canon == "default":
-        raise ValueError("Cannot create a profile named 'default' — it is the built-in profile (~/.hermes).")
-    profile_dir = _target_dir
-    if profile_dir.exists():
-        raise _profile_exists_error(canon)
     if source_dir is not None and clone_channels:
         from hermes_cli.profile_channels import clone_channels_refusal
         refusal = clone_channels_refusal(source_dir, clone_from or get_active_profile_name() or "default")
@@ -1371,7 +1363,6 @@ def _initialize_profile(
     _finish_profile_layout(profile_dir, no_skills=no_skills, clone_all=clone_all, description=description)
     # A clone is a new lifecycle object, never a copy of the source generation's authority.
     write_fresh_profile_incarnation(profile_dir)
-    return profile_dir
 
 
 def _finish_profile_layout(profile_dir: Path, *, no_skills: bool, clone_all: bool,
@@ -1420,8 +1411,9 @@ def create_profile(
     sync_imports: bool = False,
 ) -> Path:
     """Build a named profile behind a tombstone, then publish it atomically."""
-    canon = normalize_profile_name(name)
-    validate_profile_name(canon)
+    canon = _canon_valid(name)
+    if canon == "default":
+        raise ValueError("Cannot create a profile named 'default' — it is the built-in profile (~/.hermes).")
     profile_dir = get_profile_dir(canon)
     cloning = clone_from is not None or clone_all or clone_config
     source_dir = _resolve_clone_source(clone_from) if cloning else None
@@ -1429,34 +1421,19 @@ def create_profile(
     with profile_lifecycle_lease(*homes):
         # Validate the source after acquiring BOTH names: a clone must never
         # read through a concurrent source retirement or replacement.
-        from hermes_cli.profile_incarnation import profile_incarnation_lease
-
         with contextlib.ExitStack() as source_lease:
             if source_dir is not None:
                 source_lease.enter_context(profile_incarnation_lease(source_dir))
             _prepare_profile_creation_target(canon, profile_dir)
 
-            def initialize(staging_dir: Path) -> Path:
-                return _initialize_profile(
-                    name,
-                    clone_from=clone_from,
-                    clone_all=clone_all,
-                    clone_config=clone_config,
-                    no_alias=no_alias,
-                    no_skills=no_skills,
-                    description=description,
-                    clone_channels=clone_channels,
-                    sync_imports=sync_imports,
-                    _target_dir=staging_dir,
-                    source_dir=source_dir,
+            def initialize(staging_dir: Path) -> None:
+                _initialize_profile(
+                    canon, staging_dir, source_dir, clone_from=clone_from, clone_all=clone_all,
+                    clone_config=clone_config, no_skills=no_skills, description=description,
+                    clone_channels=clone_channels, sync_imports=sync_imports,
                 )
 
-            create_profile_generation(
-                canon,
-                profile_dir,
-                _get_profiles_root(),
-                initialize,
-            )
+            create_profile_generation(canon, profile_dir, _get_profiles_root(), initialize)
         _maybe_register_gateway_service(canon)
         # A running multiplexer enumerates profiles/ at boot: ask it to serve this one now (it also
         # rescans periodically, so a missed signal only delays serving).
@@ -1638,6 +1615,30 @@ def _profile_bound_backend_pids(canon: str, profile_dir: Path) -> list[tuple[int
     return identities
 
 
+def _wait_then_force_kill(
+    pids: List[int], *, alive: Callable[[int], bool],
+    start_times: Optional[Dict[int, Optional[float]]] = None, wait: float = 10.0,
+) -> bool:
+    """After a graceful ``terminate_pid``, poll ``alive(pid)`` (the caller's identity check, so a
+    recycled PID never reads as a straggler) every 0.5s for up to *wait* seconds, then force-kill
+    stragglers. True when every pid exited without one. ``start_times`` pins each force kill to
+    the incarnation seen before the graceful signal; without it the start time is read at kill
+    time and a pid whose identity is then unprovable is never force-killed."""
+    from gateway.status import get_process_start_time, terminate_pid
+    stragglers = [pid for pid in pids if alive(pid)]
+    for _ in range(int(wait / 0.5)):
+        if not stragglers:
+            return True
+        time.sleep(0.5)
+        stragglers = [pid for pid in stragglers if alive(pid)]
+    for pid in stragglers:
+        with contextlib.suppress(OSError):  # includes ProcessLookupError / PermissionError
+            if start_times is not None:
+                expected_start_time = start_times.get(pid)
+            elif (expected_start_time := get_process_start_time(pid)) is None or not alive(pid):
+                continue
+            terminate_pid(pid, force=True, expected_start_time=expected_start_time)
+    return not stragglers
 
 
 def _stop_profile_backends(canon: str, profile_dir: Path) -> None:
@@ -1655,55 +1656,30 @@ def _stop_profile_backends(canon: str, profile_dir: Path) -> None:
 
     try:
         import psutil  # type: ignore
-        from gateway.status import (
-            get_process_start_time,
-            terminate_pid as _terminate_pid,
-        )
+        from gateway.status import terminate_pid
     except Exception:
         return
+    ledger_created = dict(identities)
 
-    def _identity_alive(identity: tuple[int, float]) -> bool:
-        pid, expected_created = identity
+    def _identity_alive(pid: int) -> bool:
         try:
             actual_created = float(psutil.Process(pid).create_time())
         except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess, OSError):
             return False
-        return abs(actual_created - expected_created) <= 0.001
+        return abs(actual_created - ledger_created[pid]) <= 0.001
 
-    signaled: list[tuple[int, float]] = []
-    for identity in identities:
-        pid, _created = identity
-        if not _identity_alive(identity):
+    signaled: list[int] = []
+    for pid in ledger_created:
+        if not _identity_alive(pid):
             continue
         try:
-            _terminate_pid(pid)  # graceful first
-            signaled.append(identity)
+            terminate_pid(pid)  # graceful first
+            signaled.append(pid)
         except (ProcessLookupError, PermissionError, OSError):
             continue
 
-    # Wait up to 10s for graceful exit, then force-kill stragglers.
-    deadline = time.time() + 10.0
-    while time.time() < deadline:
-        if not any(_identity_alive(identity) for identity in signaled):
-            break
-        time.sleep(0.5)
-
-    for identity in signaled:
-        pid, _created = identity
-        if _identity_alive(identity):
-            try:
-                expected_start_time = get_process_start_time(pid)
-                if expected_start_time is None or not _identity_alive(identity):
-                    continue
-                _terminate_pid(
-                    pid,
-                    force=True,
-                    expected_start_time=expected_start_time,
-                )
-            except (ProcessLookupError, PermissionError, OSError):
-                pass
-
     if signaled:
+        _wait_then_force_kill(signaled, alive=_identity_alive)
         print(f"✓ Stopped {len(signaled)} profile backend process(es)")
 
 
@@ -2073,12 +2049,9 @@ def _cleanup_gateway_service(name: str, profile_dir: Path) -> None:
 
 def _stop_gateway_process(profile_dir: Path) -> None:
     """Stop the positively identified gateway named by its runtime-locked PID file."""
-    import time as _time
-
     pid_file = profile_dir / "gateway.pid"
     if not pid_file.exists():
         return
-
     try:
         from gateway.status import (
             get_process_start_time,
@@ -2111,22 +2084,15 @@ def _stop_gateway_process(profile_dir: Path) -> None:
         # and raw os.kill with SIGTERM doesn't cascade to child processes
         # the same way taskkill /T does.
         _terminate_pid(pid)  # graceful first
-        # Wait up to 10s for graceful shutdown. On Windows, os.kill(pid, 0)
-        # is NOT a no-op — use the handle-based existence check.
-        for _ in range(20):
-            _time.sleep(0.5)
-            if get_running_pid(pid_file, cleanup_stale=False) != pid:
-                print(f"✓ Gateway stopped (PID {pid})")
-                return
-        # Force kill
-        if get_running_pid(pid_file, cleanup_stale=False) != pid:
+        # On Windows os.kill(pid, 0) is NOT a no-op: liveness is the runtime-locked record.
+        if _wait_then_force_kill(
+            [pid],
+            alive=lambda p: get_running_pid(pid_file, cleanup_stale=False) == p,
+            start_times={pid: expected_start_time},
+        ):
             print(f"✓ Gateway stopped (PID {pid})")
-            return
-        try:
-            _terminate_pid(pid, force=True, expected_start_time=expected_start_time)
-        except (ProcessLookupError, OSError):
-            pass
-        print(f"✓ Gateway force-stopped (PID {pid})")
+        else:
+            print(f"✓ Gateway force-stopped (PID {pid})")
     except (ProcessLookupError, PermissionError):
         print("✓ Gateway already stopped")
     except Exception as e:

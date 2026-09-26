@@ -591,8 +591,8 @@ def _kernel_lock(lock_file: Any, acquire: bool) -> None:
 def _ensure_auth_write_parent(path: Path) -> None:
     """Prepare an auth/config parent without recreating a named profile home."""
     from hermes_constants import (
+        assert_named_profile_home_available,
         mkdir_under_hermes_home,
-        named_profile_home_is_unavailable,
         profile_deletion_marker_path,
     )
 
@@ -608,14 +608,12 @@ def _ensure_auth_write_parent(path: Path) -> None:
         # Explicit global/shared stores are outside the active named home.
         mkdir_under_hermes_home(parent)
         return
-    if named_profile_home_is_unavailable(home):
-        raise FileNotFoundError(f"Named profile home is missing or being deleted: {home}")
+    assert_named_profile_home_available(home)
     if parent != home and not parent.is_dir():
         # Never create the managed profile root itself. Nested auth directories
         # may be created only while their already-published parent exists.
         parent.mkdir(parents=False, exist_ok=True)
-    if not home.is_dir() or named_profile_home_is_unavailable(home):
-        raise FileNotFoundError(f"Named profile home is missing or being deleted: {home}")
+    assert_named_profile_home_available(home)
 
 
 @contextmanager

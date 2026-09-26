@@ -47,6 +47,15 @@ const SNAPSHOT_THROTTLE_MS = 750
 // already reads off the next output snapshot anyway.
 const CWD_PROBE_THROTTLE_MS = 2000
 
+// Status line written when a persistent PTY stream ends, keyed by exit signal.
+const TERMINAL_EXIT_MESSAGES: Record<string, string> = {
+  disconnected: 'Terminal disconnected. Press Enter to reconnect to the same shell.',
+  expired: 'Terminal expired or exited. Press Enter to create a new shell.',
+  superseded: 'Terminal is attached in another window. Press Enter to take it back.',
+  denied: 'Terminal access denied. Check your sign-in and profile, then press Enter to retry.',
+  capacity: 'Terminal capacity reached. Close another terminal, then press Enter to retry.'
+}
+
 // True once the page/app is tearing down (Cmd+Q, Alt+F4, window close, reload).
 // App quit kills the PTYs from the main process, which fires onExit in the
 // renderer — but React skips effect cleanups on teardown, so the per-instance
@@ -905,11 +914,7 @@ export function useTerminalSession({
       hasSessionActivityRef.current = true
     })
 
-    const onCompositionStart = () => {
-      hasSessionActivityRef.current = true
-    }
-
-    const onBeforeInput = () => {
+    const markActivity = () => {
       hasSessionActivityRef.current = true
     }
 
@@ -925,8 +930,8 @@ export function useTerminalSession({
       }
     }
 
-    host.addEventListener('beforeinput', onBeforeInput)
-    host.addEventListener('compositionstart', onCompositionStart)
+    host.addEventListener('beforeinput', markActivity)
+    host.addEventListener('compositionstart', markActivity)
     host.addEventListener('pointerdown', onPointerActivity)
     host.addEventListener('wheel', onWheelActivity)
 
@@ -951,8 +956,8 @@ export function useTerminalSession({
     cleanup.push(
       () => keyDisposable.dispose(),
       () => dataDisposable.dispose(),
-      () => host.removeEventListener('beforeinput', onBeforeInput),
-      () => host.removeEventListener('compositionstart', onCompositionStart),
+      () => host.removeEventListener('beforeinput', markActivity),
+      () => host.removeEventListener('compositionstart', markActivity),
       () => host.removeEventListener('pointerdown', onPointerActivity),
       () => host.removeEventListener('wheel', onWheelActivity)
     )
@@ -1104,18 +1109,9 @@ export function useTerminalSession({
 
               if (persistent && exit.signal) {
                 setStatus('closed')
-
-                const messages: Record<string, string> = {
-                  disconnected: 'Terminal disconnected. Press Enter to reconnect to the same shell.',
-                  expired: 'Terminal expired or exited. Press Enter to create a new shell.',
-                  superseded: 'Terminal is attached in another window. Press Enter to take it back.',
-                  denied: 'Terminal access denied. Check your sign-in and profile, then press Enter to retry.',
-                  capacity: 'Terminal capacity reached. Close another terminal, then press Enter to retry.'
-                }
-
                 resumeOnly = exit.signal !== 'expired'
                 retrySession = startSession
-                term.write(`\r\n${messages[exit.signal] || 'Terminal disconnected. Press Enter to reconnect.'}\r\n`)
+                term.write(`\r\n${TERMINAL_EXIT_MESSAGES[exit.signal] || 'Terminal disconnected. Press Enter to reconnect.'}\r\n`)
 
                 return
               }
@@ -1181,7 +1177,7 @@ export function useTerminalSession({
 
           if (expired) {
             resumeOnly = false
-            term.write('Terminal expired or exited. Press Enter to create a new shell.\r\n')
+            term.write(`${TERMINAL_EXIT_MESSAGES.expired}\r\n`)
           } else {
             term.write(`Terminal failed to start: ${error instanceof Error ? error.message : String(error)}. Press Enter to retry.\r\n`)
           }

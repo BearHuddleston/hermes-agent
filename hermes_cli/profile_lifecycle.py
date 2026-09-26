@@ -12,7 +12,6 @@ from __future__ import annotations
 
 from contextlib import ExitStack, contextmanager
 from functools import wraps
-import errno
 import hashlib
 import inspect
 import logging
@@ -27,6 +26,7 @@ import time
 from typing import Callable, Iterator
 
 from hermes_constants import get_default_hermes_root, profile_deletion_marker_path
+from pm.filesystem import lock_fd
 
 logger = logging.getLogger(__name__)
 
@@ -66,38 +66,20 @@ def _cross_process_profile_mutation_lock(lock_path: Path, *, deadline: float) ->
     lock_path.parent.mkdir(mode=directory_mode, parents=True, exist_ok=True)
     handle = open(lock_path, "a+b")
     try:
-        os.chmod(lock_path, file_mode)
-        os.chmod(lock_path.parent, directory_mode)
+        # Every lease (read paths included) lands here: stat first so a settled
+        # lock touches no metadata.
+        for path, mode in ((lock_path, file_mode), (lock_path.parent, directory_mode)):
+            if stat.S_IMODE(os.stat(path).st_mode) != mode:
+                os.chmod(path, mode)
     except OSError:
         pass
     acquired = False
     try:
-        while True:
-            try:
-                if sys.platform == "win32":
-                    import msvcrt
-
-                    handle.seek(0, os.SEEK_END)
-                    if handle.tell() == 0:
-                        handle.write(b"\0")
-                        handle.flush()
-                    handle.seek(0)
-                    msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
-                else:
-                    import fcntl
-
-                    fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-                acquired = True
-                break
-            except OSError as exc:
-                if exc.errno not in (errno.EACCES, errno.EAGAIN, errno.EDEADLK):
-                    raise
-                remaining = deadline - time.monotonic()
-                if remaining <= 0:
-                    raise TimeoutError(
-                        f"Timed out waiting for profile lifecycle lock: {lock_path}; retry the operation."
-                    ) from exc
-                time.sleep(min(0.05, remaining))
+        if not lock_fd(handle.fileno(), wait=True, timeout=max(0.0, deadline - time.monotonic())):
+            raise TimeoutError(
+                f"Timed out waiting for profile lifecycle lock: {lock_path}; retry the operation."
+            )
+        acquired = True
         yield
     finally:
         if acquired:
@@ -400,7 +382,7 @@ def create_profile_generation(
     canon: str,
     profile_dir: Path | str,
     profiles_root: Path | str,
-    initialize: Callable[[Path], Path],
+    initialize: Callable[[Path], None],
 ) -> Path:
     """Build a generation behind a tombstone and atomically publish it."""
     profile_dir = Path(profile_dir)
@@ -417,9 +399,7 @@ def create_profile_generation(
     incarnation: str | None = None
     try:
         staging_parent.mkdir(parents=True, exist_ok=False)
-        created = initialize(staging_dir)
-        if created != staging_dir:
-            raise RuntimeError(f"Profile initialization targeted unexpected path: {created}")
+        initialize(staging_dir)
         if profile_dir.exists():
             raise FileExistsError(f"Profile '{canon}' appeared during initialization")
         os.replace(staging_dir, profile_dir)

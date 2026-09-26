@@ -86,7 +86,6 @@ with contextlib.suppress(Exception):
     prefetch_update_check()
 
 from tui_gateway.profile_lifecycle import ProfileLifecycleFence
-from tui_gateway.session_lifecycle import _PROFILE_INCARNATION_UNSET
 from tui_gateway.render import make_stream_renderer, render_diff, render_message  # noqa: F401
 
 _sessions: dict[str, dict] = {}
@@ -568,23 +567,22 @@ def _profile_home(profile: str | None) -> Path | None:
         home = Path(profiles_mod.get_profile_dir(canon))
     except (TypeError, ValueError) as exc:
         raise ProfileUnavailableError(f"Profile '{name}' is invalid.") from exc
+    missing = f"Profile '{canon}' is missing or being deleted."
     if not home.is_dir():
-        raise ProfileUnavailableError(f"Profile '{canon}' is missing or being deleted.")
+        raise ProfileUnavailableError(missing)
     # Already the launch profile? No override needed.
     if home.resolve() == Path(_hermes_home).resolve():
         if _profile_home_rejected(home):
-            raise ProfileUnavailableError(f"Profile '{canon}' is missing or being deleted.")
+            raise ProfileUnavailableError(missing)
         return None
-    if profiles_mod.profile_home_is_tombstoned(home):
-        raise ProfileUnavailableError(f"Profile '{canon}' is missing or being deleted.")
-    if not profiles_mod.profile_exists(canon):
-        raise ProfileUnavailableError(f"Profile '{canon}' is missing or being deleted.")
+    if profiles_mod.profile_home_is_tombstoned(home) or not profiles_mod.profile_exists(canon):
+        raise ProfileUnavailableError(missing)
     try:
         profile_incarnation = _capture_profile_incarnation(home)
     except FileNotFoundError as exc:
-        raise ProfileUnavailableError(f"Profile '{canon}' is missing or being deleted.") from exc
-    if _profile_home_rejected(home, profile_incarnation):
-        raise ProfileUnavailableError(f"Profile '{canon}' is missing or being deleted.")
+        raise ProfileUnavailableError(missing) from exc
+    if _profile_home_rejected(home, profile_incarnation, require_incarnation=True):
+        raise ProfileUnavailableError(missing)
     if home not in _served_profile_homes:
         # This process now hosts a second profile home: freeze the launch env as the launch
         # profile's own and flip get_secret() to fail closed, so an unscoped read for a
@@ -1092,12 +1090,12 @@ def _attach_built_agent(sid: str, current: dict, agent) -> bool:
         publish = (
             _sessions.get(sid) is current
             and not current.get("_closing")
-            and not _profile_home_rejected(current.get("profile_home"), current.get("profile_incarnation")))
+            and not _profile_home_rejected(
+                current.get("profile_home"), current.get("profile_incarnation"), require_incarnation=True))
         if publish:
             current["agent"] = agent
     if not publish:
-        with contextlib.suppress(Exception):
-            agent.close()
+        _discard_agent(agent)
         return False
     # A workspace move can land while construction is still in flight.
     _register_session_cwd(current)
@@ -1170,17 +1168,10 @@ def _start_agent_build(sid: str, session: dict) -> None:
             return
         notify_registered, scopes, session_db = False, None, None
         profile_home = current.get("profile_home")
-        profile_incarnation_value = current.get(
-            "profile_incarnation",
-            _PROFILE_INCARNATION_UNSET,
-        )
-        profile_incarnation = (
-            profile_incarnation_value
-            if isinstance(profile_incarnation_value, str)
-            else None
-        )
+        profile_incarnation = current.get("profile_incarnation")
         try:
-            if _profile_home_rejected(profile_home, profile_incarnation_value):
+            if _profile_home_rejected(
+                    profile_home, profile_incarnation, require_incarnation="profile_incarnation" in current):
                 raise FileNotFoundError(
                     f"Profile incarnation is stale or home is unavailable: {profile_home or _hermes_home}")
             if not _await_resume_history(sid, current):
@@ -1232,6 +1223,7 @@ def _sess_nowait(params, rid):
         if _profile_home_rejected(
             s.get("profile_home"),
             s.get("profile_incarnation"),
+            require_incarnation=True,
         ):
             return (
                 None,
@@ -2651,15 +2643,11 @@ def _init_session(
         try:
             profile_incarnation = _capture_profile_incarnation(profile_home)
         except Exception:
-            with contextlib.suppress(Exception):
-                if agent is not None and hasattr(agent, "close"):
-                    agent.close()
+            _discard_agent(agent)
             raise
     with _sessions_lock:
-        if _profile_home_rejected(profile_home, profile_incarnation):
-            with contextlib.suppress(Exception):
-                if agent is not None and hasattr(agent, "close"):
-                    agent.close()
+        if _profile_home_rejected(profile_home, profile_incarnation, require_incarnation=True):
+            _discard_agent(agent)
             raise FileNotFoundError(
                 f"Profile home is missing or being deleted: {profile_home or _hermes_home}")
         _sessions[sid] = {
@@ -2685,9 +2673,7 @@ def _init_session(
             current = _sessions.get(sid)
             if current is not None and current.get("agent") is agent:
                 _sessions.pop(sid, None)
-        with contextlib.suppress(Exception):
-            if callable(close := getattr(agent, "close", None)):
-                close()
+        _discard_agent(agent)
         raise
     _register_session_cwd(_sessions[sid])
     _wire_session_agent(sid, key, agent)  # no eager slash-worker pre-warm (see _start_agent_build)
@@ -2790,6 +2776,7 @@ def _claim_or_reuse_live(sid: str, session_key: str, record: dict, lease) -> tup
             if _profile_home_rejected(
                 record.get("profile_home"),
                 record.get("profile_incarnation"),
+                require_incarnation=True,
             ):
                 if lease is not None:
                     lease.release()
@@ -2978,25 +2965,21 @@ def _session_lookup_key(session: dict, *, fallback: str = "") -> str:
 def _find_live_session_by_key(
     session_key: str,
     profile_home=_ANY_PROFILE,
-    profile_incarnation=_PROFILE_INCARNATION_UNSET,
+    profile_incarnation: str | None = None,
 ) -> tuple[str, dict] | None:
     # Stored session ids are timestamp-based and can legitimately exist in more
     # than one profile's store, so a bare-id match can hand profile B's resume
     # profile A's live runtime (#100029). Profile-aware callers pass the home
-    # they resolved; generation-aware callers also pass the incarnation so a
-    # stale runtime cannot hide a later winner for a recreated profile.
+    # AND incarnation they resolved, so a stale runtime cannot hide a later
+    # winner for a recreated profile.
     for sid, session in list(_sessions.items()):
         if session.get("_finalized"):
             continue
         if _session_lookup_key(session, fallback=sid) != session_key:
             continue
-        if profile_incarnation is _PROFILE_INCARNATION_UNSET:
-            if not _live_profile_matches(session, profile_home):
-                continue
-        elif (
-            not _live_profile_matches(session, profile_home)
-            or (session.get("profile_incarnation") or None) != profile_incarnation
-        ):
+        if not _live_profile_matches(session, profile_home):
+            continue
+        if profile_home is not _ANY_PROFILE and (session.get("profile_incarnation") or None) != profile_incarnation:
             continue
         return sid, session
     return None

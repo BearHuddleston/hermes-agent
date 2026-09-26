@@ -20,6 +20,20 @@ from hermes_constants import (
 )
 
 
+def _resolved(profile_home: Path | str) -> Path:
+    try:
+        return Path(profile_home).resolve()
+    except OSError:
+        return Path(profile_home)
+
+
+def _current_incarnation(profile_home: Path | str) -> str | None:
+    try:
+        return read_profile_incarnation(profile_home)
+    except (OSError, RuntimeError):
+        return None
+
+
 class ProfileLifecycleFence:
     """Track retired paths and incarnations inside one gateway process."""
 
@@ -32,10 +46,11 @@ class ProfileLifecycleFence:
 
     @staticmethod
     def key(profile_home: Path | str) -> str:
-        try:
-            return str(Path(profile_home).resolve())
-        except OSError:
-            return str(Path(profile_home))
+        return str(_resolved(profile_home))
+
+    def _retired_key(self, profile_home: Path | str) -> str | None:
+        """``key()`` costs a resolve(); with nothing retired in this process no key can match."""
+        return self.key(profile_home) if self.retired_homes or self.retired_incarnations else None
 
     def capture(self, profile_home: Path | str | None) -> str | None:
         if profile_home is None:
@@ -88,7 +103,7 @@ class ProfileLifecycleFence:
         *,
         require_incarnation: bool = False,
     ) -> bool:
-        key = self.key(profile_home)
+        key = self._retired_key(profile_home)
         with self._lock:
             # Old callbacks need no disk lease (and may hold the sessions lock
             # while a deleting thread owns the disk lease and waits for it).
@@ -111,9 +126,8 @@ class ProfileLifecycleFence:
         if named_marker is None:
             return False
         if expected_incarnation is None:
-            if require_incarnation:
-                return True
-            return False
+            return require_incarnation
+        key = key or self._retired_key(profile_home)
         with self._lock:
             if (key, expected_incarnation) in self.retired_incarnations:
                 return True
@@ -126,10 +140,7 @@ class ProfileLifecycleFence:
     ) -> None:
         key = self.key(profile_home)
         if incarnation is None:
-            try:
-                incarnation = read_profile_incarnation(profile_home)
-            except (OSError, RuntimeError):
-                incarnation = None
+            incarnation = _current_incarnation(profile_home)
         with self._lock:
             self.retired_homes.add(key)
             self._retired_home_incarnations[key] = incarnation
@@ -143,10 +154,7 @@ class ProfileLifecycleFence:
     ) -> None:
         key = self.key(profile_home)
         if incarnation is None:
-            try:
-                incarnation = read_profile_incarnation(profile_home)
-            except (OSError, RuntimeError):
-                incarnation = None
+            incarnation = _current_incarnation(profile_home)
         # Rollback of a failed delete admits the unchanged generation.  A
         # same-name recreate has a fresh token, so its call leaves the retired
         # predecessor tuple intact.
@@ -168,15 +176,8 @@ class ProfileLifecycleFence:
         close_launch_db: Callable[[], int],
     ) -> int:
         """Fence a profile and tear down every retained in-process session."""
-        try:
-            target = Path(profile_home).resolve()
-        except OSError:
-            target = Path(profile_home)
-        try:
-            resolved_launch_home = Path(launch_home).resolve()
-        except OSError:
-            resolved_launch_home = Path(launch_home)
-        retiring_launch_home = target == resolved_launch_home
+        target = _resolved(profile_home)
+        retiring_launch_home = target == _resolved(launch_home)
 
         def belongs(session: dict) -> bool:
             if retiring_launch_home and not session.get("profile_home"):
@@ -184,10 +185,7 @@ class ProfileLifecycleFence:
             raw = session.get("profile_home")
             if not raw:
                 return False
-            try:
-                return Path(raw).resolve() == target
-            except OSError:
-                return Path(raw) == target
+            return _resolved(raw) == target
 
         with sessions_lock:
             self.retire(target, incarnation)

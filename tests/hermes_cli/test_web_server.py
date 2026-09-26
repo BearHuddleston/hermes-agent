@@ -31,7 +31,6 @@ import hermes_cli.web_server_lifecycle as _web_server_lifecycle
 import hermes_cli.web_server_memory as _web_server_memory
 import hermes_cli.web_server_messaging as _web_server_messaging
 import hermes_cli.web_server_sessions as _web_server_sessions
-import hermes_cli.web_server_profiles as _web_server_profiles
 
 
 # ---------------------------------------------------------------------------
@@ -4580,6 +4579,7 @@ class TestPtyWebSocket:
     def test_webapp_shell_mode_uses_host_terminal_transport(self, monkeypatch, tmp_path):
         from fastapi import FastAPI
         from starlette.testclient import TestClient
+        from hermes_cli import web_host_terminal
         from hermes_cli.web_host_terminal_sessions import host_terminal_lifespan
         from hermes_cli.web_routers.chat_ws import router
 
@@ -4590,15 +4590,14 @@ class TestPtyWebSocket:
             raise AssertionError("browser terminal must not launch Hermes TUI")
 
         monkeypatch.setattr(
-            _web_server_chat,
-            "_resolve_host_terminal_argv",
-            lambda profile=None, requested_cwd=None: (
+            web_host_terminal,
+            "resolve_argv",
+            lambda home, requested_cwd=None: (
                 ["/bin/cat"],
                 str(tmp_path),
                 {"TERM": "xterm-256color"},
                 "cat",
             ),
-            raising=False,
         )
         monkeypatch.setattr(
             _web_server_chat,
@@ -4691,18 +4690,20 @@ class TestPtyWebSocket:
     def test_host_terminal_policy_rejects_dashboard_and_unauthenticated_public_bind(
         self, monkeypatch
     ):
+        from hermes_cli import web_host_terminal
+
         app = self.ws_module.app
         monkeypatch.setattr(app.state, "ui_surface", "dashboard", raising=False)
         monkeypatch.setattr(app.state, "bound_host", "127.0.0.1", raising=False)
         monkeypatch.setattr(app.state, "auth_required", False, raising=False)
-        assert _web_server_chat._host_terminal_request_allowed() is False
+        assert web_host_terminal.request_allowed() is False
 
         app.state.ui_surface = "webapp"
         app.state.bound_host = "0.0.0.0"
-        assert _web_server_chat._host_terminal_request_allowed() is False
+        assert web_host_terminal.request_allowed() is False
 
         app.state.auth_required = True
-        assert _web_server_chat._host_terminal_request_allowed() is True
+        assert web_host_terminal.request_allowed() is True
     def test_tui_python_command_uses_child_path(self, tmp_path):
         """Bare Python commands are resolved from the TUI child's PATH."""
 
@@ -4803,8 +4804,11 @@ class TestPtyWebSocket:
 
 
 def _assert_host_terminal_resolver_uses_real_host(tmp_path):
-    argv, cwd, env, shell_name = _web_server_chat._resolve_host_terminal_argv(
-        requested_cwd=str(tmp_path)
+    from hermes_cli import web_host_terminal
+    from hermes_constants import get_hermes_home
+
+    argv, cwd, env, shell_name = web_host_terminal.resolve_argv(
+        home=get_hermes_home(), requested_cwd=str(tmp_path)
     )
 
     assert argv
@@ -4819,6 +4823,8 @@ def _assert_host_terminal_resolver_uses_real_host(tmp_path):
 def test_host_terminal_resolver_applies_selected_profile_home_and_config(
     tmp_path, monkeypatch
 ):
+    from hermes_cli import web_host_terminal
+
     real_home = tmp_path / "real-home"
     current = tmp_path / "profiles" / "current"
     target = tmp_path / "profiles" / "target"
@@ -4833,11 +4839,8 @@ def test_host_terminal_resolver_applies_selected_profile_home_and_config(
     monkeypatch.setenv("HERMES_REAL_HOME", str(real_home))
     monkeypatch.setenv("TERMINAL_HOME_MODE", "profile")
     monkeypatch.setenv("OPENAI_API_KEY", "current-profile-secret")
-    monkeypatch.setattr(_web_server_profiles, "_resolve_profile_dir", lambda _name: target)
 
-    _argv, _cwd, env, _shell_name = _web_server_chat._resolve_host_terminal_argv(
-        profile="target"
-    )
+    _argv, _cwd, env, _shell_name = web_host_terminal.resolve_argv(home=target)
 
     assert env["HERMES_HOME"] == str(target)
     assert env["HOME"] == str(target / "home")

@@ -136,46 +136,6 @@ async def _legacy_pump(ws: "WebSocket", bridge) -> None:
 _LOOPBACK_HOSTS = frozenset({"127.0.0.1", "::1", "localhost", "testclient"})
 
 
-_HOST_TERMINAL_META_PREFIX = "\0HERMES_TERMINAL_META:"
-
-
-def _host_terminal_request_allowed() -> bool:
-    from hermes_cli import web_host_terminal
-    from hermes_cli.web_server import app
-
-    return web_host_terminal.request_allowed(
-        ui_surface=getattr(app.state, "ui_surface", "dashboard"),
-        auth_required=bool(getattr(app.state, "auth_required", False)),
-        bound_host=getattr(app.state, "bound_host", "") or "",
-        loopback_hosts=_LOOPBACK_HOSTS,
-    )
-
-
-
-
-
-
-
-
-def _resolve_host_terminal_argv(
-    profile: Optional[str] = None,
-    requested_cwd: Optional[str] = None,
-) -> tuple[list[str], str, dict, str]:
-    from hermes_cli import __version__, web_host_terminal
-    from hermes_cli.web_server_profiles import _resolve_profile_dir
-
-    return web_host_terminal.resolve_argv(
-        profile=profile,
-        requested_cwd=requested_cwd,
-        resolve_profile_dir=_resolve_profile_dir,
-        resolve_shell_spec=web_host_terminal.shell_spec,
-        resolve_cwd=web_host_terminal.safe_cwd,
-        version=__version__,
-    )
-
-
-
-
 def _ws_client_reason(ws: "WebSocket") -> Optional[str]:
     """Return a rejection reason token for the peer IP, or None when allowed.
 

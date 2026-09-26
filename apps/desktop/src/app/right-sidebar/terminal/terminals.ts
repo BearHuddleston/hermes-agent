@@ -286,10 +286,10 @@ export function cycleTerminal(direction: 1 | -1): void {
   $activeTerminalId.set(list[(current + direction + list.length) % list.length].id)
 }
 
-/** Drop a terminal. Focus slides to the neighbor that fills its slot; closing
- *  the last one closes the whole pane. */
 const closingTerminals = new Set<string>()
 
+/** Drop a terminal. Focus slides to the neighbor that fills its slot; closing
+ *  the last one closes the whole pane. */
 export function closeTerminal(id: string): void {
   const entry = $terminals.get().find(term => term.id === id)
   const closeSaved = window.hermesDesktop?.terminal?.closeSaved
@@ -355,10 +355,6 @@ export function closeActiveTerminal(): void {
 }
 
 export function closeAllTerminals(): void {
-  if ($terminals.get().length === 0) {
-    return
-  }
-
   $terminals.get().forEach(term => closeTerminal(term.id))
 }
 

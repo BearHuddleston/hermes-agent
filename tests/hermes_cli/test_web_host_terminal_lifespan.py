@@ -60,7 +60,7 @@ async def test_overlapping_lifespans_close_only_their_owned_registry(older_first
 def test_real_shells_remain_owned_after_overlapping_lifespan_exit(tmp_path, monkeypatch, older_first):
     import psutil
 
-    from hermes_cli import web_host_terminal, web_server, web_server_chat
+    from hermes_cli import web_host_terminal, web_server
     from hermes_cli.web_routers.chat_ws import router
 
     home = tmp_path / ".hermes"
@@ -81,7 +81,7 @@ def test_real_shells_remain_owned_after_overlapping_lifespan_exit(tmp_path, monk
 
     def open_shell(client):
         with client.websocket_connect(url) as ws:
-            metadata = json.loads(ws.receive_text().removeprefix(web_server_chat._HOST_TERMINAL_META_PREFIX))
+            metadata = json.loads(ws.receive_text().removeprefix(web_host_terminal.META_PREFIX))
             session = get_host_terminals(app)._sessions[metadata["terminalId"]]
             bridges.append(session.bridge)
             processes.append(psutil.Process(session.bridge.pid))

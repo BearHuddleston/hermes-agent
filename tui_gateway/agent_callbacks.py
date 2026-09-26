@@ -515,9 +515,7 @@ def _rebuild_session_agent(sid: str, session: dict, **kwargs):
         config_model_seen = _config_model_target()
         if opened:
             with _profile_home_lease(profile_home, profile_incarnation):
-                session_db = (
-                    _open_profile_session_db(profile_home) if profile_incarnation is None else
-                    _open_profile_session_db(profile_home, expected_profile_incarnation=profile_incarnation))
+                session_db = _open_profile_session_db(profile_home, expected_profile_incarnation=profile_incarnation)
         agent = _make_agent(sid, session["session_key"], session_db=session_db, **kwargs)
     except BaseException:
         if opened and session_db is not None:
@@ -545,8 +543,7 @@ def _rebuild_session_agent(sid: str, session: dict, **kwargs):
                     session_db.close()
     except BaseException:
         # A rejected replacement never acquired the old agent's handle; only a fresh open is ours.
-        with contextlib.suppress(Exception):
-            agent.close()
+        _discard_agent(agent)
         if opened and session_db is not None:
             with contextlib.suppress(Exception):
                 session_db.close()

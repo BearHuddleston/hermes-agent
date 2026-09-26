@@ -873,6 +873,11 @@ function sameRuntimeAnchor(left: ChatMessage, right: ChatMessage): boolean {
     normalizedText(chatMessageText(left)) === normalizedText(chatMessageText(right))
 }
 
+/** The backend boundary of a journaled runtime wake; human turns carry none. */
+function journaledRuntimeStartedAt(messages: ChatMessage[]): number | undefined {
+  return messages.find(message => message.runtimeTurnStartedAt !== undefined)?.runtimeTurnStartedAt
+}
+
 /** Runtime projections have no guaranteed user row. Their backend identity
  * provides the recovery boundary, including across reused stream ids. */
 function mergeRuntimeTurn(
@@ -898,6 +903,8 @@ function mergeRuntimeTurn(
     (currentRuntimeAssistant < 0 || index > currentRuntimeAssistant)
   )
 
+  const humans = tail.filter(message => message.role === 'user' && message.userOriginated !== false)
+
   // Raw persisted history does not have renderer runtime markers. Only an
   // exact durable predecessor can prove its suffix; a later human turn or a
   // different marked runtime ends that suffix. Known corrections remain human
@@ -907,7 +914,6 @@ function mergeRuntimeTurn(
 
   if (anchorIndex >= 0 && (first < 0 || anchorIndex < first)) {
     committedCandidates = []
-    const corrections = tail.filter(message => message.role === 'user' && message.userOriginated !== false)
     let correction = 0
 
     for (const message of baseMessages.slice(anchorIndex + 1)) {
@@ -916,7 +922,7 @@ function mergeRuntimeTurn(
       }
 
       if (message.role === 'user' && message.userOriginated !== false) {
-        const covered = coveredHumanOccurrences(message, corrections, correction)
+        const covered = coveredHumanOccurrences(message, humans, correction)
 
         if (!covered) {
           break
@@ -936,8 +942,6 @@ function mergeRuntimeTurn(
       baseTurn = committedCandidates
     }
   }
-
-  const humans = tail.filter(message => message.role === 'user' && message.userOriginated !== false)
 
   const durableHumans = committedCandidates.filter(message => message.role === 'user' &&
     message.userOriginated !== false && !message.recovered && message.pending !== true &&
@@ -1134,7 +1138,7 @@ export function mergeInFlightMessages(
     return noop
   }
 
-  const runtimeStartedAt = tail.find(message => message.runtimeTurnStartedAt !== undefined)?.runtimeTurnStartedAt
+  const runtimeStartedAt = journaledRuntimeStartedAt(tail)
 
   if (runtimeStartedAt !== undefined) {
     return mergeRuntimeTurn(baseMessages, tail, runtimeStartedAt, Boolean(options.keepPending))
@@ -1365,8 +1369,7 @@ export function persistInFlightTurnState(state: JournalableSessionState): void {
     if (state.messages.some(message => message.recovered)) {
       const snapshot = readInFlightTurnJournal(storedSessionId)
 
-      const runtimeStartedAt = snapshot?.messages.find(message =>
-        message.runtimeTurnStartedAt !== undefined)?.runtimeTurnStartedAt
+      const runtimeStartedAt = journaledRuntimeStartedAt(snapshot?.messages ?? [])
 
       const recoveredRuntime = runtimeStartedAt !== undefined && state.messages.some(message =>
         message.recovered && (message.runtimeTurnStartedAt === runtimeStartedAt ||
@@ -1436,7 +1439,7 @@ export function recoverInFlightTurnJournal(
   }
 
   const recovered = mergeInFlightMessages(baseMessages, snapshot.messages, options)
-  const runtimeStartedAt = snapshot.messages.find(message => message.runtimeTurnStartedAt !== undefined)?.runtimeTurnStartedAt
+  const runtimeStartedAt = journaledRuntimeStartedAt(snapshot.messages)
 
   const recoveredRuntimeIsActive = runtimeStartedAt !== undefined && recovered.messages.some(message =>
     message.id === recovered.streamId && message.runtimeTurnStartedAt === runtimeStartedAt

@@ -1037,6 +1037,13 @@ type ReconciledSessionResumeResult = SessionResumeResult & {
   [safelyUnpersistedInflightUser]?: true
 }
 
+/** The gateway's backend-clock turn boundary; older gateways omit it. */
+export function finiteTurnStartedAt(projection: Pick<SessionResumeResult, 'turn_started_at'>): number | null {
+  const startedAt = projection.turn_started_at
+
+  return typeof startedAt === 'number' && Number.isFinite(startedAt) ? startedAt : null
+}
+
 export function appendLiveSessionProjection(messages: ChatMessage[], projection: LiveSessionProjection): ChatMessage[] {
   const inflightUser = projection.inflight?.user?.trim() ?? ''
   const inflightAssistant = projection.inflight?.assistant ?? ''
@@ -1090,20 +1097,8 @@ export function appendLiveSessionProjection(messages: ChatMessage[], projection:
   // rows (#73793), so collect the run by walking back over the live tail:
   // user rows count, live-tail assistant rows are skipped, and a committed
   // assistant reply ends the turn.
-  let latestUserIndex = -1
-
-  for (let index = messages.length - 1; index >= 0; index -= 1) {
-    if (messages[index].role === 'user' && !isSyntheticUserMarker(messages[index])) {
-      latestUserIndex = index
-
-      break
-    }
-  }
-
-  const turnStartedAt =
-    typeof projection.turn_started_at === 'number' && Number.isFinite(projection.turn_started_at)
-      ? projection.turn_started_at
-      : null
+  const latestUserIndex = messages.findLastIndex(isPrompt)
+  const turnStartedAt = finiteTurnStartedAt(projection)
 
   // Hydrated rows do not retain the renderer's `pending` bit, so an assistant
   // already flushed by the CURRENT turn looks settled. The gateway and agent
@@ -1490,13 +1485,10 @@ export function dedupeInflightUserAgainstTranscript(
 ): ReconciledSessionResumeResult {
   const inflightUser = projection.inflight?.user?.replace(/\s+/g, ' ').trim() ?? ''
 
-  const hasAuthoritativeTurnBoundary =
-    typeof projection.turn_started_at === 'number' && Number.isFinite(projection.turn_started_at)
-
   // Modern gateways provide the backend-clock boundary needed to classify
   // hydrated rows in appendLiveSessionProjection. Do not let this older-
   // gateway text fallback override that stronger evidence.
-  if (!inflightUser || hasAuthoritativeTurnBoundary) {
+  if (!inflightUser || finiteTurnStartedAt(projection) !== null) {
     return projection
   }
 
@@ -1515,17 +1507,11 @@ export function dedupeInflightUserAgainstTranscript(
 
   const removedLocalLiveProjection = localCommittedPrefix.length < localMessages.length
 
+  const lastPersistedAnchorIndex = (anchor: ChatMessage) =>
+    persistedMessages.findLastIndex(message => transcriptAnchorMatches(message, anchor))
+
   if (runtimeMessages.length) {
-    const runtimeAnchor = runtimeMessages[runtimeMessages.length - 1]
-    let persistedAnchorIndex = -1
-
-    for (let index = persistedMessages.length - 1; index >= 0; index -= 1) {
-      if (transcriptAnchorMatches(persistedMessages[index], runtimeAnchor)) {
-        persistedAnchorIndex = index
-
-        break
-      }
-    }
+    const persistedAnchorIndex = lastPersistedAnchorIndex(runtimeMessages[runtimeMessages.length - 1])
 
     if (persistedAnchorIndex < 0) {
       return projection
@@ -1546,20 +1532,8 @@ export function dedupeInflightUserAgainstTranscript(
 
     let persistedAnchorIndex = -1
 
-    for (let localIndex = anchorCandidates.length - 1; localIndex >= 0; localIndex -= 1) {
-      const localAnchor = anchorCandidates[localIndex]
-
-      for (let index = persistedMessages.length - 1; index >= 0; index -= 1) {
-        if (transcriptAnchorMatches(persistedMessages[index], localAnchor)) {
-          persistedAnchorIndex = index
-
-          break
-        }
-      }
-
-      if (persistedAnchorIndex >= 0) {
-        break
-      }
+    for (let localIndex = anchorCandidates.length - 1; localIndex >= 0 && persistedAnchorIndex < 0; localIndex -= 1) {
+      persistedAnchorIndex = lastPersistedAnchorIndex(anchorCandidates[localIndex])
     }
 
     if (persistedAnchorIndex < 0 && anchorCandidates.length) {
@@ -1572,15 +1546,7 @@ export function dedupeInflightUserAgainstTranscript(
 
   const persistedTail = persistedMessages.slice(suffixStart)
   const lastPersistedMessage = persistedTail[persistedTail.length - 1]
-  let latestHumanUserIndex = -1
-
-  for (let index = persistedTail.length - 1; index >= 0; index -= 1) {
-    if (persistedTail[index].role === 'user' && !isSyntheticUserMarker(persistedTail[index])) {
-      latestHumanUserIndex = index
-
-      break
-    }
-  }
+  const latestHumanUserIndex = persistedTail.findLastIndex(isPrompt)
 
   // On old gateways the local pair can prove where the live interval starts,
   // but it cannot prove that a same-text REST turn inside that interval is the

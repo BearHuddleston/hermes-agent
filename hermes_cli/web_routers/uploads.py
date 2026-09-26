@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from contextlib import contextmanager, suppress
 import os
 from pathlib import Path
 import re
@@ -56,6 +57,17 @@ def _prune_stale_uploads(root: Path, *, now: float | None = None) -> None:
             continue
 
 
+@contextmanager
+def _removed_on_failure(target: Path):
+    """Unlink a partially published file; a cleanup error never masks the cause."""
+    try:
+        yield
+    except BaseException:
+        with suppress(OSError):
+            target.unlink(missing_ok=True)
+        raise
+
+
 def _resolve_upload_generation(profile: str | None) -> tuple[Path, str | None]:
     """Resolve one profile home and capture the named generation it denotes."""
     from hermes_constants import get_hermes_home, named_profile_home_is_unavailable
@@ -83,7 +95,6 @@ def _publish_staged_upload(
     """Publish staged bytes while the captured profile generation is leased."""
     from hermes_constants import named_profile_home_is_unavailable
 
-    target: Path | None = None
     try:
         with profile_incarnation_lease(
             profile_home,
@@ -113,8 +124,7 @@ def _publish_staged_upload(
             target = upload_root / (
                 f"web-{secrets.token_hex(8)}-{_safe_filename(filename)}"
             )
-            completed = False
-            try:
+            with _removed_on_failure(target):
                 fd = os.open(
                     target,
                     os.O_WRONLY | os.O_CREAT | os.O_EXCL,
@@ -126,13 +136,6 @@ def _publish_staged_upload(
                         handle.write(chunk)
                     handle.flush()
                     os.fsync(handle.fileno())
-                completed = True
-            finally:
-                if not completed and target is not None:
-                    try:
-                        target.unlink(missing_ok=True)
-                    except OSError:
-                        pass
             return target
     except FileNotFoundError as exc:
         raise HTTPException(

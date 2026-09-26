@@ -321,6 +321,7 @@ class ComputeHost:
             if server._profile_home_rejected(
                 effective_home,
                 expected_incarnation,
+                require_incarnation=True,
             ):
                 raise FileNotFoundError(
                     f"Profile incarnation is stale or home is missing or being deleted: "
@@ -410,9 +411,9 @@ class ComputeHost:
             # _init_session's side machinery (slash worker, approval notify) unavailable: keep a
             # minimal host-owned session rather than failing after the expensive agent build.
             with server._sessions_lock:
-                if server._profile_home_rejected(profile_home or None, profile_incarnation):
-                    with contextlib.suppress(Exception):
-                        agent.close()
+                if server._profile_home_rejected(
+                        profile_home or None, profile_incarnation, require_incarnation=True):
+                    server._discard_agent(agent)
                     raise
                 server._sessions[sid] = {
                     "agent": agent, "session_key": key, "history": list(history),

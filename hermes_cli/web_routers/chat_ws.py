@@ -439,14 +439,13 @@ async def _pty_fail(ws: WebSocket, exc: BaseException, *, surface: str = "Chat")
 async def pty_ws(ws: WebSocket) -> None:
     from hermes_cli.web_server_chat import PTY_REGISTRY, PtyBridge, PtyUnavailableError, _PTY_BRIDGE_AVAILABLE, _RESIZE_RE
     from pm.package import InstallError
-    from hermes_cli.web_server_chat import _host_terminal_request_allowed
+    from hermes_cli import web_host_terminal
     host_terminal = (ws.query_params.get("mode") or "").strip().lower() == "shell"
-    label = "Terminal" if host_terminal else "Chat"
     gate = await _ws_gate(ws, "pty")
     if gate is None:
         return
     peer, mode, cred = gate
-    if host_terminal and not _host_terminal_request_allowed():
+    if host_terminal and not web_host_terminal.request_allowed():
         await ws.close(code=4403, reason="host terminal requires authenticated Webapp")
         return
     persistent_shell = host_terminal and ws.query_params.get("persistent") == "1"
@@ -458,7 +457,9 @@ async def pty_ws(ws: WebSocket) -> None:
 
     # Native Windows can't import the POSIX PTY bridge: say so and close cleanly.
     if not _PTY_BRIDGE_AVAILABLE:
-        await _pty_fail(ws, PtyUnavailableError("Pseudo-terminal support is not installed on this host."), surface=label)
+        await _pty_fail(
+            ws, PtyUnavailableError("Pseudo-terminal support is not installed on this host."),
+            surface="Terminal" if host_terminal else "Chat")
         return
 
     if host_terminal:
@@ -466,14 +467,13 @@ async def pty_ws(ws: WebSocket) -> None:
         await serve_host_terminal(ws, persistent=persistent_shell)
         return
 
-    profile = ws.query_params.get("profile") or None
-    raw_resume = resume = None
-    active_session_file: Optional[Path] = None
     raw_resume = ws.query_params.get("resume") or None
     resume = raw_resume
+    profile = ws.query_params.get("profile") or None
     channel = _channel_or_close_code(ws)
     sidecar_url = _build_sidecar_url(channel) if channel else None
     force_fresh = (ws.query_params.get("fresh") or "").strip().lower() in {"1", "true", "yes", "on"}
+    active_session_file: Optional[Path] = None
 
     if channel:
         active_session_file = _active_session_file_for_channel(ws.app, channel)
@@ -534,10 +534,10 @@ async def pty_ws(ws: WebSocket) -> None:
         try:
             bridge = _spawn()
         except PtyUnavailableError as exc:
-            await _pty_fail(ws, exc, surface=label)
+            await _pty_fail(ws, exc)
             return
         except (FileNotFoundError, OSError) as exc:
-            await _pty_fail(ws, exc, surface=label)
+            await _pty_fail(ws, exc)
             return
         await _legacy_pump(ws, bridge)
         return
@@ -546,7 +546,7 @@ async def pty_ws(ws: WebSocket) -> None:
     try:
         session, _created = await PTY_REGISTRY.attach_or_spawn(attach_token, spawn=_spawn)
     except (PtyUnavailableError, FileNotFoundError, OSError, RegistryFull) as exc:
-        await _pty_fail(ws, exc, surface=label)
+        await _pty_fail(ws, exc)
         return
 
     # A fresh xterm can't rebuild the TUI from an arbitrary tail of alternate-

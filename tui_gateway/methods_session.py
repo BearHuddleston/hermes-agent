@@ -383,7 +383,7 @@ def _create_session(rid, params: dict, *, copy_parent_history: bool = False) -> 
     session_model_override, create_reasoning_override, create_service_tier_override = _create_overrides(params)
     now = time.time()
     with _sessions_lock:
-        if _profile_home_rejected(profile_home, profile_incarnation):
+        if _profile_home_rejected(profile_home, profile_incarnation, require_incarnation=True):
             raise FileNotFoundError(
                 "Profile incarnation is stale or home is missing or being deleted: "
                 f"{profile_home or _hermes_home}"
@@ -901,8 +901,7 @@ def _resume_eager(ctx: _Resume) -> dict:
     with _session_resume_lock:
         live = _find_live_session_by_key(ctx.target, ctx.profile_home, ctx.profile_incarnation)
         if live is not None:
-            with contextlib.suppress(Exception):
-                agent.close()
+            _discard_agent(agent)
             return _resume_reuse_live_locked(ctx, *live)
         try:
             with _profile_build_scope(ctx.profile_home):
@@ -2060,7 +2059,7 @@ def _build_branch_agent(session: dict, new_sid: str, new_key: str, history: list
     ``_transfer_db_to_agent`` (released here on failure)."""
     parent_home = session.get("profile_home")
     parent_incarnation = session.get("profile_incarnation")
-    if _profile_home_rejected(parent_home, parent_incarnation):
+    if _profile_home_rejected(parent_home, parent_incarnation, require_incarnation=True):
         raise FileNotFoundError("Parent session belongs to a stale profile incarnation")
     parent_user_id = _session_auth_user_id(session)
     branch_db, branch_owns_db = _profile_session_db(parent_home, parent_incarnation) if parent_home else (None, False)

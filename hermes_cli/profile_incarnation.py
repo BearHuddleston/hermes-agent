@@ -117,13 +117,9 @@ def profile_incarnation_lease(
             raise FileNotFoundError(
                 f"Named profile home is missing or being deleted: {home}"
             )
-        if expected_incarnation is None:
-            if require_incarnation:
-                raise FileNotFoundError(
-                    f"Named profile incarnation is required: {home}"
-                )
-        elif not profile_incarnation_matches(home, expected_incarnation):
-            raise FileNotFoundError(f"Named profile incarnation is stale: {home}")
+        if expected_incarnation is None and require_incarnation:
+            raise FileNotFoundError(f"Named profile incarnation is required: {home}")
+        assert_profile_incarnation_current(home, expected_incarnation)
         yield home
 
 
@@ -196,3 +192,14 @@ def profile_incarnation_matches(
     except (OSError, RuntimeError):
         return False
     return current is not None and secrets.compare_digest(current, expected_incarnation)
+
+
+def assert_profile_incarnation_current(
+    profile_home: Path | str,
+    expected_incarnation: str | None,
+) -> None:
+    """Refuse a caller bound to a retired generation; ``None`` binds no generation."""
+    if expected_incarnation is not None and not profile_incarnation_matches(
+        profile_home, expected_incarnation,
+    ):
+        raise FileNotFoundError(f"Named profile incarnation is stale: {profile_home}")

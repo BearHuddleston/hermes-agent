@@ -1,3 +1,5 @@
+import { readKey, writeKey } from './storage'
+
 type ZoomState = { level: number; percent: number }
 
 /** App scale is independent of browser zoom and monitor pixel density. */
@@ -16,22 +18,13 @@ export function createBrowserZoom(basePath: string): NonNullable<Window['hermesD
     document.documentElement.style.zoom = String(percent / 100)
   }
 
-  try {
-    apply(Number(localStorage.getItem(storageKey)) || 100)
-  } catch {
-    // Private browsing can deny storage; the current tab can still scale.
-    apply(100)
-  }
+  // Private browsing can deny storage; the current tab can still scale.
+  apply(Number(readKey(storageKey)) || 100)
 
   const setPercent = (value: number) => {
     apply(value)
-
-    try {
-      localStorage.setItem(storageKey, String(percent))
-    } catch {
-      // Keep the applied value even when persistence is unavailable.
-    }
-
+    // Keep the applied value even when persistence is unavailable.
+    writeKey(storageKey, String(percent))
     listeners.forEach(callback => callback(state()))
     // Layout consumers such as terminal fit need to remeasure at the new scale.
     window.dispatchEvent(new Event('resize'))

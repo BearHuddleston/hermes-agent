@@ -563,7 +563,9 @@ def _ensure_default_soul_md(home: Path) -> None:
 
 
 # Named homes need a persisted generation: filesystems can reuse inode and ctime together.
-_HERMES_HOME_ENSURED: dict[str, tuple[int, int, int, str | None]] = {}
+# No ctime either: every create/import mints a fresh token, while every write in the profile
+# root (config.yaml, auth.json, state.db -wal/-shm) moves ctime and would force a re-init.
+_HERMES_HOME_ENSURED: dict[str, tuple[int, int, str | None]] = {}
 _HERMES_HOME_SUBDIRS = (
     "cron", "sessions", "logs", "logs/curator", "memories",
     "pairing", "hooks", "image_cache", "audio_cache", "skills")
@@ -571,7 +573,7 @@ _HERMES_HOME_SUBDIRS = (
 
 def _hermes_home_identity(
     home: Path, *, named_profile: bool,
-) -> tuple[int, int, int, str | None] | None:
+) -> tuple[int, int, str | None] | None:
     try:
         value = home.stat()
         incarnation = None
@@ -585,7 +587,7 @@ def _hermes_home_identity(
                 return None
     except OSError:
         return None
-    return (value.st_dev, value.st_ino, value.st_ctime_ns if named_profile else 0, incarnation)
+    return (value.st_dev, value.st_ino, incarnation)
 
 
 def ensure_hermes_home():

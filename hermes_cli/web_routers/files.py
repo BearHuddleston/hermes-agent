@@ -26,7 +26,7 @@ from fastapi.responses import FileResponse
 
 from hermes_cli._subprocess_compat import windows_hide_flags
 from hermes_cli.profile_incarnation import profile_incarnation_lease
-from hermes_cli.web_routers.uploads import _resolve_upload_generation
+from hermes_cli.web_routers.uploads import _removed_on_failure, _resolve_upload_generation
 from hermes_cli.web_deps import late
 from hermes_cli.web_server_files import (
     _fs_path, _managed_file_entry, _managed_response_meta, _resolve_managed_path,
@@ -38,7 +38,6 @@ from hermes_cli.web_models import (
 router = APIRouter()
 
 # Late-bound so a test's monkeypatch on the owning module wins at call time.
-_profile_scope = late("_profile_scope", "hermes_cli.web_server_profiles")
 get_hermes_home = late("get_hermes_home", "hermes_cli.config")
 load_config = late("load_config", "hermes_cli.config")
 # Image types GET /api/media serves — extension-allowlisted so an authenticated
@@ -331,14 +330,12 @@ def _decode_chat_image_upload(payload: ChatImageUpload) -> tuple[bytes, str, str
 
 @router.post("/api/chat/image-upload")
 async def upload_chat_image(payload: ChatImageUpload, profile: Optional[str] = None):
-    """Persist a browser-provided chat image where the embedded TUI can read it.
+    """Persist a browser clipboard image where the embedded TUI can read it.
 
-    The dashboard /chat page runs Hermes inside an xterm.js PTY. Browser
-    clipboard image bytes are not visible to the server-side clipboard, so the
-    page uploads them here, then drives the TUI's ``/image <path>`` command
-    with the returned gateway-visible path. Files land under
-    ``HERMES_HOME/images/`` — the same directory ``clipboard.paste`` /
-    ``image.attach`` already use.
+    Browser clipboard bytes aren't visible to the server-side clipboard, so the
+    /chat page uploads them here and drives the TUI's ``/image <path>`` with
+    the returned gateway-visible path under ``HERMES_HOME/images/`` (the same
+    dir ``clipboard.paste`` / ``image.attach`` use).
     """
     def _run():
         from hermes_constants import named_profile_home_is_unavailable
@@ -347,26 +344,19 @@ async def upload_chat_image(payload: ChatImageUpload, profile: Optional[str] = N
         home, expected_incarnation = _resolve_upload_generation(profile)
 
         try:
-            incarnation_lease = profile_incarnation_lease(
+            with profile_incarnation_lease(
                 home,
                 expected_incarnation,
                 require_incarnation=expected_incarnation is not None,
-            )
-            with incarnation_lease:
+            ):
                 img_dir = home / "images"
-                try:
-                    # Never recreate a named profile parent if DELETE wins after
-                    # resolution; the lifecycle owner publishes the parent.
-                    img_dir.mkdir(parents=False, exist_ok=True)
-                except FileNotFoundError:
-                    raise HTTPException(status_code=404, detail="Profile home is unavailable")
-                except PermissionError:
-                    raise HTTPException(status_code=403, detail="Image directory is not writable")
-                except OSError as exc:
-                    raise HTTPException(
-                        status_code=500,
-                        detail=f"Could not create image directory: {exc}",
-                    ) from exc
+                with _io_errors("Image directory is not writable", "Could not create image directory"):
+                    try:
+                        # Never recreate a named profile parent if DELETE wins after
+                        # resolution; the lifecycle owner publishes the parent.
+                        img_dir.mkdir(parents=False, exist_ok=True)
+                    except FileNotFoundError:
+                        raise HTTPException(status_code=404, detail="Profile home is unavailable")
                 if named_profile_home_is_unavailable(home):
                     raise HTTPException(status_code=404, detail="Profile home is unavailable")
 
@@ -375,8 +365,7 @@ async def upload_chat_image(payload: ChatImageUpload, profile: Optional[str] = N
                 ts = datetime.now().strftime("%Y%m%d_%H%M%S")
                 target = img_dir / f"dashboard_{ts}_{secrets.token_hex(4)}_{stem}{ext}"
 
-                completed = False
-                try:
+                with _removed_on_failure(target):
                     with _io_errors("Image directory is not writable", "Could not write image"):
                         target.write_bytes(data)
                     if named_profile_home_is_unavailable(home) or not target.is_file():
@@ -384,13 +373,6 @@ async def upload_chat_image(payload: ChatImageUpload, profile: Optional[str] = N
                             status_code=404,
                             detail="Profile was deleted during upload",
                         )
-                    completed = True
-                finally:
-                    if not completed:
-                        try:
-                            target.unlink(missing_ok=True)
-                        except OSError:
-                            pass
         except FileNotFoundError as exc:
             raise HTTPException(
                 status_code=404,
@@ -405,9 +387,9 @@ async def upload_chat_image(payload: ChatImageUpload, profile: Optional[str] = N
             "mime_type": mime_type,
         }
 
-    # _profile_scope acquires _SKILLS_PROFILE_LOCK and the body does file I/O —
-    # keep both off the event loop (asyncio.to_thread copies the contextvar
-    # context, so the profile override stays scoped to the worker thread).
+    # _profile_scope takes _SKILLS_PROFILE_LOCK and the body does file I/O — both
+    # off the loop; to_thread copies the contextvar context so the override
+    # stays scoped to the worker thread.
     return await asyncio.to_thread(_run)
 
 

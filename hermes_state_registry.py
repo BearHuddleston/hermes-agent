@@ -119,10 +119,9 @@ def _assert_expected_profile_incarnation(
     """Reject a stale named-profile acquisition before lending a generation."""
     if expected_profile_incarnation is None:
         return
-    from hermes_cli.profile_incarnation import profile_incarnation_matches
+    from hermes_cli.profile_incarnation import assert_profile_incarnation_current
 
-    if not profile_incarnation_matches(path.parent, expected_profile_incarnation):
-        raise FileNotFoundError(f"Named profile incarnation is stale: {path.parent}")
+    assert_profile_incarnation_current(path.parent, expected_profile_incarnation)
 
 
 def _teardown(db: "SessionDB") -> None:
@@ -226,20 +225,20 @@ def acquire(db_path: Optional[Path] = None, expected_profile_incarnation: Option
     except OSError:
         path = raw_path
 
-    # Warm readers do not need to take the process-wide mutation lease. The
-    # existing tracked connection already prevents deletion of its generation.
-    _assert_expected_profile_incarnation(path, expected_profile_incarnation)
     with _lock:
         generation = _generations.get(path)
         if generation is not None:
             current = _stat_db_file_identity(path)
             if current is None or generation.identity is None or current == generation.identity:
-                # The pre-lock check may refer to a generation drained and
-                # replaced while this caller waited. This check takes no lease.
+                # Warm readers take no mutation lease: the tracked connection already
+                # prevents deletion of its generation. Check under _lock, since a
+                # delete/recreate may have replaced it before this caller got here.
                 _assert_expected_profile_incarnation(path, expected_profile_incarnation)
                 generation.refcount += 1
                 return generation.db
 
+    # A stale caller fails as stale here, never waiting on (or timing out behind) the lease.
+    _assert_expected_profile_incarnation(path, expected_profile_incarnation)
     from hermes_cli.profile_incarnation import profile_incarnation_lease
 
     # Acquire BEFORE publishing _opening or taking a path lifecycle mutex:

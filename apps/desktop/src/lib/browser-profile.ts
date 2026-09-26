@@ -1,5 +1,7 @@
 import type { DesktopProfileRoute } from '@/global'
 
+import { readJson } from './storage'
+
 interface BrowserProfileOptions {
   basePath: string
   currentProfile: () => string | null
@@ -47,7 +49,7 @@ export function createBrowserProfileBridge({
 
   const readDefault = (): DesktopProfileRoute | null => {
     try {
-      return requireRoute(JSON.parse(window.localStorage.getItem(storageKey) || 'null'))
+      return requireRoute(readJson(storageKey))
     } catch {
       return null
     }

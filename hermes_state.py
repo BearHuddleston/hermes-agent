@@ -25,9 +25,9 @@ from contextlib import contextmanager, suppress
 from pathlib import Path
 
 from hermes_constants import (
+    assert_named_profile_home_available,
     get_hermes_home,
     mkdir_under_hermes_home,
-    named_profile_home_is_unavailable,
     profile_deletion_marker_path,
 )
 from typing import Any, Callable, Dict, Iterator, List, Optional, Tuple, TypeVar, cast
@@ -814,14 +814,9 @@ class SessionDB(
     def _assert_named_profile_available(self) -> None:
         if profile_deletion_marker_path(self.db_path.parent) is None:
             return
-        if named_profile_home_is_unavailable(self.db_path.parent):
-            raise FileNotFoundError(
-                f"Named profile home is missing or being deleted: {self.db_path.parent}")
-        if self.expected_profile_incarnation is not None:
-            from hermes_cli.profile_incarnation import profile_incarnation_matches
-            if not profile_incarnation_matches(self.db_path.parent, self.expected_profile_incarnation):
-                raise FileNotFoundError(f"Named profile incarnation is stale: {self.db_path.parent}")
-
+        assert_named_profile_home_available(self.db_path.parent)
+        from hermes_cli.profile_incarnation import assert_profile_incarnation_current
+        assert_profile_incarnation_current(self.db_path.parent, self.expected_profile_incarnation)
 
     def _connect_and_init(self) -> None:
         self._assert_named_profile_available()

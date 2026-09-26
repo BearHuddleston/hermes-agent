@@ -7,7 +7,7 @@ from fastapi import FastAPI
 from starlette.testclient import TestClient
 from starlette.websockets import WebSocketDisconnect
 
-from hermes_cli import web_server, web_server_chat
+from hermes_cli import web_host_terminal, web_server, web_server_chat
 from hermes_cli.web_routers.chat_ws import router
 
 
@@ -38,8 +38,8 @@ def url(extra=""):
 
 def metadata(ws):
     text = ws.receive_text()
-    assert text.startswith(web_server_chat._HOST_TERMINAL_META_PREFIX)
-    return json.loads(text.removeprefix(web_server_chat._HOST_TERMINAL_META_PREFIX))
+    assert text.startswith(web_host_terminal.META_PREFIX)
+    return json.loads(text.removeprefix(web_host_terminal.META_PREFIX))
 
 
 def output_until(ws, marker):

@@ -174,6 +174,7 @@ import {
   dedupeInflightUserAgainstTranscript,
   dropListedSession,
   findListedSession,
+  finiteTurnStartedAt,
   goneSessionVerdict,
   isSessionGoneError,
   overlayConcurrentMessageChanges,
@@ -279,8 +280,8 @@ function reconcilePersistedSessionTurn(
   rows: SessionMessage[],
   projection: Pick<SessionResumeResult, 'inflight' | 'queued' | 'session_id' | 'turn_started_at'>
 ): ChatMessage[] | null {
-  const startedAt = projection.turn_started_at
-  const hasBoundary = typeof startedAt === 'number' && Number.isFinite(startedAt)
+  const startedAt = finiteTurnStartedAt(projection)
+  const hasBoundary = startedAt !== null
 
   const currentStart = hasBoundary
     ? rows.findIndex(row => row.timestamp !== undefined && row.timestamp >= startedAt)

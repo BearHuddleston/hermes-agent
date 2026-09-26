@@ -23,7 +23,7 @@ import time
 import urllib.parse
 
 from hermes_cli.install_identity import get_install_id as _shared_get_install_id
-from hermes_cli.process_identity import is_desktop_owned_backend
+from hermes_cli.process_identity import WEB_SERVER_PURPOSES, is_desktop_owned_backend
 from hermes_cli.pty_session import run_reaper
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
@@ -1515,7 +1515,7 @@ def start_server(
     """
     _apply_ssh_session_token(ssh_session_token or "")
     _apply_ssh_owner_nonce(ssh_owner_nonce)
-    if ui_surface not in {"dashboard", "webapp", "serve"}:
+    if ui_surface not in WEB_SERVER_PURPOSES:
         raise ValueError(f"unsupported web UI surface: {ui_surface}")
     app.state.ui_surface = "serve" if headless else ui_surface
 

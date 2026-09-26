@@ -4,24 +4,22 @@ from __future__ import annotations
 
 import os
 import shutil
-from collections.abc import Callable, Set
 from pathlib import Path
 from typing import Optional
 
+META_PREFIX = "\0HERMES_TERMINAL_META:"
 
-def request_allowed(
-    *,
-    ui_surface: str,
-    auth_required: bool,
-    bound_host: str,
-    loopback_hosts: Set[str],
-) -> bool:
+
+def request_allowed() -> bool:
     """Allow host shells only for Webapp on loopback or behind authentication."""
-    if ui_surface != "webapp":
+    from hermes_cli.web_server import app
+    from hermes_cli.web_server_chat import _LOOPBACK_HOSTS
+
+    if getattr(app.state, "ui_surface", "dashboard") != "webapp":
         return False
-    if auth_required:
+    if getattr(app.state, "auth_required", False):
         return True
-    return bound_host.strip().lower() in loopback_hosts
+    return (getattr(app.state, "bound_host", "") or "").strip().lower() in _LOOPBACK_HOSTS
 
 
 def shell_command(candidate: str) -> Optional[str]:
@@ -40,25 +38,23 @@ def shell_command(candidate: str) -> Optional[str]:
     return shutil.which(raw)
 
 
-def shell_spec(
-    resolve_shell: Callable[[str], Optional[str]] = shell_command,
-) -> tuple[list[str], str]:
+def shell_spec() -> tuple[list[str], str]:
     """Resolve the same interactive-shell ladder the native Desktop uses."""
     override = (os.environ.get("HERMES_DESKTOP_SHELL") or "").strip()
     if os.name != "nt":
         override = override or (os.environ.get("SHELL") or "").strip()
-    command = resolve_shell(override)
+    command = shell_command(override)
 
     if os.name == "nt":
         if not command:
-            command = resolve_shell("pwsh.exe") or resolve_shell("pwsh")
+            command = shell_command("pwsh.exe") or shell_command("pwsh")
         if not command:
             system_root = (
                 os.environ.get("SystemRoot")
                 or os.environ.get("windir")
                 or r"C:\Windows"
             )
-            command = resolve_shell(
+            command = shell_command(
                 str(
                     Path(system_root)
                     / "System32"
@@ -67,14 +63,14 @@ def shell_spec(
                     / "powershell.exe"
                 )
             )
-        command = command or resolve_shell("powershell.exe")
-        command = command or resolve_shell(os.environ.get("COMSPEC", "")) or "cmd.exe"
+        command = command or shell_command("powershell.exe")
+        command = command or shell_command(os.environ.get("COMSPEC", "")) or "cmd.exe"
     elif not command:
         command = next(
             (
                 resolved
                 for candidate in ("/bin/zsh", "/bin/bash", "/bin/sh")
-                if (resolved := resolve_shell(candidate))
+                if (resolved := shell_command(candidate))
             ),
             "/bin/sh",
         )
@@ -105,16 +101,11 @@ def safe_cwd(requested: Optional[str]) -> str:
 
 
 def resolve_argv(
-    *,
-    profile: Optional[str],
-    requested_cwd: Optional[str],
-    resolve_profile_dir: Callable[[str], Path],
-    resolve_shell_spec: Callable[[], tuple[list[str], str]],
-    resolve_cwd: Callable[[Optional[str]], str],
-    version: str,
+    *, home: Path, requested_cwd: Optional[str] = None,
 ) -> tuple[list[str], str, dict[str, str], str]:
-    """Return argv/cwd/env/name for Webapp's authenticated host terminal."""
+    """Return argv/cwd/env/name for Webapp's authenticated host terminal in ``home``."""
     from gateway.run import _profile_runtime_scope
+    from hermes_cli import __version__
     from hermes_cli.config import TERMINAL_CONFIG_ENV_MAP
     from hermes_constants import (
         get_process_hermes_home, reset_hermes_home_override, set_hermes_home_override,
@@ -125,14 +116,7 @@ def resolve_argv(
         activate_multi_profile_hosting, launch_profile_runtime_scope,
     )
 
-    requested_profile = (profile or "").strip()
-    profile_dir = None
-    if requested_profile and requested_profile.lower() != "current":
-        profile_dir = resolve_profile_dir(requested_profile)
-
-    launch_home = get_process_hermes_home()
-    home = profile_dir if profile_dir is not None else launch_home
-    if home.resolve() != launch_home.resolve():
+    if home.resolve() != get_process_hermes_home().resolve():
         activate_multi_profile_hosting()
         scope = _profile_runtime_scope(home)
     else:
@@ -162,12 +146,12 @@ def resolve_argv(
     env["COLORTERM"] = "truecolor"
     env["TERM"] = "xterm-256color"
     env["TERM_PROGRAM"] = "Hermes"
-    env["TERM_PROGRAM_VERSION"] = version
+    env["TERM_PROGRAM_VERSION"] = __version__
     env["HERMES_DESKTOP_TERMINAL"] = "1"
     env.setdefault("LC_CTYPE", "UTF-8")
 
-    argv, shell_name = resolve_shell_spec()
-    return argv, resolve_cwd(requested_cwd), env, shell_name
+    argv, shell_name = shell_spec()
+    return argv, safe_cwd(requested_cwd), env, shell_name
 
 
 def query_dimension(raw: Optional[str], default: int, maximum: int) -> int:
