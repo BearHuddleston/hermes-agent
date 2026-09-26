@@ -61,7 +61,7 @@ def test_real_shells_remain_owned_after_overlapping_lifespan_exit(tmp_path, monk
     import psutil
 
     from hermes_cli import web_host_terminal, web_server
-    from hermes_cli.web_routers.chat_ws import router
+    from hermes_cli.web_routers.webapp import router
 
     home = tmp_path / ".hermes"
     home.mkdir()
@@ -75,7 +75,7 @@ def test_real_shells_remain_owned_after_overlapping_lifespan_exit(tmp_path, monk
     monkeypatch.setattr(web_host_terminal, "shell_spec", lambda: (["/bin/sh", "-i"], "sh"))
     app = FastAPI(lifespan=host_terminal_lifespan)
     app.include_router(router)
-    url = f"ws://localhost/api/pty?mode=shell&persistent=1&token={web_server._SESSION_TOKEN}"
+    url = f"ws://localhost/api/host-terminal?token={web_server._SESSION_TOKEN}"
     bridges = []
     processes = []
 

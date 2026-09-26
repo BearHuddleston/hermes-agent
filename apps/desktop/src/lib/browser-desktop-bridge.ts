@@ -390,7 +390,7 @@ function selectBrowserFiles(
 
 async function authenticatedWebsocketUrl(
   bootstrap: BrowserBootstrap,
-  path: '/api/pty' | '/api/ws',
+  path: '/api/host-terminal' | '/api/ws',
   profile?: null | string
 ): Promise<string> {
   if (!bootstrap.authRequired) {
@@ -740,7 +740,7 @@ export function installBrowserDesktopBridge(): boolean {
   const terminal = createBrowserTerminal({
     basePath: bootstrap.basePath,
     currentProfile: browserProfile,
-    websocketUrl: profile => authenticatedWebsocketUrl(bootstrap, '/api/pty', profile),
+    websocketUrl: profile => authenticatedWebsocketUrl(bootstrap, '/api/host-terminal', profile),
     defaultCwd: async profile => (await api<{ cwd?: string }>({ path: '/api/fs/default-cwd', profile })).cwd || ''
   })
 

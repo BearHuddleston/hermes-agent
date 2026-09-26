@@ -18,10 +18,9 @@ from fastapi import APIRouter, FastAPI, HTTPException, WebSocket, WebSocketDisco
 from agent.interrupt_scope import InterruptScope, bind_interrupt_scope
 from hermes_cli.pty_session import RegistryFull
 from hermes_cli.web_deps import LateState, late
-from hermes_cli.web_routers.chat_ws_errors import chat_start_failure_message
 from hermes_cli.web_server_chat import (
-    _build_sidecar_url, _close_stalled_pty_input, _get_console_executor, _legacy_pump, _ws_auth_ok,
-    _ws_request_is_allowed,
+    _build_sidecar_url, _close_stalled_pty_input, _get_console_executor, _legacy_pump, _pty_fail, _ws_auth_ok,
+    _ws_close_reason, _ws_gate, _ws_request_is_allowed,
 )
 
 _log = logging.getLogger("hermes_cli.web_server")
@@ -32,9 +31,6 @@ _active_session_file_for_channel = late("_active_session_file_for_channel", "her
 _profile_scope = late("_profile_scope", "hermes_cli.web_server_profiles")
 _resolve_chat_argv_async = late("_resolve_chat_argv_async", "hermes_cli.web_server_chat")
 _resolve_profile_dir = late("_resolve_profile_dir", "hermes_cli.web_server_profiles")
-_ws_auth_reason = late("_ws_auth_reason", "hermes_cli.web_server_chat")
-_ws_client_reason = late("_ws_client_reason", "hermes_cli.web_server_chat")
-_ws_host_origin_reason = late("_ws_host_origin_reason", "hermes_cli.web_server_chat")
 _DASHBOARD_EMBEDDED_CHAT_ENABLED = LateState("_DASHBOARD_EMBEDDED_CHAT_ENABLED")
 
 
@@ -51,18 +47,6 @@ def _get_event_state(app: "FastAPI"):
 
 
 _VALID_CHANNEL_RE = re.compile(r"^[A-Za-z0-9._-]{1,128}$")
-
-
-def _ws_auth_mode() -> str:
-    """Short label for the active WS auth mode — logged on every connection."""
-    from hermes_cli.web_server_chat import _LOOPBACK_HOSTS
-    from hermes_cli.web_server import app
-    if getattr(app.state, "auth_required", False):
-        return "gated"
-    bound_host = (getattr(app.state, "bound_host", "") or "").strip().lower()
-    if bound_host and bound_host not in _LOOPBACK_HOSTS:
-        return "insecure"
-    return "loopback"
 
 
 async def _broadcast_event(app: Any, channel: str, payload: str) -> None:
@@ -90,50 +74,6 @@ def _read_active_session_file(path: Path) -> Optional[str]:
     except (OSError, json.JSONDecodeError):
         return None
     return str(data.get("session_id") or "").strip() or None
-
-
-def _ws_close_reason(text: str) -> str:
-    """Clamp to RFC 6455's 123-byte close-reason limit (uvicorn raises past it);
-    reasons embed an attacker-controlled origin, so truncate rather than crash."""
-    encoded = text.encode("utf-8", "replace")
-    if len(encoded) <= 123:
-        return text
-    return encoded[:120].decode("utf-8", "ignore") + "..."
-
-
-async def _ws_gate(ws: WebSocket, kind: str) -> Optional[tuple[str, str, str]]:
-    """Run the pre-accept gates for /api/console and /api/pty.
-
-    Each gate maps to a distinct close code so the log and the browser banner
-    agree on the cause: 4404 chat disabled, 4401 bad credential, 4403
-    host/origin mismatch, 4408 peer not allowed. Returns ``(peer, mode, cred)``
-    once every gate passes, or None after closing the socket.
-    """
-    peer = ws.client.host if ws.client else "?"
-    if not _DASHBOARD_EMBEDDED_CHAT_ENABLED:
-        _log.info("%s refused: embedded chat disabled peer=%s", kind, peer)
-        await ws.close(code=4404, reason="embedded chat disabled")
-        return None
-
-    auth_reason, cred = _ws_auth_reason(ws)
-    mode = _ws_auth_mode()
-    if auth_reason is not None:
-        _log.warning("%s auth rejected reason=%s mode=%s cred=%s peer=%s", kind, auth_reason, mode, cred, peer)
-        await ws.close(code=4401, reason=_ws_close_reason(f"auth: {auth_reason}"))
-        return None
-
-    host_origin_reason = _ws_host_origin_reason(ws)
-    if host_origin_reason is not None:
-        _log.warning("%s refused: %s peer=%s", kind, host_origin_reason, peer)
-        await ws.close(code=4403, reason=_ws_close_reason(host_origin_reason))
-        return None
-
-    client_reason = _ws_client_reason(ws)
-    if client_reason is not None:
-        _log.warning("%s refused: %s", kind, client_reason)
-        await ws.close(code=4408, reason=_ws_close_reason(client_reason))
-        return None
-    return peer, mode, cred
 
 
 async def _close_unless_sidecar_allowed(ws: WebSocket, *, allow_internal: bool = False) -> bool:
@@ -427,44 +367,20 @@ async def console_ws(ws: WebSocket) -> None:
                 pass
 
 
-async def _pty_fail(ws: WebSocket, exc: BaseException, *, surface: str = "Chat") -> None:
-    """Tell the user why chat could not start, then close 1011 so the SPA renders
-    "Start new session". The raw exception goes to the server log only."""
-    _log.warning("pty start failed: %s: %s", type(exc).__name__, exc)
-    await ws.send_text(f"\r\n\x1b[31m{chat_start_failure_message(exc, surface=surface)}\x1b[0m\r\n")
-    await ws.close(code=1011)
-
-
 @router.websocket("/api/pty")
 async def pty_ws(ws: WebSocket) -> None:
     from hermes_cli.web_server_chat import PTY_REGISTRY, PtyBridge, PtyUnavailableError, _PTY_BRIDGE_AVAILABLE, _RESIZE_RE
     from pm.package import InstallError
-    from hermes_cli import web_host_terminal
-    host_terminal = (ws.query_params.get("mode") or "").strip().lower() == "shell"
     gate = await _ws_gate(ws, "pty")
     if gate is None:
         return
     peer, mode, cred = gate
-    if host_terminal and not web_host_terminal.request_allowed():
-        await ws.close(code=4403, reason="host terminal requires authenticated Webapp")
-        return
-    persistent_shell = host_terminal and ws.query_params.get("persistent") == "1"
-    if host_terminal and not persistent_shell and ws.query_params.get("attach") is not None:
-        await ws.close(code=4403, reason="host terminal does not support reattach")
-        return
     await ws.accept()
     _log.info("pty accepted peer=%s mode=%s cred=%s", peer, mode, cred)
 
     # Native Windows can't import the POSIX PTY bridge: say so and close cleanly.
     if not _PTY_BRIDGE_AVAILABLE:
-        await _pty_fail(
-            ws, PtyUnavailableError("Pseudo-terminal support is not installed on this host."),
-            surface="Terminal" if host_terminal else "Chat")
-        return
-
-    if host_terminal:
-        from hermes_cli.web_host_terminal_sessions import host_terminal as serve_host_terminal
-        await serve_host_terminal(ws, persistent=persistent_shell)
+        await _pty_fail(ws, PtyUnavailableError("Pseudo-terminal support is not installed on this host."))
         return
 
     raw_resume = ws.query_params.get("resume") or None

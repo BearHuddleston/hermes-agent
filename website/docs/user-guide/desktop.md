@@ -67,9 +67,8 @@ OAuth/OIDC for direct internet exposure.
 Browser-selected files are staged under the active profile before they enter
 the normal attachment flow. Browser attachments are capped at **16 MiB**, the
 same limit used when the staged bytes enter that flow. The terminal rail opens
-the host's interactive shell through the existing authenticated `/api/pty`
-transport; Dashboard's Chat
-tab continues to use the Hermes TUI mode on that same endpoint. Host-shell mode
+the host's interactive shell through its own authenticated `/api/host-terminal`
+WebSocket, gated like Dashboard's Chat tab `/api/pty` endpoint. The host shell
 is available on loopback with the private launch link printed by `hermes webapp`,
 and on authenticated remote Webapp binds. The browser consumes the link's secret
 fragment into tab-local session storage; refresh keeps access. **New Window**,
@@ -84,7 +83,7 @@ on an existing server, navigate in an authorized tab or put `?profile=<name>`
 before the private link's `#` fragment. Keep the link and captured CLI output private.
 The named-profile CLI launcher prints these instructions rather than opening
 an unauthorized bare-URL tab when a Webapp is already running.
-Host-shell mode is refused for any unauthenticated non-loopback bind. Native-only affordances—HUD/global shortcuts,
+The host shell is refused for any unauthenticated non-loopback bind. Native-only affordances—HUD/global shortcuts,
 always-on-top overlays, OS-window inspection, external-terminal launch, and the
 native updater—remain available only in Electron. Website links open in a
 separate browser tab by default in Webapp. Link labels are derived from their

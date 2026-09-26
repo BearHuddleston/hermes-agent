@@ -64,8 +64,6 @@ function settleOpen(state: TerminalState): void {
 
 async function closeSavedShell(saved: SavedTerminal, websocketUrl: BrowserTerminalOptions['websocketUrl']): Promise<boolean> {
   const url = new URL(await websocketUrl(saved.profile))
-  url.searchParams.set('mode', 'shell')
-  url.searchParams.set('persistent', '1')
   url.searchParams.set('attach', saved.terminalId)
   url.searchParams.set('action', 'close')
   const socket = new WebSocket(url)
@@ -126,8 +124,6 @@ async function dialTerminal(state: TerminalState, context: DialContext): Promise
     throw new TerminalConnectionError('Terminal attachment cancelled')
   }
 
-  url.searchParams.set('mode', 'shell')
-  url.searchParams.set('persistent', '1')
   url.searchParams.set('cols', String(state.cols))
   url.searchParams.set('rows', String(state.rows))
 

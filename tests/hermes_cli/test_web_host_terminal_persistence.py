@@ -1,4 +1,4 @@
-"""Native shell continuity through the real /api/pty route, isolated from user state."""
+"""Native shell continuity through the real /api/host-terminal route, isolated from user state."""
 import json
 from pathlib import Path
 
@@ -8,7 +8,7 @@ from starlette.testclient import TestClient
 from starlette.websockets import WebSocketDisconnect
 
 from hermes_cli import web_host_terminal, web_server, web_server_chat
-from hermes_cli.web_routers.chat_ws import router
+from hermes_cli.web_routers.webapp import router
 
 
 @pytest.fixture
@@ -33,7 +33,7 @@ def host_app(tmp_path, monkeypatch):
 
 
 def url(extra=""):
-    return f"ws://localhost/api/pty?mode=shell&persistent=1&token={web_server._SESSION_TOKEN}{extra}"
+    return f"ws://localhost/api/host-terminal?token={web_server._SESSION_TOKEN}{extra}"
 
 
 def metadata(ws):
@@ -50,10 +50,9 @@ def output_until(ws, marker):
 
 
 @pytest.mark.platforms("linux")
-@pytest.mark.parametrize("persistent", [False, True])
 @pytest.mark.parametrize("named_launch", [False, True])
 def test_shell_scopes_passthrough_after_eager_activation(
-    host_app, tmp_path, monkeypatch, persistent, named_launch,
+    host_app, tmp_path, monkeypatch, named_launch,
 ):
     from agent import secret_scope
     from hermes_constants import get_hermes_home_override
@@ -97,10 +96,7 @@ def test_shell_scopes_passthrough_after_eager_activation(
             ("other", b"other-value:missing:other-only"),
             (launch_name, b"launch-value:launch-only:missing"),
         ):
-            endpoint = url(f"&profile={profile}")
-            if not persistent:
-                endpoint = endpoint.replace("&persistent=1", "")
-            with client.websocket_connect(endpoint) as ws:
+            with client.websocket_connect(url(f"&profile={profile}")) as ws:
                 assert metadata(ws)["shell"] == "sh"
                 ws.send_bytes(command)
                 output = output_until(ws, b"SCOPE=")
@@ -268,7 +264,7 @@ def rejection(client, request, expected):
 def ticket_url(user="owner", extra=""):
     from hermes_cli.dashboard_auth.ws_tickets import mint_ticket
     ticket = mint_ticket(user_id=user, provider="test-provider")
-    return f"ws://localhost/api/pty?mode=shell&persistent=1&ticket={ticket}{extra}"
+    return f"ws://localhost/api/host-terminal?ticket={ticket}{extra}"
 
 
 def test_identity_profile_incarnation_and_auth_gate(host_app, fake_bridges, tmp_path, monkeypatch):
@@ -333,10 +329,9 @@ def test_real_profile_a_b_a_and_process_exit_never_respawns(host_app, tmp_path):
 
 
 @pytest.mark.platforms("linux")
-@pytest.mark.parametrize("persistent", [False, True])
 @pytest.mark.parametrize("retirement", ["delete", "replace"])
 def test_real_shell_rejects_input_after_profile_retirement(
-    host_app, tmp_path, persistent, retirement,
+    host_app, tmp_path, retirement,
 ):
     import os
     import shlex
@@ -347,11 +342,8 @@ def test_real_shell_rejects_input_after_profile_retirement(
     profile.mkdir(parents=True)
     (profile / "config.yaml").write_text("{}", encoding="utf-8")
     before, after = tmp_path / "before", tmp_path / "after"
-    endpoint = url("&profile=alpha")
-    if not persistent:
-        endpoint = endpoint.replace("&persistent=1", "")
     with TestClient(host_app) as client:
-        with client.websocket_connect(endpoint) as ws:
+        with client.websocket_connect(url("&profile=alpha")) as ws:
             metadata(ws)
             ws.send_bytes((
                 f"stty -echo; printf before > {shlex.quote(str(before))}; printf 'REA%s\\n' DY\n"
@@ -375,41 +367,6 @@ def test_real_shell_rejects_input_after_profile_retirement(
                 output_until(ws, b"STALE")
             assert error.value.code == 4410
         assert not after.exists()
-
-
-@pytest.mark.platforms("linux")
-def test_nonpersistent_shell_disconnect_closes_child(host_app, monkeypatch):
-    import threading
-
-    bridges = []
-    closed = threading.Event()
-    spawn = web_server_chat.PtyBridge.spawn
-
-    def capture_spawn(*args, **kwargs):
-        bridge = spawn(*args, **kwargs)
-        original_close = bridge.close
-
-        def close():
-            original_close()
-            closed.set()
-
-        bridge.close = close
-        bridges.append(bridge)
-        return bridge
-
-    monkeypatch.setattr(web_server_chat.PtyBridge, "spawn", capture_spawn)
-    with TestClient(host_app) as client:
-        endpoint = url().replace("&persistent=1", "")
-        with client.websocket_connect(endpoint) as ws:
-            assert metadata(ws) == {"shell": "sh"}
-            ws.send_bytes(b"printf 'REA%s\\n' DY\n")
-            output_until(ws, b"READY")
-            assert bridges[0].is_alive()
-        assert closed.wait(5)
-        assert not bridges[0].is_alive()
-        assert not host_app.state.host_terminals._sessions
-        rejection(client, endpoint + "&attach=" + "x" * 43, 4403)
-        assert len(bridges) == 1
 
 
 def test_capacity_expiry_close_idempotence_and_lifespan(host_app, fake_bridges):

@@ -67,9 +67,7 @@ def test_html_cannot_authorize_privileged_sibling_routes(monkeypatch, tmp_path, 
         assert response.status_code == 401
     else:
         query = {"token": exposed}
-        path = "/api/ws" if operation == "rpc" else "/api/pty"
-        if operation != "rpc":
-            query.update(mode="shell", persistent="1")
+        path = "/api/ws" if operation == "rpc" else "/api/host-terminal"
         if operation in {"reattach", "close"}:
             query["attach"] = "known-shell"
         if operation == "close":

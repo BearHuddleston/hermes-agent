@@ -50,7 +50,7 @@ it('uses one private session for REST, RPC and terminal across reload without lo
   expect((await desktop.getConnection()).token).toBe(token)
   expect(new URL((await desktop.getConnection()).wsUrl).searchParams.get('token')).toBe(token)
   await desktop.terminal.start({ cwd: '/work' })
-  expect(urls[0].pathname).toBe('/one/api/pty')
+  expect(urls[0].pathname).toBe('/one/api/host-terminal')
   expect(urls[0].searchParams.get('token')).toBe(token)
   window.dispatchEvent(new Event('beforeunload'))
   Reflect.deleteProperty(window, 'hermesDesktop')

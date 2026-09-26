@@ -1,16 +1,19 @@
-"""One-use child-window handoff for the private, loopback Webapp session."""
+"""Webapp-only routes: the host terminal (loopback or authenticated binds) and
+the one-use child-window handoff for the private, loopback Webapp session."""
 from __future__ import annotations
 
 import json
+import logging
 import secrets
 import threading
 import time
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, HTTPException, Request, WebSocket
 from fastapi.responses import HTMLResponse, JSONResponse
 
 from hermes_cli.dashboard_auth.request_utils import _http_origin
 
+_log = logging.getLogger("hermes_cli.web_server")
 router = APIRouter()
 WINDOW_TICKET_TTL_SECONDS = 30
 _MAX_WINDOW_TICKETS = 128
@@ -21,6 +24,28 @@ def _require_private_webapp(request: Request) -> None:
     if (getattr(request.app.state, "ui_surface", None) != "webapp"
             or getattr(request.app.state, "auth_required", False)):
         raise HTTPException(404, "Private Webapp window handoff is unavailable")
+
+
+@router.websocket("/api/host-terminal")
+async def host_terminal_ws(ws: WebSocket) -> None:
+    from hermes_cli import web_host_terminal
+    from hermes_cli.web_host_terminal_sessions import host_terminal
+    from hermes_cli.web_server_chat import _PTY_BRIDGE_AVAILABLE, PtyUnavailableError, _pty_fail, _ws_gate
+
+    gate = await _ws_gate(ws, "host-terminal")
+    if gate is None:
+        return
+    peer, mode, cred = gate
+    if not web_host_terminal.request_allowed():
+        await ws.close(code=4403, reason="host terminal requires authenticated Webapp")
+        return
+    await ws.accept()
+    _log.info("host terminal accepted peer=%s mode=%s cred=%s", peer, mode, cred)
+    if not _PTY_BRIDGE_AVAILABLE:
+        await _pty_fail(
+            ws, PtyUnavailableError("Pseudo-terminal support is not installed on this host."), surface="Terminal")
+        return
+    await host_terminal(ws)
 
 
 @router.post("/api/webapp/window-ticket")

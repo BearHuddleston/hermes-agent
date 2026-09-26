@@ -88,7 +88,6 @@ describe('persistent browser terminals', () => {
   it('reattaches the saved tab after reload to its captured profile, not the newly active one', async () => {
     const firstApi = install()
     await firstApi.start({ cwd: '/original', restoreKey: 'tab-one' })
-    expect(Socket.instances[0].url.searchParams.get('persistent')).toBe('1')
     window.dispatchEvent(new Event('beforeunload'))
     $connection.set({ profile: 'other' } as never)
     const secondApi = install()

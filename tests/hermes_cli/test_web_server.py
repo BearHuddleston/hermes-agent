@@ -4576,86 +4576,6 @@ class TestPtyWebSocket:
         q = {"token": tok, **params}
         return f"/api/pty?{urlencode(q)}"
 
-    def test_webapp_shell_mode_uses_host_terminal_transport(self, monkeypatch, tmp_path):
-        from fastapi import FastAPI
-        from starlette.testclient import TestClient
-        from hermes_cli import web_host_terminal
-        from hermes_cli.web_host_terminal_sessions import host_terminal_lifespan
-        from hermes_cli.web_routers.chat_ws import router
-
-        app = FastAPI(lifespan=host_terminal_lifespan)
-        app.include_router(router)
-
-        async def fail_chat_resolution(**_kwargs):
-            raise AssertionError("browser terminal must not launch Hermes TUI")
-
-        monkeypatch.setattr(
-            web_host_terminal,
-            "resolve_argv",
-            lambda home, requested_cwd=None: (
-                ["/bin/cat"],
-                str(tmp_path),
-                {"TERM": "xterm-256color"},
-                "cat",
-            ),
-        )
-        monkeypatch.setattr(
-            _web_server_chat,
-            "_resolve_chat_argv_async",
-            fail_chat_resolution,
-        )
-        monkeypatch.setattr(
-            self.ws_module.app.state,
-            "ui_surface",
-            "webapp",
-            raising=False,
-        )
-        monkeypatch.setattr(
-            self.ws_module.app.state,
-            "bound_host",
-            "testclient",
-            raising=False,
-        )
-        monkeypatch.setattr(
-            self.ws_module.app.state,
-            "auth_required",
-            False,
-            raising=False,
-        )
-
-        with TestClient(app) as client, client.websocket_connect(
-            self._url(
-                mode="shell",
-                cwd=str(tmp_path),
-                cols="42",
-                rows="13",
-            ),
-            headers={"host": "testclient"},
-        ) as conn:
-            conn.send_bytes(b"host-shell-probe\n")
-            metadata_message = conn.receive()
-            assert metadata_message["type"] == "websocket.send"
-            metadata = metadata_message.get("text", "")
-            assert metadata.startswith("\0HERMES_TERMINAL_META:")
-            assert json.loads(metadata.split(":", 1)[1]) == {"shell": "cat"}
-            assert b"host-shell-probe" in conn.receive_bytes()
-
-    def test_host_terminal_attach_is_rejected(self, monkeypatch):
-        from starlette.websockets import WebSocketDisconnect
-
-        monkeypatch.setattr(self.ws_module.app.state, "ui_surface", "webapp", raising=False)
-        monkeypatch.setattr(self.ws_module.app.state, "bound_host", "testclient", raising=False)
-        monkeypatch.setattr(self.ws_module.app.state, "auth_required", False, raising=False)
-
-        with pytest.raises(WebSocketDisconnect) as exc:
-            with self.client.websocket_connect(
-                self._url(mode="shell", attach="shared"),
-                headers={"host": "testclient"},
-            ):
-                pass
-
-        assert exc.value.code == 4403
-
     @pytest.mark.parametrize(
         ("surface", "bound_host", "headers"),
         [
@@ -4681,7 +4601,7 @@ class TestPtyWebSocket:
 
         with pytest.raises(WebSocketDisconnect) as exc:
             with self.client.websocket_connect(
-                self._url(mode="shell"), headers=headers
+                f"/api/host-terminal?token={self.token}", headers=headers
             ):
                 pass
 

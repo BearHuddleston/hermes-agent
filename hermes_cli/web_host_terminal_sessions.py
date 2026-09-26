@@ -219,10 +219,9 @@ def _metadata(token, owner, session, registry, *, reconnected):
     }, separators=(",", ":"))
 
 
-async def host_terminal(ws: WebSocket, *, persistent: bool) -> None:
+async def host_terminal(ws: WebSocket) -> None:
     """Called only after both the existing WS gate and host policy have passed."""
-    from hermes_cli.web_server_chat import _RESIZE_RE
-    from hermes_cli.web_routers.chat_ws import _pty_fail
+    from hermes_cli.web_server_chat import _RESIZE_RE, _pty_fail
     token = ws.query_params.get("attach")
     action = ws.query_params.get("action")
     session = None
@@ -248,13 +247,8 @@ async def host_terminal(ws: WebSocket, *, persistent: bool) -> None:
             await ws.send_text(META_PREFIX + json.dumps({"terminalId": token, "closed": True}))
             await ws.close(code=1000)
             return
-        initial_text = None
-        if persistent:
-            initial_text = _metadata(
-                token, owner, session, registry, reconnected=ws.query_params.get("attach") is not None)
-        else:
-            # One-shot clients have no replay boundary or reusable capability.
-            await ws.send_text(META_PREFIX + json.dumps({"shell": owner.shell}))
+        initial_text = _metadata(
+            token, owner, session, registry, reconnected=ws.query_params.get("attach") is not None)
         if not await session.attach(ws, initial_text=initial_text):
             if session._ws is None:
                 with suppress(Exception):
@@ -295,8 +289,4 @@ async def host_terminal(ws: WebSocket, *, persistent: bool) -> None:
         await _pty_fail(ws, exc, surface="Terminal")
     finally:
         if session is not None:
-            if persistent:
-                session.detach(ws)
-            else:
-                # One-shot shells share admission/revocation, not retention.
-                await registry.remove(session.key)
+            session.detach(ws)
