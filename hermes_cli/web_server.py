@@ -23,6 +23,7 @@ import urllib.parse
 from hermes_cli.install_identity import get_install_id as _shared_get_install_id
 from hermes_cli.process_identity import WEB_SERVER_PURPOSES, is_desktop_owned_backend
 from hermes_cli.pty_session import run_reaper
+from hermes_cli import web_server_file_tickets as _file_tickets
 from hermes_cli.web_server_surface import policy, private_launch
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
@@ -221,13 +222,17 @@ def _has_valid_session_token(request: Request) -> bool:
     return hmac.compare_digest(auth.encode(), f"Bearer {_SESSION_TOKEN}".encode())
 
 
-# Routes that may also authenticate via ``?token=`` (browser downloads and
-# audio/video elements cannot set headers). The OAuth gate still requires its
-# session cookie; query tokens are only accepted by the loopback token gate.
-_QUERY_TOKEN_API_PATHS: frozenset[str] = frozenset({"/api/files/download", "/api/files/stream"})
+# Routes that may also authenticate via ``?token=`` for Electron's remote
+# "open externally" download link. Browser pages use path-bound file tickets
+# instead (``web_server_file_tickets``), so the session token never lands in
+# their download history or a copyable media URL. The OAuth gate still requires
+# its session cookie; query credentials are only accepted by the loopback gate.
+_QUERY_TOKEN_API_PATHS: frozenset[str] = frozenset({"/api/files/download"})
 
 
 def _has_valid_query_token(request: Request, path: str) -> bool:
+    if _file_tickets.redeem(request):
+        return True
     if path not in _QUERY_TOKEN_API_PATHS:
         return False
     token = request.query_params.get("token", "")

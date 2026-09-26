@@ -1,7 +1,7 @@
 import type { HermesApiRequest } from '@/global'
 import { translateNow } from '@/i18n'
 import { fetchBrowserImage } from '@/lib/browser-image-download'
-import { authenticatedEndpointUrl, type BrowserBootstrap } from '@/lib/browser-transport'
+import { type BrowserBootstrap, fileEndpointUrl } from '@/lib/browser-transport'
 import { notifyError } from '@/store/notifications'
 
 function queryPath(route: string, values: Record<string, boolean | null | string | undefined>) {
@@ -23,7 +23,7 @@ interface BrowserFilesOptions {
   requireConnection: (connectionId?: string | null) => void
 }
 
-/** Server files reach the page through /api/fs reads and authenticated download/stream URLs. */
+/** Server files reach the page through /api/fs reads and ticketed download/stream URLs. */
 export function createBrowserFilesBridge({
   api,
   bootstrap,
@@ -76,11 +76,10 @@ export function createBrowserFilesBridge({
     getGatewayFileStreamUrl: async payload => {
       requireConnection(payload.connectionId)
 
-      return authenticatedEndpointUrl(
-        bootstrap,
-        queryPath('/api/files/stream', { path: payload.path }),
-        payload.profile ?? currentProfile()
-      ).href
+      return (await fileEndpointUrl(bootstrap, 'stream', {
+        path: payload.path,
+        profile: payload.profile ?? currentProfile()
+      })).href
     },
     readDir: (path: string) =>
       fsGet<Awaited<ReturnType<Window['hermesDesktop']['readDir']>>>('list', path),
@@ -90,16 +89,19 @@ export function createBrowserFilesBridge({
       fsGet<Awaited<ReturnType<Window['hermesDesktop']['readFileText']>>>('read-text', path),
     saveGatewayFile: async payload => {
       requireConnection(payload.connectionId)
-      const path = queryPath('/api/files/download', { path: payload.path, session_id: payload.sessionId })
-      const profile = payload.profile ?? currentProfile()
+      const query = { path: payload.path, profile: payload.profile ?? currentProfile(), session_id: payload.sessionId }
 
       // Validate before handing the transfer to the browser so missing or
       // denied files surface in the chat without navigating away. HEAD keeps
       // large downloads out of renderer memory.
-      await api({ method: 'HEAD', path, profile })
+      await api({
+        method: 'HEAD',
+        path: queryPath('/api/files/download', { path: query.path, session_id: query.session_id }),
+        profile: query.profile
+      })
 
       return {
-        saved: await downloadUrl(authenticatedEndpointUrl(bootstrap, path, profile).href, payload.suggestedName)
+        saved: await downloadUrl((await fileEndpointUrl(bootstrap, 'download', query)).href, payload.suggestedName)
       }
     },
     saveImageFromUrl: async (url: string) => {

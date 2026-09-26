@@ -22,8 +22,9 @@ from pathlib import Path
 from typing import Any, Dict, Optional
 
 from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 
+from hermes_cli import web_server_file_tickets as file_tickets
 from hermes_cli._subprocess_compat import windows_hide_flags
 from hermes_cli.profile_incarnation import profile_incarnation_lease
 from hermes_cli.web_routers.uploads import _removed_on_failure, _resolve_upload_generation
@@ -32,7 +33,8 @@ from hermes_cli.web_server_files import (
     _fs_path, _managed_file_entry, _managed_response_meta, _resolve_managed_path,
 )
 from hermes_cli.web_models import (
-    ChatImageUpload, FsWriteText, ManagedDirectoryCreate, ManagedFileDelete, ManagedFileUpload,
+    ChatImageUpload, FileTicketRequest, FsWriteText, ManagedDirectoryCreate, ManagedFileDelete,
+    ManagedFileUpload,
 )
 
 router = APIRouter()
@@ -475,6 +477,14 @@ def _managed_file_response(
     )
 
 
+@router.post("/api/files/ticket")
+async def issue_file_ticket(payload: FileTicketRequest):
+    """Ticket a browser download/media URL instead of putting the session token in it."""
+    query = {"path": payload.path, "profile": payload.profile, "session_id": payload.session_id}
+    ticket = file_tickets.mint(payload.route, {key: value for key, value in query.items() if value is not None})
+    return JSONResponse({"ticket": ticket}, headers={"Cache-Control": "no-store"})
+
+
 @router.get("/api/files/download")
 @router.head("/api/files/download")
 async def download_managed_file(
@@ -482,8 +492,9 @@ async def download_managed_file(
 ):
     """Stream a managed file as an attachment download.
 
-    ``auth_middleware`` also accepts the session token as ``?token=`` here so a
-    shell/browser-opened download (no session header) still authenticates.
+    ``auth_middleware`` also accepts a path-bound ``?ticket=`` (browsers) or the
+    session token as ``?token=`` (Electron's remote external link) here so a
+    download without the session header still authenticates.
     Chromium marks ``<audio>``/``<video>`` subresource requests via
     ``Sec-Fetch-Dest``; those are served inline for Desktop builds that still
     use this route as their player source, attachment semantics otherwise.
@@ -508,8 +519,9 @@ async def download_managed_file(
 async def stream_managed_file(request: Request, path: str, profile: Optional[str] = None):
     """Stream managed audio/video inline with HTTP Range support — Electron's
     media pipeline may reject an attachment response as an ``<audio>``/
-    ``<video>`` source. Same auth, size cap, sensitive guard and MIME detection
-    as download."""
+    ``<video>`` source. Browser media elements authenticate with a reusable
+    path-bound ``?ticket=``; the session token is never accepted in this URL.
+    Same size cap, sensitive guard and MIME detection as download."""
     if path.lower().startswith("file:"):
         path = str(await _fs_download_path(path, profile, None))
     return _managed_file_response(request, path, content_disposition_type="inline", media_only=True)

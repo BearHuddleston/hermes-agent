@@ -10,7 +10,13 @@ import { captureGatewayFileDownload } from './media'
 
 it('keeps a captured download on its owning browser profile after a foreground switch', async () => {
   win.__HERMES_SESSION_TOKEN__ = 'served-token'
-  const fetchMock = vi.fn().mockResolvedValue(new Response(null, { status: 200 }))
+
+  const fetchMock = vi.fn(async (input: URL, _init?: RequestInit) =>
+    input.pathname === '/api/files/ticket'
+      ? new Response(JSON.stringify({ ticket: 'file-ticket' }), { status: 200 })
+      : new Response(null, { status: 200 })
+  )
+
   vi.stubGlobal('fetch', fetchMock)
   const downloads: HTMLAnchorElement[] = []
   vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(function (this: HTMLAnchorElement) {
@@ -33,6 +39,8 @@ it('keeps a captured download on its owning browser profile after a foreground s
   const url = new URL(downloads[0].href)
   expect(url.searchParams.get('profile')).toBe('file-owner')
   expect(url.searchParams.get('path')).toBe('file://nas/share/report.pdf')
+  expect(url.searchParams.get('ticket')).toBe('file-ticket')
+  expect(JSON.parse(String(fetchMock.mock.calls[1][1]?.body))).toMatchObject({ profile: 'file-owner' })
   expect(downloads[0].download).toBe('report.pdf')
 })
 

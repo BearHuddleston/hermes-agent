@@ -243,11 +243,13 @@ def test_managed_download_accepts_file_uris_without_bypassing_policy(
     assert request("/api/files/download", params={"path": artifact.as_uri()}).status_code == 413
 
 
-def test_stream_authenticates_native_and_browser_players_and_supports_ranges(forced_files_client):
+def test_stream_requires_header_auth_and_supports_ranges(forced_files_client):
     client, root = forced_files_client
     file_path = _seed_file(client, root, name="out/demo.mp4")
 
-    # Electron supplies a header; browser media elements cannot set one.
+    # Electron's main-process proxy supplies the connection credential as a
+    # header. The session token grants host shells, so browser media elements
+    # use a path-bound ticket instead: the stream URL never accepts the token.
     params = {"path": str(file_path)}
 
     full = client.get("/api/files/stream", params=params)
@@ -276,21 +278,55 @@ def test_stream_authenticates_native_and_browser_players_and_supports_ranges(for
     assert head.headers["x-content-type-options"] == "nosniff"
 
     del client.headers[web_server._SESSION_HEADER_NAME]
-    playback = client.get(
-        "/api/files/stream",
-        params={"path": str(file_path), "token": web_server._SESSION_TOKEN},
-        headers={"Range": "bytes=1-3"},
-    )
-    assert playback.status_code == partial.status_code
-    assert playback.content == partial.content
-    assert playback.headers["content-range"] == partial.headers["content-range"]
-    assert playback.headers["content-type"] == partial.headers["content-type"]
-    assert playback.headers["content-disposition"].startswith("inline;")
     assert client.get(
         "/api/files/stream",
-        params={"path": str(file_path), "token": "wrong-token"},
+        params={"path": str(file_path), "token": web_server._SESSION_TOKEN},
     ).status_code == 401
     assert client.get("/api/files/stream", params=params).status_code == 401
+
+
+def test_browser_file_urls_authenticate_only_with_route_and_path_bound_tickets(
+    forced_files_client, monkeypatch,
+):
+    """A ticket admits exactly the URL it was minted for: reusable for media
+    Range requests, single-use for a download, useless for any other file."""
+    from hermes_cli import web_server_file_tickets
+
+    client, root = forced_files_client
+    video = _seed_file(client, root, name="out/demo.mp4")
+    other = _seed_file(client, root, name="out/other.mp4")
+
+    def ticket(route, **query):
+        response = client.post("/api/files/ticket", json={"route": route, **query})
+        assert response.status_code == 200, response.text
+        assert response.headers["cache-control"] == "no-store"
+        return response.json()["ticket"]
+
+    stream = ticket("stream", path=str(video), profile="default")
+    download = ticket("download", path=str(video))
+    monkeypatch.setattr(web_server_file_tickets, "STREAM_TTL_SECONDS", 0)
+    expired = ticket("stream", path=str(video))
+    del client.headers[web_server._SESSION_HEADER_NAME]
+    assert client.post("/api/files/ticket", json={"route": "stream", "path": str(video)}).status_code == 401
+
+    params = {"path": str(video), "profile": "default", "ticket": stream}
+    for _ in range(2):
+        partial = client.get("/api/files/stream", params=params, headers={"Range": "bytes=1-3"})
+        assert (partial.status_code, partial.content) == (206, b"ell")
+    for foreign in (
+        {**params, "path": str(other)},
+        {**params, "profile": "other"},
+        {"path": str(video), "ticket": stream},
+        {**params, "path": [str(video), str(other)]},
+    ):
+        assert client.get("/api/files/stream", params=foreign).status_code == 401, foreign
+    assert client.get("/api/files/download", params=params).status_code == 401
+    assert client.get("/api/files/stream", params={"path": str(video), "ticket": expired}).status_code == 401
+
+    once = {"path": str(video), "ticket": download}
+    assert client.get("/api/files/stream", params=once).status_code == 401
+    assert client.get("/api/files/download", params=once).content == b"hello"
+    assert client.get("/api/files/download", params=once).status_code == 401
 
 
 def test_stream_rejects_non_media_active_content(forced_files_client):

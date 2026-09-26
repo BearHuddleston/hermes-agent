@@ -489,13 +489,41 @@ describe('browser-hosted Desktop bridge', () => {
     expect(new Headers(init.headers).get('X-Hermes-Session-Token')).toBe('served-token')
   })
 
+  // Downloads and media elements cannot send the session header, and the
+  // session token grants host shells: it must never appear in their URLs
+  // (download history, "Copy video address"). Token sessions carry a ticket
+  // minted for that exact route and query instead.
+  const fileTicketFetch = (headStatus = 200) =>
+    vi.fn(async (input: URL, init?: RequestInit) => {
+      if (input.pathname.endsWith('/api/files/ticket')) {
+        const { route, ...query } = JSON.parse(String(init?.body)) as Record<string, string>
+        const scope = new URLSearchParams(query)
+        scope.sort()
+
+        return new Response(JSON.stringify({ ticket: `ticket:${route}:${scope}` }), { status: 200 })
+      }
+
+      return new Response(null, { status: headStatus })
+    })
+
+  const ticketFor = (url: URL, route: string) => {
+    const query = new URLSearchParams(url.search)
+    query.delete('ticket')
+    query.sort()
+
+    return `ticket:${route}:${query}`
+  }
+
+  const carriesToken = (url: URL, token: string) =>
+    Boolean(token) && [...url.searchParams.entries()].some(entry => entry.join('=').includes(token))
+
   it.each(['token', 'cookie'])('downloads browser files with %s auth on the original profile', async auth => {
     const win = mutableWindow()
     const token = auth === 'token' ? 'served / token' : ''
     win.__HERMES_SESSION_TOKEN__ = token
     win.__HERMES_AUTH_REQUIRED__ = auth === 'cookie'
     win.__HERMES_BASE_PATH__ = '/hermes'
-    const fetchMock = vi.fn().mockResolvedValue(new Response(null, { status: 200 }))
+    const fetchMock = fileTicketFetch()
     vi.stubGlobal('fetch', fetchMock)
     const downloads: HTMLAnchorElement[] = []
     vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(function (this: HTMLAnchorElement) {
@@ -527,17 +555,17 @@ describe('browser-hosted Desktop bridge', () => {
     expect(url.searchParams.get('path')).toBe(requestUrl.searchParams.get('path'))
     expect(url.searchParams.get('profile')).toBe('research')
     expect(url.searchParams.get('session_id')).toBe('origin-session')
-    expect(url.searchParams.get('token')).toBe(token || null)
+    expect(carriesToken(url, token)).toBe(false)
+    expect(url.searchParams.get('ticket')).toBe(token ? ticketFor(url, 'download') : null)
     expect(downloads[0].download).toBe('a b.pdf')
     expect(downloads[0].isConnected).toBe(false)
 
-    fetchMock.mockResolvedValue(new Response(null, { status: 404 }))
+    fetchMock.mockImplementation(async () => new Response(null, { status: 404 }))
     await expect(downloadGatewayMediaFile('/srv/missing.pdf')).rejects.toThrow('404')
     await expect(win.hermesDesktop!.saveGatewayFile!({
       connectionId: 'another-host', path: '/srv/reports/a b.pdf'
     })).rejects.toThrow('No connection with id "another-host"')
     expect(downloads).toHaveLength(1)
-    expect(fetchMock).toHaveBeenCalledTimes(2)
   })
 
   it.each(['token', 'cookie'])('streams browser audio/video over HTTP with %s auth', async auth => {
@@ -546,7 +574,7 @@ describe('browser-hosted Desktop bridge', () => {
     win.__HERMES_SESSION_TOKEN__ = token
     win.__HERMES_AUTH_REQUIRED__ = auth === 'cookie'
     win.__HERMES_BASE_PATH__ = '/hermes'
-    const fetchMock = vi.fn()
+    const fetchMock = fileTicketFetch()
     vi.stubGlobal('fetch', fetchMock)
 
     expect(installBrowserDesktopBridge()).toBe(true)
@@ -564,13 +592,20 @@ describe('browser-hosted Desktop bridge', () => {
       expect(url.pathname).toBe('/hermes/api/files/stream')
       expect.soft(url.searchParams.get('path'), path).toBe(path)
       expect(url.searchParams.get('profile')).toBe('research')
-      expect(url.searchParams.get('token')).toBe(token || null)
+      expect(carriesToken(url, token)).toBe(false)
+      expect(url.searchParams.get('ticket')).toBe(token ? ticketFor(url, 'stream') : null)
     }
 
     await expect(resolveMediaPlaybackSrc('https://cdn.example.com/video.mp4')).resolves.toBe(
       'https://cdn.example.com/video.mp4'
     )
-    expect(fetchMock).not.toHaveBeenCalled()
+
+    for (const [input, init] of fetchMock.mock.calls as [URL, RequestInit][]) {
+      expect(input.pathname).toBe('/hermes/api/files/ticket')
+      expect(new Headers(init.headers).get('X-Hermes-Session-Token')).toBe(token)
+    }
+
+    expect(fetchMock).toHaveBeenCalledTimes(token ? 5 : 0)
   })
 
   it('persists browser image bytes through the existing chat upload API', async () => {

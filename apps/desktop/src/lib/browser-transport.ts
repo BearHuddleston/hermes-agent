@@ -78,16 +78,6 @@ export function endpointUrl(path: string, basePath: string, profile?: null | str
   return url
 }
 
-export function authenticatedEndpointUrl(bootstrap: BrowserBootstrap, path: string, profile?: null | string): URL {
-  const url = endpointUrl(path, bootstrap.basePath, profile)
-
-  // Downloads and media elements cannot set the session header. Gated hosts
-  // use their same-origin cookie; loopback hosts use the injected token.
-  if (bootstrap.token) {url.searchParams.set('token', bootstrap.token)}
-
-  return url
-}
-
 export function websocketUrl(
   basePath: string,
   path: string,
@@ -242,6 +232,45 @@ export async function browserApi<T>(bootstrap: BrowserBootstrap, request: Hermes
   }
 
   return JSON.parse(text) as T
+}
+
+export interface FileEndpointQuery {
+  path: string
+  profile?: null | string
+  session_id?: string
+}
+
+/**
+ * URL for a download link or media element, which cannot send the session
+ * header. Gated hosts authenticate it with the same-origin cookie. A token
+ * session mints a ticket bound to this exact route and query: the session
+ * token grants host shells, so it must never reach download history or a
+ * copyable media address.
+ */
+export async function fileEndpointUrl(
+  bootstrap: BrowserBootstrap,
+  route: 'download' | 'stream',
+  query: FileEndpointQuery
+): Promise<URL> {
+  const params = Object.fromEntries(Object.entries(query).filter(([, value]) => value)) as Record<string, string>
+  const url = endpointUrl(`/api/files/${route}`, bootstrap.basePath)
+
+  Object.entries(params).forEach(([key, value]) => url.searchParams.set(key, value))
+
+  if (bootstrap.token) {
+    const result = await browserApi<null | { ticket?: string }>(bootstrap, {
+      body: { ...params, route },
+      method: 'POST',
+      path: '/api/files/ticket'
+    })
+
+    const ticket = String(result?.ticket || '')
+
+    if (!ticket) {throw new Error('Hermes did not return a file ticket')}
+    url.searchParams.set('ticket', ticket)
+  }
+
+  return url
 }
 
 export async function authenticatedWebsocketUrl(
