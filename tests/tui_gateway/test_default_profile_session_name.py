@@ -50,8 +50,7 @@ def test_default_home_aliases_are_reported_as_default(tmp_path, monkeypatch):
             server._profile_home(invalid)
 
 
-@pytest.mark.parametrize("fence", ["tombstone", "retired"])
-def test_deleted_legacy_alias_never_routes_to_default(tmp_path, monkeypatch, fence):
+def test_deleted_legacy_alias_never_routes_to_default(tmp_path, monkeypatch):
     from hermes_cli import profiles
     from tui_gateway import server
     from tui_gateway.profile_lifecycle import ProfileLifecycleFence
@@ -67,13 +66,10 @@ def test_deleted_legacy_alias_never_routes_to_default(tmp_path, monkeypatch, fen
 
     # Only a never-used legacy basename can be an alias for default.
     assert server._profile_home("hermes") == default_home
-    if fence == "tombstone":
-        marker = profiles.profile_deletion_marker(deleted_home)
-        marker.parent.mkdir(parents=True, exist_ok=True)
-        marker.write_text("deleted\n", encoding="utf-8")
-    else:
-        with server._sessions_lock:
-            server._profile_lifecycle.retire(deleted_home)
+    # Deletion leaves this tombstone until a successor generation is published.
+    marker = profiles.profile_deletion_marker(deleted_home)
+    marker.parent.mkdir(parents=True, exist_ok=True)
+    marker.write_text("deleted\n", encoding="utf-8")
 
     assert not deleted_home.exists()
     for name in ("hermes", "HERMES"):

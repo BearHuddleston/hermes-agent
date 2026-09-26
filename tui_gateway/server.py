@@ -510,10 +510,8 @@ def _canonical_profile_request(name: str) -> str:
         # The legacy '.hermes' alias is not a valid named-profile id.
         home = profiles_mod._get_profiles_root() / profiles_mod.normalize_profile_name(name)
         if not home.is_dir():
-            # A retired named profile is not a legacy alias for the default home.
-            with _sessions_lock:
-                if _profile_lifecycle.key(home) in _profile_lifecycle.retired_homes:
-                    return name
+            # A deleted named profile keeps its tombstone until a successor is
+            # published, so it is never a legacy alias for the default home.
             if profiles_mod.profile_home_is_tombstoned(home):
                 return name
             return "default"

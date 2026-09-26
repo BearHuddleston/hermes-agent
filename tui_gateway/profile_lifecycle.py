@@ -35,49 +35,40 @@ def _current_incarnation(profile_home: Path | str) -> str | None:
 
 
 class ProfileLifecycleFence:
-    """Track retired paths and incarnations inside one gateway process."""
+    """Remember generations retired inside one gateway process.
+
+    Disk state is the cross-process authority: retirement tombstones a home
+    before its sessions are torn down, and only publication of a generation
+    (with its own incarnation token) or a rollback clears that tombstone. This
+    set only ADDS rejection of retired ``(home, incarnation)`` pairs, so no
+    check ever needs the profile lease: callers hold ``_sessions_lock``, which
+    lease holders (publish, delete) take in turn.
+    """
 
     def __init__(self) -> None:
-        # Never acquire a disk lease while holding this short in-memory lock.
-        self._lock = threading.RLock()
-        self.retired_homes: set[str] = set()
-        self._retired_home_incarnations: dict[str, str | None] = {}
+        self._lock = threading.Lock()
         self.retired_incarnations: set[tuple[str, str]] = set()
 
     @staticmethod
     def key(profile_home: Path | str) -> str:
         return str(_resolved(profile_home))
 
-    def _retired_key(self, profile_home: Path | str) -> str | None:
-        """``key()`` costs a resolve(); with nothing retired in this process no key can match."""
-        return self.key(profile_home) if self.retired_homes or self.retired_incarnations else None
+    def _is_retired(self, profile_home: Path | str, incarnation: str | None) -> bool:
+        # key() costs a resolve(); with nothing retired in this process no key can match.
+        if incarnation is None or not self.retired_incarnations:
+            return False
+        key = self.key(profile_home)
+        with self._lock:
+            return (key, incarnation) in self.retired_incarnations
 
     def capture(self, profile_home: Path | str | None) -> str | None:
         if profile_home is None:
             return None
-        with profile_incarnation_lease(profile_home):
-            # Never backfill a missing marker to bypass a local retirement.
-            self._check_retirement(profile_home, read_profile_incarnation(profile_home))
-            return ensure_profile_incarnation(profile_home)
-
-    def _check_retirement(
-        self, profile_home: Path | str, expected_incarnation: str | None,
-    ) -> None:
-        """Reconcile a published successor while holding its disk lifecycle lease."""
-        key = self.key(profile_home)
-        with self._lock:
-            if expected_incarnation is not None and (key, expected_incarnation) in self.retired_incarnations:
-                raise FileNotFoundError(f"Profile incarnation is retired: {profile_home}")
-            if key not in self.retired_homes:
-                return
-            current = read_profile_incarnation(profile_home)
-            if (current is None or (key, current) in self.retired_incarnations
-                    or self._retired_home_incarnations.get(key) is None):
-                raise FileNotFoundError(f"Profile home is retired: {profile_home}")
-            # Another process can publish without calling allow() in this server.
-            # Drop only the pathname fence; old captured tokens stay rejected.
-            self.retired_homes.discard(key)
-            self._retired_home_incarnations.pop(key, None)
+        # The lazy backfill refuses tombstoned homes, so it cannot revive a retirement.
+        incarnation = ensure_profile_incarnation(profile_home)
+        if self._is_retired(profile_home, incarnation):
+            raise FileNotFoundError(f"Profile incarnation is retired: {profile_home}")
+        return incarnation
 
     @contextmanager
     def lease(
@@ -93,7 +84,8 @@ class ProfileLifecycleFence:
             expected_incarnation,
             require_incarnation=require_incarnation,
         ) as home:
-            self._check_retirement(home, expected_incarnation)
+            if self._is_retired(home, expected_incarnation):
+                raise FileNotFoundError(f"Profile incarnation is retired: {home}")
             yield home
 
     def rejected(
@@ -103,34 +95,18 @@ class ProfileLifecycleFence:
         *,
         require_incarnation: bool = False,
     ) -> bool:
-        key = self._retired_key(profile_home)
-        with self._lock:
-            # Old callbacks need no disk lease (and may hold the sessions lock
-            # while a deleting thread owns the disk lease and waits for it).
-            if expected_incarnation is not None and (key, expected_incarnation) in self.retired_incarnations:
-                return True
-            retired = key in self.retired_homes
+        if self._is_retired(profile_home, expected_incarnation):
+            return True
         try:
             named_marker = profile_deletion_marker_path(profile_home)
             if named_profile_home_is_unavailable(profile_home):
                 return True
         except Exception:
             return True
-        if retired:
-            try:
-                with self.lease(profile_home, expected_incarnation,
-                                require_incarnation=require_incarnation):
-                    return False
-            except (OSError, RuntimeError):
-                return True
         if named_marker is None:
             return False
         if expected_incarnation is None:
             return require_incarnation
-        key = key or self._retired_key(profile_home)
-        with self._lock:
-            if (key, expected_incarnation) in self.retired_incarnations:
-                return True
         return not profile_incarnation_matches(profile_home, expected_incarnation)
 
     def retire(
@@ -138,13 +114,12 @@ class ProfileLifecycleFence:
         profile_home: Path | str,
         incarnation: str | None = None,
     ) -> None:
-        key = self.key(profile_home)
         if incarnation is None:
             incarnation = _current_incarnation(profile_home)
-        with self._lock:
-            self.retired_homes.add(key)
-            self._retired_home_incarnations[key] = incarnation
-            if incarnation is not None:
+        # A tokenless (legacy) generation is fenced by its tombstone alone.
+        if incarnation is not None:
+            key = self.key(profile_home)
+            with self._lock:
                 self.retired_incarnations.add((key, incarnation))
 
     def allow(
@@ -152,16 +127,14 @@ class ProfileLifecycleFence:
         profile_home: Path | str,
         incarnation: str | None = None,
     ) -> None:
-        key = self.key(profile_home)
         if incarnation is None:
             incarnation = _current_incarnation(profile_home)
         # Rollback of a failed delete admits the unchanged generation.  A
         # same-name recreate has a fresh token, so its call leaves the retired
         # predecessor tuple intact.
-        with self._lock:
-            self.retired_homes.discard(key)
-            self._retired_home_incarnations.pop(key, None)
-            if incarnation is not None:
+        if incarnation is not None:
+            key = self.key(profile_home)
+            with self._lock:
                 self.retired_incarnations.discard((key, incarnation))
 
     def retire_sessions(

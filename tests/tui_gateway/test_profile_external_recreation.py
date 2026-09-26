@@ -7,7 +7,11 @@ import pytest
 
 from hermes_cli import profiles
 from hermes_cli.profile_incarnation import read_profile_incarnation
-from hermes_cli.profile_lifecycle import profile_lifecycle_lease
+from hermes_cli.profile_lifecycle import (
+    mark_profile_deleting,
+    profile_lifecycle_lease,
+    rollback_profile_retirement,
+)
 from hermes_state import SessionDB
 from tui_gateway.profile_lifecycle import ProfileLifecycleFence
 
@@ -67,8 +71,8 @@ def test_registered_rpc_admits_new_generation_and_fences_old(tmp_path, monkeypat
         old_record = _create_session(server, "worker")
         _create_session(server, "default")
         old = old_record["profile_incarnation"]
-        # Independent fence copies exercise both companion entrypoints without
-        # benefiting from the server's capture-time reconciliation.
+        # Independent fence copies prove each entrypoint admits the successor
+        # from disk state alone, with no capture in their process.
         check_fence, lease_fence = ProfileLifecycleFence(), ProfileLifecycleFence()
         check_fence.retire(home, old)
         lease_fence.retire(home, old)
@@ -116,13 +120,15 @@ def test_registered_rpc_admits_new_generation_and_fences_old(tmp_path, monkeypat
         marker = home / ".profile-incarnation"
         saved_marker = marker.read_bytes()
         marker.unlink()
-        check_fence.retire(home)  # unknown latest retirement, despite a known older token
+        # A tokenless retirement (legacy tombstone) is fenced by the tombstone itself.
+        mark_profile_deleting(home)
         with pytest.raises(FileNotFoundError):
             server._capture_profile_incarnation(home)
         assert not marker.exists(), "lazy marker backfill must not revive a retired generation"
         marker.write_bytes(saved_marker)
         assert check_fence.rejected(home, new, require_incarnation=True)
-        server.allow_profile_home(home, new)  # explicit rollback admits unchanged generation
+        rollback_profile_retirement(home, new)  # explicit rollback admits unchanged generation
+        assert not check_fence.rejected(home, new, require_incarnation=True)
         assert _create_session(server, "worker")["profile_incarnation"] == new
     finally:
         for sid in list(server._sessions):
