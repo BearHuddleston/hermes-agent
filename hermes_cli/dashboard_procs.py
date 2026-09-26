@@ -726,17 +726,20 @@ def _restart_killed_backends(
     pid_cmdline: dict[int, list[str]], pid_home: dict[int, str | None], *,
     pid_launchd: dict[int, tuple[str, str, int | None]] | None = None) -> list[int]:
     """Update path: restart systemd units, kickstart launchd jobs (macOS), respawn manual argv
-    (detached, headless, logged to logs/dashboard-restart.log; one per profile, no ``--port 0``).
-    Returns PIDs not brought back."""
+    (detached, headless, logged to logs/dashboard-restart.log; one per profile, no ``--port 0``,
+    never a Webapp — the operator gets its restart command instead). Returns PIDs not brought
+    back, deliberate skips excluded."""
     # Two categories: Without this, a remote backend (hermes serve) under Restart=on-failure never comes
     # back after our clean SIGTERM, and the Desktop can't reconnect (#68934). Filtered so Desktop
     # ``serve|dashboard --port 0`` backends are not resurrected and duplicates collapse to one per profile
     # (#78821).
     from hermes_cli import main_dashboard as _dash
+    from hermes_cli.update_cmd_windows import _hermes_holder_subcommand
     unrecovered: list[int] = []
     failed_restarts: list[tuple[str, str]] = []
     seen_services: set[str] = set()
     respawn_candidates: list[tuple[int, list[str], str | None]] = []
+    operator_restarts: list[list[str]] = []
     for pid in killed:
         svc_name = pid_service.get(pid)
         launchd_job = (pid_launchd or {}).get(pid)
@@ -768,11 +771,23 @@ def _restart_killed_backends(
                     (target, f"launchd is not supervising a fresh process; run: {sudo}launchctl kickstart -k {target}"))
                 unrecovered.append(pid)
         elif pid in pid_cmdline:
-            respawn_candidates.append((pid, pid_cmdline[pid], pid_home.get(pid)))
+            # A Webapp start is an operator handoff: an unauthenticated one prints a private
+            # host-access launch link, which a detached respawn would write into
+            # dashboard-restart.log, and every open tab loses its session either way. Whether a
+            # start is private is decided at runtime by the auth gate, not by argv, so no Webapp
+            # is respawned. Set aside BEFORE the one-per-profile cap so a sibling dashboard of
+            # the same profile still comes back.
+            if _hermes_holder_subcommand(subprocess.list2cmdline(pid_cmdline[pid])) == "webapp":
+                operator_restarts.append(pid_cmdline[pid])
+            else:
+                respawn_candidates.append((pid, pid_cmdline[pid], pid_home.get(pid)))
         else:
             unrecovered.append(pid)
     for svc, err in failed_restarts:
         print(f"    ⚠ {svc}: {err}")
+    for argv in operator_restarts:
+        print("    ⚠ Webapp not restarted: each start hands you a new launch link.\n"
+              f"      Start it again when you're ready:  hermes {shlex.join(_normalize_dashboard_cmdline(argv))}")
     respawn_cmds = _filter_dashboard_respawn_candidates(respawn_candidates)
     failed_cmds = _dash._respawn_dashboard_processes(respawn_cmds) if respawn_cmds else None
     if failed_cmds:

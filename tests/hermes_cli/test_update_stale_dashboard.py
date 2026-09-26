@@ -413,6 +413,45 @@ class TestManualBackendRespawn:
         respawn.assert_called_once_with([argv])
         assert "when you're ready" not in capsys.readouterr().out
 
+    @pytest.mark.platforms("posix")
+    def test_webapp_is_stopped_but_never_respawned_while_its_profile_dashboard_is(
+            self, tmp_path, monkeypatch, capsys):
+        """A respawned Webapp mints a new host-access launch link and prints it into the persistent
+        restart log, and every open tab loses its session regardless. The update stops it, is never
+        the one to start it again, and hands the operator the command instead; a dashboard of the same
+        profile still comes back (the Webapp does not take the one-per-profile respawn slot)."""
+        home = tmp_path / ".hermes"
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        webapp = ["/venv/bin/python", "/venv/bin/hermes", "webapp", "--port", "9120"]
+        dashboard = ["/venv/bin/python", "/venv/bin/hermes", "dashboard", "--port", "9119"]
+        argv_by_pid = {6101: webapp, 6102: dashboard}
+        spawned: list[list[str]] = []
+
+        class _FakePopen:
+            def __init__(self, cmd, **kwargs):
+                spawned.append(list(cmd))
+
+        def fake_kill(pid, sig):
+            if sig == 0:
+                raise ProcessLookupError
+
+        with patch.object(main_dashboard, "_restart_managed_dashboard_service", return_value=False), \
+             patch.object(main_dashboard, "_find_stale_dashboard_pids", return_value=list(argv_by_pid)), \
+             patch.object(main_dashboard, "_get_pid_cgroup_path", return_value=None), \
+             patch.object(main_dashboard, "_get_systemd_service_for_pid", return_value=None), \
+             patch.object(main_dashboard, "_dashboard_cmdline_for_pid", side_effect=argv_by_pid.get), \
+             patch.object(dashboard_procs, "_hermes_home_for_pid", return_value=str(home)), \
+             patch.object(dashboard_procs, "_posix_descendants", return_value={}), \
+             patch.object(main_dashboard.subprocess, "Popen", _FakePopen), \
+             patch("os.kill", side_effect=fake_kill), \
+             patch("time.sleep"):
+            result = _kill_stale_dashboard_processes(restart_managed=True)
+
+        assert sorted(result["killed"]) == [6101, 6102]
+        assert spawned == [[*dashboard, "--no-open"]]
+        assert result["unrecovered"] == []
+        assert "hermes webapp --port 9120" in capsys.readouterr().out
+
     @pytest.mark.skipif(sys.platform == "win32", reason="POSIX cmdline capture + respawn")
     def test_port_zero_serves_killed_without_respawn(self, capsys):
         """``serve --port 0`` backends are stopped but not resurrected (#78821)."""
