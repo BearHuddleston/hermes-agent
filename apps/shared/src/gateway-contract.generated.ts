@@ -2770,6 +2770,7 @@ export interface SessionCreateParams {
   cols?: number | null
   source?: string | null
   cwd?: string | null
+  cwd_explicit?: boolean | null
   messages?: SeedMessage[] | null
   parent_session_id?: string | null
   title?: string | null
