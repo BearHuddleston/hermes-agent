@@ -13,8 +13,9 @@ def request_allowed() -> bool:
     """Allow host shells only for Webapp on loopback or behind authentication."""
     from hermes_cli.web_server import app
     from hermes_cli.web_server_chat import _LOOPBACK_HOSTS
+    from hermes_cli.web_server_surface import policy
 
-    if getattr(app.state, "ui_surface", "dashboard") != "webapp":
+    if not policy(app.state).host_terminal:
         return False
     if getattr(app.state, "auth_required", False):
         return True

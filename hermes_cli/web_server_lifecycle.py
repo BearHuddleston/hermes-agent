@@ -245,6 +245,7 @@ def _maybe_open_browser(host: str, actual_port: int, open_browser: bool, initial
     SIGHUP the server; maps ``0.0.0.0``/``::`` binds to ``127.0.0.1``.
     """
     from hermes_cli.web_server import app
+    from hermes_cli.web_server_surface import private_launch
     from urllib.parse import quote
 
     display_host = host if host not in ("0.0.0.0", "::") else "127.0.0.1"
@@ -253,9 +254,8 @@ def _maybe_open_browser(host: str, actual_port: int, open_browser: bool, initial
     _open_url = f"http://{display_host}:{actual_port}"
     if initial_profile:
         _open_url += f"/?profile={quote(initial_profile, safe='')}"
-    private_launch = (getattr(app.state, "ui_surface", "dashboard") == "webapp"
-                      and not getattr(app.state, "auth_required", False))
-    if private_launch:
+    private = private_launch(app.state)
+    if private:
         from hermes_cli.web_server import _SESSION_TOKEN
 
         _open_url += f"#hermes-session={quote(_SESSION_TOKEN, safe='')}"
@@ -281,7 +281,7 @@ def _maybe_open_browser(host: str, actual_port: int, open_browser: bool, initial
             time.sleep(1.0)
             # Browser launchers put their URL in argv (visible to other OS
             # users). Pass only an owner-readable redirect FILE, never the token.
-            target = _private_browser_launch_file(_open_url) if private_launch else _open_url
+            target = _private_browser_launch_file(_open_url) if private else _open_url
             webbrowser.open(target)
         except Exception:
             pass

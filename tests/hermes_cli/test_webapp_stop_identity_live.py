@@ -35,8 +35,7 @@ def audit(event, args):
 sys.addaudithook(audit)
 from hermes_cli.web_server import start_server
 surface = sys.argv[1]
-start_server(host="127.0.0.1", port=0, open_browser=False,
-             headless=surface == "serve", ui_surface=surface)
+start_server(host="127.0.0.1", port=0, open_browser=False, ui_surface=surface)
 '''
 
 

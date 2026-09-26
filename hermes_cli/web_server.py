@@ -25,6 +25,7 @@ import urllib.parse
 from hermes_cli.install_identity import get_install_id as _shared_get_install_id
 from hermes_cli.process_identity import WEB_SERVER_PURPOSES, is_desktop_owned_backend
 from hermes_cli.pty_session import run_reaper
+from hermes_cli.web_server_surface import policy, private_launch
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 
@@ -230,7 +231,7 @@ async def _lifespan(app: "FastAPI"):
     # Standalone Webapp, like Desktop, has no gateway to run its scheduled jobs.
     # Reuse the profile-aware ticker without adopting Electron's gateway cleanup.
     # Plain dashboard deployments still rely on their existing gateway.
-    if desktop_owned or getattr(app.state, "ui_surface", None) == "webapp":
+    if desktop_owned or policy(app.state).cron_ticker:
         cron_stop = threading.Event()
         cron_thread = threading.Thread(
             target=_start_desktop_cron_ticker,
@@ -243,8 +244,10 @@ async def _lifespan(app: "FastAPI"):
     # Reap idle/dead keep-alive PTY sessions (30-min TTL).
     PTY_REGISTRY._closed = False
     pty_reaper_task = asyncio.create_task(run_reaper(PTY_REGISTRY))
+    from contextlib import nullcontext
     from hermes_cli.web_host_terminal_sessions import host_terminal_lifespan
-    host_terminals = host_terminal_lifespan(app)
+    # Host shells, and the reaper that retires them, exist only where the surface allows them.
+    host_terminals = host_terminal_lifespan(app) if policy(app.state).host_terminal else nullcontext()
     await host_terminals.__aenter__()
     # Periodic authenticated self-test feeding the ``dashboard`` component on /api/status.
     selftest_task = asyncio.create_task(_dashboard_selftest_loop())
@@ -1296,7 +1299,6 @@ def _on_server_started(
     *,
     host: str,
     port: int,
-    headless: bool,
     isolated: bool,
     open_browser: bool,
     initial_profile: str,
@@ -1349,7 +1351,8 @@ def _on_server_started(
     app.state.bound_port = actual_port
     # Published by /api/host/identity: an attaching `hermes dashboard` must never be routed to a
     # headless backend (a URL with no UI behind it).
-    app.state.serves_spa = not headless
+    serves_spa = policy(app.state).serves_spa
+    app.state.serves_spa = serves_spa
 
     # Positive process identity in the machine spawn ledger (+ Windows
     # kill-on-close job). Registered AFTER the bind so the entry carries the
@@ -1359,7 +1362,7 @@ def _on_server_started(
         from hermes_cli.process_identity import attach_self_to_kill_on_close_job, register_self
 
         register_self(
-            "serve" if headless else "webapp" if getattr(app.state, "ui_surface", "dashboard") == "webapp" else "dashboard",
+            app.state.ui_surface,
             detail={"host": host, "port": actual_port, "profile": initial_profile or "", "isolated": isolated},
         )
         attach_self_to_kill_on_close_job()
@@ -1376,9 +1379,9 @@ def _on_server_started(
     # Port-discovery sentinel parsed by the Desktop spawn (matches either
     # token). Written to fd 1: tui_gateway.server redirects sys.stdout to
     # stderr at import, and the Desktop watches child.stdout (#96282).
-    ready_token = "HERMES_BACKEND_READY" if headless else "HERMES_DASHBOARD_READY"
+    ready_token = "HERMES_DASHBOARD_READY" if serves_spa else "HERMES_BACKEND_READY"
     _write_machine_sentinel_line(f"{ready_token} port={actual_port}")
-    if headless:
+    if not serves_spa:
         # Auth-gated JSON-RPC/WS only — announce the bind, not a URL. flush:
         # a piped stdout otherwise surfaces this minutes after the sentinel.
         print(f"  Hermes backend listening on {host}:{actual_port}", flush=True)
@@ -1493,18 +1496,22 @@ def start_server(
     open_browser: bool = True,
     allow_public: bool = False,
     initial_profile: str = "",
-    headless: bool = False,
     isolated: bool = False,
     ssh_session_token: Optional[str] = None,
     ssh_owner_nonce: Optional[str] = None,
     start_mcp_discovery_after_bind: bool = False,
     ui_surface: str = "dashboard",
+    web_dist: Optional[Path] = None,
 ):
     """Start the web UI server.
 
+    ``ui_surface`` is the launch surface (``serve`` | ``dashboard`` | ``webapp``) and
+    its ledger purpose; what it may do is ``web_server_surface.policy``. ``serve`` is
+    the JSON-RPC/WS backend: no UI build, no SPA mount (``HERMES_SERVE_HEADLESS``).
+    ``web_dist`` is the SPA a launch prepared itself (the Webapp renderer); it wins
+    over ``WEB_DIST`` and is never exported to child processes.
     ``initial_profile`` is appended to the auto-opened URL as ``?profile=<name>``
-    (profile alias ``<profile> dashboard``). ``headless`` is the ``serve`` path:
-    JSON-RPC/WS backend, no UI build, no SPA mount (``HERMES_SERVE_HEADLESS``).
+    (profile alias ``<profile> dashboard``).
     ``isolated`` (``--isolated``) is recorded in the spawn ledger so attach-first
     discovery never adopts this process.
     ``ssh_session_token``/``ssh_owner_nonce`` are process-local Desktop SSH
@@ -1517,7 +1524,8 @@ def start_server(
     _apply_ssh_owner_nonce(ssh_owner_nonce)
     if ui_surface not in WEB_SERVER_PURPOSES:
         raise ValueError(f"unsupported web UI surface: {ui_surface}")
-    app.state.ui_surface = "serve" if headless else ui_surface
+    app.state.ui_surface = ui_surface
+    app.state.web_dist = web_dist
 
     # Dashboard-mode starts don't route through main.py's `serve` path, which
     # applies the same RLIMIT_NOFILE floor (policy in resource_limits, #81547).
@@ -1535,7 +1543,7 @@ def start_server(
         _log.debug("Nous auth keepalive did not start: %s", exc)
 
     _configure_auth_gate(host, allow_public, ssh_session_token, ssh_owner_nonce)
-    if app.state.ui_surface == "webapp" and not app.state.auth_required:
+    if private_launch(app.state):
         # Webapp launch credentials are process-local, never inherited from
         # Desktop environment/argv. Every start invalidates old launch links.
         global _SESSION_TOKEN
@@ -1599,7 +1607,6 @@ def start_server(
                 server,
                 host=host,
                 port=port,
-                headless=headless,
                 isolated=isolated,
                 open_browser=open_browser,
                 initial_profile=initial_profile,

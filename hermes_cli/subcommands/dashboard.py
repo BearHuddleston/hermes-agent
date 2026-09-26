@@ -2,8 +2,9 @@
 
 ``dashboard`` is the browser web UI; ``serve`` is the same gateway, headless —
 what the desktop app and remote backends run. ``serve`` also skips the web UI
-build (``headless_backend=True``): pure JSON-RPC/WS clients never load the SPA.
-Both share one handler (``cmd_dashboard`` → ``start_server``).
+build: pure JSON-RPC/WS clients never load the SPA. Each parser fixes its launch
+surface as ``ui_surface`` (``serve`` | ``dashboard`` | ``webapp``), and all share
+one server (``cmd_dashboard`` → ``start_server``).
 """
 
 from __future__ import annotations
@@ -59,7 +60,7 @@ def _configure_serve_parser(parser, *, cmd_dashboard: Callable) -> None:
     parser.add_argument(
         "--ssh-owner-nonce", dest="ssh_owner_nonce", metavar="NONCE", default=None,
         help="Identify a Desktop-owned SSH backend process")
-    parser.set_defaults(func=cmd_dashboard, no_open=True, headless_backend=True, command="serve")
+    parser.set_defaults(func=cmd_dashboard, no_open=True, ui_surface="serve", command="serve")
 
 
 def build_serve_parser(
@@ -92,7 +93,7 @@ def build_dashboard_parser(
     # `--tui` was removed (embedded chat always on). Accept + ignore so an old app with a
     # new CLI doesn't die on "unrecognized arguments". Drop once the app floor is > 0.16.0.
     dashboard_parser.add_argument("--tui", action="store_true", help=argparse.SUPPRESS)
-    dashboard_parser.set_defaults(func=cmd_dashboard)
+    dashboard_parser.set_defaults(func=cmd_dashboard, ui_surface="dashboard")
 
     # `serve`: same gateway as `dashboard`, never opens a browser. Exists so the desktop
     # app / remote backends launch a backend WITHOUT invoking `dashboard` — independent
@@ -161,8 +162,4 @@ def build_dashboard_parser(
         action="store_true",
         help="Rebuild the browser-hosted Desktop renderer even when its build receipt is current",
     )
-    webapp_parser.set_defaults(
-        func=cmd_webapp,
-        headless_backend=False,
-        webapp_surface=True,
-    )
+    webapp_parser.set_defaults(func=cmd_webapp, ui_surface="webapp")

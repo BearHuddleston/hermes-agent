@@ -10,8 +10,7 @@ from starlette.websockets import WebSocketDisconnect
 
 
 @pytest.mark.parametrize("surface,gated,headless", [
-    ("webapp", False, False), ("webapp", False, True),
-    ("webapp", True, False), ("dashboard", False, False), ("serve", False, True),
+    ("webapp", False, False), ("webapp", True, False), ("dashboard", False, False), ("serve", False, True),
 ])
 def test_bootstrap_token_visibility(monkeypatch, tmp_path, surface, gated, headless):
     from hermes_cli import web_server as server

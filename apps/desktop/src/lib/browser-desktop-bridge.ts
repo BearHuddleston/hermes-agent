@@ -32,6 +32,8 @@ interface BrowserBootstrapWindow {
 interface BrowserBootstrap {
   authRequired: boolean
   basePath: string
+  /** Webapp on an unauthenticated bind: the operator's launch link is the only credential source. */
+  privateSession: boolean
   token: string
   stagedUploads: Map<string, HermesStagedUpload>
 }
@@ -89,12 +91,13 @@ function browserBootstrap(): BrowserBootstrap | null {
   const win = window as unknown as BrowserBootstrapWindow
   const authRequired = win.__HERMES_AUTH_REQUIRED__ === true
   const basePath = normalizeBasePath(win.__HERMES_BASE_PATH__)
-  const webapp = win.__HERMES_UI_SURFACE__ === 'webapp'
-  const token = authRequired ? '' : webapp ? consumeWebappSession(basePath) : String(win.__HERMES_SESSION_TOKEN__ || '').trim()
+  const privateSession = !authRequired && win.__HERMES_UI_SURFACE__ === 'webapp'
+  const token = authRequired ? '' : privateSession ? consumeWebappSession(basePath) : String(win.__HERMES_SESSION_TOKEN__ || '').trim()
 
   return {
     authRequired,
     basePath,
+    privateSession,
     token,
     stagedUploads: new Map()
   }
@@ -642,7 +645,7 @@ export function installBrowserDesktopBridge(): boolean {
 
   if (!bootstrap) {return false}
 
-  if (win.__HERMES_UI_SURFACE__ === 'webapp' && !bootstrap.authRequired) {
+  if (bootstrap.privateSession) {
     watchWebappLaunchLink(() => window.location.reload())
   }
 
@@ -690,7 +693,7 @@ export function installBrowserDesktopBridge(): boolean {
   const openWindow = createBrowserWindowOpener({
     api,
     basePath: bootstrap.basePath,
-    privateSession: win.__HERMES_UI_SURFACE__ === 'webapp' && !bootstrap.authRequired
+    privateSession: bootstrap.privateSession
   })
 
   window.addEventListener(

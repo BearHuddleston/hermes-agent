@@ -38,8 +38,8 @@ def test_fast_serve_launch_dispatches_only_unambiguous_serve(monkeypatch) -> Non
 
     monkeypatch.setattr(sys, "argv", ["hermes", "serve", "--host", "127.0.0.1", "--port", "0"])
     assert main_mod._try_fast_serve_launch() is True
-    assert (captured[0].command, captured[0].headless_backend, captured[0].no_open, captured[0].port) == (
-        "serve", True, True, 0,
+    assert (captured[0].command, captured[0].ui_surface, captured[0].no_open, captured[0].port) == (
+        "serve", "serve", True, 0,
     )
 
     # Every ambiguous shape falls back to the full parser: unknown flags,

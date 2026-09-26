@@ -12,6 +12,7 @@ from fastapi import APIRouter, HTTPException, Request, WebSocket
 from fastapi.responses import HTMLResponse, JSONResponse
 
 from hermes_cli.dashboard_auth.request_utils import _http_origin
+from hermes_cli.web_server_surface import private_launch
 
 _log = logging.getLogger("hermes_cli.web_server")
 router = APIRouter()
@@ -21,8 +22,7 @@ _ticket_lock = threading.Lock()
 
 
 def _require_private_webapp(request: Request) -> None:
-    if (getattr(request.app.state, "ui_surface", None) != "webapp"
-            or getattr(request.app.state, "auth_required", False)):
+    if not private_launch(request.app.state):
         raise HTTPException(404, "Private Webapp window handoff is unavailable")
 
 

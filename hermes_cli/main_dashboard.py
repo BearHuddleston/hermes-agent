@@ -796,11 +796,7 @@ def cmd_webapp(args):
         )
         raise SystemExit(1 if _webapp_pids() else 0)
 
-    from hermes_cli.webapp import (
-        WebappBuildError,
-        activate_webapp_dist,
-        prepare_webapp_renderer,
-    )
+    from hermes_cli.webapp import WebappBuildError, prepare_webapp_renderer
 
     try:
         dist = prepare_webapp_renderer(
@@ -820,7 +816,10 @@ def cmd_webapp(args):
         print("✓ Hermes Webapp renderer ready (--build-only)")
         return None
 
-    activate_webapp_dist(dist)
+    # Handed to start_server, never exported: shells and PTYs this server
+    # spawns must not inherit the Desktop renderer as their dashboard dist.
+    args.web_dist = dist
+    # A named-profile re-exec reuses this renderer instead of rebuilding it.
     args.skip_build = True
     return cmd_dashboard(args)
 
@@ -880,7 +879,7 @@ def _endpoint_conflict(args, record, typed: set) -> str:
     return ""
 
 
-def _attach_to_host_backend(args, headless_backend: bool) -> None:
+def _attach_to_host_backend(args) -> None:
     """Multiplex-only: a second `hermes serve`/`dashboard` attaches to the host backend.
 
     Exactly ONE backend runs per host and multiplexes every profile, so a second invocation —
@@ -917,6 +916,8 @@ def _attach_to_host_backend(args, headless_backend: bool) -> None:
         # answered". Fall through to the bind — never exit 0 on an attach that did not happen.
         return
 
+    surface = args.ui_surface
+    headless = surface == "serve"
     typed = _explicit_endpoint_flags()
     conflict = _endpoint_conflict(args, record, typed)
     if conflict:
@@ -925,19 +926,18 @@ def _attach_to_host_backend(args, headless_backend: bool) -> None:
         print("  Stop that backend, or drop the flag to use the running one.")
         sys.exit(GATEWAY_FATAL_CONFIG_EXIT_CODE)
 
-    if not headless_backend and not identity.get("servesSpa"):
+    if not headless and not identity.get("servesSpa"):
         print(f"Refusing to start: this host is already served by {hr.describe(record)}, "
               "which is a headless `hermes serve` backend with no dashboard UI.")
         print("  Stop it and run `hermes dashboard`, or use --isolated for a dedicated server.")
         sys.exit(GATEWAY_FATAL_CONFIG_EXIT_CODE)
 
-    expected_surface = "webapp" if getattr(args, "webapp_surface", False) else "dashboard"
     # Pre-Webapp host identities only distinguish SPA from headless. Once an
     # exact surface is advertised, an invalid or different value cannot attach.
     owner_surface = identity.get("ui_surface", "dashboard")
-    if not headless_backend and owner_surface != expected_surface:
+    if not headless and owner_surface != surface:
         print(f"Refusing to start: {hr.describe(record)} serves {owner_surface}, "
-              f"not Hermes {expected_surface}.")
+              f"not Hermes {surface}.")
         print("  Stop that backend, or use --isolated with a different --port.")
         sys.exit(1)
 
@@ -949,7 +949,7 @@ def _attach_to_host_backend(args, headless_backend: bool) -> None:
     wanted = getattr(args, "open_profile", "") or profile
     url = f"http://{hr.dial_host(record)}:{record.port}/?profile={wanted}"
 
-    kind = "backend" if headless_backend else expected_surface
+    kind = "backend" if headless else surface
     print(f"Hermes {kind} already running on this host: PID {record.pid}, port {record.port}.")
     print(f"  Managing profile '{wanted}': {url}")
     if kind == "webapp":
@@ -964,8 +964,7 @@ def _attach_to_host_backend(args, headless_backend: bool) -> None:
     sys.exit(0)
 
 
-def _route_named_profile_dashboard(
-    args, _headless_backend: bool, _ssh_owner_nonce: str, _token_file: str) -> None:
+def _route_named_profile_dashboard(args, _ssh_owner_nonce: str, _token_file: str) -> None:
     """Route a named-profile launch to the single MACHINE dashboard (per-request ``?profile=`` scoping
     makes one server per profile pure fragmentation).
 
@@ -989,7 +988,6 @@ def _route_named_profile_dashboard(
     ):
         return
 
-    expected_surface = "webapp" if getattr(args, "webapp_surface", False) else "dashboard"
     print(
         f"Routing to the machine dashboard (profile '{_launch_profile}' "
         f"preselected). Use --isolated for a dedicated per-profile server."
@@ -997,9 +995,9 @@ def _route_named_profile_dashboard(
     reexec_argv = [
         sys.executable, "-m", "hermes_cli.main",
         "-p", "default",
-        # Preserve the lean serve path so a named-profile `serve` doesn't
-        # silently rebuild the UI as `dashboard`.
-        "serve" if _headless_backend else expected_surface,
+        # The surface IS the subcommand: a named-profile `serve` keeps the lean
+        # path instead of silently rebuilding the UI as `dashboard`.
+        args.ui_surface,
         "--port", str(args.port),
         "--host", args.host,
         "--open-profile", _launch_profile]
@@ -1034,19 +1032,23 @@ def _route_named_profile_dashboard(
         os.execvpe(sys.executable, reexec_argv, env)
 
 
-def _resolve_dashboard_web_dist(args, _headless_backend: bool) -> None:
+def _resolve_dashboard_web_dist(args) -> None:
     """Build or validate the web UI dist before the server imports.
 
-    ``serve`` sets HERMES_SERVE_HEADLESS so mount_spa() stays off. Otherwise build
-    unless HERMES_WEB_DIST / --skip-build promise a dist — then verify index.html
-    (else the server serves 404s). --skip-build on the default location gets ONE
-    recovery build; a caller-managed HERMES_WEB_DIST can't be populated.
+    ``serve`` sets HERMES_SERVE_HEADLESS so mount_spa() stays off. A launch that
+    already prepared its own dist (``args.web_dist``: the Webapp renderer) passes
+    it to start_server as-is. Otherwise build unless HERMES_WEB_DIST / --skip-build
+    promise a dist — then verify index.html (else the server serves 404s).
+    --skip-build on the default location gets ONE recovery build; a caller-managed
+    HERMES_WEB_DIST can't be populated.
     """
     from hermes_cli.main import PROJECT_ROOT
     from hermes_cli.main_web_build import _build_web_ui
     skip_build = getattr(args, "skip_build", False)
-    if _headless_backend:
+    if args.ui_surface == "serve":
         os.environ["HERMES_SERVE_HEADLESS"] = "1"  # set before web_server import
+    elif getattr(args, "web_dist", None) is not None:
+        return
     elif "HERMES_WEB_DIST" not in os.environ and not skip_build:
         if not _build_web_ui(PROJECT_ROOT / "web", fatal=True):
             sys.exit(1)

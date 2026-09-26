@@ -24,6 +24,7 @@ def _args(**overrides):
         "skip_build": False,
         "status": False,
         "stop": False,
+        "ui_surface": "webapp",
     }
     values.update(overrides)
     return argparse.Namespace(**values)
@@ -127,24 +128,11 @@ def test_only_requested_builds_may_install_renderer_dependencies(tmp_path: Path,
         webapp, "prepare_webapp_renderer",
         lambda *_a, **kwargs: requests.append(kwargs["explicit"]) or tmp_path / "dist-webapp")
     monkeypatch.setattr(cli_main, "cmd_dashboard", lambda _args: None)
-    monkeypatch.setenv("HERMES_WEB_DIST", "restore-after-test")
 
     cli_main.cmd_webapp(_args())
     cli_main.cmd_webapp(_args(build_only=True))
     cli_main.cmd_webapp(_args(force_build=True))
     assert requests == [False, True, True]
-
-
-def test_webapp_selects_its_dist_without_leaking_headless_mode(tmp_path: Path, monkeypatch):
-    dist = tmp_path / "dist-webapp"
-    dist.mkdir()
-    monkeypatch.setenv("HERMES_WEB_DIST", "restore-after-test")
-    monkeypatch.setenv("HERMES_SERVE_HEADLESS", "1")
-
-    webapp.activate_webapp_dist(dist)
-
-    assert Path(os.environ["HERMES_WEB_DIST"]) == dist
-    assert "HERMES_SERVE_HEADLESS" not in os.environ
 
 
 def test_webapp_build_only_prepares_without_starting_server(tmp_path: Path, monkeypatch):
@@ -159,7 +147,6 @@ def test_webapp_runs_through_the_shared_dashboard_server(tmp_path: Path, monkeyp
     prepared = tmp_path / "dist-webapp"
     prepared.mkdir()
     delegated = []
-    monkeypatch.setenv("HERMES_WEB_DIST", "restore-after-test")
     monkeypatch.setattr(cli_main, "PROJECT_ROOT", tmp_path)
     monkeypatch.setattr(webapp, "prepare_webapp_renderer", lambda *a, **k: prepared)
     monkeypatch.setattr(
@@ -170,7 +157,59 @@ def test_webapp_runs_through_the_shared_dashboard_server(tmp_path: Path, monkeyp
     assert cli_main.cmd_webapp(args) == "running"
     assert delegated == [args]
     assert args.skip_build is True
-    assert Path(os.environ["HERMES_WEB_DIST"]) == prepared
+    assert args.web_dist == prepared
+
+
+def test_webapp_serves_its_renderer_without_exporting_it_to_children(tmp_path: Path, monkeypatch):
+    """The renderer once travelled through os.environ["HERMES_WEB_DIST"], which every host shell
+    and PTY child inherited: `hermes dashboard` run from a Webapp terminal then served the Desktop
+    renderer as its dashboard (the #52945 class). It is now handed to start_server explicitly."""
+    import hermes_cli.config
+    import hermes_cli.mcp_startup
+    import hermes_cli.plugins
+    import hermes_cli.resource_limits
+    from fastapi.testclient import TestClient
+    from hermes_cli import web_host_terminal, web_server
+    from hermes_constants import get_hermes_home
+
+    renderer = tmp_path / "dist-webapp"
+    renderer.mkdir()
+    (renderer / "index.html").write_text(
+        "<html><head></head><body>webapp-renderer</body></html>", encoding="utf-8")
+    monkeypatch.delenv("HERMES_WEB_DIST", raising=False)
+    monkeypatch.delenv("HERMES_SERVE_HEADLESS", raising=False)
+    monkeypatch.setattr(webapp, "prepare_webapp_renderer", lambda *_a, **_k: renderer)
+    for owner, name in (
+        (cli_main, "_sync_bundled_skills_quietly"),
+        (cli_main, "_maybe_setup_dashboard_auth_interactively"),
+        (hermes_cli.config, "apply_terminal_config_to_env"),
+        (hermes_cli.plugins, "discover_plugins"),
+        (hermes_cli.mcp_startup, "defer_background_mcp_discovery"),
+        (hermes_cli.resource_limits, "apply_nofile_soft_limit"),
+        (web_server, "_configure_auth_gate"),
+    ):
+        monkeypatch.setattr(owner, name, lambda *_a, **_k: None)
+    monkeypatch.setattr("hermes_cli.nous_auth_keepalive.start_nous_auth_keepalive", lambda: None)
+    # start_server writes these; restore them for the rest of this file's tests.
+    for key, value in (("ui_surface", "dashboard"), ("web_dist", None), ("auth_required", False),
+                       ("bound_host", ""), ("initial_profile", "")):
+        monkeypatch.setattr(web_server.app.state, key, value, raising=False)
+    monkeypatch.setattr(web_server, "_SESSION_TOKEN", web_server._SESSION_TOKEN)
+
+    class _Bind(Exception):
+        pass
+
+    def stop_at_bind(*_a, **_k):
+        raise _Bind
+
+    monkeypatch.setattr(web_server, "_build_uvicorn_server", stop_at_bind)
+    with pytest.raises(_Bind):
+        cli_main.cmd_webapp(_args(no_open=True, isolated=True))
+
+    _argv, _cwd, shell_env, _shell = web_host_terminal.resolve_argv(home=get_hermes_home())
+    assert "HERMES_WEB_DIST" not in shell_env
+    served = TestClient(web_server.app, base_url="http://127.0.0.1").get("/")
+    assert served.status_code == 200 and "webapp-renderer" in served.text
 
 
 def test_webapp_status_is_scoped_and_does_not_build(monkeypatch):

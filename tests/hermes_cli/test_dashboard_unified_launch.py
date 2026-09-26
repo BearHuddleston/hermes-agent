@@ -21,7 +21,7 @@ def _args(**kw):
     defaults = dict(
         status=False, stop=False, host="127.0.0.1", port=9119,
         no_open=True, insecure=False, skip_build=False,
-        isolated=False, open_profile="",
+        isolated=False, open_profile="", ui_surface="dashboard",
     )
     defaults.update(kw)
     return types.SimpleNamespace(**defaults)
@@ -109,7 +109,7 @@ class TestUnifiedDashboardRouting:
 
         with pytest.raises(SystemExit) as exc:
             main_mod.cmd_dashboard(
-                _args(no_open=False, skip_build=True, webapp_surface=True)
+                _args(no_open=False, skip_build=True, ui_surface="webapp")
             )
 
         assert exc.value.code == 1
@@ -131,7 +131,7 @@ class TestUnifiedDashboardRouting:
 
         with pytest.raises(SystemExit) as exc:
             main_mod.cmd_dashboard(
-                _args(no_open=False, skip_build=True, webapp_surface=True)
+                _args(no_open=False, skip_build=True, ui_surface="webapp")
             )
 
         assert exc.value.code == 0

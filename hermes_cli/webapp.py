@@ -102,9 +102,3 @@ def prepare_webapp_renderer(
             raise WebappBuildError(f"Browser-hosted Desktop build failed: {exc}") from exc
         print(f"✓ Hermes Webapp renderer built: {dist}")
         return dist
-
-
-def activate_webapp_dist(dist: Path) -> None:
-    """Select the caller-managed Desktop bundle for the shared web server."""
-    os.environ["HERMES_WEB_DIST"] = str(dist.resolve())
-    os.environ.pop("HERMES_SERVE_HEADLESS", None)

@@ -34,6 +34,7 @@ from hermes_cli.profile_lifecycle import (
     verify_profile_resources_released,
 )
 from hermes_cli.home_data_layout import PM_RUNTIME_ROOT_DIRS
+from hermes_cli.process_identity import WEB_SERVER_PURPOSES
 from hermes_constants import (
     LOCAL_RUNTIME_ROOT_DIRS, PROFILE_ID_RE, named_profile_has_identity,
     named_profile_is_deleted, named_profile_is_live,
@@ -228,8 +229,7 @@ _HERMES_SUBCOMMANDS = frozenset({
     "chat", "model", "gateway", "setup", "whatsapp", "login", "logout",
     "status", "cron", "doctor", "dump", "config", "pairing", "skills", "tools",
     "mcp", "sessions", "insights", "version", "update", "uninstall", "profile", "plugins", "honcho", "acp",
-    "dashboard", "serve", "webapp",
-})
+}) | WEB_SERVER_PURPOSES
 
 
 # Path helpers

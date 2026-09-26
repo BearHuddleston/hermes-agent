@@ -74,10 +74,10 @@ def test_existing_named_webapp_preserves_profile_and_explains_private_access(mon
     monkeypatch.setattr(main_dashboard, "_explicit_endpoint_flags", lambda: set())
     opened = []
     monkeypatch.setattr(webbrowser, "open", opened.append)
-    args = SimpleNamespace(host="127.0.0.1", port=9123, webapp_surface=True,
+    args = SimpleNamespace(host="127.0.0.1", port=9123, ui_surface="webapp",
                            no_open=False, isolated=False, open_profile="")
     with pytest.raises(SystemExit) as result:
-        main_dashboard._attach_to_host_backend(args, False)
+        main_dashboard._attach_to_host_backend(args)
     assert result.value.code == 0
     output = capsys.readouterr().out
     assert "?profile=coder" in output
