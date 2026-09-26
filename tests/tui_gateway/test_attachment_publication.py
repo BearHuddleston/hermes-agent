@@ -2,6 +2,7 @@
 
 import base64
 from concurrent.futures import ThreadPoolExecutor
+import errno
 import io
 import os
 from pathlib import Path
@@ -270,6 +271,36 @@ def test_publish_collision_and_partial_write_never_destroy_existing_bytes(
     if method == "image.attach_bytes":
         assert session["image_counter"] == 1
         assert session["attached_images"] == [str(target)]
+
+
+@pytest.mark.parametrize("method", ["file.attach", "image.attach_bytes"])
+def test_filesystem_refusing_hard_links_still_publishes_without_clobbering(
+    runtime, monkeypatch, method,
+):
+    # FAT/exFAT, Android app data (SELinux) and some SMB/FUSE mounts refuse link().
+    add, _ = runtime
+    home = server._hermes_home / "profiles" / "first"
+    root = home / ("attachments" if method == "file.attach" else "images")
+    collisions = []
+
+    def refuse_link(source, target):
+        if Path(target).parent == root and not collisions:
+            # Another process publishes this name after selection, before our publish.
+            Path(target).write_bytes(b"other publisher")
+            collisions.append(Path(target))
+        raise PermissionError(errno.EPERM, "Operation not permitted", str(target))
+
+    monkeypatch.setattr(os, "link", refuse_link)
+    # A pre-marker named profile backfills its incarnation on this filesystem too.
+    session = add("first")
+    assert profile_incarnation.read_profile_incarnation(home) == session["profile_incarnation"]
+    assert profile_incarnation.ensure_profile_incarnation(home) == session["profile_incarnation"]
+    params = ({"name": "notes.txt", "data_url": base64.b64encode(PNG).decode()}
+              if method == "file.attach" else {"filename": "shot.png", "data": base64.b64encode(PNG).decode()})
+    target = Path(request(method, **params)["result"]["path"])
+    assert collisions and collisions[0].read_bytes() == b"other publisher"
+    assert target != collisions[0] and target.read_bytes() == PNG
+    assert set(root.iterdir()) == {target, collisions[0]}
 
 
 @pytest.mark.parametrize("method", ["file.attach", "image.attach"])

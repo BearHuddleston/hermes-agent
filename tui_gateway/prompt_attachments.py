@@ -155,6 +155,7 @@ def _publish_attachment(
             _check_attachment_owner(session, owner)
             root = _session_home_dir(session, "images" if image_prefix else "attachments")
         from hermes_constants import mkdir_under_hermes_home
+        from utils import publish_no_clobber
         if image_prefix and not root.parent.is_dir():
             raise FileNotFoundError(f"Profile home is missing or being deleted: {root.parent}")
         mkdir_under_hermes_home(root)
@@ -174,7 +175,7 @@ def _publish_attachment(
                     try:
                         # No-clobber publication also fences other processes in
                         # the launch home, whose lifecycle lease is a no-op.
-                        os.link(temp, target)
+                        publish_no_clobber(temp, target)
                         break
                     except FileExistsError:
                         target = root / f"{stem}-{duplicate}{suffix}"

@@ -24,6 +24,7 @@ from hermes_constants import (
 from hermes_cli.profile_lifecycle import (
     profile_lifecycle_lease as _profile_mutation_lease,
 )
+from pm.filesystem import hard_link_refused
 
 PROFILE_INCARNATION_FILENAME = ".profile-incarnation"
 _INCARNATION_RE = re.compile(r"^[0-9a-f]{32}$")
@@ -171,6 +172,15 @@ def ensure_profile_incarnation(profile_home: Path | str) -> str | None:
                 os.link(temp, path)
             except FileExistsError:
                 pass
+            except OSError as exc:
+                if not hard_link_refused(exc):
+                    raise
+                # FAT/exFAT, Android app data, some SMB/FUSE mounts. The lease
+                # serializes every live-marker writer and the marker was absent
+                # above, so a rename cannot replace a winner either; unlike an
+                # O_EXCL reservation it never exposes an empty marker to the
+                # lease-free readers or strands one after a crash.
+                os.replace(temp, path)
         finally:
             temp.unlink(missing_ok=True)
 
