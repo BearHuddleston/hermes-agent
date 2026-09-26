@@ -236,6 +236,32 @@ describe('browser staged attachment transport', () => {
     }
   )
 
+  // Behind nginx's default 1 MiB client_max_body_size a pick or paste gets
+  // nginx's HTML 413 page, and a down backend a proxy's 502: neither is JSON.
+  it.each([
+    {
+      body: '<html><head><title>413 Request Entity Too Large</title></head><body>nginx</body></html>',
+      message: /\(413\).*larger than/,
+      status: 413
+    },
+    { body: '<html><body><h1>502 Bad Gateway</h1></body></html>', message: /\(502\)/, status: 502 },
+    { body: JSON.stringify({ detail: 'Upload request is too large' }), message: /^Upload request is too large$/, status: 413 }
+  ])('reports a $status upload failure from its status or server detail', async ({ body, message, status }) => {
+    Object.assign(window, { __HERMES_SESSION_TOKEN__: 'test-token' })
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(body, { status })))
+    expect(installBrowserDesktopBridge()).toBe(true)
+
+    for (const stage of [
+      () => window.hermesDesktop.stageFileForAttach!(file()),
+      () => window.hermesDesktop.savePastedText(pastedText)
+    ]) {
+      const failure: unknown = await stage().catch((error: unknown) => error)
+      expect(failure).toBeInstanceOf(Error)
+      expect(failure).not.toBeInstanceOf(SyntaxError)
+      expect((failure as Error).message).toMatch(message)
+    }
+  })
+
   it.each([
     { remote: false, terminalBackend: 'local', upload: false },
     { remote: true, terminalBackend: 'local', upload: true },

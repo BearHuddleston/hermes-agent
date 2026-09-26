@@ -46,6 +46,31 @@ function sandboxedHtmlBlob(bytes: Uint8Array): Blob {
   return new Blob([wrapper], { type: 'text/html;charset=utf-8' })
 }
 
+interface StageResponse {
+  detail?: unknown
+  path?: string
+  staged_upload?: HermesStagedUpload
+}
+
+/** A proxy's own error page (nginx's 413, a 502/504) is HTML, not the server's JSON. */
+function stageResponse(text: string): StageResponse {
+  try {
+    const value: unknown = JSON.parse(text)
+
+    return value && typeof value === 'object' ? (value as StageResponse) : {}
+  } catch {
+    return {}
+  }
+}
+
+function uploadFailure(status: number, detail: unknown): string {
+  if (typeof detail === 'string' && detail) {return detail}
+
+  return status === 413
+    ? 'File upload failed (413): the file is larger than the server or a proxy in front of it accepts'
+    : `File upload failed (${status})`
+}
+
 async function stageBrowserFile(
   bootstrap: BrowserBootstrap,
   file: File,
@@ -61,10 +86,10 @@ async function stageBrowserFile(
     profile
   })
 
-  const payload = JSON.parse(text) as { detail?: string; path?: string; staged_upload?: HermesStagedUpload }
+  const payload = stageResponse(text)
 
   if (!response.ok || !payload.path) {
-    throw new Error(payload.detail || `File upload failed (${response.status})`)
+    throw new Error(uploadFailure(response.status, payload.detail))
   }
 
   // Keep the existing string-path bridge for pickers and drops. Composer chips
