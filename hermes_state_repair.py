@@ -20,7 +20,9 @@ import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-from hermes_constants import assert_named_profile_home_available, get_hermes_home, profile_deletion_marker_path
+from hermes_constants import (
+    assert_named_profile_home_available, assert_named_profile_home_live, get_hermes_home, mkdir_under_hermes_home,
+)
 from hermes_startup_watchdog import report_startup_progress
 from hermes_state_holders import read_only_db_uri
 from hermes_state_common import (
@@ -104,19 +106,13 @@ def _claim_repair_attempt(db_path: Path) -> bool:
 
 
 def _open_lock_file(db_path: Path, suffix: str, what: str, tail: str):
-    """Open ``<db>.<suffix>`` for locking; on failure warn and return None."""
+    """Open ``<db>.<suffix>`` for locking; on failure warn and return None (a deleted profile raises)."""
     lock_path = db_path.with_name(db_path.name + suffix)
-    named_marker = profile_deletion_marker_path(db_path.parent)
-    if named_marker is not None:
-        assert_named_profile_home_available(db_path.parent)
+    assert_named_profile_home_live(lock_path.parent)
     try:
-        if named_marker is None:
-            lock_path.parent.mkdir(parents=True, exist_ok=True)
+        mkdir_under_hermes_home(lock_path.parent)
         return lock_path, lock_path.open("a+b")
     except OSError as exc:
-        if named_marker is not None:
-            raise FileNotFoundError(
-                f"Named profile home is missing or being deleted: {db_path.parent}") from exc
         logger.warning(f"Could not open state.db {what} lock %s (%s) — {tail}", lock_path, exc)
         return lock_path, None
 

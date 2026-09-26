@@ -80,9 +80,8 @@ def test_other_session_attaches_while_clipboard_extraction_is_waiting(
     release = threading.Event()
     staging_paths = []
 
-    def blocked_extract(path, *, create_parent=True):
+    def blocked_extract(path):
         staging_paths.append(path)
-        assert create_parent is False
         assert not path.is_relative_to(profile_home)
         entered.set()
         assert release.wait(_BARRIER_TIMEOUT), "clipboard release barrier timed out"
@@ -127,7 +126,7 @@ def test_clipboard_rejects_profile_deleted_during_extraction(
     generation = session["profile_incarnation"]
     staging_paths = []
 
-    def delete_during_extract(path, *, create_parent=True):
+    def delete_during_extract(path):
         staging_paths.append(path)
         path.write_bytes(PNG_BYTES)
         with profile_incarnation.profile_incarnation_lease(profile_home, generation):
@@ -153,7 +152,7 @@ def test_clipboard_rejects_profile_deleted_during_extraction(
     if recreate:
         fresh_sid, fresh, _ = clipboard_sessions("retired")
 
-        def current_extract(path, *, create_parent=True):
+        def current_extract(path):
             staging_paths.append(path)
             path.write_bytes(PNG_BYTES)
             return True
@@ -177,7 +176,7 @@ def test_clipboard_failure_keeps_counter_and_cleans_partial_staging(
     session["image_counter"] = 3
     staging_paths = []
 
-    def fail_extract(path, *, create_parent=True):
+    def fail_extract(path):
         staging_paths.append(path)
         path.write_bytes(b"partial")
         return False
@@ -202,7 +201,7 @@ def test_clipboard_write_errors_preserve_counter_and_cleanup(
     write_bytes = Path.write_bytes
     link = os.link
 
-    def extract(path, *, create_parent=True):
+    def extract(path):
         staging_paths.append(path)
         write_bytes(path, PNG_BYTES)
         if failure_stage == "extraction":
@@ -231,7 +230,7 @@ def test_clipboard_rejects_session_rebound_during_extraction(
     _, replacement, replacement_home = clipboard_sessions("replacement")
     staging_paths = []
 
-    def rebind_during_extract(path, *, create_parent=True):
+    def rebind_during_extract(path):
         staging_paths.append(path)
         path.write_bytes(PNG_BYTES)
         session["profile_home"] = replacement["profile_home"]
@@ -260,7 +259,7 @@ def test_clipboard_without_named_profile_uses_launch_home(
         session["profile_incarnation"] = ""
     staging_paths = []
 
-    def extract(path, *, create_parent=True):
+    def extract(path):
         staging_paths.append(path)
         path.write_bytes(PNG_BYTES)
         return True
@@ -284,7 +283,7 @@ def test_clipboard_does_not_publish_after_session_retirement(
     staging_paths = []
     replacement = None
 
-    def blocked_extract(path, *, create_parent=True):
+    def blocked_extract(path):
         staging_paths.append(path)
         entered.set()
         assert release.wait(_BARRIER_TIMEOUT), "clipboard release barrier timed out"

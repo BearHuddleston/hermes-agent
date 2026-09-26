@@ -93,7 +93,7 @@ def _publish_staged_upload(
     filename: str,
 ) -> Path:
     """Publish staged bytes while the captured profile generation is leased."""
-    from hermes_constants import named_profile_home_is_unavailable
+    from hermes_constants import mkdir_under_hermes_home
 
     try:
         with profile_incarnation_lease(
@@ -101,11 +101,9 @@ def _publish_staged_upload(
             expected_incarnation,
             require_incarnation=expected_incarnation is not None,
         ):
-            if named_profile_home_is_unavailable(profile_home):
-                raise FileNotFoundError(profile_home)
             upload_root = profile_home / "uploads"
             try:
-                upload_root.mkdir(parents=False, exist_ok=True, mode=0o700)
+                mkdir_under_hermes_home(upload_root)
                 upload_root.chmod(0o700)
             except FileNotFoundError:
                 raise

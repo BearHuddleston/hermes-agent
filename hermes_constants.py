@@ -374,20 +374,30 @@ def clear_named_profile_deleted(profile_home: str | Path) -> None:
 
 
 def assert_named_profile_home_live(path: str | Path) -> None:
-    """Refuse missing or tombstoned named profile homes."""
+    """Refuse a *path* inside a missing or tombstoned named profile home."""
     home = named_profile_home(path)
-    if home is not None and (named_profile_is_deleted(home) or not home.exists()):
-        raise FileNotFoundError(
-            f"Named profile home does not exist: {home}. "
-            "Create the profile explicitly before using it."
-        )
+    if home is not None:
+        assert_named_profile_home_available(home)
 
 
 def mkdir_under_hermes_home(path: str | Path) -> Path:
-    """Create *path*, but never materialize a deleted/missing named profile."""
+    """Create *path*, but never materialize a deleted/missing named profile.
+
+    Inside a named profile only the segments below the home are created, one at a time: a home
+    deleted after the liveness check makes the first ``mkdir`` fail where ``parents=True`` would
+    recreate it. The second check catches a delete that tombstoned the home mid-call.
+    """
     target = Path(path)
-    assert_named_profile_home_live(target)
-    target.mkdir(parents=True, exist_ok=True)
+    home = named_profile_home(target)
+    if home is None:
+        target.mkdir(parents=True, exist_ok=True)
+        return target
+    assert_named_profile_home_available(home)
+    current = home
+    for part in target.relative_to(home).parts:
+        current = current / part
+        current.mkdir(exist_ok=True)
+    assert_named_profile_home_available(home)
     return target
 
 
@@ -413,7 +423,9 @@ def assert_named_profile_home_available(profile_home: Path | str) -> None:
     Exact-home scope; :func:`assert_named_profile_home_live` guards any path under a home.
     """
     if named_profile_home_is_unavailable(profile_home):
-        raise FileNotFoundError(f"Named profile home is missing or being deleted: {profile_home}")
+        raise FileNotFoundError(
+            f"Named profile home does not exist because it is missing or being deleted: {profile_home}. "
+            "Create the profile explicitly before using it.")
 
 
 def _packaged_dir(env_var: str, default: Path | None, subdir: str) -> Path:

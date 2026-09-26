@@ -956,7 +956,7 @@ def write_profile_meta(
         # parse errors as {}, so a crashed write would silently drop unspecified fields.
         # See #51356.
         from utils import atomic_yaml_write
-        atomic_yaml_write(path, existing, sort_keys=False, create_parent=False)
+        atomic_yaml_write(path, existing, sort_keys=False)
 
 
 def drop_profile_role(profile_dir: Path) -> None:
@@ -2399,7 +2399,7 @@ def _atomic_write_json(path: Path, data: dict) -> bool:
     """Atomic rewrite of a third-party JSON config; False on OSError (nothing partially written)."""
     from utils import atomic_json_write
     try:
-        atomic_json_write(path, data, create_parent=False)
+        atomic_json_write(path, data)
         return True
     except OSError:
         return False

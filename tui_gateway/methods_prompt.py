@@ -738,7 +738,7 @@ def _(rid, params: dict) -> dict:
     ) as tmpdir:
         staged_path = Path(tmpdir) / "clipboard.png"
         # Save-first: mirrors CLI keybinding path; more robust than has_image().
-        if not save_clipboard_image(staged_path, create_parent=False):
+        if not save_clipboard_image(staged_path):
             msg = (
                 "Clipboard has image but extraction failed"
                 if has_clipboard_image()

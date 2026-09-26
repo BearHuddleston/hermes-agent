@@ -65,7 +65,7 @@ def attachment_input(kind, tmp_path, monkeypatch, payload=PNG):
     if kind == "image-bytes":
         return "image.attach_bytes", {"filename": "shot.png", "data": base64.b64encode(payload).decode()}
     if kind == "clipboard":
-        def extract(path, **_kwargs):
+        def extract(path):
             path.write_bytes(payload)
             return True
         monkeypatch.setattr(clipboard, "save_clipboard_image", extract)

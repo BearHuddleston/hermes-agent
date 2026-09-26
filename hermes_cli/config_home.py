@@ -44,10 +44,9 @@ def _operator_owned_links(links: list[Path], home: Path) -> list[Path]:
     return [link for link in links if link == home or home in link.parents]
 
 
-def _ensure_directory(
-    path: Path, *, create: bool, secure: bool, home: Path, parents: bool = True,
-) -> None:
+def _ensure_directory(path: Path, *, create: bool, secure: bool, home: Path) -> None:
     from hermes_cli.config import _secure_dir
+    from hermes_constants import mkdir_under_hermes_home
 
     detail = ""
     try:
@@ -59,7 +58,7 @@ def _ensure_directory(
                 raise FileNotFoundError(f"Directory link is unavailable: {link}")
         if not path.is_dir():
             if create:
-                path.mkdir(parents=parents, exist_ok=True)
+                mkdir_under_hermes_home(path)
             else:
                 raise FileNotFoundError(f"Required directory does not exist: {path}")
         # The operator owns permissions beyond a link, including logs/curator.
@@ -93,24 +92,16 @@ def initialize_home(
     managed = is_managed()
     old_umask = os.umask(0o007) if managed else None
     try:
-        _ensure_directory(
-            directory_home, create=not managed and not named_profile,
-            secure=not managed, home=directory_home,
-        )
+        _ensure_directory(directory_home, create=not managed, secure=not managed, home=directory_home)
         required = ("cron", "sessions", "logs", "memories") if managed else subdirs
         for subdir in required:
             if named_profile:
                 assert_named_profile_home_available(home)
-            # A stale initializer must not recreate a deleted profile's parents.
-            _ensure_directory(
-                directory_home / subdir, create=not managed, secure=not managed, home=directory_home, parents=not named_profile,
-            )
+            _ensure_directory(directory_home / subdir, create=not managed, secure=not managed, home=directory_home)
         if managed:
             if named_profile:
                 assert_named_profile_home_available(home)
-            _ensure_directory(
-                directory_home / "logs" / "curator", create=True, secure=False, home=directory_home, parents=not named_profile,
-            )
+            _ensure_directory(directory_home / "logs" / "curator", create=True, secure=False, home=directory_home)
         try:
             _ensure_default_soul_md(directory_home)
         except OSError as exc:

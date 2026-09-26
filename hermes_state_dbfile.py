@@ -688,13 +688,9 @@ def has_invalid_sqlite_header_preopen(path: Path, *, probe_bytes: int = 100, for
 def quarantine_cross_process_lock(path: Path, timeout: float = 5.0):
     """Acquire the cross-process lock for path.quarantine.lock."""
     import platform
-    from hermes_constants import assert_named_profile_home_available, profile_deletion_marker_path
+    from hermes_constants import assert_named_profile_home_available, mkdir_under_hermes_home
     lock_path = path.with_name(path.name + ".quarantine.lock")
-    named_marker = profile_deletion_marker_path(path.parent)
-    if named_marker is not None:
-        assert_named_profile_home_available(path.parent)
-    else:
-        lock_path.parent.mkdir(parents=True, exist_ok=True)
+    mkdir_under_hermes_home(lock_path.parent)
     handle = lock_path.open("a+b")
     acquired = False
     try:
@@ -719,7 +715,7 @@ def quarantine_cross_process_lock(path: Path, timeout: float = 5.0):
                 if time.monotonic() >= deadline:
                     break
                 time.sleep(0.020)
-        if acquired and named_marker is not None:
+        if acquired:
             assert_named_profile_home_available(path.parent)
         yield acquired
     finally:

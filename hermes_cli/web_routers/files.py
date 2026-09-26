@@ -338,7 +338,7 @@ async def upload_chat_image(payload: ChatImageUpload, profile: Optional[str] = N
     dir ``clipboard.paste`` / ``image.attach`` use).
     """
     def _run():
-        from hermes_constants import named_profile_home_is_unavailable
+        from hermes_constants import mkdir_under_hermes_home, named_profile_home_is_unavailable
 
         data, mime_type, ext = _decode_chat_image_upload(payload)
         home, expected_incarnation = _resolve_upload_generation(profile)
@@ -352,13 +352,9 @@ async def upload_chat_image(payload: ChatImageUpload, profile: Optional[str] = N
                 img_dir = home / "images"
                 with _io_errors("Image directory is not writable", "Could not create image directory"):
                     try:
-                        # Never recreate a named profile parent if DELETE wins after
-                        # resolution; the lifecycle owner publishes the parent.
-                        img_dir.mkdir(parents=False, exist_ok=True)
+                        mkdir_under_hermes_home(img_dir)
                     except FileNotFoundError:
                         raise HTTPException(status_code=404, detail="Profile home is unavailable")
-                if named_profile_home_is_unavailable(home):
-                    raise HTTPException(status_code=404, detail="Profile home is unavailable")
 
                 stem = Path(_sanitize_chat_image_filename(payload.filename)).stem or "pasted-image"
                 stem = re.sub(r"[^A-Za-z0-9_.-]+", "_", stem).strip("._-") or "pasted-image"

@@ -154,11 +154,10 @@ def _publish_attachment(
         with _sessions_lock:
             _check_attachment_owner(session, owner)
             root = _session_home_dir(session, "images" if image_prefix else "attachments")
-        from hermes_constants import profile_deletion_marker_path
-        named_profile = profile_deletion_marker_path(root.parent) is not None
-        if (image_prefix or named_profile) and not root.parent.is_dir():
+        from hermes_constants import mkdir_under_hermes_home
+        if image_prefix and not root.parent.is_dir():
             raise FileNotFoundError(f"Profile home is missing or being deleted: {root.parent}")
-        root.mkdir(parents=not named_profile and not image_prefix, exist_ok=True)
+        mkdir_under_hermes_home(root)
         temp = _write_attachment_temp(root, payload)
         try:
             with _sessions_lock:

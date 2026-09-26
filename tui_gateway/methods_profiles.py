@@ -443,9 +443,10 @@ def _(rid, params: dict) -> dict:
     if ext is None:
         return _err(rid, 4070, "unsupported image format (PNG/JPEG/WebP only)")
     from hermes_cli.profiles import profile_home_is_tombstoned
+    from hermes_constants import mkdir_under_hermes_home
     if profile_home_is_tombstoned(profile_dir):
         return _err(rid, 4064, f"profile '{_name}' not found")
-    assets_dir.mkdir(parents=False, exist_ok=True)
+    mkdir_under_hermes_home(assets_dir)
     _unlink_asset_files(assets_dir, asset)  # one canonical file per asset
     tmp = assets_dir / f"{asset}.{ext}.tmp"
     tmp.write_bytes(blob)
@@ -634,7 +635,7 @@ def _configure_ui_meta(profile_dir, params, applied) -> None:
                 existing.pop("ui_meta", None)
             existing["_ui_meta_revisions"] = revisions
             from utils import atomic_yaml_write
-            atomic_yaml_write(profile_dir / "profile.yaml", existing, sort_keys=False, create_parent=False)
+            atomic_yaml_write(profile_dir / "profile.yaml", existing, sort_keys=False)
             applied["ui_meta"] = True
             applied["ui_meta_revisions"] = {key: revisions[key] for key in incoming}
     except Exception:

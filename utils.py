@@ -262,8 +262,7 @@ def rmtree_readonly(path: Union[str, Path], *, ignore_errors: bool = False) -> N
 
 
 def _atomic_write(path: Path, write, *, prefix: str, encoding: str = "utf-8", mode: "int | None" = None,
-                  preserve_owner: bool = True, binary: bool = False, fsync_dir: bool = False,
-                  create_parent: bool = True) -> None:
+                  preserve_owner: bool = True, binary: bool = False, fsync_dir: bool = False) -> None:
     """Temp file + fsync + :func:`atomic_replace`, then re-apply owner/mode.
 
     *write(f)* emits the payload into the open handle (text, or bytes when *binary*). The temp file
@@ -283,8 +282,7 @@ def _atomic_write(path: Path, write, *, prefix: str, encoding: str = "utf-8", mo
     # would resurrect the profile before the write can fail.
     from hermes_constants import mkdir_under_hermes_home
 
-    if create_parent:
-        mkdir_under_hermes_home(path.parent)
+    mkdir_under_hermes_home(path.parent)
     if mode is None and not path.exists():
         mode = default_new_file_mode()
     original_owner = _preserve_file_owner(path) if preserve_owner else None
@@ -355,7 +353,7 @@ def _dump_json(data: Any, f, *, indent: "int | None", ensure_ascii: bool, dump_k
 
 def atomic_json_write(
     path: Union[str, Path], data: Any, *, indent: int = 2, mode: int | None = None,
-    ensure_ascii: bool = False, fsync_dir: bool = False, create_parent: bool = True, **dump_kwargs: Any,
+    ensure_ascii: bool = False, fsync_dir: bool = False, **dump_kwargs: Any,
 ) -> None:
     """Write JSON to *path* atomically (temp file + fsync + replace).
 
@@ -367,7 +365,7 @@ def atomic_json_write(
     path = Path(path)
     _atomic_write(path, lambda f: _dump_json(data, f, indent=indent, ensure_ascii=ensure_ascii, dump_kwargs=dump_kwargs),
                   prefix=f".{path.stem}_", mode=mode if mode is not None else _preserve_file_mode(path),
-                  fsync_dir=fsync_dir, create_parent=create_parent)
+                  fsync_dir=fsync_dir)
 
 
 def read_json_or_empty(path: Union[str, Path]) -> dict:
@@ -403,8 +401,7 @@ def warn_if_credential_file_broadly_readable(path: Union[str, Path], *, label: s
 
 
 def atomic_yaml_write(path: Union[str, Path], data: Any, *, default_flow_style: bool = False, sort_keys: bool = False,
-                      extra_content: str | None = None, create_mode: "int | None" = None,
-                      create_parent: bool = True) -> None:
+                      extra_content: str | None = None, create_mode: "int | None" = None) -> None:
     """Write YAML to *path* atomically (temp file + fsync + replace)."""
     path = Path(path)
 
@@ -413,8 +410,7 @@ def atomic_yaml_write(path: Union[str, Path], data: Any, *, default_flow_style: 
         if extra_content:
             f.write(extra_content)
 
-    _atomic_write(path, _write, prefix=f".{path.stem}_", mode=_mode_for_write(path, create_mode),
-                  create_parent=create_parent)
+    _atomic_write(path, _write, prefix=f".{path.stem}_", mode=_mode_for_write(path, create_mode))
 
 
 def _roundtrip_load(path: Path):
@@ -427,15 +423,13 @@ def _roundtrip_load(path: Path):
     return yaml_rt, data if isinstance(data, CommentedMap) else CommentedMap(data or {})
 
 
-def _roundtrip_dump(path: Path, yaml_rt, config, *, extra_content: "str | None" = None,
-                    create_parent: bool = True) -> None:
+def _roundtrip_dump(path: Path, yaml_rt, config, *, extra_content: "str | None" = None) -> None:
     def _write(f) -> None:
         yaml_rt.dump(config, f)
         if extra_content:
             f.write(extra_content)
 
-    _atomic_write(path, _write, prefix=f".{path.stem}_", mode=_preserve_file_mode(path),
-                  create_parent=create_parent)
+    _atomic_write(path, _write, prefix=f".{path.stem}_", mode=_preserve_file_mode(path))
 
 
 def atomic_roundtrip_yaml_update(path: Union[str, Path], key_path: str, value: Any) -> None:
@@ -507,8 +501,7 @@ def _rt_value(value: Any) -> Any:
 
 
 def atomic_roundtrip_yaml_save(path: Union[str, Path], new_state: dict, *,
-                               extra_content_on_create: "str | None" = None,
-                               create_parent: bool = True) -> None:
+                               extra_content_on_create: "str | None" = None) -> None:
     """Persist a full config-state dict while preserving comments and ordering.
 
     THE writer for ``config.yaml`` (every production caller reaches it through
@@ -525,12 +518,9 @@ def atomic_roundtrip_yaml_save(path: Union[str, Path], new_state: dict, *,
     from hermes_cli.config import require_readable_config_before_write
 
     path = Path(path)
-    from hermes_constants import assert_named_profile_home_live, mkdir_under_hermes_home
+    from hermes_constants import mkdir_under_hermes_home
 
-    if create_parent:
-        mkdir_under_hermes_home(path.parent)
-    else:
-        assert_named_profile_home_live(path.parent)
+    mkdir_under_hermes_home(path.parent)
     require_readable_config_before_write(path)
     creating = not path.exists() or not path.read_text(encoding="utf-8").strip()
     yaml_rt, existing = _roundtrip_load(path)
@@ -568,8 +558,7 @@ def atomic_roundtrip_yaml_save(path: Union[str, Path], new_state: dict, *,
             del dst[key]
 
     _merge(existing, new_state)
-    _roundtrip_dump(path, yaml_rt, existing, extra_content=extra_content_on_create if creating else None,
-                    create_parent=create_parent)
+    _roundtrip_dump(path, yaml_rt, existing, extra_content=extra_content_on_create if creating else None)
 
 
 def safe_json_loads(text: str, default: Any = None) -> Any:
