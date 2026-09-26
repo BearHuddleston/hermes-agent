@@ -1,3 +1,5 @@
+import { externalUrlTarget } from '@hermes/shared'
+
 import type { HermesApiRequest } from '@/global'
 import { BROWSER_BRIDGE_STUBS } from '@/lib/browser-bridge-stubs'
 import { createBrowserClipboardBridge } from '@/lib/browser-clipboard'
@@ -62,8 +64,13 @@ export function installBrowserDesktopBridge(): boolean {
     privateSession: bootstrap.privateSession
   })
 
+  // Electron's opener rule: agent- or tool-supplied links must not run script
+  // or custom schemes on this origin, whose cookie authenticates the API. A
+  // `file:` URL names the server's disk, and this browser cannot open it.
   const openExternal = async (url: string) => {
-    window.open(url, '_blank', 'noopener,noreferrer')
+    const target = externalUrlTarget(url)
+
+    if (target?.kind === 'web') {window.open(target.url, '_blank', 'noopener,noreferrer')}
   }
 
   const uploads = createBrowserUploadsBridge({ api, bootstrap, currentProfile, objectUrls })

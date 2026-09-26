@@ -5,6 +5,7 @@ import { $connection } from '@/store/session'
 
 import { installBrowserDesktopBridge } from './browser-desktop-bridge'
 import { desktopGit } from './desktop-git'
+import { openLink } from './external-link'
 import { downloadGatewayMediaFile, resolveMediaPlaybackSrc } from './media'
 
 type MutableWindow = Window & {
@@ -320,6 +321,43 @@ describe('browser-hosted Desktop bridge', () => {
     expect(url.hash).toBe('#/session%20%2F%201')
     expect(target).toBe('_blank')
     expect(features).toBe('noopener,noreferrer')
+  })
+
+  it('hands only the schemes Electron opens externally to window.open', async () => {
+    mutableWindow().__HERMES_SESSION_TOKEN__ = 'served-token'
+    const open = vi.spyOn(window, 'open').mockImplementation(() => null)
+
+    expect(installBrowserDesktopBridge()).toBe(true)
+    const desktop = mutableWindow().hermesDesktop!
+    const openers = [desktop.openExternal, desktop.openPreviewInBrowser!]
+
+    // Chat links reach the bridge through the same handoff as a user's click.
+    openLink('javascript:alert(document.cookie)')
+
+    for (const url of [
+      'javascript:alert(1)',
+      ' JavaScript:alert(1)',
+      'data:text/html,<script>alert(1)</script>',
+      'vbscript:msgbox(1)',
+      'hermes-media://stream/%2Fetc%2Fpasswd',
+      'file:///etc/passwd',
+      'not a url'
+    ]) {
+      for (const opener of openers) {await opener(url)}
+    }
+
+    expect(open).not.toHaveBeenCalled()
+
+    for (const url of ['https://example.com/a b', 'http://127.0.0.1:3000/', 'mailto:someone@example.com']) {
+      for (const opener of openers) {await opener(url)}
+    }
+
+    expect(open.mock.calls).toEqual(
+      ['https://example.com/a%20b', 'http://127.0.0.1:3000/', 'mailto:someone@example.com'].flatMap(url => [
+        [url, '_blank', 'noopener,noreferrer'],
+        [url, '_blank', 'noopener,noreferrer']
+      ])
+    )
   })
 
   it.each([
