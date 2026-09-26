@@ -29,6 +29,12 @@ import crypto from 'node:crypto'
 
 import { READY_IN_MERGED_OUTPUT_RE } from './backend-ready'
 import { parseRemoteProfileListing } from './connection-registry'
+import {
+  extractSentinelPath,
+  LOGIN_SHELL_PATH_PROBE,
+  LOGIN_SHELL_PATH_TIMEOUT_MS,
+  mergeLoginShellPath
+} from './shell-path'
 import { assertBootstrapNotSuperseded, withRemoteTimeout } from './ssh-connection'
 
 const LOCKFILE_SCHEMA_VERSION = 2
@@ -41,7 +47,8 @@ const REMOTE_LOCK_DIR = '~/.hermes/desktop-ssh'
 const SUPPORTED_REMOTE_OS = new Set(['Linux', 'Darwin'])
 const DEFAULT_READY_TIMEOUT_MS = 45_000
 const READY_POLL_INTERVAL_MS = 750
-const REMOTE_LOGIN_PATH_MARKER = '__HERMES_DESKTOP_LOGIN_PATH__:'
+const REMOTE_SSH_PATH_START = '__HERMES_SSH_PATH_START__'
+const REMOTE_SSH_PATH_END = '__HERMES_SSH_PATH_END__'
 // macOS sshd starts non-interactive shells with a 256-FD soft limit even when
 // the hard limit is unlimited. A Desktop backend can legitimately exceed that
 // while serving several profiles/tools, so raise only the child process limit.
@@ -166,46 +173,53 @@ function expandRemotePath(p) {
 }
 
 // A command executed directly over SSH inherits sshd's minimal, non-login
-// PATH. Resolve the user's configured login-shell PATH before detaching the
-// backend so tools installed by nvm, pyenv, asdf, Cargo, Homebrew, or the
-// per-user Hermes/Codex installers remain discoverable by child processes.
+// PATH, and the detached backend keeps it. Tools the user installed through
+// their shell profile (~/.local/bin, nvm, pyenv, asdf, Cargo, Homebrew) are then
+// invisible to the backend's `shutil.which` probes: provider plugins that drive
+// a local CLI report it as missing, and stdio MCP servers fail to spawn.
 //
-// Startup files may print banners, so frame the value with a private marker
-// and take the final marked line. If the configured shell is unavailable or
-// exits unsuccessfully, preserve the non-login PATH as the compatibility rung.
-async function resolveRemoteLoginPath(ssh) {
-  const emitPath = `printf '\\n${REMOTE_LOGIN_PATH_MARKER}%s\\n' "$PATH"`
+// This is the remote twin of shell-path.ts (local GUI launches) and uses the
+// same probe, flag ladder and merge: `-ilc` (rc files) then `-lc` (profile
+// files), each bounded remotely, login entries first and the SSH PATH appended.
+// A broken or slow profile must never block connecting, so every failure
+// returns '' and the backend keeps the PATH it would have had anyway.
+function sshPathSentinel(text) {
+  const start = text.indexOf(REMOTE_SSH_PATH_START)
+  const end = start === -1 ? -1 : text.indexOf(REMOTE_SSH_PATH_END, start)
 
-  const command =
-    `remote_shell=\${SHELL:-/bin/sh}; ` +
-    `if test -x "$remote_shell" && "$remote_shell" -lc ${shq(emitPath)}; then exit 0; fi; ` +
-    emitPath
+  return end === -1 ? '' : text.slice(start + REMOTE_SSH_PATH_START.length, end)
+}
 
-  let output
+async function resolveRemoteLoginPath(ssh, { timeoutSecs = Math.ceil(LOGIN_SHELL_PATH_TIMEOUT_MS / 1000) } = {}) {
+  for (const flags of ['-ilc', '-lc']) {
+    const probe = `"$hermes_login_shell" ${flags} ${shq(LOGIN_SHELL_PATH_PROBE)} 2>/dev/null`
 
-  try {
-    output = String(await ssh.exec(command))
-  } catch (cause) {
-    const error: any = new Error('Could not resolve the remote login-shell PATH.')
+    const command =
+      `hermes_login_shell=\${SHELL:-/bin/sh}; test -x "$hermes_login_shell" || hermes_login_shell=/bin/sh; ` +
+      `printf '%s' "${REMOTE_SSH_PATH_START}\${PATH}${REMOTE_SSH_PATH_END}"; ` +
+      `(${withRemoteTimeout(probe, timeoutSecs)}) 2>/dev/null; exit 0`
 
-    error.kind = 'transient-transport-error'
-    error.cause = cause
-    throw error
+    let output
+
+    try {
+      output = String(await ssh.exec(command))
+    } catch {
+      return ''
+    }
+
+    const loginPath = extractSentinelPath(output)
+
+    if (!loginPath) {
+      continue
+    }
+
+    const merged = mergeLoginShellPath(loginPath, sshPathSentinel(output), { delimiter: ':' })
+
+    // eslint-disable-next-line no-control-regex -- reject unsafe PATH data before shell interpolation
+    return /[\x00\n\r]/.test(merged) ? '' : merged
   }
 
-  const markedLine = output
-    .split(/\r?\n/)
-    .filter(line => line.startsWith(REMOTE_LOGIN_PATH_MARKER))
-    .at(-1)
-
-  const remoteLoginPath = markedLine?.slice(REMOTE_LOGIN_PATH_MARKER.length) || ''
-
-  // eslint-disable-next-line no-control-regex -- reject unsafe PATH data before shell interpolation
-  if (!remoteLoginPath || /[\x00\n\r]/.test(remoteLoginPath)) {
-    return ''
-  }
-
-  return remoteLoginPath
+  return ''
 }
 
 // Resolve the remote hermes executable. An EXPLICIT path is honored strictly
