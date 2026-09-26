@@ -137,6 +137,44 @@ def test_explicit_stop_does_not_spare_backend_owned_by_valid_ssh_lock(
     assert result == {"matched": [], "killed": [], "failed": []}
 
 
+@pytest.mark.platforms("posix")
+def test_process_scan_reads_live_argv_only_for_rows_that_can_be_hermes(monkeypatch):
+    """ps flattens argv, so a row is re-read losslessly through psutil (a spaced interpreter
+    path parses only from structured argv). That read is a /proc or KERN_PROCARGS2 call per
+    process, so rows that cannot be Hermes never pay it, while every web server is found."""
+    from types import SimpleNamespace
+
+    from hermes_cli import update_cmd_windows
+
+    hermes = {
+        5_000_001: ["/Users/me/Python Home/bin/python3", "/opt/Hermes App/hermes", "webapp", "--port", "9120"],
+        5_000_002: ["/usr/bin/python3.11", "-m", "hermes_cli.main", "serve", "--port", "9119"],
+        5_000_003: ["/home/me/.local/bin/hermes", "--profile", "work", "dashboard"],
+    }
+    others = {5_100_000 + i: argv for i, argv in enumerate(
+        [["/usr/bin/python3", "-m", "http.server", str(8000 + n)] for n in range(300)]
+        + [["/bin/bash", "-l"], ["[kworker/0:1-events]"], ["/usr/lib/firefox/firefox", "-contentproc"]] * 100)}
+    table = {**hermes, **others}
+    constructed: list[int] = []
+
+    class _Process:
+        def __init__(self, pid):
+            constructed.append(pid)
+            self._argv = table[pid]
+
+        def cmdline(self):
+            return self._argv
+
+    monkeypatch.setattr(update_cmd_windows, "_psutil", lambda: SimpleNamespace(Process=_Process))
+    monkeypatch.setattr(dashboard_procs, "_ledger_web_server_processes", lambda: {})
+    ps_out = "\n".join(_ps_line(pid, " ".join(argv)) for pid, argv in table.items()) + "\n"
+    with patch("subprocess.run", side_effect=_ps_runner(ps_out)):
+        found = dict(dashboard_procs._scan_dashboard_processes())
+
+    assert set(found) == set(hermes)
+    assert set(constructed) <= set(hermes)
+
+
 class TestFindStaleDashboardPids:
     """Unit tests for the ps/wmic-based detection step."""
 

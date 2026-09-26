@@ -70,7 +70,11 @@ def _iter_process_table() -> list[tuple[int, str]]:
             if len(parts) == 2 and "grep" not in line:
                 # ps loses argv boundaries, including executable paths with spaces.
                 # Prefer live structured argv; keep ps as the unavailable-reader fallback.
-                if psutil is not None:
+                # Only a row that can be Hermes pays for that read (thousands on a busy
+                # host, a KERN_PROCARGS2 sysctl each on macOS): every entry token the
+                # canonical matcher accepts (hermes, hermes.exe, hermes_cli.main,
+                # hermes_cli/main.py) spells "hermes", and -ww keeps ps from truncating it.
+                if psutil is not None and "hermes" in parts[1].lower():
                     with contextlib.suppress(Exception):
                         parts[1] = _cmdline_or_empty(psutil.Process(int(parts[0]))) or parts[1]
                 _append_row(rows, parts[0], parts[1])
