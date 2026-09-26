@@ -62,6 +62,7 @@ import {
 } from './preview-annotate-host'
 import { ArtifactPreview } from './preview-artifact'
 import { PreviewBrowserBar } from './preview-browser-bar'
+import { mountBrowserPreviewFrame, type PreviewNavigationSurface } from './preview-browser-frame'
 import {
   clampConsoleHeight,
   compactUrl,
@@ -77,13 +78,6 @@ import { PREVIEW_BROWSER_ATTR, registerPreviewNav } from './preview-nav'
 import { registerPreviewPageReader } from './preview-reader'
 import { registerPreviewScriptRunner } from './preview-script-runner'
 import { RealProfileConsentDialog } from './real-profile-consent-dialog'
-
-interface PreviewNavigationSurface {
-  getTitle?: () => string
-  getURL?: () => string
-  loadURL?: (url: string) => Promise<void>
-  reload?: () => void
-}
 
 type PreviewWebview = HTMLElement & PreviewNavigationSurface & {
   canGoBack?: () => boolean
@@ -1067,55 +1061,14 @@ export function PreviewPane({
     }
 
     if (usesBrowserIframe) {
-      const frame = document.createElement('iframe')
-      frame.className = 'flex h-full w-full flex-1 border-0 bg-transparent'
-      frame.referrerPolicy = 'no-referrer'
-      frame.setAttribute(
-        'sandbox',
-        'allow-forms allow-scripts'
-      )
-      // Browser-hosted previews deliberately grant no camera, microphone, or
-      // clipboard capability. Fullscreen is the only delegated permission.
-      frame.setAttribute('allow', 'fullscreen')
-      frame.src = target.url
-
-      const navigation: PreviewNavigationSurface = {
-        getTitle: () => frame.title,
-        getURL: () => frame.src,
-        loadURL: async url => {
-          frame.src = url
-          setCurrentUrl(url)
-          setLoading(true)
-        },
-        reload: () => {
-          const url = frame.src
-          frame.src = 'about:blank'
-          frame.src = url
-          setLoading(true)
-        }
-      }
-
-      const onLoad = () => {
-        setCurrentUrl(frame.src)
-        setLoading(false)
-      }
-
-      const onError = () => {
-        setLoadError({ description: copy.unreachableDescription, url: frame.src || target.url })
-        setLoading(false)
-      }
-
-      frame.addEventListener('load', onLoad)
-      frame.addEventListener('error', onError)
-      host.appendChild(frame)
-      navigationRef.current = navigation
-
-      return () => {
-        if (navigationRef.current === navigation) {navigationRef.current = null}
-        frame.removeEventListener('load', onLoad)
-        frame.removeEventListener('error', onError)
-        frame.remove()
-      }
+      return mountBrowserPreviewFrame({
+        host,
+        navigationRef,
+        onError: url => setLoadError({ description: copy.unreachableDescription, url }),
+        setCurrentUrl,
+        setLoading,
+        url: target.url
+      })
     }
 
     const webview = document.createElement('webview') as PreviewWebview
