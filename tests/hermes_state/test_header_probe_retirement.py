@@ -166,7 +166,9 @@ def test_probe_retirement_preserves_alias_and_deferred_close_locks(tmp_path, mon
         sibling.close()
         owner.close()
 
-    for opener in ("writer", "readiness", "doctor"):
+    # "recovery" is session_recovery's own opener of the SessionDB-initialized output it
+    # rebuilds: every in-process opener, not only SessionDB's, must survive probe cleanup.
+    for opener in ("writer", "readiness", "doctor", "recovery"):
         _assert_concurrent_opener_keeps_locks(path, monkeypatch, opener)
 
 
@@ -177,7 +179,7 @@ def _assert_concurrent_opener_keeps_locks(path, monkeypatch, opener):
     import hermes_state_dbfile as dbfile
     from gateway.readiness import _probe_state_db
     from hermes_cli.doctor_state import _session_count
-    from hermes_cli import sqlite_safe_read
+    from hermes_cli import session_recovery, sqlite_safe_read
 
     with close_connection(connect_tracked(path, isolation_level=None)) as seed:
         seed.execute("CREATE TABLE IF NOT EXISTS sessions(id TEXT)")
@@ -234,6 +236,14 @@ def _assert_concurrent_opener_keeps_locks(path, monkeypatch, opener):
                 results.append(_probe_state_db(path.parent))
             elif opener == "doctor":
                 results.append(_session_count(path))
+            elif opener == "recovery":
+                # A same-thread connection: hold the write lock, then close it here.
+                with close_connection(session_recovery._connect(path)) as conn:
+                    conn.execute("BEGIN IMMEDIATE")
+                    locked.set()
+                    attempting.set()
+                    assert finish_reader.wait(15)
+                    conn.execute("ROLLBACK")
             else:
                 conn = connect_tracked(path, check_same_thread=False, isolation_level=None)
                 new_connections.append(conn)
@@ -246,7 +256,7 @@ def _assert_concurrent_opener_keeps_locks(path, monkeypatch, opener):
     with monkeypatch.context() as patcher:
         patcher.setattr(sqlite_safe_read, "_live_lock", ObservedLock())
         patcher.setattr(dbfile.os, "close", close_probe)
-        if opener != "writer":
+        if opener in ("readiness", "doctor"):
             patcher.setattr(sqlite3, "connect", reader_connect)
         closer = threading.Thread(target=close_owner)
         successor = threading.Thread(target=open_successor)
@@ -272,6 +282,6 @@ def _assert_concurrent_opener_keeps_locks(path, monkeypatch, opener):
                 conn.close()
             closing.close()
         assert not successor.is_alive() and not errors, errors
-        if opener != "writer":
+        if opener in ("readiness", "doctor"):
             assert results == ([{"status": "ok"}] if opener == "readiness" else [0])
     assert not has_live_connection(path) and _foreign_exclusive(path)
