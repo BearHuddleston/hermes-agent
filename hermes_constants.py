@@ -373,9 +373,23 @@ def clear_named_profile_deleted(profile_home: str | Path) -> None:
     profile_tombstone_path(Path(profile_home)).unlink(missing_ok=True)
 
 
+def _named_profile_spelling(path: Path) -> Path:
+    """*path* resolved when that lands in a named profile home, else as given.
+
+    A symlink/junction alias of a home (or of a path inside it) then shares the home's
+    tombstone and lifecycle lock instead of escaping the fence under another name. A named
+    entry that itself links outside every Hermes root keeps its own lexical fence.
+    """
+    try:
+        resolved = path.resolve(strict=False)
+    except (OSError, RuntimeError):
+        return path
+    return resolved if named_profile_home(resolved) is not None else path
+
+
 def assert_named_profile_home_live(path: str | Path) -> None:
     """Refuse a *path* inside a missing or tombstoned named profile home."""
-    home = named_profile_home(path)
+    home = named_profile_home(_named_profile_spelling(Path(path)))
     if home is not None:
         assert_named_profile_home_available(home)
 
@@ -388,13 +402,14 @@ def mkdir_under_hermes_home(path: str | Path) -> Path:
     recreate it. The second check catches a delete that tombstoned the home mid-call.
     """
     target = Path(path)
-    home = named_profile_home(target)
+    spelled = _named_profile_spelling(target)
+    home = named_profile_home(spelled)
     if home is None:
         target.mkdir(parents=True, exist_ok=True)
         return target
     assert_named_profile_home_available(home)
     current = home
-    for part in target.relative_to(home).parts:
+    for part in spelled.relative_to(home).parts:
         current = current / part
         current.mkdir(exist_ok=True)
     assert_named_profile_home_available(home)
@@ -402,8 +417,8 @@ def mkdir_under_hermes_home(path: str | Path) -> Path:
 
 
 def profile_deletion_marker_path(profile_home: Path | str) -> Path | None:
-    """Return the canonical deletion marker for a named profile home."""
-    home = Path(profile_home)
+    """Return the canonical deletion marker for a named profile home (see ``_named_profile_spelling``)."""
+    home = _named_profile_spelling(Path(profile_home))
     named_home = named_profile_home(home)
     if named_home is None or named_home != home:
         return None
