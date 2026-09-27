@@ -23,7 +23,7 @@ import stat
 import sys
 import threading
 import time
-from typing import Callable, Iterator
+from typing import Callable, Iterable, Iterator
 
 from hermes_constants import get_default_hermes_root, profile_deletion_marker_path
 from pm.filesystem import lock_fd
@@ -309,8 +309,18 @@ def wait_for_profile_state_db_release(profile_dir: Path | str) -> bool:
     return True
 
 
-def external_profile_file_holders(profile_dir: Path | str) -> list[int]:
-    """Same-user external PIDs with an open file under ``profile_dir``."""
+def external_profile_file_holders(
+    profile_dir: Path | str,
+    candidates: Iterable[int] | None = None,
+) -> list[int]:
+    """Same-user external PIDs with an open file under ``profile_dir``.
+
+    Ownership is settled before ``open_files`` is read: on Windows, fetching another user's
+    (system) process handles can fault inside psutil and kill the interpreter, and it is the
+    expensive call. A process whose owner cannot be read is skipped for the same reason, and
+    an unreadable current user leaves nothing provably same-user to scan. ``candidates``
+    narrows the scan to those PIDs.
+    """
     profile_dir = Path(profile_dir)
     try:
         import psutil  # type: ignore
@@ -323,26 +333,21 @@ def external_profile_file_holders(profile_dir: Path | str) -> list[int]:
     try:
         current_user = psutil.Process(os.getpid()).username()
     except Exception:
-        current_user = None
+        return []
+    wanted = None if candidates is None else set(candidates)
 
     holders: list[int] = []
-    for proc in psutil.process_iter(["pid", "username", "open_files"]):
+    for proc in psutil.process_iter(["pid", "username"]):
         try:
             info = proc.info
             pid = info.get("pid")
             if not isinstance(pid, int) or pid == os.getpid():
                 continue
-            process_user = info.get("username")
-            if (
-                current_user is not None
-                and process_user is not None
-                and process_user != current_user
-            ):
+            if wanted is not None and pid not in wanted:
                 continue
-            files = info.get("open_files")
-            if files is None:
-                files = proc.open_files()
-            for opened in files or []:
+            if info.get("username") != current_user:
+                continue
+            for opened in proc.open_files() or []:
                 raw = getattr(opened, "path", "")
                 if not raw:
                     continue
@@ -361,13 +366,17 @@ def external_profile_file_holders(profile_dir: Path | str) -> list[int]:
 
 
 def wait_for_external_profile_file_release(profile_dir: Path | str) -> list[int]:
-    """Return remaining external holders after a bounded release grace."""
+    """Return remaining external holders after a bounded release grace.
+
+    Callers have already published the retirement tombstone, so no Hermes process can open
+    the profile anew; after the first census only its holders are re-checked.
+    """
     deadline = time.monotonic() + _PROFILE_DB_RELEASE_TIMEOUT_SECONDS
-    while True:
-        holders = external_profile_file_holders(profile_dir)
-        if not holders or time.monotonic() >= deadline:
-            return holders
+    holders = external_profile_file_holders(profile_dir)
+    while holders and time.monotonic() < deadline:
         time.sleep(0.05)
+        holders = external_profile_file_holders(profile_dir, holders)
+    return holders
 
 
 def publish_profile_generation(
