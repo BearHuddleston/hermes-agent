@@ -42,6 +42,26 @@ def _start_desktop_cron_ticker(stop_event: "threading.Event", interval: int = 60
     """
     from cron.scheduler_provider import InProcessCronScheduler, resolve_cron_scheduler
 
+    # A live gateway on THIS backend's HERMES_HOME owns cron delivery with live platform
+    # adapters (#52202): let it tick, and start nothing here. Without this, the fail-open
+    # paths below (profile enumeration failure, empty served set, external provider) start
+    # an ungated single-store ticker that races the gateway's tick-lock; when the desktop
+    # wins, delivery has no live adapter and the cold send hangs until script_timeout.
+    try:
+        from hermes_constants import get_hermes_home
+        from hermes_cli.profiles import _check_gateway_running
+
+        if _check_gateway_running(Path(get_hermes_home())):
+            _log.info(
+                "Desktop cron scheduler not started: live gateway owns cron on this "
+                "HERMES_HOME; the gateway ticks with live adapters"
+            )
+            return
+    except Exception:
+        # Liveness probe failed: fall through to the existing per-tick gating, which
+        # still stands down profile-by-profile for gateway-owned homes.
+        _log.warning("Desktop cron: gateway-ownership probe failed; using per-tick gating only", exc_info=True)
+
     provider = resolve_cron_scheduler()
 
     start_kwargs: dict = {"interval": interval}
@@ -163,10 +183,12 @@ async def _lifespan(app: "FastAPI"):
         # one that would race the same credential (#77276). Runs
         # unconditionally; protection of a healthy standalone gateway lives
         # INSIDE the reaper (registration probed with cleanup_stale=False).
+        # Startup grace: spare a gateway still claiming gateway.pid/lock (#122533).
         try:
+            from hermes_cli.dashboard_procs import _REAP_MIN_AGE_SECONDS
             from hermes_cli.gateway import _reap_unsupervised_gateway_orphans
 
-            _reap_unsupervised_gateway_orphans()
+            _reap_unsupervised_gateway_orphans(min_age_s=_REAP_MIN_AGE_SECONDS)
         except Exception:
             _log.exception("Desktop startup: orphan gateway reap failed")
 

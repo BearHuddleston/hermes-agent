@@ -231,8 +231,9 @@ def _holder_value_flags() -> frozenset:
 def _hermes_holder_subcommand(cmdline: str, *, module_only: bool = False) -> str | None:
     """The actual Hermes SUBCOMMAND a venv-holder argv runs, or None (callers must NOT guess a label).
 
-    Only the executable or Python's execution target may identify Hermes. A ``-c`` payload, another
-    script/module's arguments, or a shell carrying a Hermes command is not a backend. Console-script
+    Only the executable or Python's execution target may identify Hermes. A ``-c`` payload (unless it is
+    a Hermes in-process bootstrap), another script/module's arguments, or a shell carrying a Hermes
+    command is not a backend. Console-script
     wrappers and direct main.py launches remain valid; CLI value flags come from the real parser.
     ``module_only`` restricts Desktop-owned callers to their ``-m hermes_cli.main`` spawn shape.
     Interpreter options are walked by the canonical ``hermes_state_holders`` helpers, never a local
@@ -255,7 +256,16 @@ def _hermes_holder_subcommand(cmdline: str, *, module_only: bool = False) -> str
     entry_idx = 0
     module_target = False
     if not _is_script(tokens[0]):
+        from gateway.status import command_line_runs_inline_source, inline_bootstrap_argv
         from hermes_state_holders import _looks_like_python_executable, _python_execution_target
+
+        # ``python -c <src> … -m hermes_cli.main <subcommand>``: the trailing argv belongs to a LATER
+        # spawn, not this holder (#107002) -- unless the source is a Hermes bootstrap running the
+        # entry point in this process (#124318).
+        if command_line_runs_inline_source(tokens):
+            tokens = inline_bootstrap_argv(tokens)
+            if tokens is None:
+                return None
 
         target = _python_execution_target(tokens) if _looks_like_python_executable(tokens[0]) else None
         if target is None:
@@ -852,6 +862,15 @@ def _pause_windows_gateway_services(service_gateways, token: dict, profiles: dic
         raise RuntimeError(detail) from exc
 
 
+def _owned_gateway_pids(pids, *, keep=(), quiet: bool = True) -> list[int]:
+    """*pids* whose live home this update owns, plus *keep* (PIDs mapped to this install's profile
+    PID files / services). The same home scope the POSIX fleet restart uses (#93349): a gateway of
+    another Hermes install, or one whose home cannot be read, is named (unless *quiet*) and left
+    running, never paused, force-killed or replayed (#124659)."""
+    from hermes_cli.update_cmd_fleet import _scoped_manual_gateway_pids
+    return _scoped_manual_gateway_pids(list(pids), keep=keep, quiet=quiet)
+
+
 def _discover_windows_gateways():
     """``(profile_processes, service_gateways, service_gateway_pids, running_pids)`` for the pause; any indeterminate probe aborts."""
     from hermes_cli.gateway import find_gateway_pids, find_profile_gateway_processes, find_windows_gateway_services
@@ -862,9 +881,10 @@ def _discover_windows_gateways():
         service_gateways = find_windows_gateway_services(profile_processes=profile_process_list)
     service_gateway_pids = {int(service.gateway_pid) for service in service_gateways}
     with _abort_on_error("Could not discover Windows gateway PIDs before update"):
-        running_pids = list(dict.fromkeys(
+        # find_gateway_pids(all_profiles=True) is a HOST-wide scan; only this install's fleet is paused.
+        running_pids = _owned_gateway_pids(dict.fromkeys(
             [*find_gateway_pids(all_profiles=True), *sorted(profile_processes), *sorted(service_gateway_pids)]
-        ))
+        ), keep=set(profile_processes) | service_gateway_pids, quiet=False)
     return profile_processes, service_gateways, service_gateway_pids, running_pids
 
 
@@ -1056,7 +1076,8 @@ def _cold_start_windows_gateway_after_update(token: dict | None = None) -> bool:
         from hermes_cli import gateway_windows
         from hermes_cli.gateway import find_gateway_pids
     with _abort_on_error("Could not re-check gateway liveness before cold-start"):
-        if list(find_gateway_pids(all_profiles=True)):
+        # Another install's live gateway must not suppress this install's cold start (#124659).
+        if _owned_gateway_pids(find_gateway_pids(all_profiles=True)):
             return True
     token = token or {}
     generation = token.get("attested_generation")
@@ -1107,6 +1128,12 @@ def _refresh_windows_gateway_launchers() -> None:
         if gateway_windows.is_installed():
             gateway_windows._write_task_script()
             print("  ✓ Refreshed Windows gateway launcher scripts")
+            # Installs from before #80569 can carry a Startup entry beside the task: both fire at logon.
+            done, warnings = gateway_windows.reconcile_autostart_launchers()
+            for message in done:
+                print(f"  ✓ {message}")
+            for message in warnings:
+                print(f"  ⚠ {message}")
             if gateway_windows.is_task_registered():
                 # A task registered by an older build never picks up template hardening otherwise (#113670).
                 gateway_windows.reconcile_scheduled_task(gateway_windows.get_task_name())
@@ -1265,7 +1292,9 @@ def _verify_relaunched_gateways_alive(token: dict, profiles: dict, unmapped: lis
         from gateway.status import _pid_exists
         from hermes_cli import gateway_windows
     timeout_s = _relaunch_verify_timeout_s(profiles, unmapped, _pid_exists)
-    ready_pids = gateway_windows._wait_for_gateway_ready(timeout_s=timeout_s, all_profiles=True)
+    ready_pids = gateway_windows._wait_for_gateway_ready(
+        timeout_s=timeout_s, all_profiles=True, pid_filter=_owned_gateway_pids
+    )
     if not ready_pids:
         token["profiles"] = dict(profiles)
         token["unmapped"] = list(unmapped)

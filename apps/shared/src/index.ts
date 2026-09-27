@@ -92,6 +92,7 @@ export {
   wireFrameText
 } from './json-rpc-channel'
 export {
+  APPROVAL_RESPOND_TIMEOUT_MS,
   type ConnectionState,
   type GatewayClientOptions,
   GatewayEventHub,
