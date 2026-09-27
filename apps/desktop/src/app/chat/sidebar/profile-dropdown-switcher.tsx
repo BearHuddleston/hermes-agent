@@ -65,8 +65,7 @@ import { useProfileRailRefreshOnActive } from './use-profile-rail-refresh-on-act
  * / manage, right-click open-in-new-window / set-as-default) in a dropdown that
  * reads like its neighbour. The rail keeps the gestures that need squares
  * (drag-order, hold-to-recolor); this is the plain-dropdown door for people who
- * run profiles as bots and don't want a strip of them, and the Webapp's only
- * profile door.
+ * run profiles as bots and don't want a strip of them.
  */
 export function ProfileSwitcher({ compact = false }: { compact?: boolean }) {
   const { t } = useI18n()

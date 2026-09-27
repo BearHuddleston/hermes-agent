@@ -3,11 +3,12 @@ import { act, cleanup, render, renderHook } from '@testing-library/react'
 import { MemoryRouter } from 'react-router'
 import { afterEach, expect, it, vi } from 'vitest'
 
-// Switching profiles has exactly one door at a time: the colored rail at the
-// sidebar foot, or the statusbar picker beside the gateway switcher. The
-// Webapp (browser-hosted Desktop) always takes the picker; native Desktop
-// keeps the rail as the user's preference. The host is fixed per page load,
-// so each case loads a fresh module graph after declaring its host.
+// Switching profiles has exactly one door at a time: the rail at the sidebar
+// foot, or the statusbar picker beside the gateway switcher when the user hides
+// the rail. The Webapp (browser-hosted Desktop) always draws the rail as its
+// dropdown, never the squares; native Desktop keeps the squares until the
+// dropdown threshold. The host is fixed per page load, so each case loads a
+// fresh module graph after declaring its host.
 
 const noop = () => {}
 
@@ -82,6 +83,7 @@ async function loadHost(webapp: boolean) {
   )
 
   const doors = () => ({
+    dropdown: sidebar.container.querySelector('[data-slot="profile-dropdown"]') !== null,
     picker: statusbar.result.current.leftStatusbarItems.some(item => item.id === 'profile-switcher' && !item.hidden),
     rail: sidebar.container.querySelector('[data-slot="profile-rail"]') !== null
   })
@@ -90,15 +92,15 @@ async function loadHost(webapp: boolean) {
 }
 
 it.each([
-  { host: 'Webapp', webapp: true, rail: false },
-  { host: 'native Desktop', webapp: false, rail: true }
-])('$host shows exactly one profile door, the rail only where it is a preference', async ({ rail, webapp }) => {
+  { host: 'Webapp', webapp: true, dropdown: true },
+  { host: 'native Desktop', webapp: false, dropdown: false }
+])('$host keeps exactly one profile door, the Webapp as a dropdown', async ({ dropdown, webapp }) => {
   const { doors, prefs } = await loadHost(webapp)
 
-  expect(doors()).toEqual({ picker: !rail, rail })
+  // The rail stays at the sidebar foot whether or not the statusbar is shown.
+  expect(doors()).toEqual({ dropdown, picker: false, rail: true })
 
-  // The user's rail toggle flips native Desktop onto the picker; it can never
-  // put the rail into the Webapp.
+  // Hiding the rail hands the door to the statusbar picker on either host.
   act(() => prefs.toggleProfileRailVisible())
-  expect(doors()).toEqual({ picker: true, rail: false })
+  expect(doors()).toEqual({ dropdown: false, picker: true, rail: false })
 })
