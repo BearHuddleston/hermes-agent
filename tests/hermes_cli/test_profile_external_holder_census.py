@@ -41,6 +41,12 @@ class _Proc:
     def pid(self):
         return self._pid
 
+    def ppid(self):
+        return 1
+
+    def name(self):
+        return "python.exe"
+
     def username(self):
         return self._user
 
@@ -67,3 +73,24 @@ def test_census_never_reads_handles_of_processes_it_cannot_prove_same_user(tmp_p
     stranger.open_files_calls = 0
     assert profile_lifecycle.external_profile_file_holders(profile, [6]) == [6]
     assert stranger.open_files_calls == 0
+
+
+def test_windows_candidates_cover_every_holder_class_hermes_creates():
+    """Windows reads open files only for these; each read walks the system handle table."""
+    processes = {
+        10: (1, "explorer.exe"),
+        20: (10, "python.exe"),       # Hermes backend
+        21: (20, "node.exe"),         # its MCP server (inherits the profile's stderr log)
+        22: (21, "chrome.exe"),       # a browser the tool launched, two levels down
+        30: (10, "Hermes.exe"),       # the Desktop app and what it spawns
+        31: (30, "Hermes.exe"),
+        40: (1, "chrome.exe"),        # detached real-profile browser: argv names the profile
+        50: (10, "code.exe"),         # unrelated same-user app
+        60: (61, "loop.exe"),         # a ppid cycle must terminate
+        61: (60, "loop.exe"),
+    }
+
+    candidates = profile_lifecycle._holder_candidates(processes, lambda pid: pid == 40)
+
+    assert candidates == {20, 21, 22, 30, 31, 40}
+
