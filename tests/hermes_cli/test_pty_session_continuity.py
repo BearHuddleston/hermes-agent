@@ -306,7 +306,7 @@ async def test_superseded_input_cancellation_wins_completed_readiness(monkeypatc
     tty.setraw(slave)
     os.set_blocking(master, False)
     bridge = PtyBridge.__new__(PtyBridge)
-    bridge._fd, bridge._closed = master, False
+    bridge._fd, bridge._closed, bridge._fd_lock = master, False, threading.Lock()
     session = PtySession("k", bridge, buffer_cap=32, read_timeout=0.01)
     old, new = Socket(), Socket()
     entered, callbacks, writes = asyncio.Event(), [], []

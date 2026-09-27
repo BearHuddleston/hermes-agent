@@ -25,7 +25,7 @@ from hermes_constants import get_hermes_home, named_profile_home_is_unavailable
 
 # No survival across backend restart. Disconnects retain a bounded ANSI tail.
 RETENTION_SECONDS = 15 * 60
-# Inbound frames buffered while one batch is checked and written (backpressure bound).
+# Inbound frames buffered while one batch is written (backpressure bound).
 _INPUT_BATCH_FRAMES = 64
 TOKEN_RE = re.compile(r"^[A-Za-z0-9_-]{43}$")
 
@@ -53,6 +53,17 @@ class HostOwner:
             and not named_profile_home_is_unavailable(self.home)
             and (self.incarnation is None or profile_incarnation_matches(self.home, self.incarnation))
         )
+
+    def admit(self, write):
+        """Run ``write`` while this generation's lease is held, or raise ``TerminalExpired``.
+
+        Retirement publishes its tombstone under the same lease, so input reaches the
+        shell before retirement commits or not at all. Blocking: bridges call it off-loop.
+        """
+        with profile_incarnation_lease(self.home, self.incarnation):
+            if not self.current():
+                raise TerminalExpired()
+            return write()
 
 
 def _request_identity(ws: WebSocket) -> tuple[str, str]:
@@ -139,7 +150,7 @@ class HostTerminalRegistry(PtySessionRegistry):
 
         await asyncio.to_thread(validate)
         # No await between the final check and the caller's attach claim. The
-        # generation was just checked off-loop; input re-checks it before any write.
+        # generation was just checked off-loop; every input write runs under its lease.
         if (self._sessions.get(token) is not session
                 or (not closing and (not session.alive or self.expired(session)))):
             raise TerminalExpired()
@@ -273,15 +284,34 @@ async def _read_frames(ws: WebSocket, inbox: asyncio.Queue) -> None:
     await inbox.put(end)
 
 
+def _input_runs(frames: list[dict], resize_re):
+    """``frames`` in order: consecutive keystrokes joined into one run, resizes as ``(cols, rows)``."""
+    run = b""
+    for msg in frames:
+        raw = msg.get("bytes")
+        if raw is None:
+            raw = (msg.get("text") or "").encode("utf-8")
+        match = resize_re.fullmatch(raw) if raw else None
+        if match is None:
+            run += raw
+            continue
+        if run:
+            yield run
+            run = b""
+        yield int(match[1]), int(match[2])
+    if run:
+        yield run
+
+
 async def _pump_input(ws: WebSocket, registry: HostTerminalRegistry, token: str,
                       session: PtySession, owner: HostOwner) -> None:
     """Forward keystrokes and resizes while ``ws`` is the attached viewer.
 
-    A frame is written only after an ownership check that began once it had
-    arrived, so input sent after a profile generation retires never reaches the
-    shell. The check reads files, so it runs off the loop, once per batch: the
-    frames that queued while the previous batch was checked or written. A paste
-    of many frames costs a few checks, not one each.
+    Keystrokes reach the shell only inside ``owner.admit``, so input sent after a
+    profile generation retires never does, even when it queued behind input that was
+    admitted first. The fence reads files and takes the profile lease, so it runs off
+    the loop, once per run of keystrokes in a batch (the frames that queued while the
+    previous batch was written): a paste of many frames costs a few fences, not one each.
     """
     from hermes_cli.web_server_chat import _RESIZE_RE
     inbox: asyncio.Queue = asyncio.Queue(maxsize=_INPUT_BATCH_FRAMES)
@@ -293,19 +323,16 @@ async def _pump_input(ws: WebSocket, registry: HostTerminalRegistry, token: str,
             while not inbox.empty():
                 batch.append(inbox.get_nowait())
             frames = [msg for msg in batch if isinstance(msg, dict)]
-            if frames and not await asyncio.to_thread(owner.current):
-                await registry.remove(token)
-                return
-            for msg in frames:
-                raw = msg.get("bytes")
-                if raw is None:
-                    raw = (msg.get("text") or "").encode("utf-8")
-                if not raw:
+            for item in _input_runs(frames, _RESIZE_RE):
+                if isinstance(item, tuple):
+                    session.resize(ws, cols=item[0], rows=item[1])
                     continue
-                match = _RESIZE_RE.fullmatch(raw)
-                if match:
-                    session.resize(ws, cols=int(match[1]), rows=int(match[2]))
-                elif not await session.write(ws, raw):
+                try:
+                    delivered = await session.write(ws, item, fence=owner.admit)
+                except (TerminalExpired, FileNotFoundError):
+                    await registry.remove(token)
+                    return
+                if not delivered:
                     if session._ws is ws:
                         await registry.remove(token)
                     return

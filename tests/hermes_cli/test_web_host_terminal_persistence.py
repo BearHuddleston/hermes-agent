@@ -1,4 +1,5 @@
 """Native shell continuity through the real /api/host-terminal route, isolated from user state."""
+import asyncio
 import json
 from pathlib import Path
 
@@ -230,10 +231,12 @@ class IdleBridge:
         self.closed.wait(timeout)
         return None if self.closed.is_set() else b""
 
-    async def write(self, data):
-        self.writes.append(data)
-        self.wrote.set()
-        return True
+    async def write(self, data, *, fence=None):
+        def record():
+            self.writes.append(data)
+            self.wrote.set()
+            return True
+        return record() if fence is None else await asyncio.to_thread(fence, record)
 
     def resize(self, cols, rows):
         self.resizes.append((cols, rows))
@@ -457,12 +460,11 @@ def test_ownership_checks_never_block_the_event_loop(host_app, fake_bridges, tmp
     assert checks and set(checks) == {"thread"}
 
 
-def test_input_frames_that_arrive_together_share_one_ownership_check():
-    """A paste lands as many frames. One off-loop check covers every frame that
-    arrived before it began, and a retired generation still receives none."""
-    import asyncio
+def test_input_frames_that_arrive_together_share_one_ownership_check(tmp_path):
+    """A paste lands as many frames. One off-loop fenced write covers every frame
+    that arrived before it began, and a retired generation still receives none."""
     from types import SimpleNamespace
-    from hermes_cli.web_host_terminal_sessions import _pump_input
+    from hermes_cli.web_host_terminal_sessions import HostOwner, _pump_input
 
     frames = [f"line {i}\n".encode() for i in range(40)]
 
@@ -479,6 +481,10 @@ def test_input_frames_that_arrive_together_share_one_ownership_check():
         checks, written, removed = [], [], []
 
         class Owner:
+            # Not a named profile home, so the fence's lease is a no-op here.
+            home, incarnation = tmp_path, None
+            admit = HostOwner.admit
+
             def current(self):
                 try:
                     asyncio.get_running_loop()
@@ -487,9 +493,8 @@ def test_input_frames_that_arrive_together_share_one_ownership_check():
                     checks.append("thread")
                 return live
 
-        async def write(_ws, data):
-            written.append(data)
-            return True
+        async def write(_ws, data, *, fence):
+            return await asyncio.to_thread(fence, lambda: written.append(data) or True)
 
         async def remove(token):
             removed.append(token)
@@ -499,8 +504,107 @@ def test_input_frames_that_arrive_together_share_one_ownership_check():
         await _pump_input(ws, SimpleNamespace(remove=remove), "terminal", session, Owner())
         return checks, written, removed
 
-    assert asyncio.run(pump(True)) == (["thread"], frames, [])
+    assert asyncio.run(pump(True)) == (["thread"], [b"".join(frames)], [])
     assert asyncio.run(pump(False)) == (["thread"], [], ["terminal"])
+
+
+@pytest.mark.platforms("posix")
+def test_retirement_between_check_and_write_never_reaches_the_shell(tmp_path, monkeypatch):
+    """A tombstone published after a batch's ownership check still fences that batch:
+    every byte the PTY accepts precedes the tombstone, and later input is refused."""
+    import os
+    import threading
+    from types import SimpleNamespace
+    from hermes_cli import pty_bridge
+    from hermes_cli.profile_incarnation import ensure_profile_incarnation
+    from hermes_cli.profile_lifecycle import mark_profile_deleting, profile_lifecycle_lease
+    from hermes_cli.pty_session import PtySession
+    from hermes_cli.web_host_terminal_sessions import HostOwner, _pump_input
+
+    home = tmp_path / ".hermes"
+    profile = home / "profiles" / "alpha"
+    profile.mkdir(parents=True)
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    incarnation = ensure_profile_incarnation(profile)
+    events = []
+
+    class SpyOs:
+        """Records the bytes the PTY master accepts, in order with the tombstone."""
+        def __getattr__(self, name):
+            return getattr(os, name)
+
+        def write(self, fd, data):
+            accepted = os.write(fd, data)
+            events.append(("write", bytes(data[:accepted])))
+            return accepted
+
+    monkeypatch.setattr(pty_bridge, "os", SpyOs())
+    published, armed = threading.Event(), threading.Event()
+
+    def retire():
+        with profile_lifecycle_lease(profile):
+            mark_profile_deleting(profile, incarnation)
+            events.append(("tombstone", b""))
+            published.set()
+
+    original = HostOwner.current
+
+    def current(owner):
+        verdict = original(owner)
+        if armed.is_set():
+            # Retire right after this check passes; a writer holding the lease
+            # keeps the tombstone out until its bytes have landed.
+            armed.clear()
+            threading.Thread(target=retire, daemon=True).start()
+            published.wait(1.0)
+        return verdict
+
+    monkeypatch.setattr(HostOwner, "current", current)
+    bridge = pty_bridge.PtyBridge.spawn(["/bin/sh", "-c", "cat >/dev/null"])
+    owner = HostOwner(("loopback", "session-token"), profile, incarnation, "sh", str(tmp_path))
+
+    class Socket:
+        def __init__(self):
+            self.inbound = asyncio.Queue()
+
+        async def receive(self):
+            return await self.inbound.get()
+
+    async def until(condition):
+        async with asyncio.timeout(10):
+            while not condition():
+                await asyncio.sleep(0.01)
+
+    async def scenario():
+        ws = Socket()
+        session = PtySession("terminal", bridge, buffer_cap=4096, read_timeout=0.05)
+        session._ws = ws
+        removed = []
+
+        async def remove(token):
+            removed.append(token)
+
+        pump = asyncio.create_task(
+            _pump_input(ws, SimpleNamespace(remove=remove), "terminal", session, owner))
+        await ws.inbound.put({"type": "websocket.receive", "bytes": b"first\n"})
+        await until(lambda: ("write", b"first\n") in events)
+        armed.set()
+        await ws.inbound.put({"type": "websocket.receive", "bytes": b"after\n"})
+        await until(published.is_set)
+        await ws.inbound.put({"type": "websocket.receive", "bytes": b"late\n"})
+        async with asyncio.timeout(10):
+            await pump
+        return removed
+
+    try:
+        assert asyncio.run(scenario()) == ["terminal"]
+    finally:
+        bridge.close()
+    tombstone = events.index(("tombstone", b""))
+    assert all(kind == "write" for kind, _ in events[:tombstone]) and events[tombstone + 1:] == []
+    assert b"".join(data for _, data in events[:tombstone]) == b"first\nafter\n"
 
 
 def test_cross_process_retirement_closes_attached_shell(host_app, fake_bridges, tmp_path):

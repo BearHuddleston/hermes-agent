@@ -17,8 +17,9 @@ import signal
 import struct
 import sys
 import termios  # windows-footgun: ok — POSIX-only module by design (see docstring)
+import threading
 import time
-from typing import Optional, Sequence
+from typing import Callable, Optional, Sequence
 
 try:
     import ptyprocess  # type: ignore
@@ -64,14 +65,17 @@ class PtyUnavailableError(RuntimeError):
 class PtyBridge:
     """Thin wrapper around ``ptyprocess.PtyProcess`` for byte streaming. Not thread-safe: owned by
     the WebSocket handler that spawned it; reads run in an executor thread, writes are awaited on
-    the loop. The master fd is non-blocking so input backpressure suspends only the owning
-    WebSocket task, never the dashboard event loop.
+    the loop (or run in a worker under a caller's ``fence``). The master fd is non-blocking so
+    input backpressure suspends only the owning WebSocket task, never the dashboard event loop.
     """
 
     def __init__(self, proc: "ptyprocess.PtyProcess"):  # type: ignore[name-defined]
         self._proc = proc
         self._fd: int = proc.fd
         self._closed = False
+        # A fenced write runs in a worker thread; it must never reach a descriptor
+        # number that close() has already released for reuse.
+        self._fd_lock = threading.Lock()
         os.set_blocking(self._fd, False)
 
     @classmethod
@@ -168,12 +172,33 @@ class PtyBridge:
             except (OSError, ValueError):
                 pass
 
-    async def write(self, data: bytes, *, timeout: float = 10.0) -> bool:
+    def _write_some(self, view: memoryview) -> Optional[int]:
+        """One non-blocking write: bytes accepted (0 while the child's buffer is full), None once closed."""
+        with self._fd_lock:
+            if self._closed:
+                return None
+            try:
+                return os.write(self._fd, view)
+            except OSError as exc:
+                if exc.errno in {errno.EIO, errno.EBADF, errno.EPIPE}:
+                    return None
+                if exc.errno in {errno.EAGAIN, errno.EWOULDBLOCK}:
+                    return 0
+                raise
+
+    async def write(
+        self, data: bytes, *, timeout: float = 10.0,
+        fence: Optional[Callable[[Callable[[], Optional[int]]], Optional[int]]] = None,
+    ) -> bool:
         """Write all raw bytes without ever blocking the dashboard event loop.
 
         Returns ``False`` when the bridge closes or the child leaves its input
         buffer full for ``timeout`` seconds. Callers can then recycle only the
         affected terminal session while the rest of the dashboard stays live.
+
+        ``fence`` wraps every non-blocking write attempt in a worker thread, so a
+        caller can hold a lock around exactly the bytes that reach the child;
+        whatever it raises propagates. Backpressure waits happen outside it.
         """
         if self._closed:
             return False
@@ -184,17 +209,12 @@ class PtyBridge:
         deadline = loop.time() + max(0.0, timeout)
         view = memoryview(data)
         while view:
-            if self._closed:
+            if fence is None:
+                n = self._write_some(view)
+            else:
+                n = await asyncio.to_thread(fence, lambda chunk=view: self._write_some(chunk))
+            if n is None:
                 return False
-            try:
-                n = os.write(self._fd, view)
-            except OSError as exc:
-                if exc.errno in {errno.EIO, errno.EBADF, errno.EPIPE}:
-                    return False
-                if exc.errno in {errno.EAGAIN, errno.EWOULDBLOCK}:
-                    n = 0
-                else:
-                    raise
             if n > 0:
                 view = view[n:]
                 # A very large paste can otherwise monopolize the loop while
@@ -228,9 +248,10 @@ class PtyBridge:
         """Terminate the child (SIGHUP → SIGTERM → SIGKILL, 0.5s grace each), reap it so the
         dashboard process never leaks zombies, and close fds. Idempotent.
         """
-        if self._closed:
-            return
-        self._closed = True
+        with self._fd_lock:
+            if self._closed:
+                return
+            self._closed = True
 
         try:
             pgid = os.getpgid(self._proc.pid)  # windows-footgun: ok — POSIX-only module (imports fcntl/termios/ptyprocess at top)
