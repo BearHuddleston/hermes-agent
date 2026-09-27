@@ -1230,18 +1230,21 @@ export function appendLiveSessionProjection(messages: ChatMessage[], projection:
     : projection[safelyPersistedInflightUser] === true || (Boolean(inflightUser) && persistedInLatestRun(inflightUser))
 
   if (inflightUser && !inflightUserAlreadyPersisted) {
-    if (typedInflight) {
-      projected.push(
-        ...typedInflight.map(message => ({ ...message, ...runtimeBoundary, id: `user-inflight-${sessionId}` }))
-      )
-    } else {
-      projected.push({
-        id: `user-inflight-${sessionId}`,
-        role: 'user',
-        parts: [textPart(inflightUser)],
-        ...(projection.inflight?.user_originated === true ? { userOriginated: true } : {})
-      })
-    }
+    // Project the prompt through the same conversion history uses, so the live
+    // bubble matches its persisted twin: attachment refs lift into the chip row,
+    // and a synthetic starting prompt (process_complete, hidden, …) takes the
+    // display typing its row will get (#112144) — `hidden` yields nothing.
+    const live =
+      typedInflight ??
+      toChatMessages([
+        {
+          role: 'user',
+          content: inflightUser,
+          ...(projection.inflight?.user_originated === true ? { user_originated: true } : {})
+        }
+      ])
+
+    projected.push(...live.map(message => ({ ...message, ...runtimeBoundary, id: `user-inflight-${sessionId}` })))
   }
 
   // Keep a pending assistant boundary even before the first delta when a
@@ -1748,14 +1751,29 @@ export function overlayConcurrentMessageChanges(
       const text = textWithoutReferenceLines(chatMessageText(current)).trim()
       const lastUser = overlaid.findLastIndex(message => message.role === 'user')
 
-      const committed = overlaid.some(
-        (message, index) =>
-          index > lastUser &&
-          message.role === 'assistant' &&
-          !baselineById.has(message.id) &&
-          !isLiveTailRow(message) &&
-          textWithoutReferenceLines(chatMessageText(message)).trim() === text
-      )
+      const committed = overlaid.some((message, index) => {
+        if (
+          !(index > lastUser) ||
+          message.role !== 'assistant' ||
+          baselineById.has(message.id) ||
+          isLiveTailRow(message)
+        ) {
+          return false
+        }
+
+        // The committed row and the settled live row capture the same reply
+        // at two moments while it kept streaming, so neither side is
+        // guaranteed to be textually identical: accept either as a forward
+        // text-extension of the other, the same trade
+        // removeRepresentedLocalLiveProjection made in 2494b95929.
+        const candidate = textWithoutReferenceLines(chatMessageText(message)).trim()
+
+        return (
+          candidate === text ||
+          isStrictAnswerTextExtension(candidate, text) ||
+          isStrictAnswerTextExtension(text, candidate)
+        )
+      })
 
       if (text && committed) {
         continue
