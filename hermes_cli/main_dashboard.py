@@ -496,16 +496,19 @@ def _finalize_update_output(state):
 def _report_dashboard_status(*, modes: set[str] | None = None) -> int:
     """Print live listening Hermes web-server processes and return the count.
 
-    The default includes every mode ``dashboard --stop`` can affect. In
-    particular, serve-mode backends stay visible (#81564), while surface-
-    specific callers such as ``webapp --status`` can narrow the report.
-    Ledger-registered launches (including profiled commands the argv scan
-    cannot match) surface through ``_scan_dashboard_processes``.
+    The default includes every mode ``dashboard --stop`` can affect: serve-mode
+    backends stay visible, since hiding them let an operator kill what they
+    couldn't see (#81564). Surface-specific callers such as ``webapp --status``
+    narrow the report. Ledger-registered launches (profiled commands the argv
+    scan cannot match) surface through ``_scan_dashboard_processes``, and the
+    ledger's recorded bind replaces the argv port so ``--port 0`` backends are
+    probed on the port the OS actually gave them.
     """
     from gateway.status import _pid_exists
-    from hermes_cli.dashboard_procs import _scan_dashboard_processes
+    from hermes_cli.dashboard_procs import _ledger_serve_binds, _scan_dashboard_processes
 
     accepted_modes = WEB_SERVER_PURPOSES if modes is None else modes
+    binds = _ledger_serve_binds()
     live: list[tuple[int, str, str]] = []
     for pid, command in _scan_dashboard_processes():
         runtime = _parse_dashboard_runtime(command)
@@ -514,11 +517,13 @@ def _report_dashboard_status(*, modes: set[str] | None = None) -> int:
         mode, host, port = runtime
         if mode not in accepted_modes:
             continue
+        if pid in binds:
+            ledger_host, port = binds[pid]
+            host = ledger_host or host
         if port < 0 or not _pid_exists(pid):
             continue
-        # `--port 0` asks the OS for an ephemeral port, which is not present in
-        # argv. Positive process identity is the only status signal available;
-        # fixed ports additionally prove readiness with a TCP probe.
+        # `--port 0` with no ledger bind: positive process identity is the only
+        # status signal available; known ports additionally prove readiness.
         if port > 0 and not _dashboard_listening(host, port):
             continue
         live.append((pid, command, mode))

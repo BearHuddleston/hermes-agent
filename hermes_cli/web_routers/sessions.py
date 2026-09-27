@@ -97,7 +97,8 @@ def _prune_sessions(body: SessionPrune):
             **{f: getattr(body, f) for f in _PRUNE_NUM_FILTERS}}
         skipped_open = db.count_open_prune_matches(**filters)
         if body.dry_run:
-            rows = db.list_prune_candidates(**filters)
+            # Same whole-lineage selection prune_sessions applies, so the preview lists what it deletes.
+            rows = db.list_prune_candidates(**filters, whole_lineages=True)
             return {
                 "ok": True,
                 "removed": 0,

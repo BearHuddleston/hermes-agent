@@ -15,7 +15,14 @@ from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from agent.image_eviction_policy import outbound_image_retire_count
-from agent.compression_marker import _COMPRESSION_MARKER_PREFIX, _COMPRESSION_MARKER_TEMPLATE
+from agent.compression_marker import (
+    ELISION_MARKER_MAX_LEN,
+    _COMPRESSION_MARKER_PREFIX,
+    _COMPRESSION_MARKER_TEMPLATE,
+    _elision_marker,
+    elide,
+    elide_middle,
+)
 from agent.auxiliary_client import (
     AuxiliaryExplicitCancellation,
     _coerce_llm_message,
@@ -525,12 +532,10 @@ _MERGED_SUMMARY_DELIMITER = "[END OF PRIOR CONTEXT — COMPACTION SUMMARY BELOW]
 # the handoff boundary (#100818). A cron run's only user turn is the job prompt
 # in the protected head, so compaction leaves it BEFORE the summary — and
 # SUMMARY_PREFIX tells the model to do nothing when no user message follows.
-# Set on a compaction carrier when the in-flight task was merged onto it (the
-# carrier ends the list, so a standalone user row would break alternation).
-# conversation_compression._ensure_compressed_has_user_turn treats it as
-# "intent present" so it does not insert a second copy of the same request.
-_INFLIGHT_REPLAY_MERGED_KEY = "_inflight_replay_merged"
-
+# When the task is merged onto a carrier (the carrier ends the list, so a
+# standalone user row would break alternation), the header right after the
+# summary end marker is what ContextCompressor._has_merged_inflight_replay
+# detects -- from content alone, so it survives SessionDB reload.
 _INFLIGHT_TASK_REPLAY_HEADER = (
     "[STILL IN PROGRESS — this is the active request, restated after the "
     "compaction boundary because it was not finished yet. Continue it; do not "
@@ -605,8 +610,7 @@ def salvage_grown_transcript(
             and len(content) > _SALVAGE_SUMMARY_MAX_CHARS
             and _looks_like_compaction_summary(msg, content)
         ):
-            msg["content"] = (content[:_SALVAGE_SUMMARY_MAX_CHARS].rstrip()
-                              + "\n…[summary truncated so compaction can shrink]\n\n" + _SUMMARY_END_MARKER)
+            msg["content"] = elide(content, _SALVAGE_SUMMARY_MAX_CHARS) + "\n\n" + _SUMMARY_END_MARKER
     _prune_stale_reasoning_replay(out)
     if estimate_messages_tokens_rough(out) >= budget:
         _salvage_reduce_todo_snapshot(out)
@@ -1003,10 +1007,9 @@ def _build_verbatim_user_section(turns: List[Dict[str, Any]]) -> str:
         if remaining <= 0:
             break
         text = content.strip()
-        if len(text) > _LEAN_USER_MESSAGE_MAX_CHARS:
-            text = text[:_LEAN_USER_MESSAGE_MAX_CHARS].rstrip() + " …[truncated]"
-        if len(text) > remaining:
-            text = text[:remaining].rstrip() + " …[truncated]"
+        if len(text) > remaining and remaining <= ELISION_MARKER_MAX_LEN:
+            break  # no room for marker + content: a marker-only quote would overshoot the budget
+        text = elide(text, min(_LEAN_USER_MESSAGE_MAX_CHARS, remaining))
         collected.append("> " + text.replace("\n", "\n> "))
         used += len(text)
     if not collected:
@@ -1266,8 +1269,7 @@ def _compact_fallback_turn(value: Any) -> str:
     text = _redact_compaction_text(_content_text_for_contains(value))
     text = re.sub(r"\bgh[pousr]_[A-Za-z0-9_]{8,}\b", "[REDACTED]", text)
     text = re.sub(r"\s+", " ", text).strip()
-    if len(text) > _FALLBACK_TURN_MAX_CHARS:
-        text = text[: _FALLBACK_TURN_MAX_CHARS - 15].rstrip() + " ...[truncated]"
+    text = elide(text, _FALLBACK_TURN_MAX_CHARS)
     return re.sub(r"\bgh[pousr]_[A-Za-z0-9_.-]+", "[REDACTED]", text)
 
 
@@ -1377,6 +1379,20 @@ def _last_assistant_index(messages: "List[Dict[str, Any]]") -> int:
     return _last_index_with_role(messages, "assistant")
 
 
+def _pending_tool_round(messages: "List[Dict[str, Any]]") -> range:
+    """Indices of the tool results the transcript ends with — a round the model has not answered yet; empty when
+    the transcript ends in any other row. /steer rows after the round do not answer it: a steer is delivered
+    after the newest tool result before the next API call, and two can land in one iteration (one when the tool
+    batch ends, one before the request), so every contiguous trailing steer row is skipped."""
+    end = len(messages)
+    while end and messages[end - 1].get("display_kind") == STEER_DISPLAY_KIND:
+        end -= 1
+    start = end
+    while start > 0 and messages[start - 1].get("role") == "tool":
+        start -= 1
+    return range(start, end)
+
+
 def _part_text(item: Any) -> Optional[str]:
     """Text of a content part: the string itself, a dict's ``text``, else None."""
     return item if isinstance(item, str) else item.get("text") if isinstance(item, dict) else None
@@ -1392,6 +1408,21 @@ def _content_text_for_contains(content: Any) -> str:
     if isinstance(content, list):
         return "\n".join(t for t in map(_part_text, content) if isinstance(t, str) and t)
     return "" if content is None else content if isinstance(content, str) else str(content)
+
+
+def _is_text_only_content(content: Any) -> bool:
+    """Whether the active request can be restated without losing a content part."""
+    if isinstance(content, str):
+        return True
+    return isinstance(content, list) and all(
+        isinstance(part, str)
+        or (
+            isinstance(part, dict)
+            and part.get("type") in {"text", "input_text"}
+            and isinstance(part.get("text"), str)
+        )
+        for part in content
+    )
 
 
 def _append_text_to_content(content: Any, text: str, *, prepend: bool = False) -> Any:
@@ -1439,9 +1470,12 @@ def _rewritten(msg: Dict[str, Any], content: Any) -> Dict[str, Any]:
     return new_msg
 
 
-def _retire_stale_tool_result_images(result: List[Dict[str, Any]], keep_newest: int = _MAX_KEEP_TOOL_IMAGES) -> int:
+def _retire_stale_tool_result_images(
+    result: List[Dict[str, Any]], keep_newest: int = _MAX_KEEP_TOOL_IMAGES, spared: range = range(0),
+) -> int:
     """Replace image payloads on older tool results with text placeholders.
-    Keeps the newest ``keep_newest`` image-bearing tool messages; user uploads untouched. Mutates
+    Keeps the newest ``keep_newest`` image-bearing tool messages and any spared pending round;
+    spared images still count toward the newest window. User uploads are untouched. Mutates
     ``result`` in place; returns the number of messages rewritten. Compaction only: it commits the
     rewrite into the canonical transcript once. The send path uses
     :func:`evict_stale_outbound_tool_images` (a per-request keep-newest window rewrites the cached
@@ -1452,7 +1486,7 @@ def _retire_stale_tool_result_images(result: List[Dict[str, Any]], keep_newest: 
         if not isinstance(msg, dict) or msg.get("role") != "tool" or not _tool_content_has_images(msg.get("content")):
             continue
         seen += 1
-        if seen <= max(keep_newest, 0):
+        if seen <= max(keep_newest, 0) or i in spared:
             continue
         new_msg = _strip_images_from_tool_msg(msg)
         if new_msg is not None:
@@ -1595,10 +1629,11 @@ def _strip_images_from_content(content: Any) -> Any:
     return content if stripped is None else stripped
 
 
-def _strip_historical_media(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+def _strip_historical_media(messages: List[Dict[str, Any]], spared: range = range(0)) -> List[Dict[str, Any]]:
     """Replace image parts in older messages with placeholder text.
     Rule 1: strip everything before the newest image-bearing user message. Rule 1b: the opening
-    attachment ages out once a newer tool image exists. Rule 2: keep only the newest tool-result image.
+    attachment ages out once a newer tool image exists. Rule 2: keep only the newest tool-result image,
+    except tool results in a spared pending round.
     Unchanged list when nothing applies; input never mutated."""
     if not messages:
         return messages
@@ -1618,6 +1653,8 @@ def _strip_historical_media(messages: List[Dict[str, Any]]) -> List[Dict[str, An
         return messages
 
     def _is_stale(index: int, message: Dict[str, Any]) -> bool:
+        if index in spared:
+            return False
         # Rule 1: everything before the newest image-bearing user message. Rule 1b: the opening
         # attachment ages out once a newer tool image exists (the text placeholder keeps the user row
         # non-empty for the zero-user-turn guard). Rule 2: superseded tool-result image, even in the tail.
@@ -1748,7 +1785,6 @@ def _sum_clarify(name, args, content, content_len, line_count):
     # Strictly below _PRUNE_MIN_CHARS so the summary survives later prune passes via the
     # min_prune_chars guard and skips the >=200-char dedup.
     max_summary_chars = _PRUNE_MIN_CHARS - 1
-    truncation_marker = "...[truncated]"
     parsed = _json_dict(content)
     response = parsed.get("user_response")
     # Batch clarify (``questions=[...]``) nests each answer inside ``responses[].user_response``
@@ -1776,8 +1812,7 @@ def _sum_clarify(name, args, content, content_len, line_count):
         # Escape lone UTF-16 surrogates so the message stays UTF-8/SQLite safe.
         serialized = json.dumps(response, ensure_ascii=False).encode("utf-8", errors="backslashreplace")
         summary = response_prefix + serialized.decode("utf-8")
-        if len(summary) > max_summary_chars:
-            summary = summary[: max_summary_chars - len(truncation_marker)].rstrip() + truncation_marker
+        summary = elide(summary, max_summary_chars)
         return summary
     return "[clarify] asked user a question"
 
@@ -2686,6 +2721,13 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
         return threshold_percent
 
     @staticmethod
+    def _effective_input_window(context_length: int, max_tokens: int | None) -> int:
+        """Usable input budget: the window minus the output reservation, or the whole window when the reservation
+        is unset or leaves nothing."""
+        effective_window = context_length - (max_tokens or 0)
+        return effective_window if effective_window > 0 else context_length
+
+    @staticmethod
     def _compute_threshold_tokens(
         context_length: int, threshold_percent: float, max_tokens: int | None = None,
     ) -> int:
@@ -2706,9 +2748,7 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
         the degenerate-window check below both operate on the effective input budget. ``max_tokens=None``
         (provider default) conservatively assumes no reservation (full window).
         """
-        effective_window = context_length - (max_tokens or 0)
-        if effective_window <= 0:
-            effective_window = context_length
+        effective_window = ContextCompressor._effective_input_window(context_length, max_tokens)
         pct_value = int(effective_window * threshold_percent)
         floored = max(pct_value, MINIMUM_CONTEXT_LENGTH)
         # The floor must not consume output headroom: cap at 85% when it is the binding term. Near-minimum windows
@@ -3144,11 +3184,12 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
 
     def _pressure_demote_tail(
         self, result: List[Dict[str, Any]], prune_boundary: int, protect_tail_tokens: int,
-        call_id_to_tool: Dict[str, tuple[str, str]], min_prune_chars: int,
+        call_id_to_tool: Dict[str, tuple[str, str]], min_prune_chars: int, spared: range,
     ) -> int:
         """Pass 4: demote inside the protected tail when it alone exceeds the soft budget (#61932).
-        Keeps a short recent floor verbatim; overrides the skill guard (else the dead-end recurs).
-        Returns the number of tool results demoted (arg truncations are logged but not counted)."""
+        Keeps a short recent floor and the ``spared`` pending tool round verbatim; overrides the skill guard
+        (else the dead-end recurs). Returns the number of tool results demoted (arg truncations are logged
+        but not counted)."""
         soft_ceiling = self._tail_soft_ceiling(protect_tail_tokens)
         demote_end = len(result) - min(_PRESSURE_KEEP_RECENT_MESSAGES, len(result))
         start = max(0, prune_boundary)
@@ -3161,6 +3202,8 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
         def _shrink_at(i: int) -> None:
             # Each helper no-ops on the other role, so both may run unconditionally.
             nonlocal demoted, pressure_hits
+            if i in spared:
+                return
             if self._demote_tool_result_at(result, i, call_id_to_tool, min_prune_chars):
                 demoted += 1
                 pressure_hits += 1
@@ -3178,9 +3221,11 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
             last_tool_idx = next((i for i in range(len(result) - 1, -1, -1) if result[i].get("role") == "tool"), None)
             for i in (i for i in range(start, len(result)) if i != last_tool_idx):
                 _shrink_at(i)
-            # Last resort: the newest body alone may exceed the soft budget; summarize it.
+            # Last resort, unless it is the spared pending round: the newest body may exceed the soft budget
+            # alone (one 200KB read); summarize it.
             if (
-                last_tool_idx is not None and last_tool_idx >= prune_boundary and _protected_region_tokens() > soft_ceiling
+                last_tool_idx is not None and last_tool_idx not in spared and last_tool_idx >= prune_boundary
+                and _protected_region_tokens() > soft_ceiling
             ) and self._demote_tool_result_at(result, last_tool_idx, call_id_to_tool, min_prune_chars):
                 demoted += 1
                 pressure_hits += 1
@@ -3191,6 +3236,17 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
                 pressure_hits, f"{_protected_region_tokens():,}", f"{soft_ceiling:,}",
             )
         return demoted
+
+    def _spared_pending_tool_round(self, messages: List[Dict[str, Any]]) -> range:
+        """Return the pending round, owning assistant(tool_calls) row included, only when it fits the input window's
+        hard share. The call's args are part of the unread round: the model reads its result next to them."""
+        pending = _pending_tool_round(messages)
+        if pending and pending.start > 0 and messages[pending.start - 1].get("tool_calls"):
+            pending = range(pending.start - 1, pending.stop)
+        input_window = self._effective_input_window(
+            getattr(self, "context_length", 0) or 0, getattr(self, "max_tokens", None))
+        hard_share = int(input_window * TAIL_MAX_CONTEXT_FRACTION)
+        return pending if sum(_estimate_msg_budget_tokens(messages[i]) for i in pending) <= hard_share else range(0)
 
     def _prune_old_tool_results(
         self, messages: List[Dict[str, Any]], protect_tail_count: int,
@@ -3203,6 +3259,12 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
         result = [m.copy() for m in messages]
         call_id_to_tool = _tool_calls_by_id(result)
         prune_boundary = self._prune_boundary(result, protect_tail_count, protect_tail_tokens)
+        # The pending tool round is output the model asked for and has not read yet: a stub makes it re-run the
+        # call (side effects included) or answer blind. Passes 2-4 spare it, call args included, unless it alone
+        # exceeds the tail's hard share of the input budget the threshold is computed from (the output reservation
+        # is not room the round can keep) — the #61932 single-200KB-read case, which must still give way.
+        spared = self._spared_pending_tool_round(result)
+        prune_boundary = min(prune_boundary, spared.start) if spared else prune_boundary
         pruned = self._dedupe_tool_results(result)
         # Just-loaded / tail-referenced skills keep full skill_view bodies through the ordinary passes.
         # Without this, a skill loaded moments before a compaction can be demoted to metadata while the
@@ -3218,11 +3280,11 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
             self._truncate_tool_call_args_at(result, i)
         # Pass 3.5: retire image payloads inside the protected tail; re-sent embeds otherwise make
         # compression look ineffective and trip anti-thrash. Newest frames stay live.
-        # Newest frames stay live for follow-up QA; older ones become placeholders. See #92699.
-        pruned += _retire_stale_tool_result_images(result)
+        # Newest frames stay live for follow-up QA; unread spared results stay live too. See #92699.
+        pruned += _retire_stale_tool_result_images(result, spared=spared)
         if protect_tail_tokens is not None and protect_tail_tokens > 0 and result:
             pruned += self._pressure_demote_tail(
-                result, prune_boundary, protect_tail_tokens, call_id_to_tool, min_prune_chars,
+                result, prune_boundary, protect_tail_tokens, call_id_to_tool, min_prune_chars, spared,
             )
         return result, pruned
 
@@ -3312,7 +3374,7 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
         (including the protected tail), so no unique content is ever lost; (2) summarize non-tail tool
         results larger than ``min_prune_chars``; (3) truncate oversized tool_call arguments on non-tail
         assistant messages; (3.5) retire image payloads on all but the newest ``_MAX_KEEP_TOOL_IMAGES``
-        image-bearing tool results — tail-agnostic and lossy by design (#92699). Only pass (2)'s floor is
+        image-bearing tool results, except a pending round that fits the hard share (#92699). Only pass (2)'s floor is
         raised by ``proactive_prune_min_result_chars``; passes (1) and (3) keep their own fixed floors. The
         recent-tail protection applies to passes (2) and (3); pass (1) is tail-agnostic by design because
         dedup is lossless.
@@ -3419,7 +3481,7 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
             if role == "assistant" and content:
                 content = strip_think_blocks(None, content)
             if len(content) > self._CONTENT_MAX:
-                content = content[:self._CONTENT_HEAD] + "\n...[truncated]...\n" + content[-self._CONTENT_TAIL:]
+                content = elide_middle(content, self._CONTENT_HEAD, self._CONTENT_TAIL)
             if role == "tool":
                 parts.append(f"[TOOL RESULT {msg.get('tool_call_id', '')}]: {content}")
                 continue
@@ -3504,9 +3566,7 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
         previous_summary_note = ""
         if self._previous_summary:
             previous_summary = redact_sensitive_text(self._previous_summary.strip())
-            if len(previous_summary) > _FALLBACK_PREVIOUS_SUMMARY_MAX_CHARS:
-                previous_summary = (previous_summary[: _FALLBACK_PREVIOUS_SUMMARY_MAX_CHARS - 45].rstrip()
-                                    + "\n...[previous summary snapshot truncated]")
+            previous_summary = elide(previous_summary, _FALLBACK_PREVIOUS_SUMMARY_MAX_CHARS)
             previous_summary_note = (
                 "\n\n## Previous Summary Snapshot\n"
                 f"{previous_summary}\n\n"
@@ -3557,8 +3617,7 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
         _pruned_names = _collect_ghosted_skill_names(turns_to_summarize)
         del _pruned_names[_MAX_PRUNED_SKILL_MARKERS:]
         summary = self._with_summary_prefix(_redact_compaction_text(body.strip()))
-        if len(summary) > _FALLBACK_SUMMARY_MAX_CHARS:
-            summary = summary[: _FALLBACK_SUMMARY_MAX_CHARS - 42].rstrip() + "\n...[fallback summary truncated]"
+        summary = elide(summary, _FALLBACK_SUMMARY_MAX_CHARS)
         # Re-inject AFTER the size cap: markers live at the end, where truncation cuts.
         summary = _reinject_pruned_skill_markers(summary, _pruned_names)
         return self._augment_summary_lean(summary, turns_to_summarize)
@@ -3633,17 +3692,11 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
         """Bound an oversized record with an explicit intra-record truncation marker."""
         if len(record) <= limit:
             return record
-        marker_template = "\n...[record truncated: {elided:,} chars elided — recover via session_search]...\n"
-        marker_reserve = len(marker_template.format(elided=len(record)))
+        marker_reserve = len(_elision_marker(omitted=len(record), total=len(record)))
         if limit <= marker_reserve:
             return record[:limit]
-        remaining = limit - marker_reserve
-        head_len = remaining // 2
-        tail_len = remaining - head_len
-        head = record[:head_len].rstrip("\n")
-        tail = record[-tail_len:].lstrip("\n")
-        elided = len(record) - len(head) - len(tail)
-        return head + marker_template.format(elided=elided) + tail
+        head_len = (limit - marker_reserve) // 2
+        return elide_middle(record, head_len, limit - marker_reserve - head_len)
 
     def _record_summary_input_coverage(self, coverage: Dict[str, int]) -> None:
         """Expose lean sampling coverage without including transcript content in telemetry."""
@@ -4384,10 +4437,11 @@ Write only the summary body. Do not include any preamble or prefix."""
             if not text:
                 continue
             text = re.sub(r"\s+", " ", text)
-            if len(text) > _ACTIVE_TASK_MAX_CHARS:
-                text = text[: _ACTIVE_TASK_MAX_CHARS - 15].rstrip() + " ...[truncated]"
+            # Elide AFTER repr: repr would escape the marker's "Hermes's" and hide a copy from the
+            # guard. Text within the cap stays whole (the split-turn path relies on that).
+            text = repr(text) if len(text) <= _ACTIVE_TASK_MAX_CHARS else elide(repr(text), _ACTIVE_TASK_MAX_CHARS)
             return (
-                f"User asked (deterministic, from compacted turns): {text!r}\n"
+                f"User asked (deterministic, from compacted turns): {text}\n"
                 "Historical only; newer protected-tail messages after this summary win."
             )
         return None
@@ -4692,6 +4746,28 @@ Write only the summary body. Do not include any preamble or prefix."""
         return adjusted
 
     @classmethod
+    def _has_merged_inflight_replay(cls, message: Any) -> bool:
+        """Recognize the active request on a handoff, including after DB reload.
+
+        Detection is content-only, anchored on the last summary end marker: the
+        explicit replay after it is authoritative; a request quoted inside the
+        historical summary is not.
+        """
+        if not cls._is_context_summary_message(message):
+            return False
+        text = _content_text_for_contains(message.get("content"))
+        # The LAST end marker is the real handoff boundary: a merged-into-tail
+        # carrier can embed an older carrier (marker + replay) in its prior
+        # context, ahead of the new summary's own marker.
+        _, boundary, remainder = text.rpartition(_SUMMARY_END_MARKER)
+        rest = remainder.lstrip()
+        return bool(
+            boundary
+            and rest.startswith(_INFLIGHT_TASK_REPLAY_HEADER)
+            and rest.removeprefix(_INFLIGHT_TASK_REPLAY_HEADER).strip()
+        )
+
+    @classmethod
     def _find_inflight_user_task(
         cls, messages: List[Dict[str, Any]]
     ) -> Optional[Dict[str, Any]]:
@@ -4734,7 +4810,7 @@ Write only the summary body. Do not include any preamble or prefix."""
             if cls._is_actionable_user_turn(msg) and _is_real_user_message(msg):
                 last_user_idx = i
                 break
-            if isinstance(msg, dict) and msg.get(_INFLIGHT_REPLAY_MERGED_KEY):
+            if cls._has_merged_inflight_replay(msg):
                 # A previous cycle merged the live request onto this summary
                 # carrier; it is the only copy left, so it is still the task.
                 last_user_idx = i
@@ -4818,7 +4894,7 @@ Write only the summary body. Do not include any preamble or prefix."""
             )
 
         last_visible_role = _last_template_visible_role(compressed)
-        if inflight.get(_INFLIGHT_REPLAY_MERGED_KEY):
+        if self._has_merged_inflight_replay(inflight):
             # Never copy a summary carrier (metadata would mark the replay
             # synthetic): restate as a plain user row.
             replay = {"role": "user", "content": task_text}
@@ -4843,14 +4919,14 @@ Write only the summary body. Do not include any preamble or prefix."""
             # tool rows are exempt), so a user-pinned summary followed by a
             # tool tail still "ends on user": a standalone user row would break
             # the Mistral-style pre-flight check (#58753). Merge onto the
-            # carrier instead and flag it — the carrier's own metadata marks it
-            # synthetic, and without the flag _ensure_compressed_has_user_turn
-            # would insert a second copy of the same request.
+            # carrier instead — its own metadata marks it synthetic, and the
+            # header after its end marker lets _has_merged_inflight_replay
+            # (used by _ensure_compressed_has_user_turn) see intent as present
+            # instead of inserting a second copy of the same request.
             carrier["content"] = _append_text_to_content(
                 carrier.get("content"),
                 "\n\n" + _INFLIGHT_TASK_REPLAY_HEADER + "\n" + task_text,
             )
-            carrier[_INFLIGHT_REPLAY_MERGED_KEY] = True
             drop_stale_api_content(carrier)
             return compressed
 
@@ -4930,7 +5006,11 @@ Write only the summary body. Do not include any preamble or prefix."""
             cut_idx, _ = self._walk_tail_budget(messages, head_end, token_budget, min_tail, cut_at_break=True)
 
         fallback_cut = n - min_tail
-        cut_idx = min(cut_idx, n - walk_floor)
+        # The newest row never leaves the tail, whatever its role. When it alone exceeds the ceiling the walk accepts
+        # nothing, and a cut at ``n`` summarised e.g. the pending tool round the model had not read (the split below
+        # then took the whole turn); aligning from ``n - 1`` keeps that row's group whole, as atomic groups may
+        # exceed the ceiling.
+        cut_idx = min(cut_idx, n - max(walk_floor, 1))
         # Small conversations: force a cut after the head so compression still removes something.
         if cut_idx <= head_end:
             cut_idx = max(fallback_cut, head_end + 1)
@@ -4950,6 +5030,9 @@ Write only the summary body. Do not include any preamble or prefix."""
         if (
             allow_split_turn
             and user_anchored_cut < cut_idx
+            # The handoff can restate text, but cannot replace an audio, image,
+            # or unknown structured input with its text-only projection.
+            and _is_text_only_content(messages[last_user_idx].get("content"))
             # A single oversized user message is indivisible and must stay verbatim in the tail; this
             # exception is only for aggregate turn growth after a normally sized opening request.
             and _estimate_msg_budget_tokens(messages[last_user_idx]) <= soft_ceiling
@@ -5295,6 +5378,7 @@ Write only the summary body. Do not include any preamble or prefix."""
 
     def _finalize_compressed(
         self, compressed: List[Dict[str, Any]], messages: List[Dict[str, Any]], n_messages: int,
+        spare_pending_images: bool,
     ) -> List[Dict[str, Any]]:
         """Post-assembly cleanup: orphan pairs, media, savings, markers, replay prune, mem trim."""
         # Single-prompt cron shape: the only live instruction sits in the protected head, BEFORE the
@@ -5302,6 +5386,7 @@ Write only the summary body. Do not include any preamble or prefix."""
         # (#100818). Sanitize FIRST: the trailing-in-flight exemption (#79278) walks back from the list
         # end, and a replay user row there would strip a genuinely pending assistant(tool_calls).
         compressed = self._sanitize_tool_pairs(compressed)
+        spared = _pending_tool_round(compressed) if spare_pending_images else range(0)
         compressed = self._reappend_inflight_user_task(compressed, self._find_inflight_user_task(messages))
         self.compression_count += 1
         # Replace historical image payloads with placeholders; multi-MB base64 blobs otherwise
@@ -5310,7 +5395,7 @@ Write only the summary body. Do not include any preamble or prefix."""
         # short text placeholder. Without this, tail messages keep their original multi-MB base-64 image
         # payloads forever, which can push every subsequent API request past the provider's body-size limit
         # and wedge the session. Port of Kilo-Org/kilocode#9434.
-        compressed = _strip_historical_media(compressed)
+        compressed = _strip_historical_media(compressed, spared=spared)
 
         # Like-for-like savings: current_tokens includes system prompt/tool schemas, new_estimate is
         # messages-only; comparing them fakes ~96% savings and kills the anti-thrashing guard.
@@ -5384,6 +5469,7 @@ Write only the summary body. Do not include any preamble or prefix."""
             )
             return messages
         display_tokens = current_tokens if current_tokens else self.last_prompt_tokens or estimate_messages_tokens_rough(messages)
+        spare_pending_images = bool(self._spared_pending_tool_round(messages))
         # Phase 1: Prune old tool results (cheap, no LLM call)
         messages, pruned_count = self._prune_old_tool_results(
             messages, protect_tail_count=self.protect_last_n, protect_tail_tokens=self.tail_token_budget,
@@ -5449,7 +5535,7 @@ Write only the summary body. Do not include any preamble or prefix."""
             )
         # Phase 4: Assemble compressed message list
         compressed = self._assemble_compressed(messages, compress_start, compress_end, scan, summary)
-        return self._finalize_compressed(compressed, messages, n_messages)
+        return self._finalize_compressed(compressed, messages, n_messages, spare_pending_images)
 
     def _assemble_compressed(
         self, messages: List[Dict[str, Any]], compress_start: int, compress_end: int, scan: "_HandoffScan", summary: str,
