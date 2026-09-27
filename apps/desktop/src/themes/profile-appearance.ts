@@ -11,7 +11,9 @@
  * Reads race writes, so every read is stamped on one clock with every local
  * change: a published value speaks for the backend only when its GET began
  * after the profile's last local change and no write for it is in flight. A
- * slower, older GET can never snap a fresh pick back.
+ * slower, older GET can never snap a fresh pick back. Writes race each other,
+ * so a profile's writes go out one at a time in pick order: the newest pick is
+ * always the last PUT to land.
  */
 
 import { atom } from 'nanostores'
@@ -43,6 +45,8 @@ export const $profileAppearance = atom<null | ProfileAppearance>(null)
 let clock = 0
 const localChangeAt = new Map<string, number>()
 const writesInFlight = new Map<string, number>()
+// Per profile: the settlement of its latest queued write.
+const writeQueues = new Map<string, Promise<unknown>>()
 
 const isThemeMode = (value: unknown): value is ThemeMode => value === 'light' || value === 'dark' || value === 'system'
 
@@ -70,8 +74,9 @@ export function appearanceIsCurrent(appearance: ProfileAppearance): boolean {
   return !writesInFlight.get(appearance.profile) && appearance.readAt > (localChangeAt.get(appearance.profile) ?? 0)
 }
 
-/** Write a pick to the profile's config.yaml. Sparse: PUT /api/config
- *  deep-merges, so echoing more would overwrite keys other surfaces changed. */
+/** Write a pick to the profile's config.yaml, after the profile's earlier
+ *  writes settle. Sparse: PUT /api/config deep-merges, so echoing more would
+ *  overwrite keys other surfaces changed. */
 export async function saveProfileAppearance(profile: string, patch: ProfileAppearancePatch): Promise<void> {
   // A bare renderer (tests, the design preview) has no backend to write to.
   if (!window.hermesDesktop) {
@@ -81,13 +86,25 @@ export async function saveProfileAppearance(profile: string, patch: ProfileAppea
   markLocalAppearanceChange(profile)
   writesInFlight.set(profile, (writesInFlight.get(profile) ?? 0) + 1)
 
-  try {
-    const result = await saveHermesConfig({ desktop: patch }, profile)
+  const write = (writeQueues.get(profile) ?? Promise.resolve())
+    .catch(() => undefined)
+    .then(async () => {
+      const result = await saveHermesConfig({ desktop: patch }, profile)
 
-    if (!result?.ok) {
-      throw new Error(translateNow('settings.config.autosaveFailed'))
-    }
+      if (!result?.ok) {
+        throw new Error(translateNow('settings.config.autosaveFailed'))
+      }
+    })
+
+  writeQueues.set(profile, write)
+
+  try {
+    await write
   } finally {
+    if (writeQueues.get(profile) === write) {
+      writeQueues.delete(profile)
+    }
+
     writesInFlight.set(profile, (writesInFlight.get(profile) ?? 1) - 1)
     // A GET that began while this write was in flight may have been served
     // before it landed.

@@ -63,10 +63,19 @@ describe('profile appearance ↔ config.yaml', () => {
   // Each profile's config.yaml as the backend serves it (PUTs are recorded, not applied).
   let configs: Record<string, unknown> = {}
   let heldRead: null | ReturnType<typeof deferred<unknown>> = null
+  // When set, every PUT stays in flight until the test settles it.
+  let heldWrites: null | { request: HermesApiRequest; settle: ReturnType<typeof deferred<unknown>> }[] = null
 
   const api = vi.fn(async (request: HermesApiRequest): Promise<unknown> => {
     if (request.method === 'PUT') {
-      return { ok: true }
+      if (!heldWrites) {
+        return { ok: true }
+      }
+
+      const settle = deferred<unknown>()
+      heldWrites.push({ request, settle })
+
+      return settle.promise
     }
 
     if (request.path !== '/api/config') {
@@ -90,6 +99,7 @@ describe('profile appearance ↔ config.yaml', () => {
     __resetBackendSkinSync()
     $profileAppearance.set(null)
     configs = {}
+    heldWrites = null
     api.mockClear()
     Object.defineProperty(window, 'hermesDesktop', { configurable: true, value: { api } })
   })
@@ -132,6 +142,31 @@ describe('profile appearance ↔ config.yaml', () => {
     // One that began after them is the backend's word again (another client's pick).
     await refresh()
     expect([ctx.themeName, ctx.mode]).toEqual(['ember', 'light'])
+  })
+
+  it('lands picks in pick order, so a slow older write never overtakes the newest', async () => {
+    configs.order = appearance('ember', 'light')
+    onProfile('order')
+    const { refresh } = mountApp()
+    await refresh()
+    const held: NonNullable<typeof heldWrites> = []
+    heldWrites = held
+    const applied: unknown[] = []
+
+    await act(async () => {
+      ctx.setTheme('mono')
+      ctx.setTheme('everforest')
+    })
+
+    // A reordering transport: the newest in-flight PUT is applied first.
+    while (held.length) {
+      const { request, settle } = held.pop()!
+      applied.push((request.body as { config: { desktop: { theme: string } } }).config.desktop.theme)
+      await act(async () => settle.resolve({ ok: true }))
+    }
+
+    expect(applied).toEqual(['mono', 'everforest'])
+    expect(ctx.themeName).toBe('everforest')
   })
 
   it("seeds an unset config once from the profile's own local pick, never an inherited one, and adopts a set one", async () => {
