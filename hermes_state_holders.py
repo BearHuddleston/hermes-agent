@@ -378,8 +378,16 @@ def _sqlite_family(base: str) -> Tuple[str, str, str]:
     return (base, base + "-wal", base + "-shm")
 
 
-def _windows_restart_manager_holders(db_path: Path) -> List[Tuple[int, str]]:
-    """Return foreign processes using state.db or a WAL sidecar via Windows Restart Manager."""
+# Paths per RmRegisterResources call: a profile tree registers thousands of files.
+_RM_REGISTER_CHUNK = 1000
+
+
+def windows_restart_manager_pids(paths: Sequence[str]) -> List[int]:
+    """PIDs Windows Restart Manager reports holding any of *paths* open; raises OSError on API failure.
+
+    One ``RmGetList`` answers for every registered file at once, so the cost follows the file
+    count rather than the number of processes on the machine.
+    """
     import ctypes
     from ctypes import wintypes
 
@@ -394,21 +402,18 @@ def _windows_restart_manager_holders(db_path: Path) -> List[Tuple[int, str]]:
         api.RmStartSession, api.RmRegisterResources, api.RmGetList, api.RmEndSession
     )
 
-    db_abspath = os.path.abspath(os.fspath(db_path))
-    resources = [path for path in _sqlite_family(db_abspath) if os.path.exists(path)]
-    if not resources:
-        return []
-
     session = wintypes.DWORD()
     key = ctypes.create_unicode_buffer(_RM_SESSION_KEY_LEN)
     rc = start(ctypes.byref(session), 0, key)
     if rc:
         raise OSError(rc, "RmStartSession failed")
     try:
-        filenames = (wintypes.LPCWSTR * len(resources))(*resources)
-        rc = register(session, len(resources), filenames, 0, None, 0, None)
-        if rc:
-            raise OSError(rc, "RmRegisterResources failed")
+        for offset in range(0, len(paths), _RM_REGISTER_CHUNK):
+            chunk = paths[offset:offset + _RM_REGISTER_CHUNK]
+            filenames = (wintypes.LPCWSTR * len(chunk))(*chunk)
+            rc = register(session, len(chunk), filenames, 0, None, 0, None)
+            if rc:
+                raise OSError(rc, "RmRegisterResources failed")
 
         # Pass 1 sizes (ERROR_MORE_DATA); the process set can change before the data pass, so retry the
         # bounded race with a re-sized buffer.
@@ -421,17 +426,22 @@ def _windows_restart_manager_holders(db_path: Path) -> List[Tuple[int, str]]:
                 apps if needed.value else None, ctypes.byref(reasons),
             )
             if rc == 0:
-                own_pid = os.getpid()
-                return [
-                    (int(apps[index].process.pid), db_abspath)
-                    for index in range(count.value)
-                    if int(apps[index].process.pid) != own_pid
-                ]
+                return [int(apps[index].process.pid) for index in range(count.value)]
             if rc != _RM_ERROR_MORE_DATA:
                 raise OSError(rc, "RmGetList failed")
         raise RuntimeError("Restart Manager holder set kept changing")
     finally:
         end(session)
+
+
+def _windows_restart_manager_holders(db_path: Path) -> List[Tuple[int, str]]:
+    """Return foreign processes using state.db or a WAL sidecar via Windows Restart Manager."""
+    db_abspath = os.path.abspath(os.fspath(db_path))
+    resources = [path for path in _sqlite_family(db_abspath) if os.path.exists(path)]
+    if not resources:
+        return []
+    own_pid = os.getpid()
+    return [(pid, db_abspath) for pid in windows_restart_manager_pids(resources) if pid != own_pid]
 
 
 def foreign_state_db_holders(db_path: Path) -> List[Tuple[int, str]]:

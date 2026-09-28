@@ -1,8 +1,9 @@
-"""The external-holder census reads open files of same-user processes only.
+"""The external-holder census behind profile delete/rename (PR #93508 review).
 
-Fetching another user's (system) process handles faulted inside psutil on Windows +
-Python 3.14 and killed ``hermes profile delete``/``rename`` with no Python exception
-(PR #93508 review). Ownership must be settled before ``open_files`` is touched.
+The psutil scan reads open files of same-user processes only: fetching another user's
+(system) process handles faulted inside psutil on Windows + Python 3.14 and killed the
+operation with no Python exception. Windows instead asks Restart Manager about every file
+in the profile at once.
 """
 
 from __future__ import annotations
@@ -41,15 +42,6 @@ class _Proc:
     def pid(self):
         return self._pid
 
-    def ppid(self):
-        return 1
-
-    def name(self):
-        return "python.exe"
-
-    def create_time(self):
-        return 1.0
-
     def username(self):
         return self._user
 
@@ -78,29 +70,49 @@ def test_census_never_reads_handles_of_processes_it_cannot_prove_same_user(tmp_p
     assert stranger.open_files_calls == 0
 
 
-def test_windows_candidates_cover_every_holder_class_hermes_creates():
-    """Windows reads open files only for these; each read walks the system handle table."""
-    processes = {
-        10: (1, "explorer.exe"),
-        20: (10, "python.exe"),       # Hermes backend
-        21: (20, "node.exe"),         # its MCP server (inherits the profile's stderr log)
-        22: (21, "chrome.exe"),       # a browser the tool launched, two levels down
-        30: (10, "Hermes.exe"),       # the Desktop app and what it spawns
-        31: (30, "Hermes.exe"),
-        40: (10, "chrome.exe"),       # argv names the profile
-        50: (10, "code.exe"),         # unrelated same-user app with a living parent
-        51: (800, "svc-child.exe"),   # parented by another user's live service
-        60: (61, "loop.exe"),         # a ppid cycle must terminate
-        61: (60, "loop.exe"),
-        70: (999, "node.exe"),        # MCP server whose Hermes parent crashed
-        71: (72, "node.exe"),         # parent PID since reused by a younger process
-        72: (10, "notepad.exe"),
-    }
-    started = {pid: 100.0 for pid in processes} | {1: 1.0, 800: 1.0, 72: 500.0}
+def test_restart_manager_census_registers_every_profile_file(tmp_path, monkeypatch):
+    """Windows asks about the whole tree in one query; nested files count and we are not a holder."""
+    import ctypes
+    import os
 
-    candidates = profile_lifecycle._holder_candidates(processes, started, lambda pid: pid == 40)
+    root = tmp_path / "profiles" / "alpha"
+    files = [root / "state.db", root / "logs" / "mcp-stderr.log", root / "browser-profile" / "chrome" / "Cookies"]
+    for path in files:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("")
+    registered = []
 
-    assert candidates == {20, 21, 22, 30, 31, 40, 70, 71}
+    class Fn:
+        def __init__(self, impl):
+            self.impl = impl
+
+        def __call__(self, *args):
+            return self.impl(*args)
+
+    def start(session, _flags, _key):
+        session._obj.value = 1
+        return 0
+
+    def register(_session, count, names, *_rest):
+        registered.extend(names[index] for index in range(count))
+        return 0
+
+    def get_list(_session, needed, count, apps, _reasons):
+        needed._obj.value = 2
+        if apps is None:
+            return 234  # ERROR_MORE_DATA: sizing call
+        apps[0].process.pid, apps[1].process.pid = os.getpid(), 4242
+        count._obj.value = 2
+        return 0
+
+    class Api:
+        RmStartSession, RmRegisterResources, RmGetList = Fn(start), Fn(register), Fn(get_list)
+        RmEndSession = Fn(lambda _session: 0)
+
+    monkeypatch.setattr(ctypes, "WinDLL", lambda *a, **k: Api(), raising=False)
+
+    assert profile_lifecycle._windows_profile_holders(root) == [4242]
+    assert sorted(registered) == sorted(str(path) for path in files)
 
 
 def test_release_is_confirmed_by_a_fresh_census(monkeypatch):

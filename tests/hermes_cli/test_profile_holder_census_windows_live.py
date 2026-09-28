@@ -1,10 +1,9 @@
 """LIVE Windows E2E for the profile-deletion holder census.
 
-On Windows each ``open_files`` read walks the whole system handle table, so the census reads
-only processes that can hold a profile's files. A holder that outlived its parent must still be
-one of them: an MCP server whose Hermes parent crashed keeps the profile's inherited
-``logs/mcp-stderr.log`` handle, runs no Python, and names the profile nowhere in its argv or
-cwd (PR #93508 review). Real processes against the live process table; no mocked psutil.
+A holder that outlived its parent must block deletion: an MCP server whose Hermes parent
+crashed keeps the profile's inherited ``logs/mcp-stderr.log`` handle, runs no Python, and
+names the profile nowhere in its argv or cwd (PR #93508 review). Real processes against the
+live system (Restart Manager on Windows); no mocked psutil.
 """
 
 from __future__ import annotations

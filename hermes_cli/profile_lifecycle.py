@@ -10,7 +10,7 @@ depend on this owner, never the reverse.
 
 from __future__ import annotations
 
-from contextlib import ExitStack, contextmanager, suppress
+from contextlib import ExitStack, contextmanager
 from functools import wraps
 import hashlib
 import inspect
@@ -23,7 +23,7 @@ import stat
 import sys
 import threading
 import time
-from typing import Callable, Iterable, Iterator, Mapping
+from typing import Callable, Iterable, Iterator
 
 from hermes_constants import get_default_hermes_root, profile_deletion_marker_path
 from pm.filesystem import lock_fd
@@ -311,112 +311,66 @@ def wait_for_profile_state_db_release(profile_dir: Path | str) -> bool:
     return True
 
 
-def _holder_candidates(
-    processes: Mapping[int, tuple[int | None, str]],
-    started: Mapping[int, float | None],
-    references_profile: Callable[[int], bool],
-) -> set[int]:
-    """PIDs of ``processes`` (same-user pid -> (ppid, name)) that can hold a profile's files.
+def _windows_profile_holders(root: Path) -> list[int]:
+    """Every process Windows Restart Manager reports holding a file under *root*.
 
-    Hermes runtimes are Python interpreters or ``hermes*`` launchers; what they spawn (MCP
-    servers holding the profile's stderr log, the browser tool, shells) descends from one. A
-    process that outlived its parent is a candidate too: its parent PID is gone from
-    ``started`` (every live pid -> start time) or now names a process started after it.
-    That covers an MCP server whose Hermes parent crashed, and the detached real-profile
-    browser, without knowing what spawned them. A living-parented process outside those
-    trees is a candidate only when its argv or cwd names the profile.
+    One query over the whole tree, whoever owns the process: psutil's per-process
+    ``open_files`` walks the system handle table on every call, which took minutes on
+    hosts with hundreds of processes (and faulted on another user's system process).
     """
-    from hermes_state_holders import _looks_like_python_executable
+    from hermes_state_holders import windows_restart_manager_pids
 
-    def orphaned(pid: int, ppid: int | None) -> bool:
-        if ppid not in started:
-            return True
-        born, parent_born = started.get(pid), started[ppid]
-        return born is not None and parent_born is not None and parent_born > born
-
-    runtimes = {
-        pid for pid, (_ppid, name) in processes.items()
-        if _looks_like_python_executable(name) or name.lower().startswith("hermes")
-    }
-    candidates = set(runtimes) | {pid for pid, (ppid, _name) in processes.items() if orphaned(pid, ppid)}
-    for pid, (ancestor, _name) in processes.items():
-        seen = {pid}
-        while ancestor in processes and ancestor not in seen:
-            if ancestor in runtimes:
-                candidates.add(pid)
-                break
-            seen.add(ancestor)
-            ancestor = processes[ancestor][0]
-    return candidates | {pid for pid in processes.keys() - candidates if references_profile(pid)}
+    files = [os.path.join(directory, name) for directory, _dirs, names in os.walk(root) for name in names]
+    if not files:
+        return []
+    return [pid for pid in dict.fromkeys(windows_restart_manager_pids(files)) if pid != os.getpid()]
 
 
 def external_profile_file_holders(
     profile_dir: Path | str,
     candidates: Iterable[int] | None = None,
 ) -> list[int]:
-    """Same-user external PIDs with an open file under ``profile_dir``.
+    """External PIDs with an open file under ``profile_dir``; ``candidates`` narrows the answer.
 
-    Ownership is settled before ``open_files`` is read: on Windows, fetching another user's
-    (system) process handles can fault inside psutil and kill the interpreter. A process whose
-    owner cannot be read is skipped for the same reason, and an unreadable current user leaves
-    nothing provably same-user to scan. ``candidates`` narrows the scan to those PIDs. Without
-    them, Windows reads only ``_holder_candidates``: each ``open_files`` there walks the whole
-    system handle table, so reading every same-user process took minutes.
+    Windows asks Restart Manager. Elsewhere (and if that fails) every same-user process's open
+    files are read, ownership settled first: fetching another user's (system) process handles
+    can fault inside psutil on Windows and kill the interpreter. A process whose owner cannot be
+    read is skipped for the same reason, and an unreadable current user leaves nothing provably
+    same-user to scan.
     """
     profile_dir = Path(profile_dir)
+    try:
+        root = profile_dir.resolve()
+    except OSError:
+        root = profile_dir
+    wanted = None if candidates is None else set(candidates)
+    if sys.platform == "win32":
+        try:
+            holders = _windows_profile_holders(root)
+        except Exception:
+            logger.debug("Restart Manager census failed; reading open files per process", exc_info=True)
+        else:
+            return [pid for pid in holders if wanted is None or pid in wanted]
     try:
         import psutil  # type: ignore
     except Exception:
         return []
     try:
-        root = profile_dir.resolve()
-    except OSError:
-        root = profile_dir
-    try:
         current_user = psutil.Process(os.getpid()).username()
     except Exception:
         return []
 
-    owned: dict[int, "psutil.Process"] = {}
-    tree: dict[int, tuple[int | None, str]] = {}
-    started: dict[int, float | None] = {}
-    for proc in psutil.process_iter(["pid", "ppid", "name", "username", "create_time"]):
-        info = proc.info
-        pid = info.get("pid")
-        if not isinstance(pid, int):
-            continue
-        started[pid] = info.get("create_time")
-        if info.get("username") == current_user:
-            owned[pid] = proc
-            tree[pid] = (info.get("ppid"), info.get("name") or "")
-    owned.pop(os.getpid(), None)
-
-    if candidates is not None:
-        scan = set(candidates)
-    elif sys.platform == "win32":
-        needles = {os.path.normcase(str(path)) for path in (profile_dir, root)}
-
-        def references_profile(pid: int) -> bool:
-            proc = owned.get(pid)
-            if proc is None:
-                return False
-            with suppress(psutil.Error, OSError):
-                if any(needle in os.path.normcase(" ".join(proc.cmdline())) for needle in needles):
-                    return True
-            with suppress(psutil.Error, OSError):
-                cwd = os.path.normcase(proc.cwd())
-                return any(cwd == needle or cwd.startswith(needle + os.sep) for needle in needles)
-            return False
-
-        scan = _holder_candidates(tree, started, references_profile)
-    else:
-        scan = owned.keys()
-
     holders: list[int] = []
-    for pid, proc in owned.items():
-        if pid not in scan:
-            continue
+    for proc in psutil.process_iter(["pid", "username"]):
         try:
+            info = proc.info
+            pid = info.get("pid")
+            if not isinstance(pid, int) or pid == os.getpid():
+                continue
+            if wanted is not None and pid not in wanted:
+                continue
+            if info.get("username") != current_user:
+                continue
             for opened in proc.open_files() or []:
                 raw = getattr(opened, "path", "")
                 if not raw:
