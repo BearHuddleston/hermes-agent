@@ -212,7 +212,9 @@ def mark_profile_deleting(
                 handle.write(profile_incarnation + "\n")
                 handle.flush()
                 os.fsync(handle.fileno())
-            os.replace(temp, marker)
+            from utils import atomic_replace
+
+            atomic_replace(temp, marker)
         finally:
             temp.unlink(missing_ok=True)
     try:

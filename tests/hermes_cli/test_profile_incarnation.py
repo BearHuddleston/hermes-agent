@@ -232,3 +232,33 @@ def test_resource_lease_timeout_fails_closed_on_windows(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _assert_resource_lease_timeout_fails_closed(tmp_path, monkeypatch)
+
+
+@pytest.mark.platforms("windows")
+def test_fresh_marker_waits_out_a_briefly_held_temp_file(tmp_path: Path, monkeypatch) -> None:
+    """Antivirus and indexers open a just-written file, and Windows refuses to rename it
+    (WinError 32) until they let go. Publishing the marker must wait that out."""
+    hermes_home = tmp_path / ".hermes"
+    profile_home = hermes_home / "profiles" / "worker"
+    profile_home.mkdir(parents=True)
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    write_token_file = profile_incarnation._write_token_file
+    released = threading.Event()
+
+    def write_then_hold(path, token, mode):
+        write_token_file(path, token, mode)
+        scanner = open(path, "rb")  # CPython opens without FILE_SHARE_DELETE, like a scanner
+
+        def release():
+            scanner.close()
+            released.set()
+
+        threading.Timer(0.05, release).start()
+
+    monkeypatch.setattr(profile_incarnation, "_write_token_file", write_then_hold)
+
+    token = profile_incarnation.write_fresh_profile_incarnation(profile_home)
+
+    assert released.is_set()
+    assert read_profile_incarnation(profile_home) == token
+    assert not list(profile_home.glob(f"{PROFILE_INCARNATION_FILENAME}.*.tmp"))

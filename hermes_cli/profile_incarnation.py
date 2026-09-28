@@ -133,9 +133,12 @@ def write_fresh_profile_incarnation(profile_home: Path | str) -> str:
     path = _incarnation_path(home)
     mode = _marker_mode(home)
     temp = _temp_marker_path(home)
+    from utils import atomic_replace
+
     try:
         _write_token_file(temp, token, mode)
-        os.replace(temp, path)
+        # Antivirus and indexers briefly hold a just-written file on Windows.
+        atomic_replace(temp, path)
         try:
             os.chmod(path, mode)
         except OSError:
@@ -180,7 +183,9 @@ def ensure_profile_incarnation(profile_home: Path | str) -> str | None:
                 # above, so a rename cannot replace a winner either; unlike an
                 # O_EXCL reservation it never exposes an empty marker to the
                 # lease-free readers or strands one after a crash.
-                os.replace(temp, path)
+                from utils import atomic_replace
+
+                atomic_replace(temp, path)
         finally:
             temp.unlink(missing_ok=True)
 
