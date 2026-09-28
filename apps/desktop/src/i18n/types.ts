@@ -1268,6 +1268,12 @@ export interface Translations {
       kindRemoteDesc: string
       kindCloudDesc: string
       kindSshDesc: string
+      kindTailcat: string
+      kindTailcatDesc: string
+      tailcatCodeTitle: string
+      tailcatCodeDesc: string
+      tailcatPaired: (fingerprint: string) => string
+      tailcatRepairHint: string
       labelTitle: string
       labelDesc: string
       labelPlaceholder: string
