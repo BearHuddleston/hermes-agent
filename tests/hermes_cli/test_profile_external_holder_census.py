@@ -47,6 +47,9 @@ class _Proc:
     def name(self):
         return "python.exe"
 
+    def create_time(self):
+        return 1.0
+
     def username(self):
         return self._user
 
@@ -84,13 +87,38 @@ def test_windows_candidates_cover_every_holder_class_hermes_creates():
         22: (21, "chrome.exe"),       # a browser the tool launched, two levels down
         30: (10, "Hermes.exe"),       # the Desktop app and what it spawns
         31: (30, "Hermes.exe"),
-        40: (1, "chrome.exe"),        # detached real-profile browser: argv names the profile
-        50: (10, "code.exe"),         # unrelated same-user app
+        40: (10, "chrome.exe"),       # argv names the profile
+        50: (10, "code.exe"),         # unrelated same-user app with a living parent
+        51: (800, "svc-child.exe"),   # parented by another user's live service
         60: (61, "loop.exe"),         # a ppid cycle must terminate
         61: (60, "loop.exe"),
+        70: (999, "node.exe"),        # MCP server whose Hermes parent crashed
+        71: (72, "node.exe"),         # parent PID since reused by a younger process
+        72: (10, "notepad.exe"),
     }
+    started = {pid: 100.0 for pid in processes} | {1: 1.0, 800: 1.0, 72: 500.0}
 
-    candidates = profile_lifecycle._holder_candidates(processes, lambda pid: pid == 40)
+    candidates = profile_lifecycle._holder_candidates(processes, started, lambda pid: pid == 40)
 
-    assert candidates == {20, 21, 22, 30, 31, 40}
+    assert candidates == {20, 21, 22, 30, 31, 40, 70, 71}
 
+
+def test_release_is_confirmed_by_a_fresh_census(monkeypatch):
+    """A holder that exits can leave a child it spawned holding the profile; that child is
+    only visible to a new census, so re-checking the old holders alone must not release."""
+    parent, child = 7, 8
+    live = {parent, child}
+    visible = {parent}  # the child is not a candidate while its parent lives
+
+    def census(_profile, candidates=None):
+        if candidates is None:
+            return sorted(live & visible)
+        held = sorted(live & set(candidates))
+        live.discard(parent)  # the parent exits after its first re-check
+        visible.add(child)
+        return held
+
+    monkeypatch.setattr(profile_lifecycle, "external_profile_file_holders", census)
+    monkeypatch.setattr(profile_lifecycle, "_PROFILE_DB_RELEASE_TIMEOUT_SECONDS", 0.5)
+
+    assert profile_lifecycle.wait_for_external_profile_file_release("profile") == [child]

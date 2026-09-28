@@ -311,22 +311,32 @@ def wait_for_profile_state_db_release(profile_dir: Path | str) -> bool:
 
 def _holder_candidates(
     processes: Mapping[int, tuple[int | None, str]],
+    started: Mapping[int, float | None],
     references_profile: Callable[[int], bool],
 ) -> set[int]:
-    """PIDs of ``processes`` (pid -> (ppid, name)) that can hold a profile's files.
+    """PIDs of ``processes`` (same-user pid -> (ppid, name)) that can hold a profile's files.
 
     Hermes runtimes are Python interpreters or ``hermes*`` launchers; what they spawn (MCP
-    servers holding the profile's stderr log, the browser tool, shells) descends from one;
-    a child that outlived its parent (the detached real-profile browser) names the profile
-    in its argv or runs inside it.
+    servers holding the profile's stderr log, the browser tool, shells) descends from one. A
+    process that outlived its parent is a candidate too: its parent PID is gone from
+    ``started`` (every live pid -> start time) or now names a process started after it.
+    That covers an MCP server whose Hermes parent crashed, and the detached real-profile
+    browser, without knowing what spawned them. A living-parented process outside those
+    trees is a candidate only when its argv or cwd names the profile.
     """
     from hermes_state_holders import _looks_like_python_executable
+
+    def orphaned(pid: int, ppid: int | None) -> bool:
+        if ppid not in started:
+            return True
+        born, parent_born = started.get(pid), started[ppid]
+        return born is not None and parent_born is not None and parent_born > born
 
     runtimes = {
         pid for pid, (_ppid, name) in processes.items()
         if _looks_like_python_executable(name) or name.lower().startswith("hermes")
     }
-    candidates = set(runtimes)
+    candidates = set(runtimes) | {pid for pid, (ppid, _name) in processes.items() if orphaned(pid, ppid)}
     for pid, (ancestor, _name) in processes.items():
         seen = {pid}
         while ancestor in processes and ancestor not in seen:
@@ -367,10 +377,14 @@ def external_profile_file_holders(
 
     owned: dict[int, "psutil.Process"] = {}
     tree: dict[int, tuple[int | None, str]] = {}
-    for proc in psutil.process_iter(["pid", "ppid", "name", "username"]):
+    started: dict[int, float | None] = {}
+    for proc in psutil.process_iter(["pid", "ppid", "name", "username", "create_time"]):
         info = proc.info
         pid = info.get("pid")
-        if isinstance(pid, int) and info.get("username") == current_user:
+        if not isinstance(pid, int):
+            continue
+        started[pid] = info.get("create_time")
+        if info.get("username") == current_user:
             owned[pid] = proc
             tree[pid] = (info.get("ppid"), info.get("name") or "")
     owned.pop(os.getpid(), None)
@@ -392,7 +406,7 @@ def external_profile_file_holders(
                 return any(cwd == needle or cwd.startswith(needle + os.sep) for needle in needles)
             return False
 
-        scan = _holder_candidates(tree, references_profile)
+        scan = _holder_candidates(tree, started, references_profile)
     else:
         scan = owned.keys()
 
@@ -423,13 +437,15 @@ def wait_for_external_profile_file_release(profile_dir: Path | str) -> list[int]
     """Return remaining external holders after a bounded release grace.
 
     Callers have already published the retirement tombstone, so no Hermes process can open
-    the profile anew; after the first census only its holders are re-checked.
+    the profile anew. Between censuses only the known holders are re-checked; once they let
+    go, a fresh census confirms nothing else holds the profile (a child the exiting holder
+    left behind is only visible to a new census) before it counts as released.
     """
     deadline = time.monotonic() + _PROFILE_DB_RELEASE_TIMEOUT_SECONDS
     holders = external_profile_file_holders(profile_dir)
     while holders and time.monotonic() < deadline:
         time.sleep(0.05)
-        holders = external_profile_file_holders(profile_dir, holders)
+        holders = external_profile_file_holders(profile_dir, holders) or external_profile_file_holders(profile_dir)
     return holders
 
 
