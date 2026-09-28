@@ -5,7 +5,7 @@ import shutil
 from pathlib import Path
 
 import pytest
-import yaml
+import hermes_yaml as yaml
 
 from agent import secret_scope
 from hermes_cli import auth, config, credential_lifecycle, profile_lifecycle

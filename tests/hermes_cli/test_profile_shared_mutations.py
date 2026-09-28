@@ -6,7 +6,7 @@ import stat
 import threading
 
 import pytest
-import yaml
+import hermes_yaml as yaml
 
 from hermes_cli import profile_lifecycle, profiles
 
