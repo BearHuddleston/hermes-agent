@@ -60,6 +60,12 @@ def test_census_never_reads_handles_of_processes_it_cannot_prove_same_user(tmp_p
     stranger = _Proc(7, "me", [tmp_path / "elsewhere.txt"])
     monkeypatch.setitem(sys.modules, "psutil", _fake_psutil([system, unreadable_owner, sibling, stranger], "me"))
 
+    def restart_manager_unavailable(_root):
+        raise OSError("rstrtmgr unavailable")
+
+    # The per-process scan is POSIX's census and Windows' fallback.
+    monkeypatch.setattr(profile_lifecycle, "_windows_profile_holders", restart_manager_unavailable)
+
     assert profile_lifecycle.external_profile_file_holders(profile) == [6]
     assert system.open_files_calls == 0
     assert unreadable_owner.open_files_calls == 0
