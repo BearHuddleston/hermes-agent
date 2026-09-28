@@ -61,6 +61,10 @@ def profile_env(tmp_path, monkeypatch):
     default_home = tmp_path / ".hermes"
     default_home.mkdir(exist_ok=True)
     monkeypatch.setenv("HERMES_HOME", str(default_home))
+    # Profile bookkeeping, not holder detection: the census reads the host's live process
+    # table (test_profile_external_holder_census.py and its Windows live E2E cover it).
+    from hermes_cli import profile_lifecycle
+    monkeypatch.setattr(profile_lifecycle, "external_profile_file_holders", lambda *a, **k: [])
     return tmp_path
 
 
