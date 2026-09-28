@@ -17,6 +17,8 @@ def root(tmp_path, monkeypatch):
     home.mkdir()
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     monkeypatch.setenv("HERMES_HOME", str(home))
+    # Shared-file ordering, not holder detection: the census reads the live process table.
+    monkeypatch.setattr(profile_lifecycle, "external_profile_file_holders", lambda *a, **k: [])
     return home
 
 

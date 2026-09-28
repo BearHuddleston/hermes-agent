@@ -394,7 +394,7 @@ def test_stream_windows_file_uri_reaches_policy_with_absolute_host_path(
     client, _home = local_files_client
     paths = []
 
-    def capture_response(request, path, *, content_disposition_type, media_only):
+    async def capture_response(request, path, *, content_disposition_type, media_only):
         paths.append(Path(path))
         assert content_disposition_type == "inline"
         assert media_only is True
