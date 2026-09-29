@@ -143,6 +143,9 @@ def _scan_dashboard_processes(*, exclude_pids: set[int] | None = None) -> list[t
     probes and Desktop-owned excluded PIDs must never enter the reaper's result.
     """
     skip = {os.getpid(), *(exclude_pids or ())}
+    # Canonical token matcher, never argv substrings: ``hermes serve`` is a prefix of ``hermes
+    # server`` and this list decides a SIGTERM — ``herdr --session hermes server`` (a terminal
+    # multiplexer) was killed and its unit restarted by ``hermes update`` (#121156).
     positive = _ledger_web_server_processes()
     try:
         found = [(pid, cmd) for pid, cmd in _iter_process_table()

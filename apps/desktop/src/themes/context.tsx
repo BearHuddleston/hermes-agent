@@ -17,6 +17,7 @@ import { $registryVersion } from '@/contrib/registry'
 import { matchesQuery, useMediaQuery } from '@/hooks/use-media-query'
 import { translateNow } from '@/i18n'
 import { persistString, persistStringRecord, storedString, storedStringRecord } from '@/lib/storage'
+import { recordFeatureUse } from '@/store/desktop-metrics'
 import { notifyError } from '@/store/notifications'
 import { $activeGatewayProfile, normalizeProfileKey } from '@/store/profile'
 import { $connection } from '@/store/session'
@@ -664,6 +665,7 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
 
   const setTheme = useCallback((name: string) => {
     const next = normalizeSkin(name)
+    recordFeatureUse('skins')
     const profile = liveProfile()
     setPreview(null)
     setThemeNameState(next)
@@ -675,6 +677,7 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
   }, [])
 
   const setMode = useCallback((next: ThemeMode) => {
+    recordFeatureUse('skins')
     const profile = liveProfile()
     setPreview(null)
     setModeState(next)

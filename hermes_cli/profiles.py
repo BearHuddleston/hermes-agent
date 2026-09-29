@@ -2012,8 +2012,8 @@ def _maybe_unregister_gateway_service(profile_name: str) -> None:
         print(f"⚠ Could not unregister s6 gateway service: {exc}")
 
 
-def _cleanup_gateway_service(name: str, profile_dir: Path) -> None:
-    """Disable and remove systemd/launchd service for a profile."""
+def _cleanup_gateway_service(name: str, profile_dir: Path) -> bool:
+    """Disable and remove systemd/launchd service for a profile; True when a unit was removed."""
     import platform as _platform
 
     # The service name follows get_hermes_home(): bind the override (the seam a multiplexed
@@ -2029,7 +2029,10 @@ def _cleanup_gateway_service(name: str, profile_dir: Path) -> None:
         def _run(*cmd: str) -> None:
             subprocess.run(list(cmd), capture_output=True, check=False, timeout=10)
 
+        from hermes_cli.profiles_service_cleanup import remove_system_systemd_unit, remove_windows_task
+
         system = _platform.system()
+        removed = False
         if system == "Linux":
             svc_name = get_service_name()
             svc_file = user_systemd_unit_dir() / f"{svc_name}.service"
@@ -2039,12 +2042,20 @@ def _cleanup_gateway_service(name: str, profile_dir: Path) -> None:
                 svc_file.unlink(missing_ok=True)
                 _run("systemctl", "--user", "daemon-reload")
                 print(f"✓ Service {svc_name} removed")
+                removed = True
+            # `gateway install --system` writes the same name under /etc; a survivor there
+            # restarts the removed profile at boot exactly like the user unit at login.
+            removed = remove_system_systemd_unit() or removed
         elif system == "Darwin":
             plist_path = get_launchd_plist_path()
             if plist_path.exists():
                 _run("launchctl", "unload", str(plist_path))
                 plist_path.unlink(missing_ok=True)
                 print("✓ Launchd service removed")
+                removed = True
+        elif system == "Windows":
+            removed = remove_windows_task()
+        return removed
     except Exception as e:
         print(f"⚠ Service cleanup: {e}")
     finally:
@@ -2052,6 +2063,7 @@ def _cleanup_gateway_service(name: str, profile_dir: Path) -> None:
         os.environ.pop("HERMES_HOME", None)
         if old_home is not None:
             os.environ["HERMES_HOME"] = old_home
+    return False
 
 
 def _stop_gateway_process(profile_dir: Path) -> None:
@@ -2517,9 +2529,14 @@ def rename_profile(old_name: str, new_name: str) -> Path:
             raise _profile_exists_error(new_canon)
         profile_incarnation = ensure_profile_incarnation(old_dir)
 
-        # 1. Stop gateway if running, and the screen whose launcher holds paths under the old name
-        if _check_gateway_running(old_dir):
-            _cleanup_gateway_service(old_canon, old_dir)
+        # 1. Remove the old name's service even when its gateway is stopped: the unit is named after
+        # the old profile and runs ``--profile <old>``, so the service manager would crash-loop it on
+        # the next login or container boot. Then stop the gateway, the profile's backends, and the
+        # screen whose launcher holds paths under the old name.
+        gw_running = _check_gateway_running(old_dir)
+        service_removed = _cleanup_gateway_service(old_canon, old_dir)
+        _maybe_unregister_gateway_service(old_canon)
+        if gw_running:
             _stop_gateway_process(old_dir)
         _stop_profile_backends(old_canon, old_dir)
         _stop_bot_desktop(old_dir)
@@ -2563,9 +2580,19 @@ def rename_profile(old_name: str, new_name: str) -> Path:
                 _migrate_profile_identity(old_canon, new_canon, live_mux)
                 if live_mux:
                     _notify_multiplexer(new_canon)
-            elif live_mux and not profile_home_is_tombstoned(old_dir):
-                # A failed move or drain restored the old generation's admission.
-                _notify_multiplexer(old_canon)
+                _maybe_register_gateway_service(new_canon)
+                if service_removed:
+                    print(f"⚠ The gateway service was removed. Reinstall it with: hermes -p {new_canon} gateway install")
+            else:
+                if live_mux and not profile_home_is_tombstoned(old_dir):
+                    # A failed move or drain restored the old generation's admission.
+                    _notify_multiplexer(old_canon)
+                if old_dir.is_dir():
+                    # The profile stayed under its old name: restore its s6 slot and say how to
+                    # reinstall the unit removed above.
+                    _maybe_register_gateway_service(old_canon)
+                    if service_removed:
+                        print(f"⚠ The gateway service was removed. Reinstall it with: hermes -p {old_canon} gateway install")
         return new_dir
 
 
@@ -2600,17 +2627,3 @@ def resolve_profile_env(profile_name: str) -> str:
     if not named_profile_is_live(profile_dir):
         raise _missing_profile_error(canon)
     return str(profile_dir)
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-
-def has_bundled_skills_opt_out(profile_dir: Path) -> bool:
-    """Return True if the profile opted out of bundled-skill seeding."""
-    try:
-        return (profile_dir / NO_BUNDLED_SKILLS_MARKER).exists()
-    except OSError:
-        return False
-# ---- END PLUGIN-COMPAT ----

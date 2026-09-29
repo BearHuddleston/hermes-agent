@@ -9,10 +9,8 @@ import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
-  DropdownMenuLabel,
   DropdownMenuRadioGroup,
   DropdownMenuRadioItem,
-  dropdownMenuSectionLabel,
   DropdownMenuSeparator,
   DropdownMenuTrigger
 } from '@/components/ui/dropdown-menu'
@@ -50,7 +48,7 @@ import { runImportProfileFlow } from '@/store/profile-share'
 import { CreateProfileDialog } from '../../profiles/create-profile-dialog'
 import { PROFILES_ROUTE } from '../../routes'
 
-import { ConnectionGlyph } from './connection-glyph'
+import { FleetGatewayMenuGroup } from './fleet-gateway-menu-group'
 import { buildRestGroups, type FleetAgent, fleetRouteKey } from './fleet-rail'
 import { useLocalDeviceSwitch } from './local-device-switch'
 import { ProfileLaunchContextMenu } from './profile-launch-menu'
@@ -235,45 +233,22 @@ export function ProfileSwitcher({ compact = false }: { compact?: boolean }) {
             )}
           </DropdownMenuRadioGroup>
           {restGroups.map(group => (
-            <div data-connection-id={group.connectionId} data-slot="profile-switcher-gateway" key={group.connectionId}>
-              <DropdownMenuSeparator />
-              <DropdownMenuLabel className={cn(dropdownMenuSectionLabel, 'flex items-center gap-1.5')}>
-                <ConnectionGlyph connection={group} />
-                <span className="truncate">{group.label}</span>
-                {!group.reachable && (
-                  <span aria-hidden="true" className="size-1.5 shrink-0 rounded-full bg-amber-500" />
-                )}
-              </DropdownMenuLabel>
-              {[group.defaultAgent, ...group.named].map(agent => {
-                const localDefault = agent.connectionKind === 'local' && agent.isDefault
-                const label = localDefault ? p.fleet.localDevice : p.fleet.onGateway(agent.profile, group.label)
-
-                return (
-                  <ProfileLaunchContextMenu
-                    connectionId={agent.connectionId}
-                    key={agent.profile}
-                    label={label}
-                    profile={agent.profile}
-                  >
-                    <DropdownMenuItem aria-label={label} className="min-w-0" onSelect={() => switchToRest(agent)}>
-                      <span className="flex min-w-0 items-center gap-1.5">
-                        {localDefault ? (
-                          <Codicon aria-hidden="true" name="device-desktop" size="0.875rem" />
-                        ) : (
-                          <ProfileGlyph
-                            aria-hidden="true"
-                            color={resolveProfileColor(agent.profile, colors)}
-                            isDefault={agent.isDefault}
-                            name={agent.profile}
-                          />
-                        )}
-                        <span className="truncate">{agent.profile}</span>
-                      </span>
-                    </DropdownMenuItem>
-                  </ProfileLaunchContextMenu>
-                )
-              })}
-            </div>
+            <FleetGatewayMenuGroup
+              group={group}
+              key={group.connectionId}
+              onSelect={switchToRest}
+              slot="profile-switcher-gateway"
+              wrapRow={(row, agent, label) => (
+                <ProfileLaunchContextMenu
+                  connectionId={agent.connectionId}
+                  key={agent.profile}
+                  label={label}
+                  profile={agent.profile}
+                >
+                  {row}
+                </ProfileLaunchContextMenu>
+              )}
+            />
           ))}
           <DropdownMenuSeparator />
           <DropdownMenuItem onSelect={() => setCreateOpen(true)}>
