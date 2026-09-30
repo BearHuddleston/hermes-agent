@@ -161,6 +161,9 @@ test('baseSshOptions carries the house ControlMaster/BatchMode/accept-new policy
   assert.match(joined, /StrictHostKeyChecking=accept-new/)
   assert.match(joined, /ExitOnForwardFailure=yes/)
   assert.match(joined, /ConnectTimeout=15/)
+  assert.match(joined, /ServerAliveInterval=15/)
+  assert.match(joined, /ServerAliveCountMax=3/)
+  assert.match(joined, /TCPKeepAlive=yes/)
   assert.ok(!joined.includes('StrictHostKeyChecking=no'), 'never disables host-key checking')
 })
 
@@ -559,10 +562,7 @@ test('mux forward keeps the ControlPersist master alive until the final forward 
   try {
     const spawnFn = scriptedSpawn({ code: 0 })
 
-    const conn = new SshConnection(
-      { host: 'box', user: 'me' },
-      { spawnFn, controlDir: '/tmp/d' }
-    )
+    const conn = new SshConnection({ host: 'box', user: 'me' }, { spawnFn, controlDir: '/tmp/d' })
 
     await conn.forward(5000, 6000)
     await conn.forward(5001, 6001)

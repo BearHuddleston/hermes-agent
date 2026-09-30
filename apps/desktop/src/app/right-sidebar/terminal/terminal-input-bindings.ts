@@ -39,18 +39,29 @@ export function bindTerminalActivity(term: Terminal, host: HTMLElement, markActi
   }
 }
 
-// Right-click menu and copy/paste chords. Paste counts as session activity.
-// Returns the context-menu registration teardown.
-export function bindTerminalClipboard(term: Terminal, host: HTMLElement, markActivity: () => void): () => void {
+// Right-click menu, the focus-routed Ctrl/Cmd+R, and copy/paste chords. Paste
+// and ^R count as session activity. Returns the context-menu registration teardown.
+export function bindTerminalClipboard(
+  term: Terminal,
+  host: HTMLElement,
+  markActivity: () => void,
+  writeInput: (data: string) => void
+): () => void {
   // The app context menu resolves right-clicks on this host through the
   // registered handle: xterm's selection is not a DOM selection, so the
-  // DOM resolver would see nothing here.
+  // DOM resolver would see nothing here. The same handle answers the
+  // focus-routed Ctrl/Cmd+R: main claimed the keystroke, so re-deliver the
+  // ^R byte to the PTY ourselves (#96482).
   const unregisterContextMenu = registerTerminalContextMenu(host, {
     getSelection: () => term.getSelection(),
     paste: text => {
       markActivity()
       term.focus()
       term.paste(text)
+    },
+    reload: () => {
+      markActivity()
+      writeInput('\x12')
     },
     selectAll: () => term.selectAll()
   })
