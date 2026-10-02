@@ -54,6 +54,8 @@ afterEach(() => {
   requestFreshSession.mockClear()
   startManualProviderOAuth.mockClear()
   requestModelMenuToggle.mockReset().mockReturnValue(true)
+  $displayTimestamps.set(true)
+  vi.unstubAllGlobals()
 })
 
 function userMessage(): ThreadMessage {
@@ -176,12 +178,16 @@ function LocationProbe() {
 function Harness({
   assistant = assistantMessage(),
   onBranchInNewChat,
+  onCancel,
+  onRestoreToMessage,
   onReload,
   isRunning = false,
   isDisabled = false
 }: {
   assistant?: ThreadMessage
   onBranchInNewChat?: (messageId: string) => void
+  onCancel?: () => void
+  onRestoreToMessage?: (messageId: string) => void
   onReload?: () => Promise<void>
   isRunning?: boolean
   isDisabled?: boolean
@@ -196,10 +202,63 @@ function Harness({
 
   return (
     <AssistantRuntimeProvider runtime={runtime}>
-      <Thread onBranchInNewChat={onBranchInNewChat} />
+      <Thread onBranchInNewChat={onBranchInNewChat} onCancel={onCancel} onRestoreToMessage={onRestoreToMessage} />
     </AssistantRuntimeProvider>
   )
 }
+
+describe('merged hover timestamps and touch actions', () => {
+  it('shows both hover times without Stop or Restore and suppresses them with timeline timestamps', async () => {
+    $displayTimestamps.set(false)
+    const { container } = render(<Harness />)
+    await screen.findByText('done')
+
+    const hoverTimes = Array.from(container.querySelectorAll('time'))
+
+    expect(hoverTimes.map(time => time.dateTime)).toEqual([
+      createdAt.toISOString(),
+      new Date(completedAt * 1000).toISOString()
+    ])
+    expect(container.querySelector('.aui-message-actions-desktop time')).toBeTruthy()
+
+    act(() => $displayTimestamps.set(true))
+    expect(hoverTimes.every(time => !time.isConnected)).toBe(true)
+    expect(container.querySelector('[data-slot="timeline-timestamp"]')).toBeTruthy()
+  })
+
+  it.each([true, false])('keeps the touch Stop/Restore action correct while running=%s', async isRunning => {
+    vi.stubGlobal(
+      'matchMedia',
+      vi.fn((query: string) => ({
+        matches: query.includes('pointer'),
+        addEventListener: vi.fn(),
+        removeEventListener: vi.fn()
+      }))
+    )
+    $displayTimestamps.set(false)
+    const onCancel = vi.fn()
+    const onRestoreToMessage = vi.fn()
+    render(<Harness isRunning={isRunning} onCancel={onCancel} onRestoreToMessage={onRestoreToMessage} />)
+
+    const action = await screen.findByRole('button', {
+      name: isRunning ? en.assistant.thread.stop : en.assistant.thread.restoreCheckpoint
+    })
+
+    expect(action.classList.contains('size-11')).toBe(true)
+    expect(action.parentElement?.querySelector('time')).toBeNull()
+    fireEvent.click(action)
+
+    if (isRunning) {
+      expect(onCancel).toHaveBeenCalledTimes(1)
+      expect(onRestoreToMessage).not.toHaveBeenCalled()
+    } else {
+      expect(await screen.findByRole('dialog')).toBeTruthy()
+      fireEvent.click(screen.getByRole('button', { name: en.assistant.thread.restoreConfirm }))
+      expect(onRestoreToMessage).toHaveBeenCalledWith('user-1', expect.objectContaining({ text: 'question one' }))
+      expect(onCancel).not.toHaveBeenCalled()
+    }
+  })
+})
 
 describe('AssistantMessage branch button visibility (bug #2 fix)', () => {
   it('reloads once from either desktop or touch Refresh', async () => {

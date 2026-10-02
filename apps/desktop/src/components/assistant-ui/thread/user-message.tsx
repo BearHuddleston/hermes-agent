@@ -8,6 +8,7 @@ import {
   messageContentText,
   PROCESS_NOTIFICATION_RE
 } from '@/components/assistant-ui/thread/content'
+import { MessageHoverTime } from '@/components/assistant-ui/thread/message-hover-time'
 import { ReactionBadge, ReactionPicker } from '@/components/assistant-ui/thread/message-reactions'
 import { BackgroundResult } from '@/components/assistant-ui/thread/system-message'
 import { threadUserOrdinal } from '@/components/assistant-ui/thread/thread-message-index'
@@ -538,15 +539,16 @@ export const UserMessage: FC<{
                     </button>
                   </ActionBarPrimitive.Edit>
                 )}
-                {(showStop || showRestore) && (
+                {(!touch || showStop || showRestore) && (
                   <div
                     className={cn(
-                      'pointer-events-none absolute right-2 bottom-2 z-10 flex items-center justify-center transition-opacity',
+                      'pointer-events-none absolute right-2 bottom-2 z-10 flex items-center gap-1 rounded-md bg-(--dt-user-bubble) pl-1 transition-opacity',
                       touch
                         ? 'opacity-100'
-                        : 'opacity-0 group-hover/user-message:opacity-100 group-focus-within/user-message:opacity-100'
+                        : 'opacity-0 group-hover/user-message:opacity-100 group-hover/user-message:transition-none group-focus-within/user-message:opacity-100'
                     )}
                   >
+                    {!touch && <MessageHoverTime className={cn(!showStop && !showRestore && 'pr-0.5')} />}
                     {showStop ? (
                       <button
                         aria-label={copy.stop}
@@ -564,7 +566,7 @@ export const UserMessage: FC<{
                       >
                         {StopGlyph}
                       </button>
-                    ) : (
+                    ) : showRestore ? (
                       <Tip label={copy.restoreFromHere}>
                         <button
                           aria-label={copy.restoreCheckpoint}
@@ -591,7 +593,7 @@ export const UserMessage: FC<{
                           <Codicon name="discard" size="0.875rem" />
                         </button>
                       </Tip>
-                    )}
+                    ) : null}
                   </div>
                 )}
               </div>
