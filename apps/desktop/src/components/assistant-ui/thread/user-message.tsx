@@ -34,6 +34,17 @@ export function hasTextSelection(): boolean {
   return Boolean(selection && !selection.isCollapsed && selection.toString().length > 0)
 }
 
+/** Keep the platform's long-press menu on touch surfaces. Desktop right-click
+ * remains the intentional reaction-picker gesture, while iOS/Android own
+ * selection handles, Copy, and text actions after a long press. */
+export function preservesNativeTouchContextMenu(): boolean {
+  return Boolean(
+    typeof window !== 'undefined' &&
+    typeof window.matchMedia === 'function' &&
+    window.matchMedia('(hover: none), (pointer: coarse)').matches
+  )
+}
+
 export function StickyHumanMessageContainer({
   attachments,
   children,
@@ -435,13 +446,13 @@ export const UserMessage: FC<{
                 // menu, and this handler's selection guard keeps ⌘C flows.
                 data-context-menu-skip=""
                 onContextMenu={
-                  // Right-click is the desktop stand-in for iOS touch-and-hold —
-                  // but only when there's nothing selected. A live highlight
-                  // keeps the native Copy menu (and ⌘C) instead of the picker.
+                  // Right-click is the desktop reaction gesture. Touch surfaces
+                  // leave long-press entirely to the platform so selection
+                  // handles and Copy are never replaced by the picker.
                   readOnly || !reactionsEnabled
                     ? undefined
                     : event => {
-                        if (hasTextSelection()) {
+                        if (hasTextSelection() || preservesNativeTouchContextMenu()) {
                           return
                         }
 

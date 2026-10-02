@@ -213,6 +213,25 @@ describe('AssistantMessage branch button visibility (bug #2 fix)', () => {
 
     expect(screen.queryByRole('button', { name: 'Branch in new chat' })).toBeNull()
   })
+
+  it('keeps a touch action lane with direct Copy and an accessible More menu', async () => {
+    render(<Harness onBranchInNewChat={() => undefined} />)
+
+    await screen.findByText('done')
+
+    expect(screen.getByTestId('aui-touch-message-actions')).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'More actions' })).toBeTruthy()
+    expect(screen.getAllByRole('button', { name: 'Copy' })).toHaveLength(2)
+
+    fireEvent.pointerDown(screen.getByRole('button', { name: 'More actions' }), {
+      button: 0,
+      pointerType: 'touch'
+    })
+
+    expect(await screen.findByRole('menuitem', { name: 'Branch in new chat' })).toBeTruthy()
+    expect(screen.getByRole('menuitem', { name: 'Read aloud' })).toBeTruthy()
+    expect(screen.getByRole('menuitem', { name: 'Refresh' })).toBeTruthy()
+  })
 })
 
 describe('stopped reply marker', () => {

@@ -835,6 +835,17 @@
   }
 }
 
+/* Touch surfaces need a real finger-sized control lane. Keep desktop's
+   compact 24/26px rhythm, but promote the same composer actions to the 44px
+   minimum recommended for coarse pointers without adding a second
+   mobile-only component. */
+@media (hover: none), (pointer: coarse) {
+  :root {
+    --composer-control-size: 2.75rem;
+    --composer-control-primary-size: 2.75rem;
+  }
+}
+
 .dither {
   background: repeating-conic-gradient(currentColor 0% 25%, transparent 0% 50%) 0 0 / 0.125rem 0.125rem;
 }
@@ -2453,6 +2464,45 @@ button[data-slot='aui_msg-reactions']:focus-visible {
 button[data-slot='aui_msg-reactions'] svg {
   width: 0.875rem;
   height: 0.875rem;
+}
+
+/* Hover reveals are useful on desktop, but a coarse pointer needs a stable
+   action lane. Keep the rich desktop row intact and expose a compact Copy +
+   More pair on touch surfaces; the buttons themselves get the 44px hit box
+   while the glyphs retain the existing quiet 14px scale. */
+.aui-message-actions-touch {
+  display: none;
+}
+
+@media (hover: none), (pointer: coarse) {
+  [data-slot='aui_msg-actions'] {
+    opacity: 1;
+    pointer-events: auto;
+  }
+
+  [data-slot='aui_msg-actions'] .aui-message-actions-desktop {
+    display: none;
+  }
+
+  [data-slot='aui_msg-actions'] .aui-message-actions-touch {
+    display: flex;
+  }
+
+  [data-slot='aui_msg-actions'] .aui-message-actions-touch button {
+    min-width: 2.75rem;
+    min-height: 2.75rem;
+  }
+
+  button[data-slot='aui_msg-reactions'] {
+    min-width: 2.75rem;
+    min-height: 2.75rem;
+    opacity: 0.5;
+    pointer-events: auto;
+  }
+
+  button[data-slot='aui_msg-reactions'][data-reacted] {
+    opacity: 1;
+  }
 }
 
 /* Re-declare the clearance calc on every chat surface. `:root` computes it

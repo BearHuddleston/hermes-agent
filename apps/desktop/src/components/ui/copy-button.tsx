@@ -19,14 +19,33 @@ export async function writeClipboardText(text: string) {
     return
   }
 
-  if (window.hermesDesktop?.writeClipboard) {
-    await window.hermesDesktop.writeClipboard(text)
-
-    return
-  }
+  // Keep the first call inside the browser's trusted gesture. In Electron the
+  // clipboard shim below still routes this native-looking call through the
+  // main-process bridge when Chromium rejects it (for example after a
+  // portaled menu steals focus). In browser-hosted mode the shim captures the
+  // real navigator method before installing the bridge, so this remains a
+  // native write with the original activation rather than an avoidable
+  // bridge-first await.
+  const bridgeWrite = window.hermesDesktop?.writeClipboard
 
   if (navigator.clipboard?.writeText) {
-    await navigator.clipboard.writeText(text)
+    try {
+      await navigator.clipboard.writeText(text)
+
+      return
+    } catch (error) {
+      if (!bridgeWrite) {
+        throw error
+      }
+    }
+  }
+
+  if (bridgeWrite) {
+    const copied = await bridgeWrite(text)
+
+    if (!copied) {
+      throw new Error('Clipboard write is unavailable')
+    }
 
     return
   }

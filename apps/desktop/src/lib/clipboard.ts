@@ -1,7 +1,6 @@
-// Routes `navigator.clipboard.writeText` through Electron IPC, since the
-// renderer's clipboard API throws "Write permission denied" whenever the
-// document loses focus (e.g. clicking a portaled Radix dropdown). The IPC
-// path runs in the main process and is unconditional.
+// Keeps the browser-native clipboard write on the original user gesture. If
+// Chromium rejects it after focus moved (for example from a portaled Radix
+// dropdown), the Electron IPC path is the fallback and remains unconditional.
 
 export function installClipboardShim() {
   const ipc = window.hermesDesktop?.writeClipboard
@@ -13,10 +12,24 @@ export function installClipboardShim() {
   const native = navigator.clipboard.writeText?.bind(navigator.clipboard)
 
   const writeText = async (text: string) => {
+    if (!native) {
+      const copied = await ipc(text)
+
+      if (!copied) {
+        throw new Error('Clipboard write is unavailable')
+      }
+
+      return
+    }
+
     try {
-      await ipc(text)
+      await native(text)
     } catch {
-      await native?.(text)
+      const copied = await ipc(text)
+
+      if (!copied) {
+        throw new Error('Clipboard write is unavailable')
+      }
     }
   }
 
