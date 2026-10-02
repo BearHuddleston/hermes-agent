@@ -471,6 +471,51 @@ export function readSnapshot(storedSessionId: string): InFlightTurnSnapshot | nu
   return snapshot
 }
 
+function migrateSnapshotKeys(store: Storage, oldKey: string, newKey: string, raw: string): void {
+  // Copy first, delete second. A crash between the two writes leaves BOTH
+  // keys holding the same recoverable tail — resume folds either one — and
+  // the old key is still reachable by the id the deleter holds (tip, lineage
+  // root, runtime id), so nothing escapes the delete gesture. Deleting first
+  // would instead trade recovery for a crash window.
+  if (readRaw(store, newKey) === null && !writeRaw(store, newKey, raw)) {
+    return
+  }
+
+  removeRaw(store, oldKey)
+}
+
+/** Move a valid snapshot to a rotated stored id without overwriting its newer entry. */
+export function migrateSnapshot(oldStoredSessionId: string, newStoredSessionId: null | string): void {
+  if (!oldStoredSessionId || !newStoredSessionId || oldStoredSessionId === newStoredSessionId) {
+    return
+  }
+
+  const store = storage()
+  const oldKey = sessionStorageKey(oldStoredSessionId)
+  const newKey = sessionStorageKey(newStoredSessionId)
+
+  if (!store || !oldKey || !newKey) {
+    return
+  }
+
+  const raw = readRaw(store, oldKey)
+
+  if (raw === null) {
+    return
+  }
+
+  // A tombstone or expired entry carries nothing recoverable — retire it.
+  const snapshot = raw === DISCARDED_SNAPSHOT_RAW ? null : parseSnapshot(raw)
+
+  if (!snapshot || isExpired(snapshot)) {
+    removeRaw(store, oldKey)
+
+    return
+  }
+
+  migrateSnapshotKeys(store, oldKey, newKey, raw)
+}
+
 export function removeSnapshot(storedSessionId: string): void {
   const store = storage()
   const key = sessionStorageKey(storedSessionId)

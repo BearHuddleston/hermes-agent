@@ -547,6 +547,15 @@ def _rebuild_session_agent(sid: str, session: dict, **kwargs):
         if opened:
             with _profile_home_lease(profile_home, profile_incarnation):
                 session_db = _open_profile_session_db(profile_home, expected_profile_incarnation=profile_incarnation)
+        # A rebuild is not a conversation boundary (/new pops the pins before calling us): carry the
+        # session's /model, /reasoning and /fast picks, else config_model_seen below hides the
+        # reversion from the per-turn sync.
+        if "model_override" not in kwargs and isinstance(session.get("model_override"), dict):
+            kwargs["model_override"] = session["model_override"]
+        for pin, kwarg in (("create_reasoning_override", "reasoning_config_override"),
+                           ("create_service_tier_override", "service_tier_override")):
+            if kwarg not in kwargs and session.get(pin) is not None:
+                kwargs[kwarg] = session[pin]
         agent = _make_agent(sid, session["session_key"], session_db=session_db, **kwargs)
     except BaseException:
         if opened and session_db is not None:

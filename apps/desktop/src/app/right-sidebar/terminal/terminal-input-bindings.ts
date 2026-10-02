@@ -45,7 +45,8 @@ export function bindTerminalClipboard(
   term: Terminal,
   host: HTMLElement,
   markActivity: () => void,
-  writeInput: (data: string) => void
+  writeInput: (data: string) => void,
+  hasSession: () => boolean
 ): () => void {
   // The app context menu resolves right-clicks on this host through the
   // registered handle: xterm's selection is not a DOM selection, so the
@@ -63,7 +64,20 @@ export function bindTerminalClipboard(
       markActivity()
       writeInput('\x12')
     },
-    selectAll: () => term.selectAll()
+    selectAll: () => term.selectAll(),
+    // Main claimed the close-tab chord; preserve readline word erase while
+    // the shell is alive, and let the caller close a disconnected tab.
+    wordErase: () => {
+      markActivity()
+
+      if (!hasSession()) {
+        return false
+      }
+
+      writeInput('\x17')
+
+      return true
+    }
   })
 
   // Copy/paste chords. Returning false stops xterm from also sending the key

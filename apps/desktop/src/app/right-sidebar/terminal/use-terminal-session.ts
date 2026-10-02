@@ -19,7 +19,13 @@ import { trackTerminalCwd } from './cwd-tracking'
 import { terminalLinkHandler, terminalWebLinksAddon } from './links'
 import { createReviveHistory } from './revive-history'
 import { createBootGapFilter } from './revive-snapshot'
-import { resolveSurfaceColor, terminalSelectionAnchor, terminalSelectionLabel, terminalTheme } from './selection'
+import {
+  resolveSurfaceColor,
+  shouldOwnAddSelectionShortcut,
+  terminalSelectionAnchor,
+  terminalSelectionLabel,
+  terminalTheme
+} from './selection'
 import { createSnapshotPersister } from './snapshot-persister'
 import { bindTerminalDrop } from './terminal-drop'
 import { prepareTerminalFontFamily } from './terminal-font'
@@ -154,12 +160,26 @@ export function useTerminalSession({
     triggerHaptic('selection')
   }, [])
 
-  // Always listen — gating on the React selection state misses selections the
-  // TUI redraw races. Only swallow ⌘/Ctrl+L when there's text to send, else it
-  // must reach the shell as clear-screen.
+  // Only the active tab owns the global ⌘/Ctrl+L listener. Every open tab
+  // stays mounted, so registering the capture handler on every session
+  // fired N identical add-selection calls for a single keypress (#76116).
+  // Still do not gate on React selection state — TUI redraw races can
+  // clear that while xterm / window still have live text.
+  // Only swallow ⌘/Ctrl+L when there's text to send; otherwise it must
+  // reach the shell as clear-screen.
   useEffect(() => {
+    if (!active) {
+      return
+    }
+
     const onKeyDown = (event: KeyboardEvent) => {
-      if (!isComposerChord(event) || !readSelection().trim()) {
+      if (!isComposerChord(event)) {
+        return
+      }
+
+      const hasSelection = Boolean(readSelection().trim())
+
+      if (!shouldOwnAddSelectionShortcut(event, { active: true, hasSelection })) {
         return
       }
 
@@ -171,7 +191,7 @@ export function useTerminalSession({
     window.addEventListener('keydown', onKeyDown, { capture: true })
 
     return () => window.removeEventListener('keydown', onKeyDown, { capture: true })
-  }, [addSelectionToChat, readSelection])
+  }, [active, addSelectionToChat, readSelection])
 
   // eslint-disable-next-line no-restricted-syntax -- legitimate non-atom ref write (see eslint rule comment)
   useEffect(() => {
@@ -274,7 +294,9 @@ export function useTerminalSession({
     const initialReviveBuffer = initialReviveBufferRef.current ?? ''
     const history = createReviveHistory(term, initialReviveBuffer, session.isPersistent)
 
-    if (!terminalApi.detach) {history.restore()}
+    if (!terminalApi.detach) {
+      history.restore()
+    }
 
     cleanup.push(history.dispose)
 
@@ -385,7 +407,7 @@ export function useTerminalSession({
 
     cleanup.push(() => selectionDisposable.dispose())
 
-    cleanup.push(bindTerminalClipboard(term, host, markActivity, session.input))
+    cleanup.push(bindTerminalClipboard(term, host, markActivity, session.input, () => Boolean(sessionIdRef.current)))
 
     // Open + fit + start only once webfonts settle. Fitting with fallback metrics
     // picks the wrong row count, the shell boots at that size, then the real font

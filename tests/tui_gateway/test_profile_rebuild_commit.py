@@ -312,3 +312,31 @@ def test_tools_configure_cannot_write_across_profile_recreation(tmp_path, monkey
         response = server._methods["tools.configure"](2, params)
         assert response["error"]["code"] == 4041
         assert (profile / "config.yaml").read_text() == replacement_config
+
+
+def test_rebuild_keeps_session_runtime_picks_but_new_clears_them(monkeypatch):
+    """Regression for #127449: a rebuild is not a conversation boundary, /new is.
+    /model, /reasoning and /fast are all session pins the rebuild must carry."""
+    from tui_gateway import server
+
+    pick = {"model": "pick-b", "provider": "openrouter"}
+    reasoning = {"enabled": True, "effort": "high"}
+    carried = ("model_override", "reasoning_config_override", "service_tier_override")
+    seen = []
+    def make_agent(*_args, **kwargs):
+        seen.append({k: kwargs.get(k) for k in carried})
+        return SimpleNamespace(_session_db=None, _owns_session_db=False)
+    monkeypatch.setattr(server, "_make_agent", make_agent)
+    monkeypatch.setattr(server, "_config_model_target", lambda: "default-a")
+    session = {"agent": None, "session_key": "k", "model_override": dict(pick),
+               "create_reasoning_override": reasoning, "create_service_tier_override": "priority"}
+    monkeypatch.setitem(server._sessions, "sid", session)
+    server._rebuild_session_agent("sid", session, session_id="k")
+    assert seen == [dict(model_override=pick, reasoning_config_override=reasoning,
+                         service_tier_override="priority")]
+    server._rebuild_session_agent("sid", session, model_override={"model": "explicit"})
+    assert seen[-1]["model_override"] == {"model": "explicit"}
+    for pin in ("model_override", "create_reasoning_override", "create_service_tier_override"):
+        session.pop(pin)
+    server._rebuild_session_agent("sid", session)
+    assert seen[-1] == dict.fromkeys(carried)

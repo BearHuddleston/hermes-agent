@@ -1,6 +1,7 @@
 import type { ChatMessage } from '@/lib/chat-messages'
 import {
   type InFlightTurnSnapshot,
+  migrateSnapshot,
   readSnapshot,
   removeSnapshot,
   resetSessionStoreSweepForTests,
@@ -288,4 +289,43 @@ function cancelPendingPersist(storedSessionId: string): void {
   }
 
   persistLatest.delete(storedSessionId)
+}
+
+/** Re-key a journaled in-flight tail when its session's stored id rotates
+ *  (e.g. auto-compression forks a continuation: tip A -> tip B).
+ *
+ *  The old stored id leaves every live index (`runtimeIdByStoredSessionId`,
+ *  tiles, lineage resolution to the tip), so the key under it would otherwise
+ *  be unreachable by a later permanent delete and simply age out after
+ *  MAX_AGE_MS — a sensitive prompt tail surviving its session's delete.
+ *  Move the entry to the new id so recovery keeps working and deletion by
+ *  the new id reaches it. A null/cleared new id is a detach, not a rotation —
+ *  the old id remains the session's live tip, so its key stays reachable and
+ *  is left alone. */
+export function migrateInFlightTurnJournal(oldStoredSessionId: string, newStoredSessionId: null | string): void {
+  migrateSnapshot(oldStoredSessionId, newStoredSessionId)
+}
+
+/** Purge journaled in-flight tails for a deleted session.
+ *
+ *  Deleting a session removes its authoritative history, but the journal
+ *  kept the deleted turn's user prompt and tool calls in localStorage until
+ *  the entry aged out — the delete gesture did not reach the local copy (the
+ *  sibling `composer-queue` store was already cleared on delete; this one
+ *  was missed, which is the #77486 journal requirement).
+ *
+ *  A session has more than one id, so callers pass every id they hold: the
+ *  stored tip, the durable lineage root, and (the sidebar delete) the closing
+ *  runtime id. The store keys on the stored id, so each id drains its own key
+ *  in a single pass; entries under a stored id NO live path can still name
+ *  are NOT reachable this way — those age out under `MAX_AGE_MS`, which is
+ *  the retention floor this file already documents. Rotation closes that gap:
+ *  `migrateInFlightTurnJournal` re-keys an entry the moment its stored id
+ *  rotates, so a mid-lineage tip cannot strand its journal key. */
+export function purgeInFlightTurnJournals(sessionIds: readonly (null | string | undefined)[]): void {
+  for (const storedSessionId of sessionIds) {
+    if (storedSessionId) {
+      clearInFlightTurnJournal(storedSessionId)
+    }
+  }
 }

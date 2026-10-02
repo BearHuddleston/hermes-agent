@@ -4,7 +4,9 @@ import { type ChatMessage, chatMessageText } from '@/lib/chat-messages'
 import {
   clearInFlightTurnJournal,
   type JournalableSessionState,
+  migrateInFlightTurnJournal,
   persistInFlightTurnState,
+  purgeInFlightTurnJournals,
   readInFlightTurnJournal,
   recoverInFlightTurnJournal,
   resetInFlightTurnJournalStateForTests
@@ -878,5 +880,73 @@ describe('mid-turn redirect corrections', () => {
     const journaled = readInFlightTurnJournal('stored-boundary')?.messages ?? []
 
     expect(journaled.map(message => message.id)).toEqual(['user-1', 'assistant-stream-1'])
+  })
+})
+
+describe('purgeInFlightTurnJournals', () => {
+  it("clears a busy session's journaled tail from localStorage (delete must reach the local copy)", () => {
+    persistInFlightTurnState(journalState())
+    vi.advanceTimersByTime(400)
+
+    expect(readInFlightTurnJournal('stored-1')?.messages.length).toBeGreaterThan(0)
+
+    purgeInFlightTurnJournals(['stored-1'])
+
+    expect(readInFlightTurnJournal('stored-1')).toBeNull()
+    expect(window.localStorage.getItem(sessionStorageKey('stored-1'))).toBeNull()
+  })
+
+  it('drains every id it is given, not just the stored tip', () => {
+    persistInFlightTurnState(journalState({ storedSessionId: 'stored-tip' }))
+    persistInFlightTurnState(journalState({ storedSessionId: 'lineage-root' }))
+    vi.advanceTimersByTime(400)
+
+    purgeInFlightTurnJournals(['stored-tip', 'lineage-root', null, undefined])
+
+    expect(readInFlightTurnJournal('stored-tip')).toBeNull()
+    expect(readInFlightTurnJournal('lineage-root')).toBeNull()
+  })
+
+  it('drops a pending throttled write so the tail cannot land after the purge', () => {
+    persistInFlightTurnState(journalState())
+
+    expect(window.localStorage.getItem(sessionStorageKey('stored-1'))).toBeNull()
+
+    purgeInFlightTurnJournals(['stored-1'])
+    vi.advanceTimersByTime(400)
+
+    expect(window.localStorage.getItem(sessionStorageKey('stored-1'))).toBeNull()
+    expect(readInFlightTurnJournal('stored-1')).toBeNull()
+  })
+})
+
+describe('migrateInFlightTurnJournal', () => {
+  it('keeps the original recoverable tail if copying fails and preserves an existing destination on retry', () => {
+    persistInFlightTurnState(journalState())
+    vi.advanceTimersByTime(400)
+    const original = window.localStorage.getItem(sessionStorageKey('stored-1'))
+    const setItem = vi.spyOn(Storage.prototype, 'setItem').mockImplementationOnce(() => {
+      throw new Error('quota')
+    })
+
+    migrateInFlightTurnJournal('stored-1', 'stored-next')
+    expect(window.localStorage.getItem(sessionStorageKey('stored-1'))).toBe(original)
+    expect(window.localStorage.getItem(sessionStorageKey('stored-next'))).toBeNull()
+    setItem.mockRestore()
+
+    persistInFlightTurnState(
+      journalState({
+        storedSessionId: 'stored-next',
+        messages: [user('u1', 'do the thing'), assistant('assistant-stream-1', 'newer answer', { pending: true })]
+      })
+    )
+    vi.advanceTimersByTime(400)
+    const newer = window.localStorage.getItem(sessionStorageKey('stored-next'))
+
+    migrateInFlightTurnJournal('stored-1', 'stored-next')
+    expect(window.localStorage.getItem(sessionStorageKey('stored-1'))).toBeNull()
+    expect(window.localStorage.getItem(sessionStorageKey('stored-next'))).toBe(newer)
+    purgeInFlightTurnJournals(['stored-next'])
+    expect(readInFlightTurnJournal('stored-next')).toBeNull()
   })
 })

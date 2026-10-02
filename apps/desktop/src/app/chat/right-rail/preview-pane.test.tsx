@@ -145,12 +145,7 @@ describe('PreviewPane console state', () => {
     $previewTabs.set([{ id: tabId, target }])
     $rightRailActiveTabId.set(tabId)
 
-    const rendered = render(
-      <PreviewPane
-        tabId={tabId}
-        target={target}
-      />
-    )
+    const rendered = render(<PreviewPane tabId={tabId} target={target} />)
 
     const frame = rendered.container.querySelector('iframe')
 
@@ -177,6 +172,33 @@ describe('PreviewPane console state', () => {
       text: '',
       url: 'https://example.com'
     })
+  })
+
+  it('reuses the browser iframe when a tab navigates to another target URL', () => {
+    globalThis.document.documentElement.dataset.hermesDesktopHost = 'browser'
+
+    const target = {
+      kind: 'url' as const,
+      label: 'Preview',
+      source: 'https://example.com/one',
+      url: 'https://example.com/one'
+    }
+
+    const rendered = render(<PreviewPane tabId="reuse-browser-frame" target={target} />)
+    const frame = rendered.container.querySelector('iframe')!
+    fireEvent.load(frame)
+
+    rendered.rerender(
+      <PreviewPane
+        tabId="reuse-browser-frame"
+        target={{ ...target, source: 'https://example.com/two', url: 'https://example.com/two' }}
+      />
+    )
+
+    expect(rendered.container.querySelector('iframe')).toBe(frame)
+    expect(frame.src).toBe('https://example.com/two')
+    expect(frame.getAttribute('sandbox')).toBe('allow-forms allow-scripts')
+    expect(rendered.container.querySelector('webview')).toBeNull()
   })
 
   it('keeps native guest input available while hidden without focusing the guest', () => {
@@ -409,6 +431,55 @@ describe('PreviewPane console state', () => {
     fireEvent.focus(address)
     fireEvent.keyDown(address, { key: 'Escape' })
     expect(goBack).not.toHaveBeenCalled()
+  })
+
+  // #120265: an external target.url change must steer the LIVE guest with
+  // loadURL(), not destroy the webview and rebuild it (which dropped JS
+  // state, cookies, form data, scroll, refs, and detached console/annotate).
+  it('reuses the live webview guest when target.url changes instead of rebuilding it', async () => {
+    const tabId = 'reuse-guest-tab'
+    let rendered!: ReturnType<typeof render>
+    await act(async () => {
+      rendered = render(
+        <PreviewPane
+          tabId={tabId}
+          target={{
+            kind: 'url',
+            label: 'Preview',
+            source: 'http://localhost:5174/one',
+            url: 'http://localhost:5174/one'
+          }}
+        />
+      )
+    })
+
+    const first = rendered.container.querySelector('webview') as HTMLElement & Record<string, unknown>
+    expect(first).toBeInstanceOf(HTMLElement)
+    const loadURL = vi.fn(async () => undefined)
+    Object.assign(first, { loadURL })
+
+    await act(async () => {
+      rendered.rerender(
+        <PreviewPane
+          tabId={tabId}
+          target={{
+            kind: 'url',
+            label: 'Preview',
+            source: 'http://localhost:5174/two',
+            url: 'http://localhost:5174/two'
+          }}
+        />
+      )
+    })
+
+    // Same guest node: JS state, cookies, form data, scroll, and refs survive.
+    expect(rendered.container.querySelector('webview')).toBe(first)
+    // Steered with loadURL, not a src swap or a rebuild.
+    expect(loadURL).toHaveBeenCalledWith('http://localhost:5174/two')
+    expect(rendered.container.querySelector('webview')?.getAttribute('src')).toBe('http://localhost:5174/one')
+    expect((rendered.getByRole('textbox', { name: 'Address' }) as HTMLInputElement).value).toBe(
+      'http://localhost:5174/two'
+    )
   })
 
   it('continues comment numbering in one conversation and resets it when the conversation changes', async () => {

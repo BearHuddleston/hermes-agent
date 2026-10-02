@@ -114,7 +114,8 @@ describe('AppContextMenu', () => {
             getSelection: () => '',
             paste: null,
             reload: vi.fn(),
-            selectAll: vi.fn()
+            selectAll: vi.fn(),
+            wordErase: null
           })
         : undefined
 
@@ -477,7 +478,8 @@ describe('AppContextMenu', () => {
       getSelection: () => 'picked text',
       paste,
       reload: vi.fn(),
-      selectAll: vi.fn()
+      selectAll: vi.fn(),
+      wordErase: null
     })
 
     fireEvent.contextMenu(host.querySelector('canvas')!)
@@ -497,7 +499,8 @@ describe('AppContextMenu', () => {
       getSelection: () => '',
       paste: null,
       reload: vi.fn(),
-      selectAll: vi.fn()
+      selectAll: vi.fn(),
+      wordErase: null
     })
 
     fireEvent.contextMenu(host.querySelector('canvas')!)
