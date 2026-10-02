@@ -66,28 +66,54 @@ OAuth/OIDC for direct internet exposure.
 
 ### Open it from your phone or another computer
 
-In the native app, **Settings → Web Access** starts the web app on this computer
-and sets up who may sign in. The pane appears only on the local connection.
+In the native app, **Settings → Web Access** starts the web app on this computer and sets up
+who may sign in. The pane appears only on the local connection; a remote connection has no
+"this computer" to expose.
 
 1. **Where to open it.**
-   - **This network:** devices on the same Wi-Fi open `http://<this computer's address>:9119`.
-     The pane shows the address and a QR code.
-   - **My own URL:** use an HTTPS address you already run (a reverse proxy, Tailscale
-     Serve, or a tunnel) that forwards to `http://127.0.0.1:9119`.
+   - **This network:** the web app listens on every interface and devices on the same Wi-Fi
+     open `http://<this computer's address>:<port>`. The pane shows the address and a QR code.
+     This is plain HTTP, so the sign-in and session cookie travel unencrypted on that network:
+     use it only on a network you trust.
+   - **My own URL:** an HTTPS address you already run that forwards to
+     `http://127.0.0.1:<port>`. The web app listens on loopback only and the URL is pinned
+     (`HERMES_DASHBOARD_PUBLIC_URL`), which keeps the login gate on and makes the Nous callback
+     point at that address.
 2. **Sign-in.**
-   - **Nous account:** registers this computer under the Nous account you are
-     signed in to (Providers → Accounts). No password to manage.
-   - **Password:** a username and password, for a network you trust only. The pane
-     warns when a password is enabled together with your own URL.
-3. **Start.** Start stays disabled until a sign-in method exists. The web app runs as its own
-   process: it keeps running after you quit Desktop. Stop it from the same pane, or with
+   - **Nous account:** registers this computer under the Nous account you are signed in to
+     (Providers → Accounts). No password to manage. It is re-registered on every Start, so it
+     follows a changed network address or URL.
+   - **Password:** a username and password, for **This network** only. **My own URL**
+     requires the Nous account; with only a password set, Start stays disabled and says why.
+3. **Start.** Start stays disabled until a sign-in method exists. The pane shows **Starting**
+   while the web app prepares (the first start can take about a minute) and **Running** once
+   the address accepts connections. The web app is its own process: it keeps running after you
+   quit Desktop, and the pane finds it again when you reopen. Stop it from the pane or with
    `hermes webapp --stop`.
 
-The CLI equivalent is `hermes webapp setup --lan` or
-`hermes webapp setup --public-url https://…`. It prepares the same configuration and prints the
-`hermes webapp` command to run (see the [CLI reference](../reference/cli-commands.md#hermes-webapp-setup)).
-`hermes webapp register` is the same registration as `hermes dashboard register`: the
-dashboard and the web app share one server and one login.
+#### Putting it on the internet
+
+Hermes does not open router ports or provision certificates. Run any HTTPS front end that
+forwards to `http://127.0.0.1:<port>`, then paste its address into **My own URL**:
+
+- **Tailscale Serve** (`tailscale serve --bg <port>`): private to the devices on your tailnet,
+  with a real certificate. The safest option.
+- **Tailscale Funnel** (`tailscale funnel --bg <port>`) or **Cloudflare Tunnel**: public
+  HTTPS without opening a port. Nous sign-in is then the only barrier.
+- **Your own reverse proxy** (Caddy, nginx) with a certificate. Never forward the web app's
+  plain-HTTP port from your router directly.
+
+A laptop that sleeps or changes networks makes a poor always-on host; Hermes Cloud serves the
+same workspace behind the Nous login.
+
+#### From the command line
+
+`hermes webapp setup --lan` or `hermes webapp setup --public-url https://…` prepares the same
+configuration as the pane (sign-in, callback, public URL) and prints the exact `hermes webapp`
+command to run; it never starts the server itself. See the
+[CLI reference](../reference/cli-commands.md#hermes-webapp-setup). `hermes webapp register` is
+the same command as `hermes dashboard register`: the dashboard and the web app share one
+server and one login, so this setup applies to both.
 
 Browser-selected files are staged under the active profile before they enter
 the normal attachment flow. Browser attachments are capped at **16 MiB**, the
