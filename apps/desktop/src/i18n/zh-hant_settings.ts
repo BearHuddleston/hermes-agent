@@ -103,7 +103,8 @@ export const zhHantSettings = {
       about: '關於',
       billing: '帳單',
       notifications: '通知',
-      vault: '密碼與登入'
+      vault: '密碼與登入',
+      webAccess: '網頁存取'
     },
     vault: {
       title: '密碼與登入',

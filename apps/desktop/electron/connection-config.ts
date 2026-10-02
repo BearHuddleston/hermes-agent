@@ -771,6 +771,14 @@ function localPrimaryRequestScope(opts: ProfileRouteOptions): boolean | null {
     return true
   }
 
+  // Web access (remote Webapp): every handler takes `?profile=`, and start/stop
+  // spawn a detached `hermes -p <profile> webapp` whose action status the
+  // /api/actions poll above reads from this same backend. A pooled backend's
+  // shutdown would also take the spawn record with it.
+  if (pathname.startsWith('/api/webapp-access/')) {
+    return true
+  }
+
   // Session WRITES are scoped by `body.profile` (`rename_session_endpoint` ->
   // `_with_db(body.profile, ...)`), not by the query. They ARE scopable — just
   // not through the URL — so they belong on the shared backend with the path

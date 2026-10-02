@@ -64,6 +64,31 @@ authentication. Prefer an SSH tunnel, Tailscale, or another trusted VPN; use
 OAuth/OIDC for direct internet exposure.
 :::
 
+### Open it from your phone or another computer
+
+In the native app, **Settings → Web Access** starts the web app on this computer
+and sets up who may sign in. The pane appears only on the local connection.
+
+1. **Where to open it.**
+   - **This network:** devices on the same Wi-Fi open `http://<this computer's address>:9119`.
+     The pane shows the address and a QR code.
+   - **My own URL:** use an HTTPS address you already run (a reverse proxy, Tailscale
+     Serve, or a tunnel) that forwards to `http://127.0.0.1:9119`.
+2. **Sign-in.**
+   - **Nous account:** registers this computer under the Nous account you are
+     signed in to (Providers → Accounts). No password to manage.
+   - **Password:** a username and password, for a network you trust only. The pane
+     warns when a password is enabled together with your own URL.
+3. **Start.** Start stays disabled until a sign-in method exists. The web app runs as its own
+   process: it keeps running after you quit Desktop. Stop it from the same pane, or with
+   `hermes webapp --stop`.
+
+The CLI equivalent is `hermes webapp setup --lan` or
+`hermes webapp setup --public-url https://…`. It prepares the same configuration and prints the
+`hermes webapp` command to run (see the [CLI reference](../reference/cli-commands.md#hermes-webapp-setup)).
+`hermes webapp register` is the same registration as `hermes dashboard register`: the
+dashboard and the web app share one server and one login.
+
 Browser-selected files are staged under the active profile before they enter
 the normal attachment flow. Browser attachments are capped at **16 MiB**, the
 same limit used when the staged bytes enter that flow. The terminal rail opens

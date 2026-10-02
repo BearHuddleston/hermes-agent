@@ -77,9 +77,25 @@ def build_serve_parser(
     return parser
 
 
+def _add_register_args(parser) -> None:
+    parser.add_argument(
+        "--name", default=None,
+        help="Human-readable label for the dashboard (default: an auto-generated name)")
+    parser.add_argument(
+        "--redirect-uri", dest="redirect_uri", default=None,
+        help="Optional public HTTPS OAuth redirect URI for the dashboard, e.g. "
+            "https://hermes.example.com/auth/callback. Omit for localhost-only use.")
+    parser.add_argument(
+        "--portal-url", dest="portal_url", default=None,
+        help="Override the Nous Portal base URL for registration (default: the "
+            "portal you logged into). The access token must be valid at this "
+            "portal. Also settable via HERMES_DASHBOARD_PORTAL_URL. Mainly for "
+            "testing against a staging/preview portal.")
+
+
 def build_dashboard_parser(
     subparsers, *, cmd_dashboard: Callable, cmd_dashboard_register: Callable,
-    cmd_webapp: Callable,
+    cmd_webapp: Callable, cmd_webapp_setup: Callable,
 ) -> None:
     """Attach the ``dashboard``, ``webapp``, and headless ``serve`` commands."""
     dashboard_parser = subparsers.add_parser(
@@ -115,19 +131,7 @@ def build_dashboard_parser(
             "Portal account. Creates an OAuth client, writes "
             "HERMES_DASHBOARD_OAUTH_CLIENT_ID into ~/.hermes/.env, and prints "
             "how to engage the login gate. Requires being logged in (hermes setup).")
-    dashboard_register_parser.add_argument(
-        "--name", default=None,
-        help="Human-readable label for the dashboard (default: an auto-generated name)")
-    dashboard_register_parser.add_argument(
-        "--redirect-uri", dest="redirect_uri", default=None,
-        help="Optional public HTTPS OAuth redirect URI for the dashboard, e.g. "
-            "https://hermes.example.com/auth/callback. Omit for localhost-only use.")
-    dashboard_register_parser.add_argument(
-        "--portal-url", dest="portal_url", default=None,
-        help="Override the Nous Portal base URL for registration (default: the "
-            "portal you logged into). The access token must be valid at this "
-            "portal. Also settable via HERMES_DASHBOARD_PORTAL_URL. Mainly for "
-            "testing against a staging/preview portal.")
+    _add_register_args(dashboard_register_parser)
     dashboard_register_parser.set_defaults(func=cmd_dashboard_register)
 
     # =========================================================================
@@ -163,3 +167,38 @@ def build_dashboard_parser(
         help="Rebuild the browser-hosted Desktop renderer even when its build receipt is current",
     )
     webapp_parser.set_defaults(func=cmd_webapp, ui_surface="webapp")
+
+    # Nested like `dashboard register` so bare `hermes webapp` keeps launching the server.
+    # `register` is the same registration as `hermes dashboard register`: both surfaces
+    # share one server and one login.
+    webapp_subparsers = webapp_parser.add_subparsers(dest="webapp_subcommand")
+    webapp_register_parser = webapp_subparsers.add_parser(
+        "register",
+        help="Set up Nous sign-in for the web app (same as `hermes dashboard register`)",
+        description="Register this install with your Nous Portal account so the web app "
+            "and dashboard accept Nous sign-in. Writes HERMES_DASHBOARD_OAUTH_CLIENT_ID "
+            "into .env. Requires being logged in (hermes setup).")
+    _add_register_args(webapp_register_parser)
+    webapp_register_parser.set_defaults(func=cmd_dashboard_register)
+
+    webapp_setup_parser = webapp_subparsers.add_parser(
+        "setup",
+        help="Make the web app reachable from other devices, behind a login",
+        description="Configure remote access to the web app: on your network (--lan), or "
+            "behind an HTTPS URL you already run (--public-url). Sets up Nous sign-in or a "
+            "password, then prints the command that serves it.")
+    where = webapp_setup_parser.add_mutually_exclusive_group(required=True)
+    where.add_argument(
+        "--lan", action="store_true",
+        help="Serve on this machine's network address (phones and laptops on the same Wi-Fi)")
+    where.add_argument(
+        "--public-url", dest="public_url", default=None, metavar="URL",
+        help="The HTTPS URL your reverse proxy or tunnel serves, forwarding to 127.0.0.1:PORT")
+    webapp_setup_parser.add_argument(
+        "--port", type=int, default=9119, help="Port the web app listens on (default: 9119)")
+    webapp_setup_parser.add_argument(
+        "--auth", choices=("nous", "password"), default=None,
+        help="Sign-in method to set up (default: keep what is configured, else nous)")
+    webapp_setup_parser.add_argument(
+        "--name", default=None, help="Label for the Nous sign-in registration")
+    webapp_setup_parser.set_defaults(func=cmd_webapp_setup)

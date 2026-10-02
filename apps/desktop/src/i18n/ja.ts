@@ -540,7 +540,8 @@ export const ja = defineLocale({
       about: '情報',
       billing: '請求',
       notifications: '通知',
-      vault: 'パスワードとログイン'
+      vault: 'パスワードとログイン',
+      webAccess: 'Web アクセス'
     },
     vault: {
       title: 'パスワードとログイン',

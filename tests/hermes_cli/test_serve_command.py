@@ -35,6 +35,7 @@ def _parser() -> argparse.ArgumentParser:
         cmd_dashboard=_dash,
         cmd_dashboard_register=_register,
         cmd_webapp=_webapp,
+        cmd_webapp_setup=lambda _args: None,
     )
     return parser
 

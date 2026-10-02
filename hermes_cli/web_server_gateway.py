@@ -12,7 +12,7 @@ import threading
 import time
 import urllib.request
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Tuple
 from hermes_cli._subprocess_compat import windows_detach_flags
 from hermes_cli.config import get_hermes_home
 
@@ -339,6 +339,7 @@ def _is_host_gateway_spawn(subcommand: List[str]) -> bool:
 
 def _profile_action_environment(
     subcommand: List[str], env_overrides: Optional[Dict[str, str]] = None,
+    env_remove: Iterable[str] = (),
 ) -> Dict[str, str]:
     """Environment for a detached ``hermes <subcommand>`` action.
 
@@ -404,6 +405,8 @@ def _profile_action_environment(
     # inheriting it trips the child's in-process restart-loop guard (exit 1). Drop it, like
     # the gateway's own restart watcher does (gateway/run.py, #52470).
     action_env.pop("_HERMES_GATEWAY", None)
+    for key in env_remove:
+        action_env.pop(key, None)
     if env_overrides:
         action_env.update(env_overrides)
     return action_env
@@ -451,7 +454,8 @@ def _action_targets_system_gateway(subcommand: List[str]) -> bool:
 
 
 def _spawn_hermes_action(
-    subcommand: List[str], name: str, *, env_overrides: Optional[Dict[str, str]] = None
+    subcommand: List[str], name: str, *, env_overrides: Optional[Dict[str, str]] = None,
+    env_remove: Iterable[str] = (),
 ) -> subprocess.Popen:
     """Spawn ``hermes <subcommand>`` detached (via ``hermes_cli.main``) and record the handle."""
     from hermes_cli.web_server import PROJECT_ROOT
@@ -484,7 +488,7 @@ def _spawn_hermes_action(
         cmd = ["sudo", "-n", *cmd]
     # Named-profile actions get a scrubbed, pinned environment so the child cannot inherit the
     # dashboard profile's credentials; see _profile_action_environment (also drops _HERMES_GATEWAY).
-    action_env = _profile_action_environment(subcommand, env_overrides)
+    action_env = _profile_action_environment(subcommand, env_overrides, env_remove)
     detach = {"creationflags": windows_detach_flags()} if sys.platform == "win32" else {"start_new_session": True}
     proc = subprocess.Popen(
         cmd, cwd=str(PROJECT_ROOT), stdin=subprocess.DEVNULL, stdout=log_file, stderr=subprocess.STDOUT,

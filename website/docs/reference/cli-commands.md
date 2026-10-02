@@ -1906,6 +1906,33 @@ hermes webapp
 hermes webapp --host 0.0.0.0 --no-open
 ```
 
+### `hermes webapp setup`
+
+```bash
+hermes webapp setup (--lan | --public-url URL) [--port PORT] [--auth nous|password] [--name NAME]
+```
+
+Prepare this profile for access from other devices, then print the exact
+`hermes webapp` command that serves it. It never starts the server. Desktop's
+**Settings → Web Access** pane runs the same setup.
+
+- `--lan` serves on this machine's network address (`--host 0.0.0.0`). Devices on
+  the same Wi-Fi open `http://<lan-address>:<port>`. Any pinned
+  `HERMES_DASHBOARD_PUBLIC_URL` is removed, because a LAN bind answers on more than one host name.
+- `--public-url https://…` is for an HTTPS address you already run (a reverse proxy, Tailscale
+  Serve, or a tunnel) that forwards to `http://127.0.0.1:<port>`. It pins
+  `HERMES_DASHBOARD_PUBLIC_URL`, which turns on the auth gate even on the loopback bind and fixes the
+  OAuth callback.
+- `--auth nous` (the default when no sign-in method exists) registers the
+  OAuth client with the right callback, the same registration `hermes webapp register` performs.
+  Configured Nous sign-in is re-registered on every run, so it follows a changed LAN address or URL.
+  `--auth password` prompts for a username and password and works only with `--lan`.
+
+### `hermes webapp register`
+
+The same command as [`hermes dashboard register`](#hermes-dashboard-register): the
+dashboard and the Webapp share one server and one login, so a single registration covers both.
+
 ## `hermes serve`
 
 ```bash

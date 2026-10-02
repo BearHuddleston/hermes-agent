@@ -802,6 +802,7 @@ export interface Translations {
       billing: string
       notifications: string
       vault: string
+      webAccess: string
     }
     plugins: {
       title: string
@@ -1330,6 +1331,58 @@ export interface Translations {
       saving: string
       cancel: string
       empty: string
+    }
+    webAccess: {
+      title: string
+      unavailableTitle: string
+      unavailableDesc: string
+      intro: string
+      warning: string
+      loadFailed: string
+      statusTitle: string
+      running: string
+      stopped: string
+      notRunning: string
+      notRunningDetail: string
+      needsSignIn: string
+      runningLan: string
+      runningPublic: (port: number) => string
+      runningLocal: string
+      scanToOpen: string
+      start: string
+      starting: string
+      stop: string
+      startFailed: string
+      startExited: string
+      startTimedOut: string
+      stopFailed: string
+      whereTitle: string
+      modeLan: string
+      modeLanDetail: (url: string) => string
+      noLan: string
+      modePublic: string
+      modePublicDetail: (port: number) => string
+      publicUrlLabel: string
+      publicUrlPlaceholder: string
+      portLabel: string
+      lockedWhileRunning: string
+      signInTitle: string
+      nousTitle: string
+      nousOn: string
+      nousOff: string
+      nousNeedsAccount: string
+      nousFailed: string
+      passwordTitle: string
+      passwordOn: (username: string) => string
+      passwordOff: string
+      passwordPublicWarning: string
+      passwordFailed: string
+      username: string
+      password: string
+      setUp: string
+      save: string
+      remove: string
+      removeFailed: string
     }
     managedUpdates: {
       title: string
