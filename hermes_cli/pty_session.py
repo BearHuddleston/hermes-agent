@@ -247,6 +247,8 @@ class PtySessionRegistry:
         self._spawn_lock = asyncio.Lock()
         self._spawn_cleanup: set[asyncio.Task] = set()
         self._closed = False
+        # Retain ownership of removed sessions until helper-process shutdown completes.
+        self._background_closes: set[asyncio.Task] = set()
 
     async def attach_or_spawn(self, key: str, *, spawn: Callable[[], object]) -> Tuple[PtySession, bool]:
         # Reserve capacity and the key across blocking fork/exec. On cancellation
@@ -294,8 +296,8 @@ class PtySessionRegistry:
         if existing is not None and existing.alive:
             return existing, False
         if existing is not None:                       # dead remnant
-            await existing.close()
             self._sessions.pop(key, None)
+            self._close_in_background(existing)
         if len(self._sessions) >= self._max:
             self._reap_one_idle_or_raise()
         # PTY spawn does blocking fork/exec work — keep it off the event loop.
@@ -340,7 +342,8 @@ class PtySessionRegistry:
         now = time.monotonic() if now is None else now
         doomed = [
             (key, s) for key, s in self._sessions.items()
-            if not s.alive or (not s.attached and s.last_detached_at is not None and (now - s.last_detached_at) > self._ttl)
+            if not s.alive or not s.bridge.is_alive()
+            or (not s.attached and s.last_detached_at is not None and (now - s.last_detached_at) > self._ttl)
         ]
         for key, expected in doomed:
             # Reaps overlap (attach_or_spawn and the background reaper) and close()
@@ -348,7 +351,7 @@ class PtySessionRegistry:
             # it instead of raising KeyError into the websocket handler.
             if self._sessions.get(key) is not expected:
                 continue
-            if expected.alive and (expected.attached or expected.last_detached_at is None
+            if expected.alive and expected.bridge.is_alive() and (expected.attached or expected.last_detached_at is None
                                    or now - expected.last_detached_at <= self._ttl):
                 continue
             session = self._sessions.pop(key, None)
@@ -361,7 +364,12 @@ class PtySessionRegistry:
             raise RegistryFull()
         oldest = min(idle, key=lambda s: s.last_detached_at or 0.0)
         self._sessions.pop(oldest.key, None)
-        asyncio.create_task(oldest.close())
+        self._close_in_background(oldest)
+
+    def _close_in_background(self, session: "PtySession") -> None:
+        task = asyncio.create_task(session.close())
+        self._background_closes.add(task)
+        task.add_done_callback(self._background_closes.discard)
 
     async def close_all(self) -> None:
         self._closed = True
@@ -370,9 +378,6 @@ class PtySessionRegistry:
             pass
         if self._spawn_cleanup:
             await asyncio.shield(asyncio.gather(*self._spawn_cleanup))
-        for key in list(self._sessions):
-            # Same overlap window as reap_idle: an in-flight reap may have popped
-            # a snapshot key while we awaited an earlier close().
-            session = self._sessions.pop(key, None)
-            if session is not None:
-                await session.close()
+        # Helper-process grace must run concurrently inside the backend shutdown budget.
+        sessions = [self._sessions.pop(key) for key in list(self._sessions)]
+        await asyncio.gather(*(s.close() for s in sessions), *self._background_closes, return_exceptions=True)

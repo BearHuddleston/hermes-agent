@@ -569,6 +569,8 @@ def _rebuild_session_agent(sid: str, session: dict, **kwargs):
     # _transfer_db_to_agent refuses it.
     try:
         with _profile_home_lease(profile_home, profile_incarnation), _sessions_lock:
+            if session.get("_closing"):
+                raise RuntimeError("session was closed while its agent was being rebuilt")
             if (_sessions.get(sid) is not session or session.get("_closing")
                     or session.get("agent") is not old_agent
                     or not _session_profile_identity_matches(session, profile_home, profile_incarnation)):
@@ -583,7 +585,8 @@ def _rebuild_session_agent(sid: str, session: dict, **kwargs):
                     session_db.close()
     except BaseException:
         # A rejected replacement never acquired the old agent's handle; only a fresh open is ours.
-        _discard_agent(agent)
+        with contextlib.suppress(Exception), _session_profile_runtime_scope(session):
+            _discard_agent(agent)
         if opened and session_db is not None:
             with contextlib.suppress(Exception):
                 session_db.close()
