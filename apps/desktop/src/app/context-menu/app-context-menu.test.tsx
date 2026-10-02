@@ -158,6 +158,53 @@ describe('AppContextMenu', () => {
     )
   })
 
+  it.each(['video', 'audio'])('leaves native %s context menus untouched in the browser Webapp', kind => {
+    installBridge()
+    window.document.documentElement.dataset.hermesDesktopHost = 'browser'
+    mountMenu()
+    const host = attach(`<${kind} controls></${kind}>`)
+    const target = host.firstElementChild!
+    const onTarget = vi.fn()
+
+    target.addEventListener('contextmenu', onTarget)
+    const event = createEvent.contextMenu(target)
+
+    fireEvent(target, event)
+
+    expect($contextMenu.get()).toBeNull()
+    expect(onTarget).toHaveBeenCalledOnce()
+    expect(event.defaultPrevented).toBe(false)
+  })
+
+  it('detects native media through the composed path', () => {
+    installBridge()
+    window.document.documentElement.dataset.hermesDesktopHost = 'browser'
+    mountMenu()
+    const host = attach('<div><video controls></video></div>')
+    const target = host.firstElementChild!
+    const video = target.firstElementChild!
+    const event = createEvent.contextMenu(target)
+
+    Object.defineProperty(event, 'composedPath', { value: () => [video, target, host, document.body, document] })
+    fireEvent(target, event)
+
+    expect($contextMenu.get()).toBeNull()
+    expect(event.defaultPrevented).toBe(false)
+  })
+
+  it('keeps native media gestures unprevented in Electron', async () => {
+    installBridge()
+    window.document.documentElement.dataset.hermesDesktopHost = 'electron'
+    mountMenu()
+    const electronHost = attach('<video controls></video>')
+    const electronEvent = createEvent.contextMenu(electronHost.firstElementChild!)
+
+    fireEvent(electronHost.firstElementChild!, electronEvent)
+
+    expect(await screen.findByText('Settings')).toBeTruthy()
+    expect(electronEvent.defaultPrevented).toBe(false)
+  })
+
   it('opens the link menu on a chat link right-click', async () => {
     installBridge()
     mountMenu()

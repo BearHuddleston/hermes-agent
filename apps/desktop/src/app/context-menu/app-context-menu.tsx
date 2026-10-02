@@ -60,6 +60,12 @@ const EDIT_SHORTCUTS = {
   selectAll: formatCombo('mod+a')
 } as const
 
+function isNativeMediaContextMenu(event: MouseEvent): boolean {
+  const path = typeof event.composedPath === 'function' ? event.composedPath() : []
+
+  return [event.target, ...path].some(target => target instanceof HTMLMediaElement)
+}
+
 function isLoopbackUrl(url: string): boolean {
   try {
     return LOOPBACK_HOST_RE.test(new URL(url).hostname)
@@ -631,6 +637,14 @@ export function AppContextMenu() {
       // (status bar footer is `data-slot="statusbar"`). The marker is stamped
       // after `{...props}` on ContextMenuTrigger and is not overwritten.
       if (element?.closest(`[${HERMES_CONTEXT_MENU_TRIGGER_ATTR}], [data-slot="context-menu-trigger"]`)) {
+        return
+      }
+
+      // Browser-owned media controls need their native context menu, including
+      // save and picture-in-picture actions. Chromium can retarget a control
+      // hit through the media element's UA shadow tree, so inspect the whole
+      // composed path instead of relying only on event.target.
+      if (isBrowserHostedDesktop() && isNativeMediaContextMenu(event)) {
         return
       }
 
