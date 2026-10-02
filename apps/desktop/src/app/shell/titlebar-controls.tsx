@@ -27,6 +27,7 @@ import {
   $panesFlipped,
   CHAT_SIDEBAR_PANE_ID,
   FILE_BROWSER_PANE_ID,
+  REVIEW_PANE_ID,
   toggleLeftSide,
   togglePanesFlipped,
   toggleRightSide
@@ -173,7 +174,8 @@ export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }:
   // column, the sessions column, whatever is physically left / right. Never an
   // active highlight — plain show/hide affordances.
   const leftEdge = { open: narrow ? overlayPanes.has(CHAT_SIDEBAR_PANE_ID) : leftSideOpen, toggle: toggleLeftSide }
-  const rightEdge = { open: narrow ? overlayPanes.has(FILE_BROWSER_PANE_ID) : fileBrowserOpen, toggle: toggleRightSide }
+  const rightOverlayId = overlayPanes.has(REVIEW_PANE_ID) ? REVIEW_PANE_ID : FILE_BROWSER_PANE_ID
+  const rightEdge = { open: narrow ? overlayPanes.has(rightOverlayId) : fileBrowserOpen, toggle: toggleRightSide }
   const leftLabel = leftEdge.open ? t.titlebar.hideSidebar : t.titlebar.showSidebar
   const rightLabel = rightEdge.open ? t.titlebar.hideRightSidebar : t.titlebar.showRightSidebar
 
@@ -224,7 +226,7 @@ export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }:
     label: `${rightLabel}${panesFlipped ? unreadHint : ''}`,
     onSelect: () => {
       triggerHaptic('tap')
-      toggleEdge(FILE_BROWSER_PANE_ID, rightEdge.open, rightEdge.toggle)
+      toggleEdge(rightOverlayId, rightEdge.open, rightEdge.toggle)
     },
     tour: 'right-pane-toggle'
   }

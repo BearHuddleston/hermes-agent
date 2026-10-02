@@ -9,7 +9,7 @@ import { $narrowOverlayPaneIds } from '@/components/pane-shell/narrow-overlay-st
 import { $narrowViewport } from '@/components/pane-shell/tree/store'
 import { registry } from '@/contrib/registry'
 import { I18nProvider } from '@/i18n'
-import { CHAT_SIDEBAR_PANE_ID } from '@/store/layout'
+import { CHAT_SIDEBAR_PANE_ID, REVIEW_PANE_ID } from '@/store/layout'
 import { setTitlebarAppActionsSide } from '@/store/titlebar-app-actions'
 
 import { ROUTES_AREA } from '../routes'
@@ -230,6 +230,21 @@ describe('titlebar app-action cluster', () => {
       renderControls('/')
       fireEvent.click(screen.getByRole('button', { name: 'Hide sidebar' }))
       expect(intents).toEqual([{ id: CHAT_SIDEBAR_PANE_ID, mode: 'close' }])
+    } finally {
+      window.removeEventListener(PANE_TOGGLE_REVEAL_EVENT, listener)
+    }
+  })
+
+  it('hides a review-only right sidebar instead of opening files', () => {
+    $narrowViewport.set(true)
+    $narrowOverlayPaneIds.set(new Set([REVIEW_PANE_ID]))
+    const intents: unknown[] = []
+    const listener = (event: Event) => intents.push((event as CustomEvent).detail)
+    window.addEventListener(PANE_TOGGLE_REVEAL_EVENT, listener)
+    try {
+      renderControls('/')
+      fireEvent.click(screen.getByRole('button', { name: 'Hide right sidebar' }))
+      expect(intents).toEqual([{ id: REVIEW_PANE_ID, mode: 'close' }])
     } finally {
       window.removeEventListener(PANE_TOGGLE_REVEAL_EVENT, listener)
     }
