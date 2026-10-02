@@ -22,6 +22,7 @@ import { formatCombo } from '@/lib/keybinds/combo'
 import { isRemoteGateway } from '@/lib/media'
 import { isBrowserHostedDesktop } from '@/lib/platform'
 import { reachablePreviewUrl } from '@/lib/preview-reach'
+import { isTouchInteraction } from '@/lib/touch-interaction'
 import { openPreview } from '@/store/preview'
 
 import { ShellMenuItems } from './shell-menu-items'
@@ -557,6 +558,19 @@ export function AppContextMenu() {
     // we own the gesture, or it opens alongside the app menu.
     const onContextMenu = (event: MouseEvent) => {
       const element = event.target instanceof Element ? event.target : null
+
+      // Long-press belongs to the browser/OS, including the interval BEFORE
+      // selection handles exist. Stop pane/row fallback menus without
+      // cancelling the native menu. Explicit app actions live in More.
+      const nativeTouchTarget = element?.closest(
+        '[data-slot="aui_user-message-root"], [data-slot="aui_assistant-message-content"], [data-slot="aui_system-message-root"], [data-selectable-text="true"], input, textarea, [contenteditable]:not([contenteditable="false"]), a[href], img, video, audio'
+      )
+
+      if (isBrowserHostedDesktop() && nativeTouchTarget && isTouchInteraction(event)) {
+        event.stopPropagation()
+
+        return
+      }
 
       const trigger = element?.closest(`[${HERMES_CONTEXT_MENU_TRIGGER_ATTR}], [data-slot="context-menu-trigger"]`)
 

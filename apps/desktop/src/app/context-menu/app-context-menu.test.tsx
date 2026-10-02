@@ -52,6 +52,7 @@ afterEach(() => {
   closeRightRail()
   cleanup()
   vi.restoreAllMocks()
+  vi.unstubAllGlobals()
   document.body.innerHTML = ''
   delete window.document.documentElement.dataset.hermesDesktopHost
   delete desktopWindow.hermesDesktop
@@ -95,6 +96,39 @@ describe('resolveDomTarget', () => {
 })
 
 describe('AppContextMenu', () => {
+  it('leaves explicit row menus available on touch devices', () => {
+    installBridge()
+    window.document.documentElement.dataset.hermesDesktopHost = 'browser'
+    vi.stubGlobal('matchMedia', vi.fn().mockReturnValue({ matches: true }))
+    mountMenu()
+    const host = attach('<div data-slot="context-menu-trigger">Profile row</div>')
+    const rowMenu = vi.fn()
+    host.addEventListener('contextmenu', rowMenu)
+    fireEvent.contextMenu(host.firstElementChild!)
+    expect(rowMenu).toHaveBeenCalledTimes(1)
+    expect($contextMenu.get()).toBeNull()
+  })
+  it.each(['p', 'pre', 'a', 'textarea'])(
+    'preserves native touch long-press on %s before text selection exists',
+    tag => {
+      installBridge()
+      window.document.documentElement.dataset.hermesDesktopHost = 'browser'
+      vi.stubGlobal('matchMedia', vi.fn().mockReturnValue({ matches: true }))
+      mountMenu()
+
+      const host = attach(
+        `<div data-zone-body="test" data-slot="context-menu-trigger"><div data-slot="aui_assistant-message-content"><${tag} href="https://example.com">selectable content</${tag}></div></div>`
+      )
+
+      const fallback = vi.fn()
+      host.addEventListener('contextmenu', fallback)
+      const event = createEvent.contextMenu(host.querySelector(tag)!, { bubbles: true, cancelable: true })
+      fireEvent(host.querySelector(tag)!, event)
+      expect(event.defaultPrevented).toBe(false)
+      expect(fallback).not.toHaveBeenCalled()
+      expect($contextMenu.get()).toBeNull()
+    }
+  )
   describe.each(['browser', 'electron'])('%s host gesture ownership', hostKind => {
     it.each([
       ['chrome', '<p>plain chrome</p>', 'Settings'],
