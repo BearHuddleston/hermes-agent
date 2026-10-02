@@ -104,7 +104,7 @@ The install also ships `hermes-agent`, a minimal runner that sends one query and
 | `hermes claw` | OpenClaw migration helpers. |
 | `hermes import-agent` | Import a Claude Code (`~/.claude`) or Codex CLI (`~/.codex`) setup. |
 | `hermes dashboard` | Launch the web dashboard for managing config, API keys, and sessions. |
-| `hermes webapp` | Launch the Desktop workspace in a normal browser against this host. |
+| `hermes webapp` | Launch the Desktop workspace in a normal browser against this host. Subcommands: `setup` (prepare access from other devices), `register` (Nous sign-in). |
 | `hermes serve` | Start the Hermes backend server (headless; powers the desktop app and remote backends). |
 | `hermes desktop` (alias `gui`) | Build and launch the native Electron desktop app. |
 | `hermes profile` | Manage profiles — multiple isolated Hermes instances. |
@@ -1905,6 +1905,47 @@ hermes webapp
 # Reach it through a trusted LAN/VPN; auth is mandatory
 hermes webapp --host 0.0.0.0 --no-open
 ```
+
+### `hermes webapp setup`
+
+```bash
+hermes webapp setup (--lan | --public-url URL) [--port PORT] [--auth nous|password] [--name NAME]
+```
+
+Prepare this profile for access from other devices, then print the exact
+`hermes webapp` command that serves it. It never starts the server. Desktop's
+**Settings → Web Access** pane runs the same setup.
+
+- `--lan` serves on this machine's network address (`--host 0.0.0.0`). Devices on
+  the same Wi-Fi open `http://<lan-address>:<port>`. Any pinned
+  `HERMES_DASHBOARD_PUBLIC_URL` is removed, because a LAN bind answers on more than one host name.
+- `--public-url https://…` is for an HTTPS address you already run (a reverse proxy, Tailscale
+  Serve, or a tunnel) that forwards to `http://127.0.0.1:<port>`. It pins
+  `HERMES_DASHBOARD_PUBLIC_URL`, which turns on the auth gate even on the loopback bind and fixes the
+  OAuth callback.
+- `--auth nous` (the default when no sign-in method exists) registers the
+  OAuth client with the right callback, the same registration `hermes webapp register` performs.
+  Configured Nous sign-in is re-registered on every run, so it follows a changed LAN address or URL.
+  `--auth password` prompts for a username and password and works only with `--lan`:
+  `--public-url` requires Nous sign-in.
+- It refuses, without changing anything, when no sign-in method would exist afterwards.
+
+The settings it writes (`HERMES_DASHBOARD_OAUTH_CLIENT_ID`, `HERMES_DASHBOARD_PUBLIC_URL`,
+`dashboard.basic_auth`) belong to the shared web server, so they apply to `hermes dashboard` too.
+
+```bash
+hermes webapp setup --lan
+# ✓ The web app is ready to serve your network.
+#   Sign-in: your Nous account
+#
+#   Start it:   hermes webapp --host 0.0.0.0 --port 9119
+#   Open:       http://192.168.1.50:9119
+```
+
+### `hermes webapp register`
+
+The same command as [`hermes dashboard register`](#hermes-dashboard-register): the
+dashboard and the Webapp share one server and one login, so a single registration covers both.
 
 ## `hermes serve`
 

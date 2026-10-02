@@ -589,7 +589,8 @@ export const ru = defineLocale({
       sessions: 'Сеансы',
       about: 'О программе',
       billing: 'Оплата',
-      notifications: 'Уведомления'
+      notifications: 'Уведомления',
+      webAccess: 'Веб-доступ'
     },
     plugins: {
       title: 'Плагины приложения',

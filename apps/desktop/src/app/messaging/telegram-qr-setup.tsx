@@ -17,6 +17,7 @@ import { useI18n } from '@/i18n'
 import { openExternalLink } from '@/lib/external-link'
 import { Check, ExternalLink, QrCode, Save, X } from '@/lib/icons'
 import { isSubmitEnter } from '@/lib/ime'
+import { renderQrDataUrl } from '@/lib/qr'
 import { cn } from '@/lib/utils'
 
 import { CREDENTIAL_CONTROL_CLASS } from '../settings/credential-key-ui'
@@ -42,13 +43,6 @@ export function formatExpiry(expiresAt: string, now = Date.now()): null | string
   const seconds = Math.ceil(ms / 1000)
 
   return `${Math.floor(seconds / 60)}:${(seconds % 60).toString().padStart(2, '0')}`
-}
-
-async function renderQr(payload: string): Promise<string> {
-  // Lazy: the QR encoder is only needed while a pairing is on screen.
-  const QRCode = await import('qrcode')
-
-  return QRCode.toDataURL(payload, { errorCorrectionLevel: 'M', margin: 1, width: 224 })
 }
 
 export interface TelegramQrSetupProps {
@@ -186,7 +180,7 @@ export function TelegramQrSetup({ onApplied, platform, scopeProfile }: TelegramQ
 
     try {
       const result = await startTelegramOnboarding(undefined, scopeProfile)
-      const dataUrl = await renderQr(result.qr_payload)
+      const dataUrl = await renderQrDataUrl(result.qr_payload, 224)
       setSetup(result)
       setQrDataUrl(dataUrl)
       setPhase('waiting')

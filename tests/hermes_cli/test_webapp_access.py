@@ -1,0 +1,178 @@
+"""Remote Webapp access (``hermes_cli.webapp_access``, ``/api/webapp-access/*``).
+
+Contracts: a Webapp that Desktop's backend launches can never qualify for the Desktop-owned
+loopback auth exemption, LAN access registers the LAN callback without pinning a public URL, and
+nothing is spawned or written while no login is configured.
+"""
+
+from __future__ import annotations
+
+import os
+from unittest.mock import patch
+
+import pytest
+
+pytest.importorskip("fastapi")
+from fastapi.testclient import TestClient  # noqa: E402
+
+
+class _FakeProc:
+    pid = 4242
+
+    def poll(self):
+        return None
+
+
+@pytest.fixture()
+def client():
+    from hermes_cli import web_server
+
+    c = TestClient(web_server.app, raise_server_exceptions=False)
+    c.headers["Authorization"] = f"Bearer {web_server._SESSION_TOKEN}"
+    return c
+
+
+@pytest.fixture()
+def spawned(monkeypatch):
+    """Capture the detached ``hermes webapp`` child instead of starting it."""
+    import hermes_cli.web_server_gateway as gw
+    from hermes_cli import webapp_access
+
+    # No live process-table scan under the test sandbox: nothing is already serving.
+    monkeypatch.setattr(webapp_access, "running_webapps", lambda: [])
+    calls: list[dict] = []
+
+    def _popen(cmd, **kwargs):
+        calls.append({"cmd": list(cmd), "env": dict(kwargs["env"])})
+        return _FakeProc()
+
+    monkeypatch.setattr(gw.subprocess, "Popen", _popen)
+    return calls
+
+
+def _dotenv() -> dict:
+    from hermes_cli.config import load_env
+
+    return load_env()
+
+
+@pytest.fixture()
+def nous_client(monkeypatch):
+    """A configured Nous sign-in; portal registration is stubbed (no network)."""
+    import hermes_cli.dashboard_register as dashboard_register
+    from hermes_cli.config import save_env_value
+
+    save_env_value("HERMES_DASHBOARD_OAUTH_CLIENT_ID", "agent:test-client")
+    registered: list[dict] = []
+    monkeypatch.setattr(
+        dashboard_register, "register_dashboard_client", lambda **kw: registered.append(kw))
+    return registered
+
+
+def test_launched_webapp_cannot_inherit_the_desktop_auth_exemption(client, spawned, nous_client, monkeypatch):
+    from hermes_cli import web_server
+
+    # What Desktop's own backend carries: the per-spawn ownership credential, plus a stale
+    # public URL that would beat the profile's .env in the child.
+    monkeypatch.setenv("HERMES_DESKTOP", "1")
+    monkeypatch.setenv("HERMES_DASHBOARD_SESSION_TOKEN", "desktop-spawn-token")
+    monkeypatch.setenv("HERMES_DASHBOARD_PUBLIC_URL", "https://stale.example.test")
+
+    response = client.post(
+        "/api/webapp-access/start",
+        json={"mode": "public", "public_url": "https://hermes.example.test", "port": 9333})
+
+    assert response.status_code == 200, response.text
+    [child] = spawned
+    assert child["cmd"][-6:] == ["webapp", "--host", "127.0.0.1", "--port", "9333", "--no-open"]
+    assert not any(key.startswith("HERMES_DASHBOARD_") for key in child["env"])
+    # HERMES_DESKTOP=1 alone already makes a server act Desktop-spawned (cron ticker, dist).
+    assert "HERMES_DESKTOP" not in child["env"]
+    with patch.dict(os.environ, child["env"], clear=True):
+        assert not web_server._desktop_loopback_auth_exempt("127.0.0.1")
+    # The child reads the public URL from the profile's .env, which engages its gate.
+    assert _dotenv().get("HERMES_DASHBOARD_PUBLIC_URL") == "https://hermes.example.test"
+
+
+def test_lan_access_registers_the_lan_callback_and_unpins_a_public_url(nous_client, monkeypatch):
+    from hermes_cli import webapp_access
+    from hermes_cli.config import save_env_value
+
+    save_env_value("HERMES_DASHBOARD_PUBLIC_URL", "https://old.example.test")
+    monkeypatch.setattr(webapp_access, "lan_address", lambda: "192.168.1.50")
+    registered = nous_client
+
+    plan = webapp_access.plan_access("lan", port=9119)
+    webapp_access.prepare(plan)
+
+    assert plan.bind_host == "0.0.0.0"
+    assert [(r["redirect_uri"], r["write_public_url"]) for r in registered] == [
+        ("http://192.168.1.50:9119/auth/callback", False)]
+    assert "HERMES_DASHBOARD_PUBLIC_URL" not in _dotenv()
+
+
+def test_start_without_a_login_spawns_and_writes_nothing(client, spawned):
+    response = client.post(
+        "/api/webapp-access/start",
+        json={"mode": "public", "public_url": "https://hermes.example.test"})
+
+    assert response.status_code == 400
+    assert spawned == []
+    assert "HERMES_DASHBOARD_PUBLIC_URL" not in _dotenv()
+
+
+def test_public_url_with_only_a_password_is_refused_before_writing(client, spawned):
+    from hermes_cli.dashboard_auth_setup import save_basic_auth
+
+    save_basic_auth("admin", "pw-for-test")
+    response = client.post(
+        "/api/webapp-access/start",
+        json={"mode": "public", "public_url": "https://hermes.example.test"})
+
+    assert response.status_code == 400
+    assert spawned == []
+    assert "HERMES_DASHBOARD_PUBLIC_URL" not in _dotenv()
+
+
+def test_privileged_routes_need_an_explicit_profile_when_serving_several(client, spawned, monkeypatch):
+    import agent.secret_scope as secret_scope
+    from hermes_cli.dashboard_auth_setup import save_basic_auth
+
+    save_basic_auth("admin", "pw-for-test")
+    monkeypatch.setattr(secret_scope, "is_multiplex_active", lambda: True)
+
+    responses = [
+        client.post("/api/webapp-access/start", json={"mode": "lan"}),
+        client.post("/api/webapp-access/password", json={"username": "x", "password": "y"}),
+        client.post("/api/webapp-access/stop"),
+    ]
+
+    assert [r.status_code for r in responses] == [400, 400, 400]
+    assert spawned == []
+
+
+def test_webapp_configuration_commands_are_never_counted_as_servers(monkeypatch):
+    import argparse
+
+    import hermes_cli.dashboard_procs as dashboard_procs
+    from hermes_cli import webapp_access
+    from hermes_cli.subcommands.dashboard import WEBAPP_CONFIG_SUBCOMMANDS, build_dashboard_parser
+    from hermes_constants import get_hermes_home
+
+    root = argparse.ArgumentParser()
+    noop = lambda _args: None  # noqa: E731
+    build_dashboard_parser(
+        root.add_subparsers(dest="command"), cmd_dashboard=noop, cmd_dashboard_register=noop,
+        cmd_webapp=noop, cmd_webapp_setup=noop)
+    # Every nested webapp subcommand the parser knows configures; the matcher reads that list.
+    for name in WEBAPP_CONFIG_SUBCOMMANDS:
+        assert root.parse_args(["webapp", name] + (["--lan"] if name == "setup" else [])).func is not None
+
+    monkeypatch.setattr(dashboard_procs, "_hermes_home_for_pid", lambda pid: str(get_hermes_home()))
+    monkeypatch.setattr(dashboard_procs, "_scan_dashboard_processes", lambda **_: [
+        (111, "hermes webapp --host 0.0.0.0 --port 9119"),
+        (222, "hermes webapp setup --lan"),
+        (333, "hermes -p work webapp register"),
+    ])
+
+    assert [s["pid"] for s in webapp_access.running_webapps(check_listening=False)] == [111]

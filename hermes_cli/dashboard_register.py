@@ -14,6 +14,7 @@ import random
 import sys
 import urllib.error
 import urllib.request
+from dataclasses import dataclass
 from typing import Optional
 from urllib.parse import urlparse
 
@@ -160,55 +161,71 @@ def _public_url_from_redirect(redirect_uri: Optional[str]) -> str:
     return ""
 
 
-def cmd_dashboard_register(args) -> None:
-    """Register a self-hosted dashboard OAuth client with Nous Portal."""
+class DashboardRegisterError(RuntimeError):
+    """Registration could not complete; ``str(exc)`` is the user-facing reason."""
+
+
+@dataclass(frozen=True)
+class DashboardRegistration:
+    client_id: str
+    name: str
+    updated: bool
+    portal_base_url: str
+    wrote_portal_url: bool
+    public_url: str  # written this run, else ""
+
+
+def register_dashboard_client(
+    *, name: Optional[str] = None, redirect_uri: Optional[str] = None,
+    portal_url: Optional[str] = None, write_public_url: bool = True,
+) -> DashboardRegistration:
+    """Register (or update in place) this home's self-hosted dashboard OAuth client.
+
+    The library half of ``hermes dashboard register``: callers that are not a terminal
+    (Desktop's Web access pane) get a result or a :class:`DashboardRegisterError`, never a
+    print or ``sys.exit``. ``write_public_url=False`` registers *redirect_uri* with the
+    portal without pinning ``HERMES_DASHBOARD_PUBLIC_URL`` (a LAN bind serves several
+    host names and reconstructs its callback per request).
+    """
     from hermes_cli.auth import AuthError, resolve_nous_access_token
     from hermes_cli.config import is_managed, save_env_value
     # Managed installs get the client id stamped in by the orchestrator (save_env_value refuses).
     if is_managed():
-        print("✗ `hermes dashboard register` is not available in a managed/hosted install.\n"
-              "  The dashboard OAuth client is provisioned by the hosting platform.")
-        sys.exit(1)
-
+        raise DashboardRegisterError(
+            "Self-hosted registration is not available in a managed/hosted install: the dashboard OAuth client is "
+            "provisioned by the hosting platform.")
     try:
         access_token = resolve_nous_access_token()
     except Exception as exc:
         if isinstance(exc, AuthError) and getattr(exc, "relogin_required", False):
-            print("✗ You're not logged into Nous Portal.\n"
-                  "  Run `hermes setup` (or `hermes auth add nous`) first, then retry.")
-        else:
-            print(f"✗ Could not resolve a Nous Portal access token: {exc}")
-        sys.exit(1)
+            raise DashboardRegisterError(
+                "You're not logged into Nous Portal. Run `hermes setup` "
+                "(or `hermes auth add nous`) first, then retry.") from exc
+        raise DashboardRegisterError(f"Could not resolve a Nous Portal access token: {exc}") from exc
     # An explicitly supplied portal (flag or env) is persisted in place; an inferred one is
     # written only if absent so .env isn't cluttered for the common production case.
-    portal_override = getattr(args, "portal_url", None) or os.environ.get("HERMES_DASHBOARD_PORTAL_URL")
+    portal_override = portal_url or os.environ.get("HERMES_DASHBOARD_PORTAL_URL")
     custom_portal_supplied = bool(isinstance(portal_override, str) and portal_override.strip())
     portal_base_url = _resolve_portal_base_url(portal_override)
     # Re-sending a locally held client_id makes the portal UPDATE that record (idempotent).
     stored = _env_value("HERMES_DASHBOARD_OAUTH_CLIENT_ID")
     existing_client_id = (stored.strip() or None) if isinstance(stored, str) else None
-    # Auto-name ONLY a first registration; a re-run without --name keeps the stored name.
-    name = getattr(args, "name", None) or (None if existing_client_id else _generate_dashboard_name())
-    custom_redirect_uri = getattr(args, "redirect_uri", None)
+    # Auto-name ONLY a first registration; a re-run without a name keeps the stored name.
+    name = name or (None if existing_client_id else _generate_dashboard_name())
     try:
         result = _register_self_hosted_client(
             access_token=access_token, portal_base_url=portal_base_url, name=name,
-            custom_redirect_uri=custom_redirect_uri, existing_client_id=existing_client_id)
+            custom_redirect_uri=redirect_uri, existing_client_id=existing_client_id)
     except RuntimeError as exc:
-        print(f"✗ Registration failed: {exc}")
-        sys.exit(1)
+        raise DashboardRegisterError(f"Registration failed: {exc}") from exc
 
     client_id = str(result["client_id"])
-    registered_name = str(result.get("name") or name or "")
-    # The portal echoes back the same client_id when it updated in place.
-    verb = "Updated" if existing_client_id and client_id == existing_client_id else "Registered"
-    print(f'✓ {verb} dashboard "{registered_name}"')
     try:  # client_id is load-bearing: fatal on failure
         save_env_value("HERMES_DASHBOARD_OAUTH_CLIENT_ID", client_id)
     except Exception as exc:
-        print(f"✗ Failed to write HERMES_DASHBOARD_OAUTH_CLIENT_ID to .env: {exc}\n"
-              f"  Set it manually:  HERMES_DASHBOARD_OAUTH_CLIENT_ID={client_id}")
-        sys.exit(1)
+        raise DashboardRegisterError(
+            f"Failed to write HERMES_DASHBOARD_OAUTH_CLIENT_ID to .env: {exc}. "
+            f"Set it manually: HERMES_DASHBOARD_OAUTH_CLIENT_ID={client_id}") from exc
     # Explicit portal → always persist (the user asked); inferred → only if unset AND non-default.
     existing_portal = _env_value("HERMES_DASHBOARD_PORTAL_URL")
     should_write_portal = (
@@ -216,12 +233,33 @@ def cmd_dashboard_register(args) -> None:
         if custom_portal_supplied
         else not existing_portal and portal_base_url.rstrip("/") != _DEFAULT_PORTAL)
     wrote_portal_url = should_write_portal and _save_env_quietly("HERMES_DASHBOARD_PORTAL_URL", portal_base_url)
-    # Public URL from --redirect-uri: written when supplied and different; never localhost-only.
-    public_url = _public_url_from_redirect(custom_redirect_uri)
+    # Public URL from the redirect: written when supplied and different; never localhost-only.
+    public_url = _public_url_from_redirect(redirect_uri) if write_public_url else ""
     wrote_public_url = bool(
         public_url
         and _env_value("HERMES_DASHBOARD_PUBLIC_URL") != public_url
         and _save_env_quietly("HERMES_DASHBOARD_PUBLIC_URL", public_url))
+    return DashboardRegistration(
+        client_id=client_id,
+        name=str(result.get("name") or name or ""),
+        # The portal echoes back the same client_id when it updated in place.
+        updated=bool(existing_client_id and client_id == existing_client_id),
+        portal_base_url=portal_base_url,
+        wrote_portal_url=wrote_portal_url,
+        public_url=public_url if wrote_public_url else "")
+
+
+def cmd_dashboard_register(args) -> None:
+    """Register a self-hosted dashboard OAuth client with Nous Portal."""
+    redirect_uri = getattr(args, "redirect_uri", None)
+    try:
+        reg = register_dashboard_client(
+            name=getattr(args, "name", None), redirect_uri=redirect_uri,
+            portal_url=getattr(args, "portal_url", None))
+    except DashboardRegisterError as exc:
+        print(f"✗ {exc}")
+        sys.exit(1)
+    print(f'✓ {"Updated" if reg.updated else "Registered"} dashboard "{reg.name}"')
     _print_post_register_hint(
-        client_id=client_id, portal_base_url=portal_base_url, custom_redirect_uri=custom_redirect_uri,
-        wrote_portal_url=wrote_portal_url, public_url=public_url if wrote_public_url else "")
+        client_id=reg.client_id, portal_base_url=reg.portal_base_url, custom_redirect_uri=redirect_uri,
+        wrote_portal_url=reg.wrote_portal_url, public_url=reg.public_url)

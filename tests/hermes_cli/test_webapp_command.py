@@ -434,6 +434,7 @@ def test_webapp_help_describes_its_scoped_lifecycle(capsys):
         cmd_dashboard=lambda _args: None,
         cmd_dashboard_register=lambda _args: None,
         cmd_webapp=lambda _args: None,
+        cmd_webapp_setup=lambda _args: None,
     )
 
     with pytest.raises(SystemExit) as exc:

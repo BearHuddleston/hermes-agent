@@ -83,7 +83,8 @@ export const arSettings = {
       about: 'حول',
       notifications: 'الإشعارات',
       keybinds: 'اختصارات لوحة المفاتيح',
-      vault: 'كلمات المرور وتسجيلات الدخول'
+      vault: 'كلمات المرور وتسجيلات الدخول',
+      webAccess: 'الوصول عبر الويب'
     },
     vault: {
       title: 'كلمات المرور وتسجيلات الدخول',

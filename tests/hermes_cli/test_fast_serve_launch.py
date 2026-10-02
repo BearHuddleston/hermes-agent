@@ -20,6 +20,7 @@ def test_lean_serve_parser_matches_full_subcommand_parser() -> None:
         cmd_dashboard=_capture,
         cmd_dashboard_register=_capture,
         cmd_webapp=_capture,
+        cmd_webapp_setup=lambda _args: None,
     )
     lean = build_serve_parser(cmd_dashboard=_capture)
 
