@@ -1852,7 +1852,7 @@ export const deOverrides = {
       stopped: 'Gestoppt',
       notRunning: 'Nicht gestartet',
       notRunningDetail: 'Starte sie, um Hermes von einem anderen Gerät aus zu öffnen.',
-      needsSignIn: 'Richte zuerst unten eine Anmeldemethode ein.',
+      needsSignIn: 'Richte zuerst oben eine Anmeldemethode ein.',
       startingDetail: 'Die Web-App wird vorbereitet. Die Adresse ist gleich erreichbar.',
       needsNousForUrl: 'Deine eigene URL braucht die Nous-Anmeldung. Ein Passwort allein ist nur für ein vertrauenswürdiges Netzwerk.',
       runningLan: 'Öffne diese Adresse auf einem Gerät im selben Netzwerk.',

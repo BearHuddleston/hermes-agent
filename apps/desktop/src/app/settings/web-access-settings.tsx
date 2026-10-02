@@ -234,14 +234,11 @@ function AvailableWebAccessSettings(): ReactElement {
 
   const spinning = (kind: Busy) => cn(busy === kind && '[&_svg]:animate-spin')
 
-  return (
-    <SettingsContent>
-      <ActiveProfileNote className="mb-5" />
-      <SectionHeading icon={Network} page title={w.title} />
-      <p className="mb-4 text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
-        {w.intro} {w.warning}
-      </p>
+  // Stopped: the page reads in setup order (where → sign-in → start) with numbered steps.
+  // Running: the address and Stop come first; setup is locked until it stops.
+  const setupStep = (n: number) => (server ? undefined : String(n))
 
+  const statusSection = (
       <SettingsSection
         aside={
           <Pill tone={serving ? 'success' : server ? 'warn' : 'muted'}>
@@ -249,6 +246,7 @@ function AvailableWebAccessSettings(): ReactElement {
           </Pill>
         }
         icon={Globe}
+        meta={setupStep(3)}
         title={w.statusTitle}
       >
         {server && openUrl ? (
@@ -306,8 +304,11 @@ function AvailableWebAccessSettings(): ReactElement {
           />
         )}
       </SettingsSection>
+  )
 
-      <SettingsSection icon={Globe} title={w.whereTitle}>
+  const whereSection = (
+      <SettingsSection
+        icon={Globe} meta={setupStep(1)} title={w.whereTitle}>
         <ListRow
           action={
             <SegmentedControl
@@ -358,8 +359,11 @@ function AvailableWebAccessSettings(): ReactElement {
           title={w.portLabel}
         />
       </SettingsSection>
+  )
 
-      <SettingsSection icon={ShieldLock} title={w.signInTitle}>
+  const signInSection = (
+      <SettingsSection
+        icon={ShieldLock} meta={setupStep(2)} title={w.signInTitle}>
         <ListRow
           action={
             status.nous_client_id ? (
@@ -438,6 +442,19 @@ function AvailableWebAccessSettings(): ReactElement {
           title={w.passwordTitle}
         />
       </SettingsSection>
+  )
+
+  return (
+    <SettingsContent>
+      <ActiveProfileNote className="mb-5" />
+      <SectionHeading icon={Network} page title={w.title} />
+      <p className="mb-4 text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
+        {w.intro} {w.warning}
+      </p>
+
+      {server ? statusSection : whereSection}
+      {server ? whereSection : signInSection}
+      {server ? signInSection : statusSection}
     </SettingsContent>
   )
 }

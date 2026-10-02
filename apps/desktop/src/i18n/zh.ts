@@ -1533,7 +1533,7 @@ export const zh = defineLocale({
       stopped: '已停止',
       notRunning: '未运行',
       notRunningDetail: '启动后即可从其他设备打开 Hermes。',
-      needsSignIn: '请先在下方设置登录方式。',
+      needsSignIn: '请先在上方设置登录方式。',
       startingDetail: '正在准备网页应用，地址马上就能打开。',
       needsNousForUrl: '使用你自己的网址需要 Nous 登录。仅设置密码只适用于你信任的网络。',
       runningLan: '在连接到同一网络的设备上打开此地址。',

@@ -1596,7 +1596,7 @@ export const en: Translations = {
       stopped: 'Stopped',
       notRunning: 'Not running',
       notRunningDetail: 'Start it to open Hermes from another device.',
-      needsSignIn: 'Set up a sign-in method below first.',
+      needsSignIn: 'Set up a sign-in method above first.',
       startingDetail: 'Preparing the web app. The address opens in a moment.',
       needsNousForUrl: 'Your own URL needs Nous sign-in. A password alone is for a network you trust.',
       runningLan: 'Open this address on a device connected to the same network.',

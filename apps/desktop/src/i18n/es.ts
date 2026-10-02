@@ -1849,7 +1849,7 @@ export const esOverrides = {
       stopped: 'Detenida',
       notRunning: 'Sin iniciar',
       notRunningDetail: 'Iníciala para abrir Hermes desde otro dispositivo.',
-      needsSignIn: 'Primero configura un método de inicio de sesión abajo.',
+      needsSignIn: 'Primero configura un método de inicio de sesión arriba.',
       startingDetail: 'Preparando la aplicación web. La dirección estará disponible en un momento.',
       needsNousForUrl: 'Tu propia URL necesita el inicio de sesión con Nous. Una contraseña sola es solo para una red de confianza.',
       runningLan: 'Abre esta dirección en un dispositivo conectado a la misma red.',
