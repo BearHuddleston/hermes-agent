@@ -75,6 +75,16 @@ const revealPane = (id: string) => {
 const overlayTab = (paneId: string) => document.querySelector<HTMLElement>(`[data-narrow-overlay-tab="${paneId}"]`)
 
 describe('narrow overlay of a stacked zone', () => {
+  it('closes the visible zone mate through the sessions sidebar alias', () => {
+    const { queryByTestId } = render(<NarrowOverlays />)
+    revealPane('bots')
+    expect(queryByTestId('bots-body')).toBeTruthy()
+    act(() =>
+      window.dispatchEvent(new CustomEvent(PANE_TOGGLE_REVEAL_EVENT, { detail: { id: 'chat-sidebar', mode: 'close' } }))
+    )
+    expect(queryByTestId('bots-body')).toBeNull()
+    expect($narrowOverlayPaneIds.get().size).toBe(0)
+  })
   it('publishes visible zone mates and clears them when Escape closes the overlay', () => {
     const view = render(<NarrowOverlays />)
     expect($narrowOverlayPaneIds.get().size).toBe(0)

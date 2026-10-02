@@ -138,7 +138,9 @@ export function NarrowOverlays() {
         }
 
         if (mode === 'close') {
-          return current?.id === match.id ? null : current
+          const currentTree = $layoutTree.get()
+          const targetZone = currentTree ? findGroupOfPane(currentTree, match.id) : null
+          return current && (current.id === match.id || targetZone?.panes.includes(current.id)) ? null : current
         }
 
         return current?.id === match.id && current.pinned ? null : { id: match.id, pinned: true }
