@@ -2,6 +2,7 @@ import { act, cleanup, fireEvent, render } from '@testing-library/react'
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { PANE_TOGGLE_REVEAL_EVENT } from '@/components/pane-shell'
+import { $narrowOverlayPaneIds } from '@/components/pane-shell/narrow-overlay-state'
 import { registry } from '@/contrib/registry'
 import { $paneStates, setPaneWidthOverride } from '@/store/panes'
 import { $connection } from '@/store/session'
@@ -40,7 +41,12 @@ beforeEach(() => {
   window.localStorage.clear()
   $hiddenTreePanes.set(new Set())
 
-  registerPane('sessions', 'sessions', { collapsible: true, placement: 'left', width: '237px' }, 'session rows')
+  registerPane(
+    'sessions',
+    'sessions',
+    { collapsible: true, placement: 'left', width: '237px', revealAliases: ['chat-sidebar'] },
+    'session rows'
+  )
   registerPane('bots', 'Bots', { collapsible: true, placement: 'left', width: '260px' }, 'bot roster')
   registerPane('workspace', 'workspace', { placement: 'main', uncloseable: true }, 'chat')
 
@@ -54,6 +60,8 @@ afterEach(() => {
   $layoutTree.set(null)
   $connection.set(null)
   vi.restoreAllMocks()
+  vi.unstubAllGlobals()
+  delete window.document.documentElement.dataset.hermesDesktopHost
   delete (window as unknown as { hermesDesktop?: unknown }).hermesDesktop
   disposers.splice(0).forEach(dispose => dispose())
 })
@@ -67,6 +75,28 @@ const revealPane = (id: string) => {
 const overlayTab = (paneId: string) => document.querySelector<HTMLElement>(`[data-narrow-overlay-tab="${paneId}"]`)
 
 describe('narrow overlay of a stacked zone', () => {
+  it('publishes visible zone mates and clears them when Escape closes the overlay', () => {
+    const view = render(<NarrowOverlays />)
+    expect($narrowOverlayPaneIds.get().size).toBe(0)
+    revealPane('sessions')
+    expect([...$narrowOverlayPaneIds.get()]).toEqual(expect.arrayContaining(['sessions', 'bots', 'chat-sidebar']))
+    fireEvent.keyDown(window, { key: 'Escape' })
+    expect($narrowOverlayPaneIds.get().size).toBe(0)
+    revealPane('bots')
+    view.unmount()
+    expect($narrowOverlayPaneIds.get().size).toBe(0)
+  })
+
+  it('reserves the browser touch titlebar above overlay tabs', () => {
+    window.document.documentElement.dataset.hermesDesktopHost = 'browser'
+    vi.stubGlobal(
+      'matchMedia',
+      vi.fn().mockReturnValue({ matches: true, addEventListener: vi.fn(), removeEventListener: vi.fn() })
+    )
+    const { container } = render(<NarrowOverlays />)
+    revealPane('sessions')
+    expect(container.querySelector<HTMLElement>('[data-narrow-overlay]')?.style.paddingTop).toBe('44px')
+  })
   it('mirrors the zone tab strip so every stacked collapsible stays reachable', () => {
     const { getByTestId, queryByTestId } = render(<NarrowOverlays />)
 

@@ -4,8 +4,11 @@ import { useEffect } from 'react'
 import { MemoryRouter, useNavigate } from 'react-router'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { $narrowOverlayPaneIds } from '@/components/pane-shell/narrow-overlay-state'
+import { $narrowViewport } from '@/components/pane-shell/tree/store'
 import { registry } from '@/contrib/registry'
 import { I18nProvider } from '@/i18n'
+import { CHAT_SIDEBAR_PANE_ID } from '@/store/layout'
 import { setTitlebarAppActionsSide } from '@/store/titlebar-app-actions'
 
 import { ROUTES_AREA } from '../routes'
@@ -193,9 +196,22 @@ describe('titlebar app-action cluster', () => {
   })
 
   afterEach(() => {
+    $narrowViewport.set(false)
+    $narrowOverlayPaneIds.set(new Set())
     setTitlebarAppActionsSide('right')
     cleanup()
     vi.unstubAllGlobals()
+  })
+
+  it('names the narrow sidebar action from its visible overlay, not docked state', () => {
+    $narrowViewport.set(true)
+    renderControls('/')
+    const left = screen.getByLabelText('Window controls')
+    expect(within(left).getByRole('button', { name: 'Show sidebar' }).getAttribute('aria-expanded')).toBe('false')
+    act(() => $narrowOverlayPaneIds.set(new Set([CHAT_SIDEBAR_PANE_ID])))
+    expect(within(left).getByRole('button', { name: 'Hide sidebar' }).getAttribute('aria-expanded')).toBe('true')
+    act(() => $narrowOverlayPaneIds.set(new Set()))
+    expect(within(left).getByRole('button', { name: 'Show sidebar' })).toBeTruthy()
   })
 
   it('moves settings, layout, and HUD to the left when the appearance setting says left', () => {

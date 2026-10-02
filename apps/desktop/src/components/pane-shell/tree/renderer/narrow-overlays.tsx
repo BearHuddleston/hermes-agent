@@ -9,17 +9,21 @@
 import { useStore } from '@nanostores/react'
 import { type MouseEventHandler, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
+import { TITLEBAR_HEIGHT } from '@/app/shell/titlebar'
+import { useTouchTitlebar } from '@/app/shell/use-touch-titlebar'
 import { $chatOnboardingSolo } from '@/components/onboarding-chat/assembly'
 import { PaneTab, PaneTabLabel, PaneTabStrip } from '@/components/ui/pane-tab'
 import { ContribBoundary, ContribRender } from '@/contrib/react/boundary'
 import { useContributions } from '@/contrib/react/use-contributions'
 import type { Contribution } from '@/contrib/types'
 import { ESCAPE_PRIORITY, isTopEscapeLayer, pushEscapeLayer } from '@/lib/escape-layers'
+import { isBrowserHostedDesktop } from '@/lib/platform'
 import { cn } from '@/lib/utils'
 import { $paneStates } from '@/store/panes'
 
 import { PANE_TOGGLE_REVEAL_EVENT } from '../..'
 import { useWindowControlsOverlap } from '../../geometry'
+import { $narrowOverlayPaneIds } from '../../narrow-overlay-state'
 import { NO_PANE_GROUP } from '../../pane-visibility'
 import { allPaneIds, findGroupOfPane, type LayoutNode } from '../model'
 import { $hiddenTreePanes, $layoutTree, $narrowViewport } from '../store'
@@ -46,6 +50,7 @@ export function narrowOverlayWidth(ctx: TrackContext, tree: LayoutNode | null, r
 }
 
 export function NarrowOverlays() {
+  const touchTitlebar = useTouchTitlebar()
   const narrow = useStore($narrowViewport)
   const solo = useStore($chatOnboardingSolo)
   const tree = useStore($layoutTree)
@@ -91,6 +96,15 @@ export function NarrowOverlays() {
 
   const collapsiblesRef = useRef(collapsibles)
   collapsiblesRef.current = collapsibles
+
+  useEffect(() => {
+    const active = narrow && !solo && reveal ? collapsibles.find(p => p.id === reveal.id) : undefined
+    const zone = active && tree ? findGroupOfPane(tree, active.id) : null
+    const visible = active ? collapsibles.filter(p => (zone ? zone.panes.includes(p.id) : p.id === active.id)) : []
+    $narrowOverlayPaneIds.set(new Set(visible.flatMap(p => [p.id, ...(paneChrome(p).revealAliases ?? [])])))
+
+    return () => $narrowOverlayPaneIds.set(new Set())
+  }, [narrow, solo, reveal, collapsibles, tree])
 
   // ⌘B / ⌘G's narrow branch dispatches the app's toggle-reveal event with the
   // REAL pane id — accept those via each contribution's revealAliases.
@@ -223,7 +237,13 @@ export function NarrowOverlays() {
           // (macOS traffic lights); the spacer above keeps that band
           // draggable, mirroring TreeGroup's reservation.
           style={{
-            paddingTop: wcOverlap ? wcOverlap.y + wcOverlap.height : undefined,
+            paddingTop: isBrowserHostedDesktop()
+              ? touchTitlebar
+                ? 44
+                : TITLEBAR_HEIGHT
+              : wcOverlap
+                ? wcOverlap.y + wcOverlap.height
+                : undefined,
             width: `min(${overlayWidth}, 85vw)`
           }}
         >

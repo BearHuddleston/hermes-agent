@@ -5,6 +5,8 @@ import { useLocation, useNavigate } from 'react-router'
 
 import { hudTargetSessionId } from '@/app/hud/handoff'
 import { toggleLayoutEditMode } from '@/components/pane-shell/edit-mode'
+import { $narrowOverlayPaneIds } from '@/components/pane-shell/narrow-overlay-state'
+import { $narrowViewport } from '@/components/pane-shell/tree/store'
 import { resetLayoutTree } from '@/components/pane-shell/tree/store'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -22,6 +24,8 @@ import {
   $fileBrowserOpen,
   $leftSideOpen,
   $panesFlipped,
+  CHAT_SIDEBAR_PANE_ID,
+  FILE_BROWSER_PANE_ID,
   toggleLeftSide,
   togglePanesFlipped,
   toggleRightSide
@@ -44,6 +48,7 @@ export interface TitlebarTool extends Tiered {
   id: string
   label: string
   active?: boolean
+  expanded?: boolean
   className?: string
   disabled?: boolean
   hidden?: boolean
@@ -141,6 +146,8 @@ export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }:
   const modHeld = useModifierHeld()
   const fileBrowserOpen = useStore($fileBrowserOpen)
   const leftSideOpen = useStore($leftSideOpen)
+  const narrow = useStore($narrowViewport)
+  const overlayPanes = useStore($narrowOverlayPaneIds)
   const panesFlipped = useStore($panesFlipped)
   const unreadCount = useStore($unreadSessionCount)
   const appActionsSide = useStore($titlebarAppActionsSide)
@@ -164,8 +171,8 @@ export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }:
   // from the live tree (see toggleLeftSide / toggleRightSide) — the browser
   // column, the sessions column, whatever is physically left / right. Never an
   // active highlight — plain show/hide affordances.
-  const leftEdge = { open: leftSideOpen, toggle: toggleLeftSide }
-  const rightEdge = { open: fileBrowserOpen, toggle: toggleRightSide }
+  const leftEdge = { open: narrow ? overlayPanes.has(CHAT_SIDEBAR_PANE_ID) : leftSideOpen, toggle: toggleLeftSide }
+  const rightEdge = { open: narrow ? overlayPanes.has(FILE_BROWSER_PANE_ID) : fileBrowserOpen, toggle: toggleRightSide }
   const leftLabel = leftEdge.open ? t.titlebar.hideSidebar : t.titlebar.showSidebar
   const rightLabel = rightEdge.open ? t.titlebar.hideRightSidebar : t.titlebar.showRightSidebar
 
@@ -175,6 +182,7 @@ export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }:
     badge: panesFlipped ? undefined : unreadBadge,
     icon: <TitlebarIcon name="layout-sidebar-left" />,
     id: 'sidebar',
+    expanded: leftEdge.open,
     label: `${leftLabel}${panesFlipped ? '' : unreadHint}`,
     onSelect: () => {
       triggerHaptic('tap')
@@ -200,6 +208,7 @@ export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }:
     badge: panesFlipped ? unreadBadge : undefined,
     icon: <TitlebarIcon name="layout-sidebar-right" />,
     id: 'right-sidebar',
+    expanded: rightEdge.open,
     label: `${rightLabel}${panesFlipped ? unreadHint : ''}`,
     onSelect: () => {
       triggerHaptic('tap')
@@ -391,6 +400,7 @@ function TitlebarToolButton({ navigate, tool }: { navigate: ReturnType<typeof us
   return (
     <Tip label={tooltipLabel} placement="toolbar">
       <Button
+        aria-expanded={tool.expanded}
         aria-label={tool.label}
         aria-pressed={tool.active ?? undefined}
         className={className}
