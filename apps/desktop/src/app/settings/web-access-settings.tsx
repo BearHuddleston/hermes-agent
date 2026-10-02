@@ -285,7 +285,12 @@ function AvailableWebAccessSettings(): ReactElement {
                     ? w.runningPublic(server.port)
                     : w.runningLocal
             }
-            title={serving ? <ExternalLink href={openUrl}>{openUrl}</ExternalLink> : openUrl}
+            title={serving ? (
+                // The web app is for another browser, never the in-app preview pane.
+                <ExternalLink href={openUrl} native showExternalIcon>
+                  {openUrl}
+                </ExternalLink>
+              ) : openUrl}
           />
         ) : (
           <ListRow
