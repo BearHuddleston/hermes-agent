@@ -27,11 +27,11 @@ import {
   $panesFlipped,
   CHAT_SIDEBAR_PANE_ID,
   FILE_BROWSER_PANE_ID,
-  REVIEW_PANE_ID,
   toggleLeftSide,
   togglePanesFlipped,
   toggleRightSide
 } from '@/store/layout'
+import { REVIEW_PANE_ID } from '@/store/review'
 import { $unreadSessionCount } from '@/store/session-dot-state'
 import { $titlebarAppActionsSide, TITLEBAR_FIXED_TOOLS } from '@/store/titlebar-app-actions'
 
