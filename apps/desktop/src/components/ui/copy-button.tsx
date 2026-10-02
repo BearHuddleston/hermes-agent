@@ -5,6 +5,7 @@ import { ContextMenuItem } from '@/components/ui/context-menu'
 import { DropdownMenuItem } from '@/components/ui/dropdown-menu'
 import { Tip } from '@/components/ui/tooltip'
 import { useI18n } from '@/i18n'
+import { writeClipboardText } from '@/lib/clipboard'
 import { triggerHaptic } from '@/lib/haptics'
 import { Check, Copy, X } from '@/lib/icons'
 import { cn } from '@/lib/utils'
@@ -13,45 +14,6 @@ type CopyPayload = string | (() => Promise<string> | string)
 type CopyButtonAppearance = 'button' | 'icon' | 'inline' | 'menu-item' | 'context-menu-item' | 'tool-row'
 type CopyStatus = 'copied' | 'error' | 'idle'
 const COPIED_RESET_MS = 1_500
-
-export async function writeClipboardText(text: string) {
-  if (!text) {
-    return
-  }
-
-  // Keep the first call inside the browser's trusted gesture. In Electron the
-  // clipboard shim below still routes this native-looking call through the
-  // main-process bridge when Chromium rejects it (for example after a
-  // portaled menu steals focus). In browser-hosted mode the shim captures the
-  // real navigator method before installing the bridge, so this remains a
-  // native write with the original activation rather than an avoidable
-  // bridge-first await.
-  const bridgeWrite = window.hermesDesktop?.writeClipboard
-
-  if (navigator.clipboard?.writeText) {
-    try {
-      await navigator.clipboard.writeText(text)
-
-      return
-    } catch (error) {
-      if (!bridgeWrite) {
-        throw error
-      }
-    }
-  }
-
-  if (bridgeWrite) {
-    const copied = await bridgeWrite(text)
-
-    if (!copied) {
-      throw new Error('Clipboard write is unavailable')
-    }
-
-    return
-  }
-
-  throw new Error('Clipboard API is unavailable')
-}
 
 export interface CopyButtonProps {
   appearance?: CopyButtonAppearance

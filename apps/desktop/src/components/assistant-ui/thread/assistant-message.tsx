@@ -1,3 +1,4 @@
+import { useActionBarReload } from '@assistant-ui/core/react'
 import {
   ActionBarPrimitive,
   BranchPickerPrimitive,
@@ -1089,7 +1090,7 @@ const AssistantActionBar: FC<MessageActionProps & { durationS?: number }> = ({
 }) => {
   const { t } = useI18n()
   const copy = t.assistant.thread
-  const aui = useAui()
+  const { reload: reloadMessage, disabled: reloadDisabled } = useActionBarReload()
 
   const [pickerOpen, setPickerOpen] = useState(false)
   const { enabled: reactionsEnabled, react, reactions: shownReactions } = useMessageReactions(messageId, 'assistant')
@@ -1102,10 +1103,14 @@ const AssistantActionBar: FC<MessageActionProps & { durationS?: number }> = ({
   })
 
   const reload = useCallback(() => {
+    if (reloadDisabled) {
+      return
+    }
+
     triggerHaptic('submit')
     recordAction(DESKTOP_BUTTON_ACTIONS.messageRetry, 'click')
-    aui.message().reload()
-  }, [aui])
+    reloadMessage()
+  }, [reloadDisabled, reloadMessage])
 
   const pickEmoji = useCallback(
     (emoji: null | string) => {
@@ -1162,11 +1167,9 @@ const AssistantActionBar: FC<MessageActionProps & { durationS?: number }> = ({
             <CopyButton appearance="icon" buttonSize="icon" label={copy.copyFullResponse} text={getFullResponseText} />
           )}
           <ReadAloudButton action={readAloud} />
-          <ActionBarPrimitive.Reload asChild>
-            <TooltipIconButton onClick={reload} tooltip={copy.refresh}>
-              <RefreshCwIcon className="size-3.5" />
-            </TooltipIconButton>
-          </ActionBarPrimitive.Reload>
+          <TooltipIconButton disabled={reloadDisabled} onClick={reload} tooltip={copy.refresh}>
+            <RefreshCwIcon className="size-3.5" />
+          </TooltipIconButton>
         </div>
         <div
           className="aui-message-actions-touch items-center justify-end gap-1"
@@ -1211,6 +1214,7 @@ const AssistantActionBar: FC<MessageActionProps & { durationS?: number }> = ({
                   iconNode: <RefreshCwIcon className="size-3.5" />,
                   key: 'refresh',
                   label: copy.refresh,
+                  disabled: reloadDisabled,
                   onSelect: reload
                 })}
               </>

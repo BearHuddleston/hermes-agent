@@ -1,6 +1,6 @@
 import type { Terminal } from '@xterm/xterm'
 
-import { writeClipboardText } from '@/components/ui/copy-button'
+import { writeClipboardText } from '@/lib/clipboard'
 import { triggerHaptic } from '@/lib/haptics'
 
 import { terminalClipboardIntent } from './clipboard'

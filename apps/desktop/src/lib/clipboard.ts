@@ -1,40 +1,53 @@
-// Keeps the browser-native clipboard write on the original user gesture. If
-// Chromium rejects it after focus moved (for example from a portaled Radix
-// dropdown), the Electron IPC path is the fallback and remains unconditional.
+import { isBrowserHostedDesktop } from '@/lib/platform'
 
-export function installClipboardShim() {
-  const ipc = window.hermesDesktop?.writeClipboard
+// Primitives and CopyButton enter one policy, never nested fallback retries.
+const nativeWrites = new WeakMap<Clipboard, Clipboard['writeText'] | undefined>()
 
-  if (!ipc || !navigator.clipboard) {
+export async function writeClipboardText(text: string) {
+  if (!text) {
     return
   }
 
-  const native = navigator.clipboard.writeText?.bind(navigator.clipboard)
+  const clipboard = navigator.clipboard
 
-  const writeText = async (text: string) => {
-    if (!native) {
-      const copied = await ipc(text)
+  const native =
+    clipboard && (nativeWrites.has(clipboard) ? nativeWrites.get(clipboard) : clipboard.writeText?.bind(clipboard))
 
-      if (!copied) {
-        throw new Error('Clipboard write is unavailable')
-      }
+  // The browser bridge calls the same native API, not an independent fallback.
+  const ipc = isBrowserHostedDesktop() ? undefined : window.hermesDesktop?.writeClipboard
 
-      return
-    }
-
+  if (native) {
     try {
       await native(text)
-    } catch {
-      const copied = await ipc(text)
 
-      if (!copied) {
-        throw new Error('Clipboard write is unavailable')
+      return
+    } catch (error) {
+      if (!ipc) {
+        throw error
       }
     }
   }
 
+  if (!ipc) {
+    throw new Error('Clipboard API is unavailable')
+  }
+
+  if (!(await ipc(text))) {
+    throw new Error('Clipboard write is unavailable')
+  }
+}
+
+export function installClipboardShim() {
+  const clipboard = navigator.clipboard
+
+  if (!window.hermesDesktop?.writeClipboard || !clipboard || nativeWrites.has(clipboard)) {
+    return
+  }
+
+  nativeWrites.set(clipboard, clipboard.writeText?.bind(clipboard))
+
   try {
-    Object.defineProperty(navigator.clipboard, 'writeText', { configurable: true, value: writeText, writable: true })
+    Object.defineProperty(clipboard, 'writeText', { configurable: true, value: writeClipboardText, writable: true })
   } catch {
     // Browser refused override; primitives keep using the native API.
   }
