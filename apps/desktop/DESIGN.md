@@ -292,6 +292,8 @@ which may sit past the dialog's edges.
 Composer controls retain 44px targets on coarse-pointer surfaces. Collapse
 stages budget the actual control-size token; below the two-target width budget,
 the context menu and Send occupy separate rows rather than clipping or shrinking.
+The voice engine split-button uses `--composer-voice-menu-size`: compact on
+desktop, matching `--composer-control-size` on touch surfaces.
 
 - **Gutters:** `PAGE_INSET_X` (`src/app/layout-constants.ts`) for page side
   padding; `PAGE_INSET_NEG_X` to bleed a child to the edge. Don't hardcode

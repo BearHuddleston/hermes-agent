@@ -542,6 +542,7 @@
     --composer-width: 100%;
     --composer-control-size: 1.5rem;
     --composer-control-primary-size: 1.625rem;
+    --composer-voice-menu-size: 1.25rem;
     --composer-control-gap: 0.25rem;
     --composer-row-gap: 0.25rem;
     --composer-ring-strength: 1;
@@ -843,6 +844,7 @@
   :root {
     --composer-control-size: 2.75rem;
     --composer-control-primary-size: 2.75rem;
+    --composer-voice-menu-size: var(--composer-control-size);
   }
 }
 
