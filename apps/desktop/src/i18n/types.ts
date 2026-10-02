@@ -1346,6 +1346,7 @@ export interface Translations {
       notRunningDetail: string
       needsSignIn: string
       startingDetail: string
+      needsNousForUrl: string
       runningLan: string
       runningPublic: (port: number) => string
       runningLocal: string

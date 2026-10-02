@@ -1858,6 +1858,7 @@ export const frOverrides = {
       notRunningDetail: 'Démarrez-la pour ouvrir Hermes depuis un autre appareil.',
       needsSignIn: 'Configurez d\'abord une méthode de connexion ci-dessous.',
       startingDetail: "Préparation de l'application web. L'adresse sera disponible dans un instant.",
+      needsNousForUrl: "Votre propre URL nécessite la connexion Nous. Un mot de passe seul est réservé à un réseau de confiance.",
       runningLan: 'Ouvrez cette adresse sur un appareil connecté au même réseau.',
       runningPublic: port => `Servie via votre URL. Votre proxy ou tunnel redirige vers le port ${port} de cet ordinateur.`,
       runningLocal: 'Disponible uniquement sur cet ordinateur.',

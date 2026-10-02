@@ -25,6 +25,7 @@ import { useI18n } from '@/i18n'
 import { ExternalLink } from '@/lib/external-link'
 import { Globe, Loader2, Network, Play, ShieldLock, StopFilled } from '@/lib/icons'
 import { isBrowserHostedDesktop } from '@/lib/platform'
+import { renderQrDataUrl } from '@/lib/qr'
 import { cn } from '@/lib/utils'
 import { notifyError } from '@/store/notifications'
 import { $connection } from '@/store/session'
@@ -73,11 +74,8 @@ async function waitForWebApp(action: string): Promise<'failed' | 'running' | 'ti
   return 'timeout'
 }
 
-async function renderQr(payload: string): Promise<string> {
-  // Lazy: the encoder only loads while a LAN address is on screen.
-  const QRCode = await import('qrcode')
-
-  return QRCode.toDataURL(payload, { errorCorrectionLevel: 'M', margin: 1, width: 176 })
+function lanUrlFor(address: null | string, port: number): null | string {
+  return address ? `http://${address}:${port}` : null
 }
 
 function useQrCode(payload: null | string): null | string {
@@ -88,7 +86,7 @@ function useQrCode(payload: null | string): null | string {
     setImage(null)
 
     if (payload) {
-      void renderQr(payload).then(url => current && setImage(url))
+      void renderQrDataUrl(payload, 176).then(url => current && setImage(url))
     }
 
     return () => {
@@ -156,9 +154,7 @@ function AvailableWebAccessSettings(): ReactElement {
   const server = status?.running[0] ?? null
   const serving = Boolean(server?.listening)
 
-  const qr = useQrCode(
-    serving && server?.mode === 'lan' && status?.lan_address ? `http://${status.lan_address}:${server.port}` : null
-  )
+  const qr = useQrCode(serving && server?.mode === 'lan' ? lanUrlFor(status?.lan_address ?? null, server.port) : null)
 
   if (error) {
     return (
@@ -177,6 +173,8 @@ function AvailableWebAccessSettings(): ReactElement {
   const chosenUrl = publicUrl ?? status.public_url
   const chosenPort = port ?? String(server?.port ?? status.default_port)
   const hasSignIn = Boolean(status.nous_client_id || status.password_username)
+  // Same rule the backend enforces: your own URL needs Nous sign-in, a password alone is LAN-only.
+  const needsNous = chosenMode === 'public' && !status.nous_client_id
 
   const plan: WebAccessPlan = {
     mode: chosenMode,
@@ -185,14 +183,12 @@ function AvailableWebAccessSettings(): ReactElement {
   }
 
   const planReady = chosenMode === 'lan' ? Boolean(status.lan_address) : chosenUrl.trim().startsWith('https://')
-  const lanUrl = status.lan_address ? `http://${status.lan_address}:${plan.port}` : null
+  const lanUrl = lanUrlFor(status.lan_address, plan.port)
 
   const openUrl = server
-    ? server.mode === 'lan' && status.lan_address
-      ? `http://${status.lan_address}:${server.port}`
-      : server.mode === 'public'
-        ? status.public_url
-        : `http://127.0.0.1:${server.port}`
+    ? server.mode === 'public'
+      ? status.public_url
+      : ((server.mode === 'lan' ? lanUrlFor(status.lan_address, server.port) : null) ?? `http://127.0.0.1:${server.port}`)
     : null
 
   function apply(next: WebAccessStatus): void {
@@ -297,7 +293,7 @@ function AvailableWebAccessSettings(): ReactElement {
             action={
               <Button
                 className={spinning('start')}
-                disabled={busy !== null || !hasSignIn || !planReady}
+                disabled={busy !== null || !hasSignIn || !planReady || needsNous}
                 onClick={() => void start()}
                 size="sm"
               >
@@ -305,7 +301,7 @@ function AvailableWebAccessSettings(): ReactElement {
                 {busy === 'start' ? w.starting : w.start}
               </Button>
             }
-            description={hasSignIn ? w.notRunningDetail : w.needsSignIn}
+            description={!hasSignIn ? w.needsSignIn : needsNous ? w.needsNousForUrl : w.notRunningDetail}
             title={w.notRunning}
           />
         )}

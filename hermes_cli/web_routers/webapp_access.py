@@ -18,7 +18,7 @@ from pydantic import BaseModel
 
 from hermes_cli import webapp_access
 from hermes_cli.web_deps import LateState, late
-from hermes_cli.web_routers._common import config_write_scope, http_failure
+from hermes_cli.web_routers._common import _profile_scope, config_write_scope, destructive_profile, http_failure
 from hermes_cli.web_server_profiles import _profile_cli_args
 
 _own_profile_selector = late("_own_profile_selector", "hermes_cli.web_server_gateway")
@@ -41,11 +41,16 @@ class PasswordBody(BaseModel):
     password: str
 
 
-async def _scoped(profile: Optional[str], fn: Callable[[], Any]) -> Any:
-    """Run *fn* in the profile's config-write scope off the loop; access errors become 400s."""
+async def _scoped(profile: Optional[str], fn: Callable[[], Any], *, config_write: bool = False) -> Any:
+    """Run *fn* in the profile's scope off the loop; access errors become 400s.
+
+    Only a ``config.yaml`` read-modify-write (the password routes) takes the config mutation
+    lock. Nous registration, start and stop touch ``.env`` and processes and may wait on the
+    portal for seconds, which must not stall every other settings write.
+    """
 
     def _run():
-        with config_write_scope(profile):
+        with config_write_scope(profile) if config_write else _profile_scope(profile):
             return fn()
 
     try:
@@ -82,26 +87,32 @@ async def webapp_access_status(profile: Optional[str] = None):
 async def set_webapp_password(body: PasswordBody, profile: Optional[str] = None):
     from hermes_cli.dashboard_auth_setup import save_basic_auth
 
+    profile = destructive_profile(profile, "POST /api/webapp-access/password")
+
     def _save():
         save_basic_auth(body.username, body.password)
         return webapp_access.access_status()
 
-    return await _scoped(profile, _save)
+    return await _scoped(profile, _save, config_write=True)
 
 
 @router.delete("/api/webapp-access/password")
 async def remove_webapp_password(profile: Optional[str] = None):
     from hermes_cli.dashboard_auth_setup import clear_basic_auth
 
+    profile = destructive_profile(profile, "DELETE /api/webapp-access/password")
+
     def _clear():
         clear_basic_auth()
         return webapp_access.access_status()
 
-    return await _scoped(profile, _clear)
+    return await _scoped(profile, _clear, config_write=True)
 
 
 @router.post("/api/webapp-access/nous")
 async def set_webapp_nous_sign_in(body: AccessPlanBody, profile: Optional[str] = None):
+    profile = destructive_profile(profile, "POST /api/webapp-access/nous")
+
     def _register():
         plan = _plan(body)
         webapp_access.apply_public_url(plan)
@@ -113,6 +124,8 @@ async def set_webapp_nous_sign_in(body: AccessPlanBody, profile: Optional[str] =
 
 @router.delete("/api/webapp-access/nous")
 async def remove_webapp_nous_sign_in(profile: Optional[str] = None):
+    profile = destructive_profile(profile, "DELETE /api/webapp-access/nous")
+
     def _remove():
         webapp_access.remove_nous_sign_in()
         return webapp_access.access_status()
@@ -122,6 +135,8 @@ async def remove_webapp_nous_sign_in(profile: Optional[str] = None):
 
 @router.post("/api/webapp-access/start")
 async def start_webapp_access(body: AccessPlanBody, profile: Optional[str] = None):
+    profile = destructive_profile(profile, "POST /api/webapp-access/start")
+
     def _prepare():
         if webapp_access.running_webapps():
             raise HTTPException(status_code=409, detail="The web app is already running. Stop it first.")
@@ -138,6 +153,7 @@ async def start_webapp_access(body: AccessPlanBody, profile: Optional[str] = Non
 @router.post("/api/webapp-access/stop")
 async def stop_webapp_access(profile: Optional[str] = None):
     """Stop in-process (no CLI child), so it works even when spawning ``hermes`` does not."""
+    profile = destructive_profile(profile, "POST /api/webapp-access/stop")
 
     def _stop():
         if webapp_access.stop_webapps()[1]:

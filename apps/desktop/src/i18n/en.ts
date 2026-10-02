@@ -1598,6 +1598,7 @@ export const en: Translations = {
       notRunningDetail: 'Start it to open Hermes from another device.',
       needsSignIn: 'Set up a sign-in method below first.',
       startingDetail: 'Preparing the web app. The address opens in a moment.',
+      needsNousForUrl: 'Your own URL needs Nous sign-in. A password alone is for a network you trust.',
       runningLan: 'Open this address on a device connected to the same network.',
       runningPublic: port => `Served through your URL. Your proxy or tunnel forwards to port ${port} on this computer.`,
       runningLocal: 'Running for this computer only.',

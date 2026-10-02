@@ -183,11 +183,15 @@ def prepare(plan: AccessPlan, *, enable_nous: bool = False, name: Optional[str] 
     that ``start_server`` would refuse.
     """
     methods = sign_in_methods()
+    nous = enable_nous or bool(methods["nous"])
     # Refuse before writing anything: a refused start must leave the home as it found it.
-    if not (enable_nous or methods["nous"] or methods["password"]):
+    if not (nous or methods["password"]):
         raise WebappAccessError("Set up a sign-in method (Nous account or password) first.")
+    if plan.mode == "public" and not nous:
+        raise WebappAccessError(
+            "Your own URL needs Nous sign-in. A password alone is for a network you trust.")
     apply_public_url(plan)
-    if enable_nous or methods["nous"]:
+    if nous:
         register_nous_sign_in(plan, name=name)
     return sign_in_methods()
 

@@ -1535,6 +1535,7 @@ export const zh = defineLocale({
       notRunningDetail: '启动后即可从其他设备打开 Hermes。',
       needsSignIn: '请先在下方设置登录方式。',
       startingDetail: '正在准备网页应用，地址马上就能打开。',
+      needsNousForUrl: '使用你自己的网址需要 Nous 登录。仅设置密码只适用于你信任的网络。',
       runningLan: '在连接到同一网络的设备上打开此地址。',
       runningPublic: port => `通过你的网址提供服务。你的代理或隧道会转发到这台电脑的 ${port} 端口。`,
       runningLocal: '仅在这台电脑上可用。',
