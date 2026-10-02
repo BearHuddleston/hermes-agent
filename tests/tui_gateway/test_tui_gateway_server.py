@@ -3105,7 +3105,7 @@ def test_expand_skill_invocation_for_replay_leaves_ordinary_text_alone(monkeypat
 
 def _two_repo_project_skill_sessions(tmp_path, monkeypatch) -> tuple[Path, Path]:
     """Two trusted repos (``alpha-skill`` / ``beta-skill``) bound to sessions ``sid-a`` / ``sid-b``, in a
-    launch shape whose process cwd and TERMINAL_CWD both point at a non-project dir."""
+    launch shape whose process cwd and TERMINAL_CWD both point outside either project."""
     import agent.skill_commands as skill_commands
     import agent.skill_utils as skill_utils
     import tools.skills_tool as skills_tool
@@ -3129,7 +3129,7 @@ def _two_repo_project_skill_sessions(tmp_path, monkeypatch) -> tuple[Path, Path]
         "external_dirs": [], "trusted_project_dirs": [str(repo_a), str(repo_b)]})
     skill_utils._external_dirs_cache_clear()
     monkeypatch.setattr(skill_commands, "_skill_commands_by_key", {})
-    # Launch shape: process cwd and TERMINAL_CWD both point at a non-project dir (the resolved placeholder).
+    # Launch shape: process cwd and TERMINAL_CWD point outside either project (the resolved placeholder).
     elsewhere = tmp_path / "home-dir"
     elsewhere.mkdir()
     monkeypatch.chdir(elsewhere)
@@ -3149,6 +3149,7 @@ def test_command_dispatch_and_catalog_resolve_project_skills_from_the_session_cw
     import agent.skill_utils as skill_utils
 
     _two_repo_project_skill_sessions(tmp_path, monkeypatch)
+    ambient_project_root = skill_utils.find_project_root()
     for sid, own, other in (("sid-a", "alpha-skill", "beta-skill"), ("sid-b", "beta-skill", "alpha-skill")):
         catalog = server._methods["commands.catalog"]("c", {"session_id": sid})["result"]
         assert f"/{own}" in catalog["skills"] and f"/{other}" not in catalog["skills"]
@@ -3157,8 +3158,8 @@ def test_command_dispatch_and_catalog_resolve_project_skills_from_the_session_cw
         assert f"BODY OF {own.upper()}" in res["result"]["message"]
         miss = server._methods["command.dispatch"]("m", {"name": other, "arg": "", "session_id": sid})
         assert miss["error"]["code"] == 4018
-    # Nothing leaks past the RPC: the thread's logical cwd is unbound again.
-    assert skill_utils.find_project_root() is None
+    # Nothing leaks past the RPC, even if the temporary directory has a host .git ancestor.
+    assert skill_utils.find_project_root() == ambient_project_root
 
 
 def test_command_dispatch_reviews_staged_skill_writes(tmp_path, monkeypatch):

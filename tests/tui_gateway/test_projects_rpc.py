@@ -22,13 +22,14 @@ def _call(method, params=None):
 
 
 @pytest.fixture(autouse=True)
-def _fast_git_probe(monkeypatch):
+def _fast_git_probe(monkeypatch, tmp_path):
     """Replace real git subprocess probes with a cheap .git-directory check.
 
     The record/discover RPC paths probe every distinct session cwd in the DB
     with a real ``git`` subprocess; on a warm session DB that made single
     tests take 10-80s. Behavior under test (policy gating, cache merging,
-    ranking) only needs root resolution, not real git.
+    ranking) only needs root resolution, not real git. Never discover a host
+    repository above this test's workspace (including an empty sandbox .git).
     """
     from tui_gateway import git_probe
 
@@ -36,7 +37,7 @@ def _fast_git_probe(monkeypatch):
 
     def _fake_run_git(cwd, *_a):
         d = str(cwd)
-        while d and d not in ("/", os.path.dirname(d)):
+        while d == str(tmp_path) or d.startswith(str(tmp_path) + os.sep):
             if os.path.isdir(os.path.join(d, ".git")):
                 return d
             d = os.path.dirname(d)
@@ -182,10 +183,12 @@ def test_scan_time_is_not_treated_as_session_activity(tmp_path):
     with the scan time — i.e. "just now" — so repos the user has never opened
     in Hermes outranked the ones they actually work in.
     """
-    worked_in = tmp_path / "worked-in"
-    worked_in.mkdir()
+    worked_in = tmp_path / "projects" / "worked-in"
+    worked_in.mkdir(parents=True)
     subprocess.run(["git", "init"], cwd=worked_in, check=True, capture_output=True)
-    server._get_db().create_session("worked-in-session", "cli", cwd=str(worked_in))
+    nested_cwd = worked_in / "src"
+    nested_cwd.mkdir()
+    server._get_db().create_session("worked-in-session", "cli", cwd=str(nested_cwd))
 
     never_opened = tmp_path / "never-opened"
     never_opened.mkdir()

@@ -924,7 +924,9 @@ describe('migrateInFlightTurnJournal', () => {
   it('keeps the original recoverable tail if copying fails and preserves an existing destination on retry', () => {
     persistInFlightTurnState(journalState())
     vi.advanceTimersByTime(400)
+
     const original = window.localStorage.getItem(sessionStorageKey('stored-1'))
+
     const setItem = vi.spyOn(Storage.prototype, 'setItem').mockImplementationOnce(() => {
       throw new Error('quota')
     })
