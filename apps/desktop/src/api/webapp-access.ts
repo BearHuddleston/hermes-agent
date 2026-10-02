@@ -77,6 +77,7 @@ export function startWebAccess(plan: WebAccessPlan): Promise<WebAccessStartRespo
   })
 }
 
-export function stopWebAccess(): Promise<{ name: string; ok: boolean; pid: number }> {
-  return hermesApi({ ...profileScoped(), method: 'POST', path: '/api/webapp-access/stop' })
+/** Stops in the backend process itself and returns the status after the stop. */
+export function stopWebAccess(): Promise<WebAccessStatus> {
+  return hermesApi<WebAccessStatus>({ ...profileScoped(), method: 'POST', path: '/api/webapp-access/stop' })
 }

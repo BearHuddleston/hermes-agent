@@ -3,7 +3,7 @@
 Thin HTTP over :mod:`hermes_cli.webapp_access` (the CLI's ``hermes webapp setup`` uses the same
 functions). Every handler runs in the requested profile's scope. The server itself is a
 detached ``hermes [-p X] webapp`` child spawned like the gateway verbs, so it outlives the
-Desktop session that started it and stops through the CLI's own home-scoped ``--stop``.
+Desktop session that started it; stop is in-process (the same home-scoped kill as ``--stop``).
 """
 
 from __future__ import annotations
@@ -28,7 +28,6 @@ _ACTION_LOG_FILES = LateState("_ACTION_LOG_FILES", "hermes_cli.web_server_gatewa
 router = APIRouter()
 
 SERVER_ACTION = "webapp-access"
-STOP_ACTION = "webapp-access-stop"
 
 
 class AccessPlanBody(BaseModel):
@@ -138,6 +137,11 @@ async def start_webapp_access(body: AccessPlanBody, profile: Optional[str] = Non
 
 @router.post("/api/webapp-access/stop")
 async def stop_webapp_access(profile: Optional[str] = None):
-    with http_failure("Failed to spawn webapp stop", 500, "Failed to stop the web app"):
-        proc, name = _spawn(profile, ["webapp", "--stop"], STOP_ACTION)
-    return {"ok": True, "pid": proc.pid, "name": name}
+    """Stop in-process (no CLI child), so it works even when spawning ``hermes`` does not."""
+
+    def _stop():
+        if webapp_access.stop_webapps()[1]:
+            raise HTTPException(status_code=500, detail="The web app is still running after the stop request.")
+        return webapp_access.access_status()
+
+    return await _scoped(profile, _stop)

@@ -222,7 +222,7 @@ function AvailableWebAccessSettings(): ReactElement {
       }
     })
 
-  const stop = () => run('stop', w.stopFailed, async () => void (await stopWebAccess()))
+  const stop = () => run('stop', w.stopFailed, async () => apply(await stopWebAccess()))
 
   const setUpNous = () => run('nous', w.nousFailed, async () => apply(await setUpWebAccessNous(plan)))
 

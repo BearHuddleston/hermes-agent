@@ -198,7 +198,7 @@ def _mode_for_bind(host: str) -> str:
     return "lan"
 
 
-def running_webapps() -> list[dict]:
+def running_webapps(*, check_listening: bool = True) -> list[dict]:
     """Live ``hermes webapp`` servers of THIS home, with their bind.
 
     ``listening`` separates a server that accepts connections from one still preparing its
@@ -217,11 +217,27 @@ def running_webapps() -> list[dict]:
     return [
         {
             "pid": pid, "host": host, "port": port, "mode": _mode_for_bind(host),
-            "listening": _dashboard_listening(host, port),
+            "listening": _dashboard_listening(host, port) if check_listening else None,
         }
         for pid in owned
         for host, port in [servers[pid]]
     ]
+
+
+def stop_webapps(reason: str = "requested via Web access") -> tuple[bool, list[dict]]:
+    """Stop THIS home's Webapp servers in-process: ``(found any, still alive)``.
+
+    The same home-scoped kill as ``hermes webapp --stop``, without spawning a CLI child: a
+    stop must keep working when spawning ``hermes`` itself is what is broken.
+    """
+    from hermes_cli.dashboard_procs import _kill_stale_dashboard_processes
+    from hermes_constants import get_hermes_home
+
+    pids = {server["pid"] for server in running_webapps(check_listening=False)}
+    if not pids:
+        return False, []
+    _kill_stale_dashboard_processes(reason=reason, include_pids=pids, scope_home=str(get_hermes_home()))
+    return True, running_webapps(check_listening=False)
 
 
 def access_status() -> dict:

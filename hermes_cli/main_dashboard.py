@@ -818,27 +818,12 @@ def cmd_webapp(args):
         _report_dashboard_status(modes={"webapp"})
         raise SystemExit(0)
     if getattr(args, "stop", False):
-        from hermes_constants import get_hermes_home
+        from hermes_cli.webapp_access import stop_webapps
 
-        own_home = str(get_hermes_home())
-
-        def _webapp_pids() -> list[int]:
-            return _pids_owned_by_hermes_home([
-                pid
-                for pid, command in _scan_dashboard_processes()
-                if (_parse_dashboard_runtime(command) or (None, "", 0))[0] == "webapp"
-            ], own_home)
-
-        webapp_pids = set(_webapp_pids())
-        if not webapp_pids:
+        found, remaining = stop_webapps(reason="requested via webapp --stop")
+        if not found:
             print("No Hermes Webapp processes running for this profile.")
-            raise SystemExit(0)
-        _kill_stale_dashboard_processes(
-            reason="requested via webapp --stop",
-            include_pids=webapp_pids,
-            scope_home=own_home,
-        )
-        raise SystemExit(1 if _webapp_pids() else 0)
+        raise SystemExit(1 if remaining else 0)
 
     from hermes_cli.webapp import WebappBuildError, prepare_webapp_renderer
 
