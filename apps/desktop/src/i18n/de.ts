@@ -1853,6 +1853,7 @@ export const deOverrides = {
       notRunning: 'Nicht gestartet',
       notRunningDetail: 'Starte sie, um Hermes von einem anderen Gerät aus zu öffnen.',
       needsSignIn: 'Richte zuerst unten eine Anmeldemethode ein.',
+      startingDetail: 'Die Web-App wird vorbereitet. Die Adresse ist gleich erreichbar.',
       runningLan: 'Öffne diese Adresse auf einem Gerät im selben Netzwerk.',
       runningPublic: port => `Über deine URL bereitgestellt. Dein Proxy oder Tunnel leitet an Port ${port} dieses Computers weiter.`,
       runningLocal: 'Nur für diesen Computer verfügbar.',

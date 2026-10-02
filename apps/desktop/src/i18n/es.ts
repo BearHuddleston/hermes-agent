@@ -1850,6 +1850,7 @@ export const esOverrides = {
       notRunning: 'Sin iniciar',
       notRunningDetail: 'Iníciala para abrir Hermes desde otro dispositivo.',
       needsSignIn: 'Primero configura un método de inicio de sesión abajo.',
+      startingDetail: 'Preparando la aplicación web. La dirección estará disponible en un momento.',
       runningLan: 'Abre esta dirección en un dispositivo conectado a la misma red.',
       runningPublic: port => `Servida a través de tu URL. Tu proxy o túnel reenvía al puerto ${port} de este ordenador.`,
       runningLocal: 'Disponible solo en este ordenador.',

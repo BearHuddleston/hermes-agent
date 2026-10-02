@@ -59,7 +59,7 @@ async function waitForWebApp(action: string): Promise<'failed' | 'running' | 'ti
   while (Date.now() < deadline) {
     await new Promise(resolve => setTimeout(resolve, START_POLL_MS))
 
-    if ((await getWebAccessStatus()).running.length > 0) {
+    if ((await getWebAccessStatus()).running.some(server => server.listening)) {
       return 'running'
     }
 
@@ -127,7 +127,14 @@ function AvailableWebAccessSettings(): ReactElement {
   const scope = JSON.stringify(useStore($apiRequestScope))
   const queryClient = useQueryClient()
   const key = webAccessKey(scope)
-  const { data: status, error } = useQuery({ queryFn: getWebAccessStatus, queryKey: key, retry: false })
+
+  const { data: status, error } = useQuery({
+    queryFn: getWebAccessStatus,
+    queryKey: key,
+    // A server still preparing (port not open yet) is polled until it serves.
+    refetchInterval: query => (query.state.data?.running.some(server => !server.listening) ? START_POLL_MS : false),
+    retry: false
+  })
 
   // Nous sign-in registers this computer under the user's own Nous account, so
   // it needs one signed in (a free-tier identity has no account to register under).
@@ -147,7 +154,11 @@ function AvailableWebAccessSettings(): ReactElement {
   const [password, setPassword] = useState('')
 
   const server = status?.running[0] ?? null
-  const qr = useQrCode(server?.mode === 'lan' && status?.lan_address ? `http://${status.lan_address}:${server.port}` : null)
+  const serving = Boolean(server?.listening)
+
+  const qr = useQrCode(
+    serving && server?.mode === 'lan' && status?.lan_address ? `http://${status.lan_address}:${server.port}` : null
+  )
 
   if (error) {
     return (
@@ -236,7 +247,11 @@ function AvailableWebAccessSettings(): ReactElement {
       </p>
 
       <SettingsSection
-        aside={<Pill tone={server ? 'success' : 'muted'}>{server ? w.running : w.stopped}</Pill>}
+        aside={
+          <Pill tone={serving ? 'success' : server ? 'warn' : 'muted'}>
+            {serving ? w.running : server ? w.starting : w.stopped}
+          </Pill>
+        }
         icon={Globe}
         title={w.statusTitle}
       >
@@ -262,9 +277,15 @@ function AvailableWebAccessSettings(): ReactElement {
               ) : undefined
             }
             description={
-              server.mode === 'lan' ? w.runningLan : server.mode === 'public' ? w.runningPublic(server.port) : w.runningLocal
+              !serving
+                ? w.startingDetail
+                : server.mode === 'lan'
+                  ? w.runningLan
+                  : server.mode === 'public'
+                    ? w.runningPublic(server.port)
+                    : w.runningLocal
             }
-            title={<ExternalLink href={openUrl}>{openUrl}</ExternalLink>}
+            title={serving ? <ExternalLink href={openUrl}>{openUrl}</ExternalLink> : openUrl}
           />
         ) : (
           <ListRow

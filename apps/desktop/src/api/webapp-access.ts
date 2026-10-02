@@ -8,6 +8,8 @@ export type WebAccessMode = 'lan' | 'public'
 
 export interface WebAccessServer {
   host: string
+  /** False while the process prepares its runtime/renderer and the port is not open yet. */
+  listening: boolean
   mode: 'lan' | 'local' | 'public'
   pid: number
   port: number

@@ -199,9 +199,13 @@ def _mode_for_bind(host: str) -> str:
 
 
 def running_webapps() -> list[dict]:
-    """Live ``hermes webapp`` servers of THIS home, with their bind."""
+    """Live ``hermes webapp`` servers of THIS home, with their bind.
+
+    ``listening`` separates a server that accepts connections from one still preparing its
+    runtime or renderer: the process exists for up to a minute before its port opens.
+    """
     from hermes_cli.dashboard_procs import _pids_owned_by_hermes_home, _scan_dashboard_processes
-    from hermes_cli.main_dashboard import _parse_dashboard_runtime
+    from hermes_cli.main_dashboard import _dashboard_listening, _parse_dashboard_runtime
     from hermes_constants import get_hermes_home
 
     servers: dict[int, tuple[str, int]] = {}
@@ -211,8 +215,12 @@ def running_webapps() -> list[dict]:
             servers[pid] = (runtime[1], runtime[2])
     owned = _pids_owned_by_hermes_home(list(servers), str(get_hermes_home()))
     return [
-        {"pid": pid, "host": servers[pid][0], "port": servers[pid][1], "mode": _mode_for_bind(servers[pid][0])}
+        {
+            "pid": pid, "host": host, "port": port, "mode": _mode_for_bind(host),
+            "listening": _dashboard_listening(host, port),
+        }
         for pid in owned
+        for host, port in [servers[pid]]
     ]
 
 
