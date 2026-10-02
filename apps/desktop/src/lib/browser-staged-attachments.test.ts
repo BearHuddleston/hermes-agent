@@ -73,9 +73,11 @@ afterEach(() => {
 describe('browser staged attachment transport', () => {
   it('keeps the picked filename readable while retaining the exact staged source identity', async () => {
     await installBrowser()
+
     const { result } = renderHook(() => useComposerActions({
       activeSessionId: null, currentCwd: '/workspace', requestGateway: vi.fn()
     }))
+
     vi.spyOn(HTMLInputElement.prototype, 'click').mockImplementation(function (this: HTMLInputElement) {
       Object.defineProperty(this, 'files', { configurable: true, value: [file()] })
       this.dispatchEvent(new Event('change'))

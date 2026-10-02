@@ -177,6 +177,7 @@ export function createBrowserUploadsBridge({
   'getStagedFileDisplayName' | 'getStagedFileForAttach' | 'saveImageBuffer' | 'savePastedText' | 'selectPaths' | 'stageFileForAttach'
 > {
   const displayNames = new Map<string, string>()
+
   const rememberName = (path: string, name: string) => {
     displayNames.set(path, name)
 
