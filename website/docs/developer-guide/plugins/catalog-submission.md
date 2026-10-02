@@ -1,14 +1,72 @@
-# Hermes Plugin Catalog
+---
+sidebar_label: "Catalog submission"
+title: "Submitting to the Plugin Catalog"
+description: "The full admission guidelines for the Hermes plugin catalog: what to check before you submit, the rules every entry follows, and what reviewers look at"
+---
 
-Curated, Nous-approved Hermes plugins. Each YAML file in this directory
-(except `removed.yaml`) is one catalog entry, discoverable via
-`hermes plugins catalog` / `hermes plugins search` and installable with
-`hermes plugins install <name>`.
+# Submitting to the Plugin Catalog
 
-## Admission policy
+The [plugin catalog](../../user-guide/features/plugin-catalog.md) is a human-reviewed
+directory of Hermes plugins. Being listed is the trust signal: users install a
+catalog plugin by name, at the exact commit a maintainer read. This page holds
+the complete guidelines for getting a plugin in and keeping it there.
 
-Presence in this directory **is** the trust signal. The rules that keep it
-meaningful:
+The canonical copy of the admission rules is
+[`plugin-catalog/README.md`](https://github.com/NousResearch/hermes-agent/blob/main/plugin-catalog/README.md)
+in the repository. The [rules section](#admission-rules) below mirrors it word
+for word, and a test fails the build if the two drift apart.
+
+## Before you submit
+
+- **A public repository.** The `repo` URL is an `https://` URL anyone can clone
+  (GitHub or GitLab).
+- **A loadable plugin at the commit you pin.** The tree has a `plugin.yaml`
+  manifest plus at least one entrypoint Hermes loads: `__init__.py` (Python),
+  `desktop/plugin.js` (Desktop), `plugin.json` (portable Agent Plugin) or
+  `dashboard/manifest.json` (web dashboard). If the plugin lives in a monorepo,
+  point `subdir` at its directory. The
+  [plugin developer guide](./index.md) covers the layout.
+- **Public surfaces only.** Extend Hermes through hooks, middleware, the
+  `ctx.register_*` APIs, provider plugins and the
+  [Desktop plugin SDK](../desktop-plugin-sdk.md). Never patch Hermes
+  code or Desktop markup at runtime. If the hook you need is missing, see
+  [Asking for a hook](#asking-for-a-hook).
+- **Validation passes locally.** Run the same check catalog CI runs, against a
+  checkout at the commit you are about to pin:
+
+  ```bash
+  hermes plugins validate /path/to/your-plugin --install-deps
+  ```
+
+  It checks the manifest and `requires_hermes`, that the plugin loads, that the
+  `capabilities` you declare match what it registers, `config_schema` and
+  `requires_env`, Python dependencies against Hermes's core constraints, the
+  install security scan, and the `desktop surface` and `no core override`
+  rules. Fix every failure before opening the PR, and read the warnings, since
+  a reviewer will.
+
+## Opening the PR
+
+1. Add **one** file, `plugin-catalog/<name>.yaml`, to
+   [`NousResearch/hermes-agent`](https://github.com/NousResearch/hermes-agent).
+   The fields are documented in the README's
+   [entry schema](https://github.com/NousResearch/hermes-agent/blob/main/plugin-catalog/README.md#entry-schema)
+   and in [What's in an entry](../../user-guide/features/plugin-catalog.md#whats-in-an-entry).
+   Pin `sha` to a full 40-character commit, and quote `version`.
+2. In the PR description, say what the plugin does, which Hermes surfaces it
+   uses, and everything rule 13 asks you to disclose. Add screenshots for
+   anything with a UI.
+3. Wait for the catalog CI job to go green. It clones your repo at the pinned
+   commit and runs `hermes plugins validate`.
+4. A maintainer reviews the pinned tree and merges, asks for changes, or
+   declines. Rule 3 and rule 9 problems are declines rather than bug-fix
+   requests: the plugin has to change its design before it can be listed.
+
+Your plugin's page at `/docs/plugins/<name>` is built from the same file. The
+README at the pinned commit renders there by default, and `screenshots:` fills
+the gallery. There is no separate listing to maintain.
+
+## Admission rules
 
 <!-- admission-rules:start (mirrored in website/docs/developer-guide/plugins/catalog-submission.md; tests/plugin_catalog keeps them identical) -->
 1. **Human-merged gate.** Entries are added *only* via a PR to the
@@ -107,73 +165,39 @@ meaningful:
    are not listed under Nous branding.
 <!-- admission-rules:end -->
 
-The step-by-step submission guide, with the same rules and what reviewers check,
-lives at
-[Submitting to the plugin catalog](https://hermes-agent.nousresearch.com/docs/developer-guide/plugins/catalog-submission).
+## Updating your entry
 
-## Entry schema
+Pin updates (bumping `sha` to a newer commit) go through the same PR and review
+process. A reviewer reads the commit range you are adopting. Bump `version` in
+the same PR so the label users see matches the code, and re-pin any `image` /
+`screenshots` URLs that embed the old sha.
 
-```yaml
-name: example-plugin        # [a-z0-9_-]{1,64}, the catalog key
-repo: https://github.com/owner/repo   # https:// only
-sha: <40-hex commit sha>    # mandatory exact pin
-subdir: ""                  # optional; plain relative path inside the repo
-                            # ([A-Za-z0-9._/-]+ only: no '..', '.', empty
-                            # segments, absolute, or backslash forms)
-description: One-line description.
-maintainer: OwnerName
-tier: official              # official | community (default community)
-category: memory            # desktop | memory | platform | web | tools | voice | automation | models | general
-                            # (default desktop) — the shelf the entry sits on at /docs/plugins
-requires_hermes: ">=0.19"   # optional
-docs_url: ""                # optional
-version: "1.4.0"            # optional human label for the sha (quote it); shown as "1.4.0 @ abcd1234"
-image: ""                   # optional https image on a GitHub host, 2:1 (e.g. 1200x600), e.g.
-                            # https://raw.githubusercontent.com/owner/repo/<sha>/docs/banner.png
-screenshots: []             # optional, up to 6 https images on a GitHub host; gallery on /docs/plugins/<name>
-readme: true                # optional, default true; the README at the PINNED SHA renders on /docs/plugins/<name>
-platforms: []               # optional, e.g. [linux, macos]; empty = all
-capabilities:
-  provides_tools: []
-  provides_hooks: []
-  provides_middleware: []
-  requires_env: []
-```
+Installed plugins compare their recorded sha against the live pin:
+`hermes plugins list --json` reports `update_available`, the Desktop Plugins tab
+shows an **Update to 1.4.0** button, and `hermes plugins update <name>` checks
+out exactly the new pin.
 
-`version`, `image`, `screenshots` and `readme` are cosmetic: none is parsed or
-used to pick what installs. The sha stays the release; bump `version` in the
-same PR that bumps `sha` so the label on the card matches the code. Images must
-live on `raw.githubusercontent.com`, `github.com` or `*.githubusercontent.com`
-so the Desktop catalog and the docs site never fetch from third-party hosts;
-pin the raw URL to the entry's commit and the picture is as immutable as the
-code.
+If a maintainer swept your plugin into the catalog and you want the entry
+changed or removed, open a PR on its file. Owners keep control of their entries.
 
-Every entry gets a page at `https://hermes-agent.nousresearch.com/docs/plugins/<name>`
-and every maintainer a page at `/docs/plugins/by/<maintainer>`, both generated
-from these files at docs build time. `screenshots:` fills the page's gallery;
-the build fetches the README (from `subdir` if set, else the repo root) **at the
-pinned sha** — GitHub and GitLab repos, on by default, `readme: false` opts out — and renders it
-through an allowlist (raw HTML dropped, links and images resolved against the
-pinned tree). The page therefore shows the README the reviewer read, and it
-changes only when a reviewed re-pin lands.
+## Delisting and removal
 
-## removed.yaml — the blocklist
+- **Delisting** deletes an entry's file: for plugins that are unmaintained,
+  superseded, squatting a name, or no longer meet a rule. Users who already
+  installed the plugin keep it, and it is welcome back once the problem is
+  fixed. When a new rule affects plugins that are already listed, their
+  authors get an issue on their repository explaining the change and time to
+  update before anything is removed.
+- **Removal** adds the plugin to
+  [`removed.yaml`](https://github.com/NousResearch/hermes-agent/blob/main/plugin-catalog/README.md#removedyaml--the-blocklist),
+  which is reserved for security and policy incidents. Installers refuse
+  anything on that list, and installed copies stop updating and cannot be
+  enabled.
 
-When an entry is pulled from the catalog for security or policy reasons, it
-is recorded in `removed.yaml` with a reason and date. The installer refuses
-to install anything matching a removed entry's name or repo URL, so a
-malicious plugin cannot be re-installed from a stale identifier after
-removal. Removals, like additions, land via reviewed PRs.
+## Asking for a hook
 
-Delisting is different from removal: an entry that is merely unmaintained, superseded, or
-squatting a name it is not affiliated with is deleted from the catalog (plain file removal,
-users who already installed it are unaffected) and is welcome back under a distinct name.
-
-## Names
-
-The catalog key and the manifest `name:` are what users search, install, and — for memory
-providers — put in `memory.provider`. A `memory` / `exclusive` entry must not reuse the name of
-another provider or of a well-known upstream project it is not affiliated with: two providers
-registering the same `register_memory_provider` name make `memory.provider` ambiguous
-(whichever loads last wins). Reviewers check the registered provider name, not just the file
-name, and the affiliated project gets the bare key.
+If your plugin needs something the plugin surface doesn't offer, open an issue
+on [hermes-agent](https://github.com/NousResearch/hermes-agent/issues)
+describing what you need and why. We would much rather add a proper seam than
+list a patch, and a plugin that will use the hook is exactly the concrete
+consumer a new hook needs.
