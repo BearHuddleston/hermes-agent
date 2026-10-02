@@ -71,6 +71,26 @@ afterEach(() => {
 })
 
 describe('browser staged attachment transport', () => {
+  it('keeps the picked filename readable while retaining the exact staged source identity', async () => {
+    await installBrowser()
+    const { result } = renderHook(() => useComposerActions({
+      activeSessionId: null, currentCwd: '/workspace', requestGateway: vi.fn()
+    }))
+    vi.spyOn(HTMLInputElement.prototype, 'click').mockImplementation(function (this: HTMLInputElement) {
+      Object.defineProperty(this, 'files', { configurable: true, value: [file()] })
+      this.dispatchEvent(new Event('change'))
+    })
+
+    await act(async () => { await result.current.pickContextPaths('file') })
+    const picked = $composerAttachments.get()[0]!
+
+    expect(picked.label).toBe('notes.txt')
+    expect(picked.path).toBe(source.path)
+    expect(picked.stagedUpload).toEqual(source)
+    stashSessionDraft('staged-attachment-contract', 'draft', [picked])
+    expect(takeSessionDraft('staged-attachment-contract').attachments[0]?.label).toBe('notes.txt')
+  })
+
   it.each(['picker', 'drop', 'paste', 'edit-message drop'] as const)(
     '%s sends provenance to the owning gateway without downloading or retransmitting bytes',
     async flow => {

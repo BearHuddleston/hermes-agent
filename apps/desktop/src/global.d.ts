@@ -374,6 +374,8 @@ declare global {
       stageFileForAttach?: (file: File) => Promise<string>
       /** Source ownership returned when this browser stages a file on its host. */
       getStagedFileForAttach?: (path: string) => HermesStagedUpload | undefined
+      /** Browser-picked display name; never replaces the host path or source identity. */
+      getStagedFileDisplayName?: (path: string) => string | undefined
       normalizePreviewTarget: (target: string, baseDir?: string) => Promise<HermesPreviewTarget | null>
       /** Resolves to `HermesReadFileErrorResult` when the watched file was
        *  already gone at call time (a restored tab probing a deleted path) —

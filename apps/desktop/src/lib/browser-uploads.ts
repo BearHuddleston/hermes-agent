@@ -74,7 +74,8 @@ function uploadFailure(status: number, detail: unknown): string {
 async function stageBrowserFile(
   bootstrap: BrowserBootstrap,
   file: File,
-  profile?: null | string
+  profile?: null | string,
+  onStaged?: (path: string, name: string) => void
 ): Promise<string> {
   const form = new FormData()
   form.append('file', file, file.name || 'attachment')
@@ -106,13 +107,16 @@ async function stageBrowserFile(
     }
   }
 
+  onStaged?.(payload.path, file.name)
+
   return payload.path
 }
 
 function selectBrowserFiles(
   bootstrap: BrowserBootstrap,
   options?: HermesSelectPathsOptions,
-  fallbackProfile?: null | string
+  fallbackProfile?: null | string,
+  onStaged?: (path: string, name: string) => void
 ): Promise<string[]> {
   if (options?.directories) {return Promise.resolve([])}
 
@@ -145,7 +149,7 @@ function selectBrowserFiles(
 
         const profile = options?.profile?.trim() || fallbackProfile || null
 
-        void Promise.all(files.map(file => stageBrowserFile(bootstrap, file, profile))).then(resolve, reject)
+        void Promise.all(files.map(file => stageBrowserFile(bootstrap, file, profile, onStaged))).then(resolve, reject)
       },
       { once: true }
     )
@@ -170,8 +174,19 @@ export function createBrowserUploadsBridge({
   objectUrls
 }: BrowserUploadsOptions): Pick<
   Window['hermesDesktop'],
-  'getStagedFileForAttach' | 'saveImageBuffer' | 'savePastedText' | 'selectPaths' | 'stageFileForAttach'
+  'getStagedFileDisplayName' | 'getStagedFileForAttach' | 'saveImageBuffer' | 'savePastedText' | 'selectPaths' | 'stageFileForAttach'
 > {
+  const displayNames = new Map<string, string>()
+  const rememberName = (path: string, name: string) => {
+    displayNames.set(path, name)
+
+    if (displayNames.size > STAGED_UPLOAD_CACHE_LIMIT) {
+      const oldest = displayNames.keys().next().value
+
+      if (oldest !== undefined) { displayNames.delete(oldest) }
+    }
+  }
+
   const saveBuffer = async (data: ArrayBuffer | Uint8Array, ext: string) => {
     const source = data instanceof Uint8Array ? data : new Uint8Array(data)
     const bytes = new Uint8Array(source.byteLength)
@@ -205,12 +220,13 @@ export function createBrowserUploadsBridge({
   }
 
   return {
+    getStagedFileDisplayName: (path: string) => displayNames.get(path),
     getStagedFileForAttach: (path: string) => bootstrap.stagedUploads.get(path),
     saveImageBuffer: saveBuffer,
     savePastedText: (text: string) => stageBrowserFile(
-      bootstrap, new File([text], 'pasted.txt', { type: 'text/plain' }), currentProfile()
+      bootstrap, new File([text], 'pasted.txt', { type: 'text/plain' }), currentProfile(), rememberName
     ),
-    selectPaths: options => selectBrowserFiles(bootstrap, options, currentProfile()),
-    stageFileForAttach: (file: File) => stageBrowserFile(bootstrap, file, currentProfile())
+    selectPaths: options => selectBrowserFiles(bootstrap, options, currentProfile(), rememberName),
+    stageFileForAttach: (file: File) => stageBrowserFile(bootstrap, file, currentProfile(), rememberName)
   }
 }
