@@ -59,13 +59,13 @@ const isThemeMode = (value: unknown): value is ThemeMode => value === 'light' ||
 
 // The connection an untagged request is served by right now ('local' for the
 // local pool). Identity for keys only; never sent as a request pin.
-const ownerKey = (profile: string) => `${ambientOwnerConnectionId() ?? ''}::${profile}`
+export const profileAppearanceOwner = (profile: string): string => `${ambientOwnerConnectionId() ?? ''}::${profile}`
 
 /** Record a local appearance change for `profile` on the current connection (a
  *  pick, a settled write, a peer window's pick), so any value read before it
  *  no longer counts. */
 export function markLocalAppearanceChange(profile: string): void {
-  localChangeAt.set(ownerKey(profile), ++clock)
+  localChangeAt.set(profileAppearanceOwner(profile), ++clock)
 }
 
 /** Call before the config GET: the owner it reads (the ambient request scope,
@@ -73,13 +73,22 @@ export function markLocalAppearanceChange(profile: string): void {
 export function beginProfileAppearanceRead(): { owner: string; profile: string; readAt: number } {
   const profile = (getApiRequestProfile() ?? '').trim() || 'default'
 
-  return { owner: ownerKey(profile), profile, readAt: ++clock }
+  return { owner: profileAppearanceOwner(profile), profile, readAt: ++clock }
 }
 
 export function publishProfileAppearance(
   read: { owner: string; profile: string; readAt: number },
   desktop: unknown
 ): void {
+  // This atom is the foreground publication, not a cache of every gateway.
+  // A late read must not evict the current owner's value, even if both
+  // gateways call their profile "default".
+  const liveProfile = (getApiRequestProfile() ?? '').trim() || 'default'
+
+  if (read.owner !== profileAppearanceOwner(liveProfile)) {
+    return
+  }
+
   const record = desktop && typeof desktop === 'object' ? (desktop as Record<string, unknown>) : {}
   const theme = typeof record.theme === 'string' ? record.theme.trim() : ''
 
@@ -104,7 +113,7 @@ export async function saveProfileAppearance(profile: string, patch: ProfileAppea
   // window may be routed to another gateway that also has this profile name.
   // An untagged pick stays untagged (the pin carries exactly the tag the
   // immediate write would have had), so it keeps Electron's untagged routing.
-  const key = ownerKey(profile)
+  const key = profileAppearanceOwner(profile)
   const pin = { connectionId: connectionScoped().connectionId, profile }
 
   localChangeAt.set(key, ++clock)
