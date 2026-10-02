@@ -4,6 +4,7 @@ import { type ComponentProps, type MouseEvent, type ReactNode, useEffect, useSta
 import { useLocation, useNavigate } from 'react-router'
 
 import { hudTargetSessionId } from '@/app/hud/handoff'
+import { PANE_TOGGLE_REVEAL_EVENT } from '@/components/pane-shell'
 import { toggleLayoutEditMode } from '@/components/pane-shell/edit-mode'
 import { $narrowOverlayPaneIds } from '@/components/pane-shell/narrow-overlay-state'
 import { $narrowViewport } from '@/components/pane-shell/tree/store'
@@ -176,6 +177,17 @@ export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }:
   const leftLabel = leftEdge.open ? t.titlebar.hideSidebar : t.titlebar.showSidebar
   const rightLabel = rightEdge.open ? t.titlebar.hideRightSidebar : t.titlebar.showRightSidebar
 
+  // A visible hover reveal is not pinned: generic toggle would pin it rather
+  // than perform the labelled Hide action. Titlebar verbs are explicit;
+  // keyboard toggles retain their hover-to-pin behavior.
+  const toggleEdge = (id: string, open: boolean, toggleDocked: () => void) => {
+    if (narrow) {
+      window.dispatchEvent(new CustomEvent(PANE_TOGGLE_REVEAL_EVENT, { detail: { id, mode: open ? 'close' : 'open' } }))
+    } else {
+      toggleDocked()
+    }
+  }
+
   const sidebarTool: TitlebarTool = {
     ...TITLEBAR_FIXED_TOOLS.sidebar,
     actionId: 'view.toggleSidebar',
@@ -186,7 +198,7 @@ export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }:
     label: `${leftLabel}${panesFlipped ? '' : unreadHint}`,
     onSelect: () => {
       triggerHaptic('tap')
-      leftEdge.toggle()
+      toggleEdge(CHAT_SIDEBAR_PANE_ID, leftEdge.open, leftEdge.toggle)
     }
   }
 
@@ -212,7 +224,7 @@ export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }:
     label: `${rightLabel}${panesFlipped ? unreadHint : ''}`,
     onSelect: () => {
       triggerHaptic('tap')
-      rightEdge.toggle()
+      toggleEdge(FILE_BROWSER_PANE_ID, rightEdge.open, rightEdge.toggle)
     },
     tour: 'right-pane-toggle'
   }

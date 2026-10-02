@@ -1,9 +1,10 @@
 // @vitest-environment jsdom
-import { act, cleanup, render, screen, within } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, within } from '@testing-library/react'
 import { useEffect } from 'react'
 import { MemoryRouter, useNavigate } from 'react-router'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { PANE_TOGGLE_REVEAL_EVENT } from '@/components/pane-shell'
 import { $narrowOverlayPaneIds } from '@/components/pane-shell/narrow-overlay-state'
 import { $narrowViewport } from '@/components/pane-shell/tree/store'
 import { registry } from '@/contrib/registry'
@@ -212,6 +213,26 @@ describe('titlebar app-action cluster', () => {
     expect(within(left).getByRole('button', { name: 'Hide sidebar' }).getAttribute('aria-expanded')).toBe('true')
     act(() => $narrowOverlayPaneIds.set(new Set()))
     expect(within(left).getByRole('button', { name: 'Show sidebar' })).toBeTruthy()
+  })
+
+  it('explicitly closes a visible overlay rather than pinning a hover reveal', () => {
+    vi.stubGlobal(
+      'matchMedia',
+      vi.fn().mockReturnValue({ matches: true, addEventListener: vi.fn(), removeEventListener: vi.fn() })
+    )
+    $narrowViewport.set(true)
+    $narrowOverlayPaneIds.set(new Set([CHAT_SIDEBAR_PANE_ID]))
+    const intents: unknown[] = []
+    const listener = (event: Event) => intents.push((event as CustomEvent).detail)
+    window.addEventListener(PANE_TOGGLE_REVEAL_EVENT, listener)
+
+    try {
+      renderControls('/')
+      fireEvent.click(screen.getByRole('button', { name: 'Hide sidebar' }))
+      expect(intents).toEqual([{ id: CHAT_SIDEBAR_PANE_ID, mode: 'close' }])
+    } finally {
+      window.removeEventListener(PANE_TOGGLE_REVEAL_EVENT, listener)
+    }
   })
 
   it('moves settings, layout, and HUD to the left when the appearance setting says left', () => {
