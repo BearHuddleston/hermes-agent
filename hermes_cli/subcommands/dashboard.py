@@ -77,6 +77,12 @@ def build_serve_parser(
     return parser
 
 
+# Nested `hermes webapp <name>` commands that configure instead of serving. Process discovery
+# (`webapp_access.running_webapps`, `--stop`) skips them, so an open `webapp setup` prompt is
+# never reported as a server or killed by Stop. Parser and matcher share this one tuple.
+WEBAPP_CONFIG_SUBCOMMANDS = ("register", "setup")
+
+
 def _add_register_args(parser) -> None:
     parser.add_argument(
         "--name", default=None,
@@ -172,8 +178,9 @@ def build_dashboard_parser(
     # `register` is the same registration as `hermes dashboard register`: both surfaces
     # share one server and one login.
     webapp_subparsers = webapp_parser.add_subparsers(dest="webapp_subcommand")
+    register_name, setup_name = WEBAPP_CONFIG_SUBCOMMANDS
     webapp_register_parser = webapp_subparsers.add_parser(
-        "register",
+        register_name,
         help="Set up Nous sign-in for the web app (same as `hermes dashboard register`)",
         description="Register this install with your Nous Portal account so the web app "
             "and dashboard accept Nous sign-in. Writes HERMES_DASHBOARD_OAUTH_CLIENT_ID "
@@ -182,7 +189,7 @@ def build_dashboard_parser(
     webapp_register_parser.set_defaults(func=cmd_dashboard_register)
 
     webapp_setup_parser = webapp_subparsers.add_parser(
-        "setup",
+        setup_name,
         help="Make the web app reachable from other devices, behind a login",
         description="Configure remote access to the web app: on your network (--lan), or "
             "behind an HTTPS URL you already run (--public-url). Sets up Nous sign-in or a "

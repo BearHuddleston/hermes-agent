@@ -149,3 +149,30 @@ def test_privileged_routes_need_an_explicit_profile_when_serving_several(client,
 
     assert [r.status_code for r in responses] == [400, 400, 400]
     assert spawned == []
+
+
+def test_webapp_configuration_commands_are_never_counted_as_servers(monkeypatch):
+    import argparse
+
+    import hermes_cli.dashboard_procs as dashboard_procs
+    from hermes_cli import webapp_access
+    from hermes_cli.subcommands.dashboard import WEBAPP_CONFIG_SUBCOMMANDS, build_dashboard_parser
+    from hermes_constants import get_hermes_home
+
+    root = argparse.ArgumentParser()
+    noop = lambda _args: None  # noqa: E731
+    build_dashboard_parser(
+        root.add_subparsers(dest="command"), cmd_dashboard=noop, cmd_dashboard_register=noop,
+        cmd_webapp=noop, cmd_webapp_setup=noop)
+    # Every nested webapp subcommand the parser knows configures; the matcher reads that list.
+    for name in WEBAPP_CONFIG_SUBCOMMANDS:
+        assert root.parse_args(["webapp", name] + (["--lan"] if name == "setup" else [])).func is not None
+
+    monkeypatch.setattr(dashboard_procs, "_hermes_home_for_pid", lambda pid: str(get_hermes_home()))
+    monkeypatch.setattr(dashboard_procs, "_scan_dashboard_processes", lambda **_: [
+        (111, "hermes webapp --host 0.0.0.0 --port 9119"),
+        (222, "hermes webapp setup --lan"),
+        (333, "hermes -p work webapp register"),
+    ])
+
+    assert [s["pid"] for s in webapp_access.running_webapps(check_listening=False)] == [111]

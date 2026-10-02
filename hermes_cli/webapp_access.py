@@ -202,6 +202,21 @@ def _mode_for_bind(host: str) -> str:
     return "lan"
 
 
+def _configures_instead_of_serving(command: str) -> bool:
+    """``hermes webapp setup|register …``: a configuration command, never a server."""
+    import shlex
+
+    from hermes_cli.dashboard_procs import _dashboard_subcommand_index
+    from hermes_cli.subcommands.dashboard import WEBAPP_CONFIG_SUBCOMMANDS
+
+    try:
+        argv = shlex.split(command)
+    except ValueError:
+        return False
+    index = _dashboard_subcommand_index(argv)
+    return index is not None and len(argv) > index + 1 and argv[index + 1] in WEBAPP_CONFIG_SUBCOMMANDS
+
+
 def running_webapps(*, check_listening: bool = True) -> list[dict]:
     """Live ``hermes webapp`` servers of THIS home, with their bind.
 
@@ -215,7 +230,7 @@ def running_webapps(*, check_listening: bool = True) -> list[dict]:
     servers: dict[int, tuple[str, int]] = {}
     for pid, command in _scan_dashboard_processes():
         runtime = _parse_dashboard_runtime(command)
-        if runtime and runtime[0] == "webapp":
+        if runtime and runtime[0] == "webapp" and not _configures_instead_of_serving(command):
             servers[pid] = (runtime[1], runtime[2])
     owned = _pids_owned_by_hermes_home(list(servers), str(get_hermes_home()))
     return [
