@@ -24,7 +24,7 @@ const desktopWindow = window as unknown as { hermesDesktop?: Window['hermesDeskt
 function installBridge(partial: Partial<Window['hermesDesktop']> = {}) {
   desktopWindow.hermesDesktop = {
     openExternal: vi.fn().mockResolvedValue(undefined),
-    writeClipboard: vi.fn().mockResolvedValue(undefined),
+    writeClipboard: vi.fn().mockResolvedValue(true),
     ...partial
   } as unknown as Window['hermesDesktop']
 }
@@ -271,7 +271,7 @@ describe('AppContextMenu', () => {
   it('offers the resolved copy only for loopback links on a remote gateway', async () => {
     $connection.set({ mode: 'remote' } as never)
     const reachPreviewUrl = vi.fn(async () => 'http://127.0.0.1:45173/')
-    const writeClipboard = vi.fn().mockResolvedValue(undefined)
+    const writeClipboard = vi.fn().mockResolvedValue(true)
 
     installBridge({
       reachPreviewUrl: reachPreviewUrl as unknown as Window['hermesDesktop']['reachPreviewUrl'],
