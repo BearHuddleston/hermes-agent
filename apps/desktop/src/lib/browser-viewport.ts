@@ -12,6 +12,7 @@ export function installBrowserViewport(): () => void {
   }
 
   let frame = 0
+  let unzoomedTop = 0
 
   const reset = () => {
     root.removeAttribute('data-browser-viewport')
@@ -22,15 +23,24 @@ export function installBrowserViewport(): () => void {
   const update = () => {
     frame = 0
 
-    // Keep the last unzoomed layout during pinch/pan, including with an open
-    // keyboard. No focus(), scrollIntoView(), or browser zoom changes here.
-    if (Math.abs(viewport.scale - 1) > 0.01 || !Number.isFinite(viewport.height) || viewport.height <= 0) {
+    // Remove pinch magnification from the height, so opening/closing the
+    // keyboard still updates available space while zoomed. No focus(),
+    // scrollIntoView(), or browser zoom changes here.
+    const height = viewport.height * viewport.scale
+
+    if (!Number.isFinite(height) || height <= 0) {
       return
     }
 
-    const top = Math.max(0, viewport.offsetTop)
+    // Offset during a pinch belongs to the user's pan, not the app shell.
+    if (Math.abs(viewport.scale - 1) < 0.01) {
+      unzoomedTop = Math.max(0, viewport.offsetTop)
+    }
 
-    if (Math.abs(viewport.height - window.innerHeight) < 1 && top < 1) {
+    const top = Math.min(unzoomedTop, Math.max(0, window.innerHeight - height))
+
+    if (Math.abs(height - window.innerHeight) < 1 && top < 1) {
+      unzoomedTop = 0
       reset()
 
       return
@@ -38,7 +48,7 @@ export function installBrowserViewport(): () => void {
 
     // Hermes' UI scale is CSS zoom on <html>, separate from pinch zoom.
     const zoom = Number.parseFloat(getComputedStyle(document.documentElement).zoom) || 1
-    root.style.setProperty('--browser-viewport-height', `${viewport.height / zoom}px`)
+    root.style.setProperty('--browser-viewport-height', `${height / zoom}px`)
     root.style.setProperty('--browser-viewport-top', `${top / zoom}px`)
     root.setAttribute('data-browser-viewport', '')
   }

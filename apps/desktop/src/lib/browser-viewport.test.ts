@@ -67,6 +67,13 @@ describe('browser visible viewport', () => {
     resize(230, 90, 2)
     expect(root.style.getPropertyValue('--browser-viewport-height')).toBe('460px')
     expect(root.style.getPropertyValue('--browser-viewport-top')).toBe('25px')
+    // Closing/reopening the keyboard while still pinched changes available
+    // space, not the user's zoom. It must not leave the old keyboard inset.
+    resize(400, 90, 2)
+    expect(root.hasAttribute('data-browser-viewport')).toBe(false)
+    resize(230, 90, 2)
+    expect(root.style.getPropertyValue('--browser-viewport-height')).toBe('460px')
+    expect(root.style.getPropertyValue('--browser-viewport-top')).toBe('0px')
 
     document.documentElement.style.zoom = '1.25'
     resize(460, 25)
