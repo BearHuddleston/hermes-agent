@@ -245,6 +245,12 @@ def _maybe_open_browser(host: str, actual_port: int, open_browser: bool, initial
     if not open_browser:
         return
 
+    if private and sys.platform == "darwin":
+        # macOS launch arguments are not a same-user credential channel. Until
+        # an authenticated OS handoff exists, keep the operator-only link above.
+        print("  On macOS, open the private launch link above in your browser.", flush=True)
+        return
+
     import webbrowser
 
     _has_display = sys.platform != "linux" or bool(os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY"))

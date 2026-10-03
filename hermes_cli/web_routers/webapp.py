@@ -118,10 +118,12 @@ def _loopback_peer_uid(client: tuple[str, int], server: tuple[str, int]) -> int 
 def _peer_is_server_user(request: Request) -> bool:
     """Whether this request's connection belongs to the OS user running the server.
 
-    Only Linux publishes every user's argv (``/proc/<pid>/cmdline``), so only there can
-    another local user read a launch ticket out of the browser launcher before the browser
-    spends it; macOS and Windows keep argv private to its owner.
+    Linux authenticates the connection owner. macOS has no authenticated
+    launch handoff here, so an argv-carried launch ticket cannot be redeemed.
+    Authenticated child-window tickets do not use this launcher channel.
     """
+    if sys.platform == "darwin":
+        return False
     if sys.platform != "linux":
         return True
     client, server = request.client, request.scope.get("server")

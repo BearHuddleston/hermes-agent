@@ -56,6 +56,9 @@ internet-facing deployment. `--insecure` is a deprecated no-op and cannot
 disable that gate. HTTPS is strongly recommended remotely and is required by
 browsers for some microphone and clipboard APIs.
 
+On macOS, open the private launch link printed in the terminal to enter a local
+Webapp session. Hermes does not automatically open that private session in a browser.
+
 :::warning Treat Webapp access like access to Hermes on the host
 An authenticated Webapp user can execute arbitrary commands as the OS account
 running Hermes, run agent tools, use host-scoped file and Git operations, and
