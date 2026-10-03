@@ -25,7 +25,7 @@ def profile(tmp_path, monkeypatch):
     cache.invalidate()
 
 
-def test_roster_retries_after_real_profile_lease_timeout(profile, monkeypatch):
+def test_readonly_roster_remains_available_during_mutation_lease(profile):
     acquired, release = threading.Event(), threading.Event()
 
     def hold():
@@ -35,12 +35,13 @@ def test_roster_retries_after_real_profile_lease_timeout(profile, monkeypatch):
 
     thread = threading.Thread(target=hold)
     thread.start()
-    monkeypatch.setattr(profile_lifecycle, "_PROFILE_LIFECYCLE_LOCK_TIMEOUT_SECONDS", 0.05)
     try:
         assert acquired.wait(5)
         during = {}
         srv._profile_session_fields(during, profile)
-        assert during == dict(last_session=None, worker_session=None, canonical_session=None)
+        # Read-only admission uses an incarnation/directory snapshot, so a
+        # writer's lease alone must not hide an otherwise live profile.
+        assert during["last_session"]["title"] == "steady chat"
     finally:
         release.set()
         thread.join(5)
@@ -71,6 +72,10 @@ def test_warm_hit_rechecks_retirement_before_publication(profile, monkeypatch):
         assert row == dict(last_session=None, worker_session=None, canonical_session=None)
     finally:
         hermes_constants.clear_named_profile_deleted(profile)
+    monkeypatch.setattr(cache, "cached_session_fields", real)
+    recovered = {}
+    srv._profile_session_fields(recovered, profile)
+    assert recovered["last_session"]["title"] == "steady chat"
 
 
 def test_warm_hit_rechecks_replacement_before_publication(profile, monkeypatch):
