@@ -75,6 +75,25 @@ const revealPane = (id: string) => {
 const overlayTab = (paneId: string) => document.querySelector<HTMLElement>(`[data-narrow-overlay-tab="${paneId}"]`)
 
 describe('narrow overlay of a stacked zone', () => {
+  it('dismisses an outside tap while preserving inside controls and cancelled gestures', () => {
+    render(<NarrowOverlays />)
+    revealPane('sessions')
+    fireEvent.pointerDown(overlayTab('bots')!, { button: 0 })
+    expect(overlayTab('bots')?.getAttribute('aria-selected')).toBe('true')
+
+    const backdrop = globalThis.document.querySelector<HTMLElement>('[data-narrow-overlay-backdrop]')!
+    expect(backdrop).not.toBeNull()
+    fireEvent.pointerDown(backdrop, { pointerId: 1, button: 0, clientX: 300, clientY: 200 })
+    fireEvent.pointerCancel(backdrop, { pointerId: 1 })
+    fireEvent.pointerUp(backdrop, { pointerId: 1, button: 0, clientX: 300, clientY: 200 })
+    expect(overlayTab('bots')).not.toBeNull()
+
+    fireEvent.pointerDown(backdrop, { pointerId: 2, button: 0, clientX: 300, clientY: 200 })
+    fireEvent.pointerUp(backdrop, { pointerId: 2, button: 0, clientX: 300, clientY: 200 })
+    expect(globalThis.document.querySelector('[data-narrow-overlay]')).toBeNull()
+    expect($narrowOverlayPaneIds.get().size).toBe(0)
+  })
+
   it('closes the visible zone mate through the sessions sidebar alias', () => {
     const { queryByTestId } = render(<NarrowOverlays />)
     revealPane('bots')
