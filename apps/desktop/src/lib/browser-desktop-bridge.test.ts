@@ -770,15 +770,15 @@ describe('browser-hosted Desktop bridge', () => {
     expect(wrapper).not.toContain('<h1>preview</h1>')
     expect(wrapper).toContain('data:text/html;charset=utf-8;base64,PGgxPnByZXZpZXc8L2gxPg==')
 
-    await win.hermesDesktop!.openPreviewInBrowser(staged)
+    await win.hermesDesktop!.openPreviewInBrowser!(staged)
     expect(open).toHaveBeenCalledExactlyOnceWith(staged, '_blank', 'noopener,noreferrer')
     open.mockClear()
-    await win.hermesDesktop!.openPreviewInBrowser('blob:http://127.0.0.1:9119/unowned')
+    await win.hermesDesktop!.openPreviewInBrowser!('blob:http://127.0.0.1:9119/unowned')
     await win.hermesDesktop!.openExternal(staged)
     expect(open).not.toHaveBeenCalled()
     window.dispatchEvent(new Event('beforeunload'))
     expect(revoke).toHaveBeenCalledWith(staged)
-    await win.hermesDesktop!.openPreviewInBrowser(staged)
+    await win.hermesDesktop!.openPreviewInBrowser!(staged)
     expect(open).not.toHaveBeenCalled()
   })
 

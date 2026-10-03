@@ -10,6 +10,9 @@ import process from 'node:process'
 import { CDP, sleep } from './perf/lib/cdp.mjs'
 
 const url = process.env.HERMES_BROWSER_HOST_URL || process.argv[2] || 'http://127.0.0.1:9119/'
+// Navigation keeps the private launch fragment; HTTP responses never contain it.
+const documentUrl = new URL(url)
+documentUrl.hash = ''
 const allowGatewayFailure = process.env.HERMES_BROWSER_ALLOW_GATEWAY_FAILURE === '1'
 const requireTerminal = process.env.HERMES_BROWSER_REQUIRE_TERMINAL === '1'
 
@@ -118,6 +121,7 @@ const stateExpression = `(() => {
     rootError: text.includes('Something broke in the interface'),
     scrollWidth: document.documentElement.scrollWidth,
     sessionToken: Boolean(window.__HERMES_SESSION_TOKEN__),
+    privateSession: window.__HERMES_UI_SURFACE__ === 'webapp',
     title: document.title
   }
 })()`
@@ -311,7 +315,7 @@ try {
       requestUrls.set(params.requestId, params.request?.url || '')
     })
     client.on('Network.responseReceived', params => {
-      if (params.type === 'Document' && params.response?.url?.startsWith(url)) httpStatus = params.response.status
+      if (params.type === 'Document' && params.response?.url === documentUrl.href) httpStatus = params.response.status
     })
     client.on('Network.loadingFailed', params => {
       const requestUrl = requestUrls.get(params.requestId) || ''
@@ -342,6 +346,12 @@ try {
     }
 
     const state = await evaluate(stateExpression)
+    const authenticated = await evaluate(`(async () => {
+      try {
+        await window.hermesDesktop.api({ path: '/api/profiles' })
+        return true
+      } catch { return false }
+    })()`)
     let htmlSandboxState = { skipped: true }
     let layoutState = { skipped: true }
     let mobileViewportState = { skipped: true }
@@ -354,7 +364,10 @@ try {
     const failures = []
     if (httpStatus === null || httpStatus >= 400) failures.push(`HTTP ${httpStatus ?? 'no response'}`)
     if (state.host !== 'browser' || !state.bridge) failures.push('browser Desktop bridge did not install')
-    if (!state.sessionToken && !state.authRequired) failures.push('browser auth bootstrap was not injected')
+    if (!state.sessionToken && !state.authRequired && !state.privateSession) {
+      failures.push('browser auth bootstrap was not injected')
+    }
+    if (!authenticated) failures.push('browser Desktop API authentication failed')
     if (!state.requiredBridgeMethods) failures.push('required browser Desktop bridge methods are missing')
     if (state.rootError) failures.push('renderer reached its root error boundary')
     if (!allowGatewayFailure && state.desktopBootFailed)
@@ -390,7 +403,7 @@ try {
 
     console.log(
       JSON.stringify(
-        { failures, htmlSandboxState, http: httpStatus, layoutState, mobileViewportState, state, terminalState, viewport },
+        { authenticated, failures, htmlSandboxState, http: httpStatus, layoutState, mobileViewportState, state, terminalState, viewport },
         null,
         2
       )
