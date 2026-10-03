@@ -37,6 +37,7 @@ import {
   $showAllProfiles,
   ALL_PROFILES,
   normalizeProfileKey,
+  prewarmProfilePick,
   profileLabel,
   refreshActiveProfile,
   selectProfile,
@@ -289,7 +290,7 @@ interface ProfileItemProps {
 }
 
 function ProfileItem({ color, connectionId, isDefault, label, name }: ProfileItemProps) {
-  const { cancelPrewarm, notePointerMove, startPrewarm } = useProfilePrewarm(name)
+  const { cancelPrewarm, notePointerMove, startPrewarm } = useProfilePrewarm(name, prewarmProfilePick)
 
   return (
     <ProfileLaunchContextMenu connectionId={connectionId} label={label} profile={name}>
