@@ -244,6 +244,9 @@ class IdleBridge:
     def close(self):
         self.closed.set()
 
+    def is_alive(self):
+        return not self.closed.is_set()
+
 
 @pytest.fixture
 def fake_bridges(monkeypatch):

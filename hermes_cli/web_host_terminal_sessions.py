@@ -180,7 +180,9 @@ class HostTerminalRegistry(PtySessionRegistry):
         retired = await asyncio.to_thread(lambda: {token for token, owner in owners if not owner.current()})
         for token, owner in owners:
             session = self._sessions.get(token)
-            if session is not None and (token in retired or not session.alive or self.expired(session, now)):
+            if session is not None and (
+                token in retired or not session.alive or not session.bridge.is_alive() or self.expired(session, now)
+            ):
                 await self.remove(token)
         for token in list(self.owners):
             if token not in self._sessions:

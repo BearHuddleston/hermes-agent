@@ -7,6 +7,7 @@ opaque token replays the buffer and resumes live.
 from __future__ import annotations
 
 import asyncio
+import threading
 import time
 from typing import Callable, Dict, Optional, Tuple
 
@@ -54,6 +55,9 @@ class PtySession:
         self._read_timeout = read_timeout
         self._ws = None
         self._attach_generation = 0
+        # Only final sink writes and viewer claims hold this lock. Profile
+        # admission/backpressure waits happen outside it.
+        self._viewer_lock = threading.Lock()
         self._drain_task: Optional[asyncio.Task] = None
         self._write_lock = asyncio.Lock()
         self._output_lock = asyncio.Lock()
@@ -105,7 +109,17 @@ class PtySession:
             if self._ws is not ws or not self.alive:
                 return True
             generation = self._attach_generation
-            write = self.bridge.write(data) if fence is None else self.bridge.write(data, fence=fence)
+
+            def viewer_fence(write):
+                def admitted_write():
+                    with self._viewer_lock:
+                        if self._ws is not ws or self._attach_generation != generation or not self.alive:
+                            return None
+                        return write()
+
+                return fence(admitted_write)
+
+            write = self.bridge.write(data) if fence is None else self.bridge.write(data, fence=viewer_fence)
             task = self._input_task = asyncio.create_task(write)
             try:
                 delivered = await task
@@ -137,16 +151,28 @@ class PtySession:
         The TUI renders differentially on an alternate screen, so a bounded ANSI tail is not a
         self-contained frame; ``force_redraw`` asks the live TUI for one full redraw after replay.
         """
-        old_ws = self._ws
+        self._attach_generation += 1
+        generation = self._attach_generation
         if self._input_task is not None:
             self._input_task.cancel()
-        # Claim before any await: two simultaneous reconnects cannot both win.
-        self._ws = ws
-        self._attach_generation += 1
-        self.attached = True
-        self.last_detached_at = None
-        # Per-viewer lock: a stalled old send must not block its replacement.
-        output_lock = self._output_lock = asyncio.Lock()
+        # Revoke queued workers first, then serialize the claim after any
+        # already-admitted sink write. ConPTY writes can block: keep the loop
+        # free to run their timeout/cancellation cleanup while we wait.
+        while not self._viewer_lock.acquire(blocking=False):
+            await asyncio.sleep(0.001)
+            if self._attach_generation != generation:
+                return False
+        try:
+            if self._attach_generation != generation:
+                return False
+            old_ws = self._ws
+            self._ws = ws
+            self.attached = True
+            self.last_detached_at = None
+            # Per-viewer lock: a stalled old send must not block its replacement.
+            output_lock = self._output_lock = asyncio.Lock()
+        finally:
+            self._viewer_lock.release()
         try:
             async with output_lock:
                 snap = self.buffer.snapshot()
