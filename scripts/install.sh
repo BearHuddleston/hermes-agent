@@ -722,10 +722,14 @@ wire_shell_path() {
         *)
             append_shell_path "$HOME/.bashrc" "$SHELL_PATH_LINE" "$SHELL_PATH_SETUP_RE"
             append_shell_path "$HOME/.profile" "$SHELL_PATH_LINE" "$SHELL_PATH_SETUP_RE"
-            # Bash prefers .bash_profile over .profile if both exist.
-            if [ -f "$HOME/.bash_profile" ]; then
-                append_shell_path "$HOME/.bash_profile" "$SHELL_PATH_LINE" "$SHELL_PATH_SETUP_RE"
-            fi
+            # A login bash reads only the first of .bash_profile, .bash_login, .profile,
+            # so an existing earlier file hides the .profile line above.
+            local rc
+            for rc in "$HOME/.bash_profile" "$HOME/.bash_login"; do
+                if [ -f "$rc" ]; then
+                    append_shell_path "$rc" "$SHELL_PATH_LINE" "$SHELL_PATH_SETUP_RE"
+                fi
+            done
             ;;
     esac
 }
