@@ -168,7 +168,7 @@ def test_probe_retirement_preserves_alias_and_deferred_close_locks(tmp_path, mon
 
     # "recovery" is session_recovery's own opener of the SessionDB-initialized output it
     # rebuilds: every in-process opener, not only SessionDB's, must survive probe cleanup.
-    for opener in ("writer", "readiness", "doctor", "recovery"):
+    for opener in ("writer", "readiness", "doctor", "recovery", "metrics"):
         _assert_concurrent_opener_keeps_locks(path, monkeypatch, opener)
 
 
@@ -180,9 +180,10 @@ def _assert_concurrent_opener_keeps_locks(path, monkeypatch, opener):
     from gateway.readiness import _probe_state_db
     from hermes_cli.doctor_state import _session_count
     from hermes_cli import session_recovery, sqlite_safe_read
+    from hermes_cli.observability.shared_metrics_snapshot import _first_session_started_at
 
     with close_connection(connect_tracked(path, isolation_level=None)) as seed:
-        seed.execute("CREATE TABLE IF NOT EXISTS sessions(id TEXT)")
+        seed.execute("CREATE TABLE IF NOT EXISTS sessions(id TEXT, started_at REAL)")
     closing = connect_tracked(path, check_same_thread=False)
     assert _pread_db_header(path, 16) == b"SQLite format 3\x00"
     probe_fd = dbfile._HEADER_PROBE_FDS[str(path)][0]
@@ -206,7 +207,8 @@ def _assert_concurrent_opener_keeps_locks(path, monkeypatch, opener):
     class PausedReaderConnection(sqlite3.Connection):
         def execute(self, sql, *args, **kwargs):
             cursor = super().execute(sql, *args, **kwargs)
-            if sql in ("SELECT name FROM sqlite_master LIMIT 1", "SELECT COUNT(*) FROM sessions"):
+            if sql in ("SELECT name FROM sqlite_master LIMIT 1", "SELECT COUNT(*) FROM sessions",
+                       "SELECT MIN(started_at) FROM sessions"):
                 # Pause the real schema read after SQLite takes SHARED, before
                 # fetchone finalizes it. Do not synthesize a writer transaction.
                 locked.set()
@@ -236,6 +238,8 @@ def _assert_concurrent_opener_keeps_locks(path, monkeypatch, opener):
                 results.append(_probe_state_db(path.parent))
             elif opener == "doctor":
                 results.append(_session_count(path))
+            elif opener == "metrics":
+                results.append(_first_session_started_at(path.parent))
             elif opener == "recovery":
                 # A same-thread connection: hold the write lock, then close it here.
                 with close_connection(session_recovery._connect(path)) as conn:
@@ -256,7 +260,7 @@ def _assert_concurrent_opener_keeps_locks(path, monkeypatch, opener):
     with monkeypatch.context() as patcher:
         patcher.setattr(sqlite_safe_read, "_live_lock", ObservedLock())
         patcher.setattr(dbfile.os, "close", close_probe)
-        if opener in ("readiness", "doctor"):
+        if opener in ("readiness", "doctor", "metrics"):
             patcher.setattr(sqlite3, "connect", reader_connect)
         closer = threading.Thread(target=close_owner)
         successor = threading.Thread(target=open_successor)
@@ -284,6 +288,8 @@ def _assert_concurrent_opener_keeps_locks(path, monkeypatch, opener):
         assert not successor.is_alive() and not errors, errors
         if opener in ("readiness", "doctor"):
             assert results == ([{"status": "ok"}] if opener == "readiness" else [0])
+        elif opener == "metrics":
+            assert len(results) == 1 and isinstance(results[0], float)
     assert not has_live_connection(path) and _foreign_exclusive(path)
 
 
