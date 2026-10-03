@@ -19,11 +19,24 @@ _ASSET_MAGIC = {"png": [(0, 8, b"\x89PNG\r\n\x1a\n")], "jpg": [(0, 3, b"\xff\xd8
                 "webp": [(0, 4, b"RIFF"), (8, 12, b"WEBP")]}
 
 
-def _profile_handler(name: str, code: int):
+def _profile_handler(name: str, code: int, *, mutating: bool = False):
     """``@method(name)`` whose body's uncaught exception becomes ``_err(rid, code, str(e))``."""
     def deco(fn):
         def handler(rid, params: dict) -> dict:
             try:
+                if mutating and str(params.get("name") or "").strip():
+                    from hermes_cli.profiles import get_profile_dir
+                    from hermes_cli.profile_incarnation import profile_incarnation_lease
+
+                    # Resolve and publish in one admission. The short editor
+                    # transaction (including clear and <=2MB decode) cannot
+                    # outlive its generation or target a reused profile path.
+                    try:
+                        home = get_profile_dir(str(params["name"]).strip())
+                        with profile_incarnation_lease(home):
+                            return fn(rid, params)
+                    except (ValueError, FileNotFoundError):
+                        return _err(rid, 4064, f"profile '{params['name']}' not found")
                 return fn(rid, params)
             except Exception as e:
                 return _err(rid, code, str(e))
@@ -400,7 +413,7 @@ def _(rid, params: dict) -> dict:
             "toolsets_pinned": pinned_set is not None, "mcp_servers": mcp_out})
 
 
-@_profile_handler("profiles.configure", 5064)
+@_profile_handler("profiles.configure", 5064, mutating=True)
 def _(rid, params: dict) -> dict:
     """Editor Save: ``name`` plus any of ``ui_meta`` (+ ``ui_meta_expected_revisions``), ``soul``,
     ``description``, ``model`` + ``provider`` (+ ``confirm_expensive_model``), ``disabled_skills``,
@@ -426,7 +439,7 @@ def _(rid, params: dict) -> dict:
                         if confirm_message is not None else {})})
 
 
-@_profile_handler("profiles.set_asset", 5065)
+@_profile_handler("profiles.set_asset", 5065, mutating=True)
 def _(rid, params: dict) -> dict:
     """Store ``assets/<asset>.<ext>`` atomically. Params: ``name``, ``asset`` (``"avatar"`` only),
     ``data`` (data URL or base64; PNG/JPEG/WebP ≤2MB, format sniffed) or ``clear: true``."""
