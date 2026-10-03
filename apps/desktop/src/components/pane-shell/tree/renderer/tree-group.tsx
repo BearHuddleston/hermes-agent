@@ -306,6 +306,7 @@ export function TreeGroup({
 
   const active = paneFor(activeId)
   const compactTabs = touchTitlebar && narrow && shown.some(isSessionStripPane)
+  const tabStripHeight = compactTabs ? 44 : 28
   const isEmpty = shown.length === 0
   const sidebarGroup = !node.panes.some(id => id === 'workspace' || paneChrome(paneFor(id)).placement === 'main')
   // The compact picker needs a full touch row: the titlebar's fit threshold
@@ -566,7 +567,7 @@ export function TreeGroup({
         <div
           className="relative flex min-w-0 shrink-0 bg-(--ui-sidebar-surface-background)"
           data-panel-header=""
-          style={topEdge ? { height: titlebarHeight + (tabsBelowControls && headerVisible ? compactTabs ? 44 : 28 : 0) } : undefined}
+          style={topEdge ? { height: titlebarHeight + (tabsBelowControls && headerVisible ? tabStripHeight : 0) } : undefined}
         >
           {topEdge && (
             <div aria-hidden="true" className="shrink-0" style={{ width: 'var(--panel-titlebar-left, 100%)' }} />
@@ -910,7 +911,7 @@ export function TreeGroup({
             className="absolute inset-x-0 bottom-0 z-50 flex cursor-grab items-center justify-center outline-1 -outline-offset-2 outline-dashed backdrop-blur-[2px]"
             onPointerDown={e => startPaneDrag(activeId, e, undefined, undefined, tabText(activeId))}
             style={{
-              top: topEdge ? titlebarHeight + (tabsBelowControls && headerVisible ? 28 : 0) : headerVisible ? 28 : 0,
+              top: topEdge ? titlebarHeight + (tabsBelowControls && headerVisible ? tabStripHeight : 0) : headerVisible ? tabStripHeight : 0,
               background:
                 'color-mix(in srgb, var(--ui-accent) 6%, color-mix(in srgb, var(--ui-bg-chrome) 55%, transparent))',
               outlineColor: 'color-mix(in srgb, var(--ui-accent) 55%, transparent)'

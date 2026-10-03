@@ -6,6 +6,7 @@ import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import { registry } from '@/contrib/registry'
 import { stubMenuDomApis, stubResizeObserver } from '@/test/jsdom'
 
+import { $layoutEditMode } from '../../edit-mode'
 import { group } from '../model'
 import { $layoutTree, $narrowViewport, $newSessionTabAction } from '../store'
 
@@ -40,6 +41,7 @@ afterEach(() => {
   $layoutTree.set(null)
   $narrowViewport.set(false)
   $newSessionTabAction.set(null)
+  $layoutEditMode.set(false)
   delete globalThis.document.documentElement.dataset.hermesDesktopHost
   vi.restoreAllMocks()
   vi.unstubAllGlobals()
@@ -90,6 +92,11 @@ it('reserves a separate touch row for phone tabs even when the titlebar reports 
   expect(screen.getByRole('button', { name: '1 tab Session 1' })).toBeTruthy()
   fireEvent.click(screen.getByRole('button', { name: 'New session tab' }))
   expect(newTab).toHaveBeenCalledOnce()
+
+  act(() => $layoutEditMode.set(true))
+  const veil = header.parentElement!.querySelector<HTMLElement>('.cursor-grab')!
+  expect(veil.style.top).toBe(header.style.height)
+  act(() => $layoutEditMode.set(false))
 
   act(() => $narrowViewport.set(false))
   expect(header.style.height).toBe('44px')
