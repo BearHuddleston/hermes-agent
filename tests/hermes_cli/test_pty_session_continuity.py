@@ -31,6 +31,9 @@ class Bridge:
     def close(self):
         self.closed = True
 
+    def is_alive(self):
+        return not self.closed
+
 
 class Socket:
     def __init__(self):

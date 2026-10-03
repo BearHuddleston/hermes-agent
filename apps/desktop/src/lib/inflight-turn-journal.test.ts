@@ -927,7 +927,7 @@ describe('migrateInFlightTurnJournal', () => {
 
     const original = window.localStorage.getItem(sessionStorageKey('stored-1'))
 
-    const setItem = vi.spyOn(Storage.prototype, 'setItem').mockImplementationOnce(() => {
+    const setItem = vi.spyOn(window.localStorage, 'setItem').mockImplementationOnce(() => {
       throw new Error('quota')
     })
 
