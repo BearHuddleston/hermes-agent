@@ -651,7 +651,13 @@ class SessionDB(
         profile_lifecycle_stack = contextlib.ExitStack()
 
         try:
-            if named_profile_marker is not None:
+            if named_profile_marker is not None and read_only:
+                from hermes_cli.profile_read_snapshot import profile_read_snapshot
+
+                self.expected_profile_incarnation = profile_lifecycle_stack.enter_context(
+                    profile_read_snapshot(self.db_path.parent, expected_profile_incarnation)
+                )
+            elif named_profile_marker is not None:
                 from hermes_cli.profile_incarnation import profile_incarnation_lease
 
                 # Keep profile create/delete/rename out until every path-based
@@ -676,6 +682,9 @@ class SessionDB(
                     self._retire_connection = _prepare_connection_retirement()
                 self._open_writer()
             self._record_db_file_identity()
+            # Read-only snapshot validation must finish before publishing the
+            # handle; a raced replacement follows the same close-on-error path.
+            profile_lifecycle_stack.close()
             initialization_complete = True
         except Exception as exc:
             # Surface WHY via /resume and friends; callers keep their ``_session_db = None`` path.
