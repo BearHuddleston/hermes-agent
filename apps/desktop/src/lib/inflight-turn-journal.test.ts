@@ -927,11 +927,21 @@ describe('migrateInFlightTurnJournal', () => {
 
     const original = window.localStorage.getItem(sessionStorageKey('stored-1'))
 
-    const setItem = vi.spyOn(window.localStorage, 'setItem').mockImplementationOnce(() => {
+    // jsdom's Storage proxy ignores own-method replacements; the Node 26
+    // fallback owns its methods directly. Spy where this implementation defines it.
+    let storageOwner = window.localStorage
+
+    while (!Object.hasOwn(storageOwner, 'setItem')) {
+      storageOwner = Object.getPrototypeOf(storageOwner)
+    }
+
+    const setItem = vi.spyOn(storageOwner, 'setItem').mockImplementationOnce(() => {
       throw new Error('quota')
     })
 
     migrateInFlightTurnJournal('stored-1', 'stored-next')
+    expect(setItem).toHaveBeenCalledOnce()
+    expect(setItem.mock.calls[0][0]).toBe(sessionStorageKey('stored-next'))
     expect(window.localStorage.getItem(sessionStorageKey('stored-1'))).toBe(original)
     expect(window.localStorage.getItem(sessionStorageKey('stored-next'))).toBeNull()
     setItem.mockRestore()
