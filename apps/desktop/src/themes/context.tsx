@@ -149,6 +149,8 @@ const APPEARANCE_PREFS: Record<AppearanceField, Pick<ReturnType<typeof profilePr
 // config (even the same value) supersedes that pick.
 interface PendingPicks {
   owner: string
+  profile: string
+  field: AppearanceField
   latest: symbol
   confirmed: string | null
 }
@@ -167,7 +169,7 @@ function commitPick(profile: string, field: AppearanceField, value: string, onRo
   const pick = Symbol()
   const owner = profileAppearanceOwner(profile)
   const pending = latestPick.get(key)
-  const picks = pending?.owner === owner ? pending : { owner, latest: pick, confirmed: pref.own(profile) }
+  const picks = pending?.owner === owner ? pending : { owner, profile, field, latest: pick, confirmed: pref.own(profile) }
 
   picks.latest = pick
   latestPick.set(key, picks)
@@ -194,6 +196,25 @@ function commitPick(profile: string, field: AppearanceField, value: string, onRo
 
     notifyError(error, translateNow('settings.config.autosaveFailed'))
   })
+}
+
+/** Storage events carry the whole named-profile map, including inactive profiles. */
+function changedAppearanceProfiles(event: StorageEvent): string[] {
+  const record = (raw: string | null): Record<string, string> => {
+    try {
+      const parsed: unknown = JSON.parse(raw || 'null')
+
+      return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+        ? Object.fromEntries(Object.entries(parsed).filter((entry): entry is [string, string] => typeof entry[1] === 'string'))
+        : {}
+    } catch { return {} }
+  }
+
+  const before = record(event.oldValue)
+  const after = record(event.newValue)
+
+  return [...new Set([...Object.keys(before), ...Object.keys(after)])]
+    .filter(profile => profile !== 'default' && before[profile] !== after[profile])
 }
 
 // Profiles whose config was already checked for a local pick to upload.
@@ -615,22 +636,38 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
   // the OTHER windows, which is exactly the set that needs to catch up.
   useEffect(() => {
     const onStorage = (event: StorageEvent) => {
-      if (event.key && !APPEARANCE_KEYS.has(event.key)) {
+      if ((event.storageArea && event.storageArea !== window.localStorage) || (event.key !== null && !APPEARANCE_KEYS.has(event.key))) {
         return
       }
 
       const live = normalizeProfileKey($activeGatewayProfile.get())
 
-      // The peer wrote the config; a config value read before its pick is stale here too.
-      if (!event.key || event.key === PROFILE_SKINS_KEY || (event.key === SKIN_KEY && live === 'default')) {
-        latestPick.delete(appearanceCacheKey(live, 'theme'))
+      const adopt = (profile: string, field: AppearanceField) => {
+        const key = appearanceCacheKey(profile, field)
+        const pending = latestPick.get(key)
+
+        // The shared cache is per profile, but a pending request still belongs
+        // to the connection captured when it began, even after navigation.
+        if (pending) { markLocalAppearanceChange(profile, pending.owner) }
+        latestPick.delete(key)
+        markLocalAppearanceChange(profile)
       }
 
-      if (!event.key || event.key === PROFILE_MODES_KEY || (event.key === MODE_KEY && live === 'default')) {
-        latestPick.delete(appearanceCacheKey(live, 'theme_mode'))
+      if (event.key === null) {
+        for (const pending of latestPick.values()) { adopt(pending.profile, pending.field) }
+        markLocalAppearanceChange(live)
+      } else if (event.key === PROFILE_SKINS_KEY || event.key === PROFILE_MODES_KEY) {
+        const field = event.key === PROFILE_SKINS_KEY ? 'theme' : 'theme_mode'
+
+        for (const profile of changedAppearanceProfiles(event)) { adopt(profile, field) }
+      } else {
+        const field = event.key === SKIN_KEY ? 'theme' : 'theme_mode'
+        adopt('default', field)
+
+        // Unassigned named profiles inherit the legacy/default slot.
+        if (APPEARANCE_PREFS[field].own(live) === null) { markLocalAppearanceChange(live) }
       }
 
-      markLocalAppearanceChange(live)
       setThemeNameState(storedSkin(live))
       setModeState(modePref.resolve(live))
     }

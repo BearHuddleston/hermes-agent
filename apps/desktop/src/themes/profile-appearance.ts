@@ -61,11 +61,11 @@ const isThemeMode = (value: unknown): value is ThemeMode => value === 'light' ||
 // local pool). Identity for keys only; never sent as a request pin.
 export const profileAppearanceOwner = (profile: string): string => `${ambientOwnerConnectionId() ?? ''}::${profile}`
 
-/** Record a local appearance change for `profile` on the current connection (a
+/** Record a local appearance change for `profile` on its captured or current connection (a
  *  pick, a settled write, a peer window's pick), so any value read before it
  *  no longer counts. */
-export function markLocalAppearanceChange(profile: string): void {
-  localChangeAt.set(profileAppearanceOwner(profile), ++clock)
+export function markLocalAppearanceChange(profile: string, owner = profileAppearanceOwner(profile)): void {
+  localChangeAt.set(owner, ++clock)
 }
 
 /** Call before the config GET: the owner it reads (the ambient request scope,

@@ -139,6 +139,51 @@ describe('foreground profile appearance ownership', () => {
     [null, 'B']
   ] as const
 
+  it.each(['theme', 'theme_mode'] as const)('retains rollback when a peer changes another profile %s', async field => {
+    const profile = `unrelated-peer-${++serial}`
+    configs.A = appearance('ember', 'light')
+    on('A', profile)
+    const load = mountApp()
+    await act(() => load())
+    holdWrites = true
+    await act(async () => {
+      if (field === 'theme') { ctx.setTheme('mono') } else { ctx.setMode('dark') }
+    })
+    expect(held).toHaveLength(1)
+    const key = field === 'theme' ? 'hermes-desktop-profile-themes-v1' : 'hermes-desktop-profile-modes-v1'
+    const oldValue = window.localStorage.getItem(key)
+    act(() => {
+      if (field === 'theme') { skinPref.put('other-profile', 'everforest') } else { modePref.put('other-profile', 'system') }
+      window.dispatchEvent(new StorageEvent('storage', { key, oldValue, newValue: window.localStorage.getItem(key) }))
+    })
+    await act(async () => { held[0].settle.resolve({ ok: false }) })
+    expect(state(profile)).toMatchObject({ theme: 'ember', cachedTheme: 'ember', mode: 'light', cachedMode: 'light' })
+  })
+
+  it.each(['theme', 'theme_mode'] as const)('keeps an inactive profile peer %s pick after an older failure', async field => {
+    const profile = `inactive-peer-${++serial}`
+    configs.A = appearance('ember', 'light')
+    on('A', profile)
+    const load = mountApp()
+    await act(() => load())
+    holdWrites = true
+    await act(async () => {
+      if (field === 'theme') { ctx.setTheme('mono') } else { ctx.setMode('dark') }
+    })
+    expect(held).toHaveLength(1)
+    on('B', 'other-profile')
+    const key = field === 'theme' ? 'hermes-desktop-profile-themes-v1' : 'hermes-desktop-profile-modes-v1'
+    const oldValue = window.localStorage.getItem(key)
+    act(() => {
+      if (field === 'theme') { skinPref.put(profile, 'everforest') } else { modePref.put(profile, 'system') }
+      window.dispatchEvent(new StorageEvent('storage', { key, oldValue, newValue: window.localStorage.getItem(key) }))
+    })
+    const foreground = state('other-profile')
+    await act(async () => { held[0].settle.resolve({ ok: false }) })
+    expect(field === 'theme' ? skinPref.own(profile) : modePref.own(profile)).toBe(field === 'theme' ? 'everforest' : 'system')
+    expect(state('other-profile')).toEqual(foreground)
+  })
+
   it.each(['theme', 'theme_mode'] as const)('keeps a peer %s pick when an older local write fails', async field => {
     const profile = `peer-${++serial}`
     configs.A = appearance('ember', 'light')
@@ -150,9 +195,11 @@ describe('foreground profile appearance ownership', () => {
       if (field === 'theme') { ctx.setTheme('mono') } else { ctx.setMode('dark') }
     })
     expect(held).toHaveLength(1)
+    const key = field === 'theme' ? 'hermes-desktop-profile-themes-v1' : 'hermes-desktop-profile-modes-v1'
+    const oldValue = window.localStorage.getItem(key)
     act(() => {
       if (field === 'theme') { skinPref.put(profile, 'everforest') } else { modePref.put(profile, 'system') }
-      window.dispatchEvent(new StorageEvent('storage', { key: null }))
+      window.dispatchEvent(new StorageEvent('storage', { key, oldValue, newValue: window.localStorage.getItem(key) }))
     })
     const peer = state(profile)
     await act(async () => { held[0].settle.resolve({ ok: false }) })
