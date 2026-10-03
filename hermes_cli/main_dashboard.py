@@ -864,6 +864,10 @@ def cmd_webapp(args):
 
     from hermes_cli.webapp import WebappBuildError, prepare_webapp_renderer
 
+    if not getattr(args, "build_only", False):
+        # A proven owner can attach or refuse without installing/building UI.
+        _attach_to_host_backend(args)
+
     try:
         dist = prepare_webapp_renderer(
             PROJECT_ROOT,
@@ -995,7 +999,7 @@ def _attach_to_host_backend(args) -> None:
     if not headless and not identity.get("servesSpa"):
         print(f"Refusing to start: this host is already served by {hr.describe(record)}, "
               "which is a headless `hermes serve` backend with no dashboard UI.")
-        print("  Stop it and run `hermes dashboard`, or use --isolated for a dedicated server.")
+        print(f"  Stop it and run `hermes {surface}`, or use --isolated for a dedicated server.")
         sys.exit(GATEWAY_FATAL_CONFIG_EXIT_CODE)
 
     # Pre-Webapp host identities only distinguish SPA from headless. Once an
@@ -1005,7 +1009,7 @@ def _attach_to_host_backend(args) -> None:
         print(f"Refusing to start: {hr.describe(record)} serves {owner_surface}, "
               f"not Hermes {surface}.")
         print("  Stop that backend, or use --isolated with a different --port.")
-        sys.exit(1)
+        sys.exit(GATEWAY_FATAL_CONFIG_EXIT_CODE)
 
     try:
         from hermes_cli.profiles import get_active_profile_name

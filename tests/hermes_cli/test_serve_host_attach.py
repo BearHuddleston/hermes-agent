@@ -173,17 +173,20 @@ def test_an_explicit_endpoint_the_owner_cannot_serve_is_refused(host_dir, owner,
     assert f"PID {os.getpid()}" in capsys.readouterr().out
 
 
-def test_dashboard_is_never_routed_to_a_headless_backend(host_dir, owner, capsys):
+@pytest.mark.parametrize("surface", ["dashboard", "webapp"])
+def test_dashboard_is_never_routed_to_a_headless_backend(host_dir, owner, capsys, surface):
     """`hermes serve` and `hermes dashboard` publish the same host role; only one mounts the SPA,
     so attaching a dashboard user to a headless backend opens a URL with no UI behind it."""
     owner.serves_spa["value"] = False
     _publish(hr.process_create_time(), port=owner.port)
 
     with pytest.raises(SystemExit) as exc:
-        _attach_to_host_backend(_args(ui_surface="dashboard"))
+        _attach_to_host_backend(_args(ui_surface=surface))
 
     assert exc.value.code == GATEWAY_FATAL_CONFIG_EXIT_CODE
-    assert "no dashboard UI" in capsys.readouterr().out
+    output = capsys.readouterr().out
+    assert "no dashboard UI" in output
+    assert f"run `hermes {surface}`" in output
 
 
 @pytest.mark.parametrize("requested,actual", [
@@ -198,7 +201,7 @@ def test_host_attach_refuses_a_different_ui_surface(host_dir, owner, monkeypatch
     monkeypatch.setattr(webbrowser, "open", opened.append)
     with pytest.raises(SystemExit) as exc:
         _attach_to_host_backend(_args(ui_surface=requested, no_open=False))
-    assert exc.value.code == 1
+    assert exc.value.code == GATEWAY_FATAL_CONFIG_EXIT_CODE
     assert not opened
 
 

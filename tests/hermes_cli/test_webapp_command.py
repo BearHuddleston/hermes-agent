@@ -143,6 +143,25 @@ def test_webapp_build_only_prepares_without_starting_server(tmp_path: Path, monk
     assert cli_main.cmd_webapp(_args(build_only=True)) is None
 
 
+def test_webapp_refuses_an_incompatible_owner_before_build_but_honors_build_only(tmp_path, monkeypatch):
+    prepared = []
+
+    def refuse(_args):
+        from gateway.restart import GATEWAY_FATAL_CONFIG_EXIT_CODE
+        raise SystemExit(GATEWAY_FATAL_CONFIG_EXIT_CODE)
+
+    monkeypatch.setattr(main_dashboard, "_attach_to_host_backend", refuse)
+    monkeypatch.setattr(webapp, "prepare_webapp_renderer", lambda *a, **k: prepared.append(True) or tmp_path)
+    monkeypatch.setattr(cli_main, "cmd_dashboard", lambda _args: pytest.fail("must refuse before starting"))
+    with pytest.raises(SystemExit) as exc:
+        cli_main.cmd_webapp(_args())
+    assert exc.value.code == 78
+    assert prepared == []
+
+    assert cli_main.cmd_webapp(_args(build_only=True)) is None
+    assert prepared == [True]
+
+
 def test_webapp_runs_through_the_shared_dashboard_server(tmp_path: Path, monkeypatch):
     prepared = tmp_path / "dist-webapp"
     prepared.mkdir()
