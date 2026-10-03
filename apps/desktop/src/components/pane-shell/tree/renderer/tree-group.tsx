@@ -308,7 +308,9 @@ export function TreeGroup({
   const compactTabs = touchTitlebar && narrow && shown.some(isSessionStripPane)
   const isEmpty = shown.length === 0
   const sidebarGroup = !node.panes.some(id => id === 'workspace' || paneChrome(paneFor(id)).placement === 'main')
-  const tabsBelowControls = topEdge && (sidebarGroup || measuredBelowControls)
+  // The compact picker needs a full touch row: the titlebar's fit threshold
+  // also has to accommodate the drag handle and the separate new-tab target.
+  const tabsBelowControls = topEdge && (compactTabs || sidebarGroup || measuredBelowControls)
   const tabsInTitlebar = topEdge && !tabsBelowControls
   const pageHeader = paneChrome(active).headerContent
 

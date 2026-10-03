@@ -7,17 +7,17 @@ import { registry } from '@/contrib/registry'
 import { stubMenuDomApis, stubResizeObserver } from '@/test/jsdom'
 
 import { group } from '../model'
-import { $layoutTree, $narrowViewport } from '../store'
+import { $layoutTree, $narrowViewport, $newSessionTabAction } from '../store'
 
 import { TreeGroup } from './tree-group'
 
 const ids = ['workspace', 'session-tile:second', 'session-tile:third']
 const disposers: (() => void)[] = []
 
-function Host() {
+function Host({ topEdge = false }: { topEdge?: boolean }) {
   const node = useStore($layoutTree)
 
-  return <MemoryRouter>{node?.type === 'group' && <TreeGroup node={node} />}</MemoryRouter>
+  return <MemoryRouter>{node?.type === 'group' && <TreeGroup node={node} topEdge={topEdge} />}</MemoryRouter>
 }
 
 beforeEach(() => {
@@ -39,6 +39,7 @@ afterEach(() => {
   disposers.splice(0).forEach(dispose => dispose())
   $layoutTree.set(null)
   $narrowViewport.set(false)
+  $newSessionTabAction.set(null)
   delete globalThis.document.documentElement.dataset.hermesDesktopHost
   vi.restoreAllMocks()
   vi.unstubAllGlobals()
@@ -63,4 +64,39 @@ it('keeps the normal strip on wider layouts', () => {
   const { container } = render(<Host />)
   expect(container.querySelector('[data-slot="compact-tab-picker"]')).toBeNull()
   expect(container.querySelectorAll('[data-tree-tab]')).toHaveLength(ids.length)
+})
+
+it('reserves a separate touch row for phone tabs even when the titlebar reports spare space', () => {
+  vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function (this: HTMLElement) {
+    if (this.dataset.titlebarCluster === 'left') {
+      return new DOMRect(14, 0, 44, 44)
+    }
+
+    if (this.dataset.titlebarCluster === 'right') {
+      return new DOMRect(242, 0, 176, 44)
+    }
+
+    return new DOMRect(0, 0, 430, 844)
+  })
+  $layoutTree.set({ ...group([ids[0]]), active: ids[0], tabStrip: 'always' })
+  const newTab = vi.fn()
+  $newSessionTabAction.set(newTab)
+  const { container } = render(<><div data-titlebar-cluster="left" /><div data-titlebar-cluster="right" /><Host topEdge /></>)
+  const header = container.querySelector<HTMLElement>('[data-panel-header]')!
+
+  // The chrome leaves 148px, but the drag handle and new-tab target consume
+  // 92px of it. The picker needs its own row to keep its label and glyphs apart.
+  expect(header.style.height).toBe('88px')
+  expect(screen.getByRole('button', { name: '1 tab Session 1' })).toBeTruthy()
+  fireEvent.click(screen.getByRole('button', { name: 'New session tab' }))
+  expect(newTab).toHaveBeenCalledOnce()
+
+  act(() => $narrowViewport.set(false))
+  expect(header.style.height).toBe('44px')
+  expect(container.querySelector('[data-slot="compact-tab-picker"]')).toBeNull()
+
+  delete globalThis.document.documentElement.dataset.hermesDesktopHost
+  act(() => $narrowViewport.set(true))
+  expect(header.style.height).toBe('34px')
+  expect(container.querySelector('[data-slot="compact-tab-picker"]')).toBeNull()
 })

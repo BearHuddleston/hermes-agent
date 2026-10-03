@@ -4992,7 +4992,7 @@ export const en: Translations = {
     saveApply: 'Save & apply',
     notExpressible: 'this arrangement interlocks (pinwheel) — not expressible as nested splits yet',
     zoneCount: count => `${count} zones`,
-    tabCount: count => `${count} tabs`
+    tabCount: count => `${count} tab${count === 1 ? '' : 's'}`
   },
 
   contextMenu: {
