@@ -737,6 +737,40 @@ def test_sandbox_dir_name_never_resolves_to_the_sandbox_root():
 
 
 @pytest.mark.require_symlinks
+@pytest.mark.parametrize("starts_sanitized", [False, True])
+def test_skills_mount_sanitization_changes_reuse_identity(monkeypatch, tmp_path, starts_sanitized):
+    """Direct skills binds and sanitized copies must never share a reuse identity."""
+    monkeypatch.setattr(docker_env, "find_docker", lambda: "/synthetic/docker")
+    monkeypatch.setattr(docker_env, "_get_active_profile_name", lambda: "default")
+    monkeypatch.setattr(docker_env.DockerEnvironment, "init_session", lambda self: None)
+    hermes_home = tmp_path / "alpha"
+    skills_dir = hermes_home / "skills"
+    skills_dir.mkdir(parents=True)
+    (skills_dir / "SKILL.md").write_text("# skill")
+    link = skills_dir / "link"
+    if starts_sanitized:
+        link.symlink_to(tmp_path / "outside")
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.setattr(docker_env.tempfile, "gettempdir", lambda: str(tmp_path))
+    calls = _mock_subprocess_run(monkeypatch)
+
+    first = _make_dummy_env()
+    direct_mount = f"{skills_dir}:/root/.hermes/skills:ro"
+    first_mounts = _bind_mount_specs(_run_args_from_calls(calls))
+    assert (direct_mount in first_mounts) is (not starts_sanitized)
+
+    if starts_sanitized:
+        link.unlink()
+    else:
+        link.symlink_to(tmp_path / "outside")
+    calls.clear()
+    second = _make_dummy_env()
+    second_mounts = _bind_mount_specs(_run_args_from_calls(calls))
+    assert (direct_mount in second_mounts) is starts_sanitized
+    assert first._labels["hermes-environment"] != second._labels["hermes-environment"]
+
+
+@pytest.mark.require_symlinks
 def test_symlinked_skills_tree_reuses_container_across_processes(monkeypatch, tmp_path):
     """A symlink under ``skills/`` makes the skills mount a fresh mkdtemp copy per
     process (and even per DockerEnvironment construction — ``_safe_skills_path``

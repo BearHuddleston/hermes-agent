@@ -133,8 +133,8 @@ def _reuse_environment_fingerprint(*, image: str, mount_args: list[str], hermes_
 
     Hash requested values rather than exposing profile paths and volume sources in labels.
     Keep mount order: later arguments can override earlier mount destinations.
-    The caller supplies the original source for known generated skills copies. All other
-    sources retain their identity, including user bind mounts under the system tempdir.
+    The caller marks known generated skills copies separately from direct binds and supplies
+    their original source. All other sources retain their identity, including user temp binds.
     """
     normalized_home = os.path.normcase(os.path.abspath(os.path.expanduser(hermes_home)))
     payload = json.dumps(
@@ -502,7 +502,7 @@ def _readonly_skill_mount_args(*, fingerprint_args: list[str] | None = None) -> 
     container can authenticate/read but never modify host state. Missing or wrong-kind sources are
     skipped with a warning (Docker-in-Docker auto-creates a missing file source as a directory,
     which would exit 125). If supplied, fingerprint_args receives the same mounts with known
-    generated skills copies identified by their original source for cross-process reuse."""
+    generated skills copies identified by a distinct marker and their original source."""
     args: list[str] = []
     try:
         import tools.credential_files as cf
@@ -519,9 +519,10 @@ def _readonly_skill_mount_args(*, fingerprint_args: list[str] | None = None) -> 
                     continue
                 args.extend(["-v", f"{entry['host_path']}:{entry['container_path']}:ro"])
                 if fingerprint_args is not None:
-                    source = (entry.get("reuse_source", entry["host_path"])
-                              if getter == "get_skills_directory_mount" else entry["host_path"])
-                    fingerprint_args.extend(["-v", f"{source}:{entry['container_path']}:ro"])
+                    source, kind = entry["host_path"], "-v"
+                    if getter == "get_skills_directory_mount" and "reuse_source" in entry:
+                        source, kind = entry["reuse_source"], "<sanitized-skills-copy>"
+                    fingerprint_args.extend([kind, f"{source}:{entry['container_path']}:ro"])
                 logger.info("Docker: mounting %s %s -> %s", noun, entry["host_path"], entry["container_path"])
     except Exception as e:
         logger.debug("Docker: could not load credential file mounts: %s", e)
