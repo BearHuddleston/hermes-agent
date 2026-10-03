@@ -15,31 +15,33 @@ from .method_ctx import bind_module
 # Child-session live mirror: a delegated child's activity reaches the gateway only as
 # relayed ``subagent.*`` events on the PARENT sid; translate them into native stream
 # events on the CHILD sid (write_json routes by sid) so its own window is not silent.
-# Both dicts are keyed on (profile_home, child key): stored ids are timestamps that exist in
+# Both dicts are keyed on (profile_home, incarnation, child key): stored ids are timestamps that exist in
 # several profiles' stores, and a child runs under its PARENT's profile — a bare-key hit let
 # profile B's lazy resume bind to A's in-flight run and receive its mirror (#120212).
-_child_mirrors: dict[tuple[str | None, str], dict] = {}
+_child_mirrors: dict[tuple[str | None, str | None, str], dict] = {}
 _child_mirrors_lock = threading.Lock()
 # Child sids with a run in flight (refreshed per relayed event, popped on complete) so a
 # lazy watch resume reports running=true during a silent long tool.
-_active_child_runs: dict[tuple[str | None, str], float] = {}
+_active_child_runs: dict[tuple[str | None, str | None, str], float] = {}
 # Anything quiet this long lost its completion event — don't pin "running".
 _CHILD_RUN_STALE_S = 3600.0
 _CHILD_DELTA_EVENTS = {"subagent.thinking": "reasoning.delta", "subagent.text": "message.delta",
                        "subagent.start": "message.delta"}
 
 
-def _child_run_active(child_key: str, profile_home) -> bool:
+def _child_run_active(child_key: str, profile_home, profile_incarnation: str | None = None) -> bool:
     """``profile_home`` is the caller's resolved home (Path / str / None = launch profile), never omitted."""
-    ts = _active_child_runs.get((str(profile_home) if profile_home else None, child_key))
+    ts = _active_child_runs.get((str(profile_home) if profile_home else None, profile_incarnation, child_key))
     return ts is not None and (time.time() - ts) < _CHILD_RUN_STALE_S
 
 
-def _mirror_subagent_to_child(event_type: str, payload: dict, profile_home) -> None:
+def _mirror_subagent_to_child(
+    event_type: str, payload: dict, profile_home, profile_incarnation: str | None = None,
+) -> None:
     child_key = str(payload.get("child_session_id") or "")
     if not child_key:
         return
-    key = (str(profile_home) if profile_home else None, child_key)
+    key = (str(profile_home) if profile_home else None, profile_incarnation, child_key)
     # Liveness registry first: accurate with no window open (one opened mid-run knows busy).
     if event_type == "subagent.complete":
         _active_child_runs.pop(key, None)
@@ -48,7 +50,7 @@ def _mirror_subagent_to_child(event_type: str, payload: dict, profile_home) -> N
     # Mirror only into a live watch session of the OWNING profile that is NOT upgraded to a full
     # agent (an upgraded one owns a real native stream). Either way drop state so a reopened
     # window starts fresh.
-    live = _find_live_session_by_key(child_key, key[0])
+    live = _find_live_session_by_key(child_key, key[0], profile_incarnation)
     if live is None or live[1].get("agent") is not None:
         with _child_mirrors_lock:
             _child_mirrors.pop(key, None)
