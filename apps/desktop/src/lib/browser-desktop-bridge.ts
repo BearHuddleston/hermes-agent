@@ -48,12 +48,14 @@ export function installBrowserDesktopBridge(): boolean {
     $connection.get()?.profile?.trim() || new URLSearchParams(window.location.search).get('profile')
 
   const objectUrls = new Set<string>()
+  const previewUrls = new Set<string>()
 
   window.addEventListener(
     'beforeunload',
     () => {
       objectUrls.forEach(url => URL.revokeObjectURL(url))
       objectUrls.clear()
+      previewUrls.clear()
     },
     { once: true }
   )
@@ -73,7 +75,7 @@ export function installBrowserDesktopBridge(): boolean {
     if (target?.kind === 'web') {window.open(target.url, '_blank', 'noopener,noreferrer')}
   }
 
-  const uploads = createBrowserUploadsBridge({ api, bootstrap, currentProfile, objectUrls })
+  const uploads = createBrowserUploadsBridge({ api, bootstrap, currentProfile, objectUrls, previewUrls })
 
   const bridge: Window['hermesDesktop'] = {
     ...BROWSER_BRIDGE_STUBS,
@@ -104,7 +106,14 @@ export function installBrowserDesktopBridge(): boolean {
       return true
     },
     openExternal,
-    openPreviewInBrowser: openExternal,
+    openPreviewInBrowser: async url => {
+      // Only this install's sandbox wrappers may open as same-origin blobs.
+      if (previewUrls.has(url)) {
+        window.open(url, '_blank', 'noopener,noreferrer')
+      } else {
+        await openExternal(url)
+      }
+    },
     openSessionWindow: async (sessionId, opts) => {
       const target = sessionWindowTarget(window.location.href, sessionId, opts)
 

@@ -164,6 +164,8 @@ interface BrowserUploadsOptions {
   currentProfile: () => string | null
   /** Blob URLs handed to the page; the installer revokes them on unload. */
   objectUrls: Set<string>
+  /** Only sandbox-wrapped HTML is eligible for the preview opener. */
+  previewUrls: Set<string>
 }
 
 /** Browser bytes become server-side files the agent can read: images, drops, pastes, picks. */
@@ -171,7 +173,8 @@ export function createBrowserUploadsBridge({
   api,
   bootstrap,
   currentProfile,
-  objectUrls
+  objectUrls,
+  previewUrls
 }: BrowserUploadsOptions): Pick<
   Window['hermesDesktop'],
   'getStagedFileDisplayName' | 'getStagedFileForAttach' | 'saveImageBuffer' | 'savePastedText' | 'selectPaths' | 'stageFileForAttach'
@@ -210,12 +213,16 @@ export function createBrowserUploadsBridge({
       return uploaded.path || ''
     }
 
-    const blob = extension === '.htm' || extension === '.html'
+    const isHtml = extension === '.htm' || extension === '.html'
+
+    const blob = isHtml
       ? sandboxedHtmlBlob(bytes)
       : new Blob([bytes.buffer], { type: 'application/octet-stream' })
 
     const url = URL.createObjectURL(blob)
     objectUrls.add(url)
+
+    if (isHtml) { previewUrls.add(url) }
 
     return url
   }

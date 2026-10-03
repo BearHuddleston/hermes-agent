@@ -147,12 +147,17 @@ const APPEARANCE_PREFS: Record<AppearanceField, Pick<ReturnType<typeof profilePr
 // The boot cache keeps its existing per-profile format. Only the pick that
 // still owns a cache slot may roll it back: adopting another gateway's
 // config (even the same value) supersedes that pick.
-const latestPick = new Map<string, symbol>()
+interface PendingPicks {
+  owner: string
+  latest: symbol
+  confirmed: string | null
+}
+const latestPick = new Map<string, PendingPicks>()
 const appearanceCacheKey = (profile: string, field: AppearanceField) => `${profile}\0${field}`
 
 /**
  * Cache a pick and write it to the profile's config.yaml. A failed write puts
- * the previous pick back (unless a newer one of the same field replaced it)
+ * the last confirmed pick back (unless a newer owner replaced it)
  * and says so, like every config-backed setting — otherwise the next config
  * load would silently undo it.
  */
@@ -161,17 +166,27 @@ function commitPick(profile: string, field: AppearanceField, value: string, onRo
   const key = appearanceCacheKey(profile, field)
   const pick = Symbol()
   const owner = profileAppearanceOwner(profile)
-  const previous = pref.own(profile)
+  const pending = latestPick.get(key)
+  const picks = pending?.owner === owner ? pending : { owner, latest: pick, confirmed: pref.own(profile) }
 
-  latestPick.set(key, pick)
+  picks.latest = pick
+  latestPick.set(key, picks)
   pref.put(profile, value)
 
-  saveProfileAppearance(profile, { [field]: value }).catch(error => {
-    if (latestPick.get(key) !== pick) {
+  saveProfileAppearance(profile, { [field]: value }).then(() => {
+    if (latestPick.get(key) !== picks) { return }
+    // Writes settle in FIFO order; an earlier success is the durable fallback
+    // even while the cache optimistically shows a later pick.
+    picks.confirmed = value
+
+    if (picks.latest === pick) { latestPick.delete(key) }
+  }).catch(error => {
+    if (latestPick.get(key) !== picks || picks.latest !== pick) {
       return
     }
 
-    pref.put(profile, previous)
+    pref.put(profile, picks.confirmed)
+    latestPick.delete(key)
 
     if (profileAppearanceOwner(profile) === owner) {
       onRollback()
@@ -607,6 +622,14 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
       const live = normalizeProfileKey($activeGatewayProfile.get())
 
       // The peer wrote the config; a config value read before its pick is stale here too.
+      if (!event.key || event.key === PROFILE_SKINS_KEY || (event.key === SKIN_KEY && live === 'default')) {
+        latestPick.delete(appearanceCacheKey(live, 'theme'))
+      }
+
+      if (!event.key || event.key === PROFILE_MODES_KEY || (event.key === MODE_KEY && live === 'default')) {
+        latestPick.delete(appearanceCacheKey(live, 'theme_mode'))
+      }
+
       markLocalAppearanceChange(live)
       setThemeNameState(storedSkin(live))
       setModeState(modePref.resolve(live))

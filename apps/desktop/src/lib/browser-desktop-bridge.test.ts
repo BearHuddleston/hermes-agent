@@ -749,6 +749,8 @@ describe('browser-hosted Desktop bridge', () => {
     win.__HERMES_SESSION_TOKEN__ = 'served-token'
     const createObjectURL = vi.fn((_blob: Blob | MediaSource) => 'blob:http://127.0.0.1:9119/preview')
     vi.spyOn(URL, 'createObjectURL').mockImplementation(createObjectURL)
+    const revoke = vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => {})
+    const open = vi.spyOn(window, 'open').mockReturnValue(null)
 
     expect(installBrowserDesktopBridge()).toBe(true)
 
@@ -767,6 +769,17 @@ describe('browser-hosted Desktop bridge', () => {
     expect(wrapper).not.toContain('allow-same-origin')
     expect(wrapper).not.toContain('<h1>preview</h1>')
     expect(wrapper).toContain('data:text/html;charset=utf-8;base64,PGgxPnByZXZpZXc8L2gxPg==')
+
+    await win.hermesDesktop!.openPreviewInBrowser(staged)
+    expect(open).toHaveBeenCalledExactlyOnceWith(staged, '_blank', 'noopener,noreferrer')
+    open.mockClear()
+    await win.hermesDesktop!.openPreviewInBrowser('blob:http://127.0.0.1:9119/unowned')
+    await win.hermesDesktop!.openExternal(staged)
+    expect(open).not.toHaveBeenCalled()
+    window.dispatchEvent(new Event('beforeunload'))
+    expect(revoke).toHaveBeenCalledWith(staged)
+    await win.hermesDesktop!.openPreviewInBrowser(staged)
+    expect(open).not.toHaveBeenCalled()
   })
 
   it('rejects API paths that escape the Webapp origin', async () => {

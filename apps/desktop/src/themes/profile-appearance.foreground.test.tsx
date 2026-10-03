@@ -139,6 +139,45 @@ describe('foreground profile appearance ownership', () => {
     [null, 'B']
   ] as const
 
+  it.each(['theme', 'theme_mode'] as const)('keeps a peer %s pick when an older local write fails', async field => {
+    const profile = `peer-${++serial}`
+    configs.A = appearance('ember', 'light')
+    on('A', profile)
+    const load = mountApp()
+    await act(() => load())
+    holdWrites = true
+    await act(async () => {
+      if (field === 'theme') { ctx.setTheme('mono') } else { ctx.setMode('dark') }
+    })
+    expect(held).toHaveLength(1)
+    act(() => {
+      if (field === 'theme') { skinPref.put(profile, 'everforest') } else { modePref.put(profile, 'system') }
+      window.dispatchEvent(new StorageEvent('storage', { key: null }))
+    })
+    const peer = state(profile)
+    await act(async () => { held[0].settle.resolve({ ok: false }) })
+    expect(state(profile)).toEqual(peer)
+  })
+
+  it.each([false, true])('restores the last durable pick after queued failures (first succeeds=%s)', async firstOk => {
+    const profile = `queued-${++serial}`
+    configs.A = appearance('ember', 'light')
+    on('A', profile)
+    const load = mountApp()
+    await act(() => load())
+    holdWrites = true
+    await act(async () => {
+      ctx.setTheme('mono')
+      ctx.setTheme('everforest')
+    })
+    expect(held).toHaveLength(1)
+    await act(async () => { held[0].settle.resolve({ ok: firstOk }) })
+    expect(held).toHaveLength(2)
+    await act(async () => { held[1].settle.resolve({ ok: false }) })
+    const expected = firstOk ? 'mono' : 'ember'
+    expect(state(profile)).toMatchObject({ theme: expected, cachedTheme: expected, painted: expected })
+  })
+
   const routes = owners.flatMap(([from, to]) => [false, true].map(named => ({ from, to, named })))
 
   const rollbacks = routes.flatMap(route =>
