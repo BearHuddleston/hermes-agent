@@ -731,3 +731,33 @@ describe('useComposerDraft — a hidden keep-alive tab never auto-focuses its co
     foreground.editor.remove()
   })
 })
+
+it('keeps touch mount and turn completion from focusing the editor while accepting deliberate focus', () => {
+  vi.stubGlobal('matchMedia', vi.fn().mockReturnValue({ matches: true }))
+  let draft!: ReturnType<typeof useComposerDraft>
+
+  function TouchDraft({ disabled }: { disabled: boolean }) {
+    draft = useComposerDraft({
+      activeQueueSessionKey: 'touch-focus', focusKey: null, inputDisabled: disabled,
+      queueEditRef: { current: null }, sessionId: 'touch-focus'
+    })
+
+    return <div contentEditable data-slot="composer-rich-input" ref={draft.editorRef} tabIndex={0} />
+  }
+
+  try {
+    const { rerender } = render(<TouchDraft disabled={false} />)
+    expect(globalThis.document.activeElement).not.toBe(draft.editorRef.current)
+    rerender(<TouchDraft disabled={true} />)
+    rerender(<TouchDraft disabled={false} />)
+    expect(globalThis.document.activeElement).not.toBe(draft.editorRef.current)
+    act(() => draft.focusInput())
+    expect(globalThis.document.activeElement).toBe(draft.editorRef.current)
+  } finally {
+    cleanup()
+    clearSessionDraft('touch-focus')
+    mainComposerScope.clear()
+    markActiveComposer('main')
+    vi.unstubAllGlobals()
+  }
+})
