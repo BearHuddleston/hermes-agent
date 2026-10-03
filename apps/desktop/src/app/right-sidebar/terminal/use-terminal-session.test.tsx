@@ -225,7 +225,9 @@ it.each(['attach', 'disconnect'])('cleans up the %s attempt before retry and ign
   expect(screen.getByText('open')).toBeTruthy()
   act(() => exits[1]({ code: 0, signal: null }))
   expect($terminals.get().some(tab => tab.id === id)).toBe(false)
+  expect(dispose).toHaveBeenCalledTimes(2) // Release the exited session before React unmounts.
   view.unmount()
+  expect(dispose).toHaveBeenCalledTimes(2)
   expect(listeners.size).toBe(0)
   vi.restoreAllMocks()
 })
