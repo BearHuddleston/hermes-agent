@@ -32,6 +32,16 @@ export function installBrowserViewport(): () => void {
       return
     }
 
+    // iOS Safari reports the visible area as innerHeight, zoomed or not, and
+    // scrolls the focused field into view itself. Fitting the shell under that
+    // scroll would shrink the app out of the visible area.
+    if (Math.abs(viewport.height - window.innerHeight) < 1) {
+      unzoomedTop = 0
+      reset()
+
+      return
+    }
+
     // Offset during a pinch belongs to the user's pan, not the app shell.
     if (Math.abs(viewport.scale - 1) < 0.01) {
       unzoomedTop = Math.max(0, viewport.offsetTop)

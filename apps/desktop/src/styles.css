@@ -846,6 +846,17 @@
     --composer-control-primary-size: 2.75rem;
     --composer-voice-menu-size: var(--composer-control-size);
   }
+
+  /* iOS Safari zooms the page into any focused text field under 16px and
+     stays zoomed after the keyboard closes. Browser hosts floor text entry
+     there; a larger chat-text scale still wins in the composer. */
+  html[data-hermes-desktop-host='browser'] :is(input, textarea, select) {
+    font-size: max(16px, 1em);
+  }
+
+  html[data-hermes-desktop-host='browser'] [data-slot='composer-rich-input'] {
+    font-size: max(16px, var(--conversation-text-font-size));
+  }
 }
 
 .dither {

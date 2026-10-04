@@ -96,6 +96,23 @@ describe('browser visible viewport', () => {
     expect(editor.value).toBe('first line\nsecond line')
   })
 
+  it('leaves a focus-zoomed iOS keyboard to Safari, whose innerHeight is the visible area', () => {
+    vi.stubGlobal('innerHeight', 714)
+    viewport.height = 714
+    dispose = installBrowserViewport()
+
+    // Measured in iOS 26.5 Safari: focusing a 14.3px field zooms 402/359 and
+    // Safari scrolls 353px to it; innerHeight follows the visible height.
+    vi.stubGlobal('innerHeight', 361)
+    resize(361, 353, 402 / 359)
+    expect(root.hasAttribute('data-browser-viewport')).toBe(false)
+
+    // Keyboard dismissed while the zoom remains.
+    vi.stubGlobal('innerHeight', 638)
+    resize(638, 76, 402 / 359)
+    expect(root.hasAttribute('data-browser-viewport')).toBe(false)
+  })
+
   it('leaves native/missing-API hosts alone and releases coalesced listeners and layout on teardown', () => {
     document.documentElement.removeAttribute('data-hermes-desktop-host')
     installBrowserViewport()()
