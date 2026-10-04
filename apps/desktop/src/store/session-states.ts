@@ -38,6 +38,7 @@ import type { ErrorSurface } from '@/lib/error-surface'
 import { tileFocusStampOnFocusChange } from '@/lib/session-timer-since'
 import { stableArray } from '@/lib/stable-array'
 import { readJson, writeJson } from '@/lib/storage'
+import { clearAppearancePicks } from '@/themes/appearance-picks'
 import type { SessionInfo } from '@/types/hermes'
 
 import { dropStatusDrawersForProfile, migrateStatusDrawersForProfile } from './composer-status-drawer'
@@ -2878,6 +2879,7 @@ export function dropTilesForProfile(
   }
 
   const name = normalizeProfileKey(profile)
+  clearAppearancePicks(name)
   dropPreviewArtifactsForProfile(name, route)
   dropStatusDrawersForProfile(name, route)
   // Route fields go through the SAME canonicalization as `name` below — a
@@ -2980,6 +2982,9 @@ export function migrateTilesForProfile(oldProfile: string, newProfile: string): 
   if (!from || !to || from === to) {
     return
   }
+
+  clearAppearancePicks(from)
+  clearAppearancePicks(to)
 
   const isLocal = (owner: SessionProfileRoute | undefined) =>
     Boolean(owner) && (String(owner?.connectionId ?? '').trim() || 'local') === 'local'

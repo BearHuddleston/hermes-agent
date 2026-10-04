@@ -24,6 +24,7 @@ import { $connection } from '@/store/session'
 import { setAppearance } from '@/store/translucency'
 
 import { $accentOverride } from './accent-override'
+import { beginAppearancePick, confirmAppearance, settleAppearancePick } from './appearance-picks'
 import {
   $backendCustomCSS,
   $backendThemes,
@@ -152,7 +153,6 @@ interface PendingPicks {
   profile: string
   field: AppearanceField
   latest: symbol
-  confirmed: string | null
 }
 const latestPick = new Map<string, PendingPicks>()
 const appearanceCacheKey = (profile: string, field: AppearanceField) => `${profile}\0${field}`
@@ -169,30 +169,37 @@ function commitPick(profile: string, field: AppearanceField, value: string, onRo
   const pick = Symbol()
   const owner = profileAppearanceOwner(profile)
   const pending = latestPick.get(key)
-  const picks = pending?.owner === owner ? pending : { owner, profile, field, latest: pick, confirmed: pref.own(profile) }
+  const picks = pending?.owner === owner ? pending : { owner, profile, field, latest: pick }
+  const sharedPick = beginAppearancePick(profile, field, owner, pref.own(profile), value)
 
   picks.latest = pick
   latestPick.set(key, picks)
   pref.put(profile, value)
 
+  const settle = (saved: boolean) => {
+    const confirmed = settleAppearancePick(sharedPick, saved, pref.own(profile))
+
+    if (confirmed !== undefined) {
+      pref.put(profile, confirmed)
+
+      if (profileAppearanceOwner(profile) === owner) { onRollback() }
+    }
+  }
+
   saveProfileAppearance(profile, { [field]: value }).then(() => {
+    settle(true)
+
     if (latestPick.get(key) !== picks) { return }
-    // Writes settle in FIFO order; an earlier success is the durable fallback
-    // even while the cache optimistically shows a later pick.
-    picks.confirmed = value
 
     if (picks.latest === pick) { latestPick.delete(key) }
   }).catch(error => {
+    settle(false)
+
     if (latestPick.get(key) !== picks || picks.latest !== pick) {
       return
     }
 
-    pref.put(profile, picks.confirmed)
     latestPick.delete(key)
-
-    if (profileAppearanceOwner(profile) === owner) {
-      onRollback()
-    }
 
     notifyError(error, translateNow('settings.config.autosaveFailed'))
   })
@@ -609,6 +616,7 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
 
     if (theme) {
       latestPick.delete(appearanceCacheKey(profileKey, 'theme'))
+      confirmAppearance(profileKey, 'theme', appearanceOwner, theme)
 
       if (skinPref.own(profileKey) !== theme) {
         skinPref.put(profileKey, theme)
@@ -619,6 +627,7 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
 
     if (configMode) {
       latestPick.delete(appearanceCacheKey(profileKey, 'theme_mode'))
+      confirmAppearance(profileKey, 'theme_mode', appearanceOwner, configMode)
 
       if (modePref.own(profileKey) !== configMode) {
         modePref.put(profileKey, configMode)
