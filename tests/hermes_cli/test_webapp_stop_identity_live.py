@@ -131,6 +131,14 @@ def test_webapp_stop_spares_argument_tail_and_stale_identity_but_stops_real_serv
 
             if not registered:
                 ledger_path.write_text("[]", encoding="utf-8")
+            # Keep the real OS argv census and all three test processes, but
+            # never inspect another developer server's HOME/active_profile.
+            # The home-I/O and signal guards stay enabled.
+            process_table = dashboard_procs._iter_process_table
+            monkeypatch.setattr(
+                dashboard_procs, "_iter_process_table",
+                lambda: [(pid, argv) for pid, argv in process_table() if pid in owned],
+            )
             monkeypatch.setenv("COLUMNS", "40")  # ps must not truncate a long interpreter path.
             scanned = dict(dashboard_procs._scan_dashboard_processes())
             for surface in ("webapp", "serve"):
