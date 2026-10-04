@@ -85,6 +85,11 @@ def _render_active_theme_bootstrap_css() -> str:
 # is served ``no-store`` and always references the current hashes).
 _IMMUTABLE_ASSET_CACHE_CONTROL = "public, max-age=31536000, immutable"
 _NO_STORE = {"Cache-Control": "no-store, no-cache, must-revalidate"}
+_DOCUMENT_HEADERS = {
+    **_NO_STORE,
+    "Content-Security-Policy": "frame-ancestors 'none'",
+    "X-Frame-Options": "DENY",
+}
 _HEADLESS_MSG = (
     "Headless backend (hermes serve): web UI disabled — use "
     "`hermes dashboard` for the browser UI."
@@ -129,7 +134,7 @@ def mount_spa(application: FastAPI):
                     f"window.__HERMES_SESSION_TOKEN__={json.dumps(_server()._SESSION_TOKEN)};"
                     "window.__HERMES_AUTH_REQUIRED__=false;"
                     f"</script></head><body>{_HEADLESS_MSG}</body></html>",
-                    headers=_NO_STORE,
+                    headers=_DOCUMENT_HEADERS,
                 )
             return JSONResponse({"error": _HEADLESS_MSG}, status_code=404)
         return
@@ -195,7 +200,7 @@ def mount_spa(application: FastAPI):
         if theme_bootstrap:
             html = html.replace("</head>", f"{theme_bootstrap}</head>", 1)
         html = html.replace("</head>", f"{bootstrap_script}</head>", 1)
-        return HTMLResponse(html, headers=_NO_STORE)
+        return HTMLResponse(html, headers=_DOCUMENT_HEADERS)
 
     # Built CSS contains absolute ``url(/fonts/...)`` / ``url(/ds-assets/...)`` references that
     # browsers resolve against the document origin — wrong under a proxy prefix. Intercept CSS
@@ -243,7 +248,7 @@ def mount_spa(application: FastAPI):
         # real 404 JSON instead of index.html (which breaks JSON clients with a SyntaxError).
         if full_path == "api" or full_path.startswith("api/"):
             return JSONResponse({"detail": f"No such API endpoint: /{full_path}"}, status_code=404)
-        if full_path == "index.html" and not policy(application.state).html_token:
+        if full_path == "index.html":
             return _serve_index(prefix)
         dist = web_dist()
         file_path = dist / full_path
@@ -254,7 +259,7 @@ def mount_spa(application: FastAPI):
             and file_path.exists()
             and file_path.is_file()
         ):
-            return FileResponse(file_path)
+            return FileResponse(file_path, headers=_DOCUMENT_HEADERS if file_path.suffix.lower() in {".html", ".htm"} else None)
         return _serve_index(prefix)
 
 
