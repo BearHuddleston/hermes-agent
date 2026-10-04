@@ -32,6 +32,7 @@ import { ContribBoundary, ContribRender } from '@/contrib/react/boundary'
 import { useContributions } from '@/contrib/react/use-contributions'
 import { useI18n } from '@/i18n'
 import { useKeybindHint } from '@/lib/keybinds/use-keybind-hint'
+import { isBrowserOwnedTouch } from '@/lib/touch-interaction'
 import { cn } from '@/lib/utils'
 import { closeAllOpenSessionTiles, setZoneParkedTiles } from '@/store/session-states'
 
@@ -100,6 +101,7 @@ import { paneChrome } from './track-model'
  *  a pane with no domain menu of its own (the file tree, a terminal, the main
  *  tab on a fresh draft) falls through to this one. */
 function ZoneMenu({
+  allowOpen,
   children,
   closable,
   includeAppActions = false,
@@ -111,6 +113,7 @@ function ZoneMenu({
   tabMenuPrefix,
   targetPane
 }: {
+  allowOpen?: () => boolean
   children: ReactNode
   includeAppActions?: boolean
   /** The pane the menu closes (the right-clicked chip / the active pane);
@@ -234,7 +237,7 @@ function ZoneMenu({
   // `w-40` clips the spelled-out chord (`Ctrl+Alt+T`) under the menu's
   // overflow-x-hidden. Size to the row; `min-w-40` keeps the short rows.
   return (
-    <ActionsContextMenu contentClassName="w-max min-w-40" items={items}>
+    <ActionsContextMenu allowOpen={allowOpen} contentClassName="w-max min-w-40" items={items}>
       {children}
     </ActionsContextMenu>
   )
@@ -261,6 +264,8 @@ export function TreeGroup({
   // The scrolling tab list inside the header (the strip also holds the
   // minimize chevron, which must not scroll away).
   const tabsRef = useRef<HTMLDivElement>(null)
+  // Whether the touch now down landed on browser-owned body content.
+  const bodyTouchOwnedByBrowser = useRef(false)
   const measuredBelowControls = usePanelTitlebar(ref, topEdge, Boolean(node.minimized))
   // The chip under the last right-click — the pane the zone menu's Split
   // actions carry into the new zone (header background = the active pane).
@@ -826,10 +831,18 @@ export function TreeGroup({
           wrap={
             !isEmpty
               ? body => (
-                  <ZoneMenu {...zoneMenu} includeAppActions>
+                  <ZoneMenu {...zoneMenu} allowOpen={() => !bodyTouchOwnedByBrowser.current} includeAppActions>
+                    {/* A touch hold on message text, an editable, a link or
+                        media keeps the browser's selection/paste callout; the
+                        hold opens this menu only on plain pane chrome. */}
                     <div
                       aria-label={t.zones.zoneMenuLabel(String(tabLabel(activeId)))}
                       data-zone-body={node.id}
+                      onPointerCancel={() => void (bodyTouchOwnedByBrowser.current = false)}
+                      onPointerDown={event =>
+                        void (bodyTouchOwnedByBrowser.current = isBrowserOwnedTouch(event.nativeEvent))
+                      }
+                      onPointerUp={() => void (bodyTouchOwnedByBrowser.current = false)}
                       style={{ display: 'contents' }}
                     >
                       {body}
