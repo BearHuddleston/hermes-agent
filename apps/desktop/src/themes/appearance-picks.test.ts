@@ -37,3 +37,29 @@ it('does not overwrite a different gateway or a newer authoritative read', () =>
   confirmAppearance('default', 'theme', 'A::default', 'everforest')
   expect(settleAppearancePick(old, true, 'everforest')).toBeUndefined()
 })
+
+it.each(['theme', 'theme_mode'] as const)('profile lifecycle only discards its own %s writes', async field => {
+  const { setApiRequestConnection } = await import('@/api/client')
+  const { dropTilesForProfile, migrateTilesForProfile } = await import('@/store/session-states')
+  const [base, preview] = field === 'theme' ? ['ember', 'mono'] : ['light', 'dark']
+  setApiRequestConnection('A')
+
+  try {
+    for (const cleanup of [
+      () => dropTilesForProfile('alpha', { connectionId: 'A', profile: 'alpha' }),
+      () => dropTilesForProfile('alpha'),
+      () => migrateTilesForProfile('alpha', 'renamed'),
+      () => migrateTilesForProfile('before', 'alpha')
+    ]) {
+      confirmAppearance('alpha', field, 'B::alpha', base)
+      const pending = beginAppearancePick('alpha', field, 'B::alpha', base, preview)
+      cleanup()
+      expect(settleAppearancePick(pending, false, preview)).toBe(base)
+    }
+
+    confirmAppearance('alpha', field, 'B::alpha', base)
+    const retired = beginAppearancePick('alpha', field, 'B::alpha', base, preview)
+    dropTilesForProfile('alpha', { connectionId: 'B', profile: 'alpha' })
+    expect(settleAppearancePick(retired, false, preview)).toBeUndefined()
+  } finally { setApiRequestConnection(null) }
+})

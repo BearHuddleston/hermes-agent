@@ -79,9 +79,11 @@ export function settleAppearancePick(pick: Pick, saved: boolean, cached: string 
 }
 
 /** Coordination is discarded on delete/rename; in-flight writes must not follow a name. */
-export function clearAppearancePicks(profile: string): void {
+export function clearAppearancePicks(profile: string, owner: string): void {
   for (const field of ['theme', 'theme_mode'] as const) {
     const key = keyFor(profile, field)
+
+    if (read(key)?.owner !== owner) { continue }
     fallback.delete(key)
     writeJson(key, null)
   }

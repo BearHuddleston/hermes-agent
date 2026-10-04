@@ -19,7 +19,7 @@
 import { backendScopeKey, type GatewayEvent, LOCAL_CONNECTION_ID, registryBackendScopeKey } from '@hermes/shared'
 import { atom, computed } from 'nanostores'
 
-import { setSessionOwnerResolver } from '@/api/client'
+import { ambientOwnerConnectionId, setSessionOwnerResolver } from '@/api/client'
 import { routeSessionId } from '@/app/routes'
 import type { ClientSessionState } from '@/app/types'
 import { findGroupOfPane, type LayoutNode } from '@/components/pane-shell/tree/model'
@@ -2879,7 +2879,8 @@ export function dropTilesForProfile(
   }
 
   const name = normalizeProfileKey(profile)
-  clearAppearancePicks(name)
+  const appearanceConnection = route?.connectionId?.trim() || ambientOwnerConnectionId() || ''
+  clearAppearancePicks(name, `${appearanceConnection}::${name}`)
   dropPreviewArtifactsForProfile(name, route)
   dropStatusDrawersForProfile(name, route)
   // Route fields go through the SAME canonicalization as `name` below — a
@@ -2983,8 +2984,8 @@ export function migrateTilesForProfile(oldProfile: string, newProfile: string): 
     return
   }
 
-  clearAppearancePicks(from)
-  clearAppearancePicks(to)
+  clearAppearancePicks(from, `${LOCAL_CONNECTION_ID}::${from}`)
+  clearAppearancePicks(to, `${LOCAL_CONNECTION_ID}::${to}`)
 
   const isLocal = (owner: SessionProfileRoute | undefined) =>
     Boolean(owner) && (String(owner?.connectionId ?? '').trim() || 'local') === 'local'
