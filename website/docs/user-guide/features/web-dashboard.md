@@ -678,6 +678,11 @@ To use the Nous provider you need an OAuth client ID (shape `agent:{id}`). There
   # …writes HERMES_DASHBOARD_OAUTH_CLIENT_ID to ~/.hermes/.env
   ```
 
+  `hermes webapp register` is the same command; the dashboard and the browser-hosted Desktop
+  share this login. To serve on your network or behind your own HTTPS URL with the right callback
+  registered for you, use `hermes webapp setup` or Desktop's **Settings → Web Access** (see
+  [Desktop → Open it from your phone or another computer](../desktop.md#open-it-from-your-phone-or-another-computer)).
+
 - **GUI — the Local Dashboards page.** Open [`/local-dashboards`](https://portal.nousresearch.com/local-dashboards) in the Nous Portal to register, name, manage, and revoke self-hosted dashboards from the browser. Copy the resulting `agent:{id}` client ID into `HERMES_DASHBOARD_OAUTH_CLIENT_ID` (env) or `dashboard.oauth.client_id` (config.yaml). This is also where you revoke a dashboard registered via the CLI.
 
 #### Configuration

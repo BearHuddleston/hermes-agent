@@ -18,6 +18,7 @@ import {
   Info,
   Keyboard,
   KeyRound,
+  Network,
   RefreshCw,
   Search,
   Settings2,
@@ -61,11 +62,13 @@ import { SettingsSubpageHeader } from './subpage-navigation'
 import { resolveSettingsSubpage, settingsSubpageIcon, settingsSubpages } from './subpages'
 import type { SettingsPageProps, SettingsView as SettingsViewId } from './types'
 import { vaultOwnerKey, VaultSettings } from './vault-settings'
+import { useWebAccessAvailable, WebAccessSettings } from './web-access-settings'
 
 const SETTINGS_VIEWS: readonly SettingsViewId[] = [
   ...SECTIONS.map(s => `config:${s.id}` as SettingsViewId),
   'providers',
   'gateway',
+  'web-access',
   // Legacy alias: the Connections page merged into Gateways. Kept in the enum
   // so saved `?tab=connections` deep links still resolve (redirected below).
   'connections',
@@ -231,6 +234,8 @@ export function SettingsView({ onClose, onConfigSaved, onMainModelChanged }: Set
     }
   }
 
+  const webAccessAvailable = useWebAccessAvailable()
+
   const navGroups: OverlayNavGroup[] = useMemo(
     () =>
       (
@@ -350,6 +355,20 @@ export function SettingsView({ onClose, onConfigSaved, onMainModelChanged }: Set
             label: t.settings.nav.gateway,
             onSelect: () => setActiveView('gateway')
           },
+          // Serving a web app on THIS machine: only for the local connection
+          // in the native app (a remote backend or the browser host has no
+          // "this computer" to expose).
+          ...(webAccessAvailable
+            ? [
+                {
+                  active: activeView === 'web-access',
+                  icon: Network,
+                  id: 'web-access',
+                  label: t.settings.nav.webAccess,
+                  onSelect: () => setActiveView('web-access')
+                }
+              ]
+            : []),
           {
             active: activeView === 'keybinds',
             icon: Keyboard,
@@ -421,6 +440,7 @@ export function SettingsView({ onClose, onConfigSaved, onMainModelChanged }: Set
       providerView,
       subpage,
       t,
+      webAccessAvailable,
       setActiveView,
       openProviderView,
       openKeysView,
@@ -549,6 +569,8 @@ export function SettingsView({ onClose, onConfigSaved, onMainModelChanged }: Set
       <NotificationsSettings subpage={subpage} />
     ) : activeView === 'billing' ? (
       <BillingSettings />
+    ) : activeView === 'web-access' ? (
+      <WebAccessSettings />
     ) : activeView === 'vault' ? (
       <VaultSettings key={vaultOwnerKey(activeConnectionId, scopeProfile)} subpage={subpage} />
     ) : (

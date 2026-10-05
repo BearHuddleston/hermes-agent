@@ -2797,6 +2797,11 @@ def cmd_webapp(args):
     return run(args)
 
 
+def cmd_webapp_setup(args):
+    from hermes_cli.webapp_setup_cmd import cmd_webapp_setup as run
+    return run(args)
+
+
 def cmd_dashboard(args):
     """Start the web UI server, or (with --stop/--status) manage running ones."""
     _token_file = getattr(args, "ssh_session_token_file", None)
@@ -3556,6 +3561,7 @@ def _build_cli_parser():
         cmd_dashboard=cmd_dashboard,
         cmd_dashboard_register=cmd_dashboard_register,
         cmd_webapp=cmd_webapp,
+        cmd_webapp_setup=cmd_webapp_setup,
     )
     # "desktop" is canonical (Hermes-Setup.exe tells users to run it, so it
     # must be the name --help shows); "gui" is a deprecated alias.

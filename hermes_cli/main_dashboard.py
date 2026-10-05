@@ -673,7 +673,6 @@ def _maybe_setup_dashboard_auth_interactively(args) -> None:
         _cancel()
 
     import getpass
-    import secrets
     print()
     try:
         username = line_input("  Username [admin]: ").strip() or "admin"
@@ -687,33 +686,12 @@ def _maybe_setup_dashboard_auth_interactively(args) -> None:
     if password != confirm:
         _cancel("  ✗ Passwords don't match — aborting.")
 
+    from hermes_cli.dashboard_auth_setup import save_basic_auth
     try:
-        from plugins.dashboard_auth.basic import hash_password
-    except Exception as exc:
-        _cancel(f"  ✗ Could not load the password provider: {exc}")
-
-    password_hash = hash_password(password)
-    # A stable token-signing secret so sessions survive a dashboard restart.
-    secret = secrets.token_urlsafe(32)
-
-    try:
-        from hermes_cli.config import load_config, save_config
-        from hermes_cli.plugins_cmd import ensure_basic_auth_plugin_enabled_in_config
-        cfg = load_config()
-        basic = cfg.setdefault("dashboard", {}).setdefault("basic_auth", {})
-        basic["username"] = username
-        basic["password_hash"] = password_hash
-        basic["password"] = ""  # never persist plaintext
-        if not str(basic.get("secret", "") or "").strip():
-            basic["secret"] = secret
-        # The bundled basic provider is a backend plugin that honours
-        # plugins.disabled; unblock it so discover_plugins below registers it,
-        # and tell an operator who deliberately disabled it.
-        if ensure_basic_auth_plugin_enabled_in_config(cfg):
+        if save_basic_auth(username, password):
             print("  ✓ Re-enabled the bundled 'basic' auth plugin (was in plugins.disabled)")
-        save_config(cfg)
     except Exception as exc:
-        _cancel(f"  ✗ Failed to write config.yaml: {exc}")
+        _cancel(f"  ✗ Failed to save the password login: {exc}")
 
     # Re-run plugin discovery so the provider registers before start_server's gate.
     try:
@@ -840,27 +818,12 @@ def cmd_webapp(args):
         _report_dashboard_status(modes={"webapp"})
         raise SystemExit(0)
     if getattr(args, "stop", False):
-        from hermes_constants import get_hermes_home
+        from hermes_cli.webapp_access import stop_webapps
 
-        own_home = str(get_hermes_home())
-
-        def _webapp_pids() -> list[int]:
-            return _pids_owned_by_hermes_home([
-                pid
-                for pid, command in _scan_dashboard_processes()
-                if (_parse_dashboard_runtime(command) or (None, "", 0))[0] == "webapp"
-            ], own_home)
-
-        webapp_pids = set(_webapp_pids())
-        if not webapp_pids:
+        found, remaining = stop_webapps(reason="requested via webapp --stop")
+        if not found:
             print("No Hermes Webapp processes running for this profile.")
-            raise SystemExit(0)
-        _kill_stale_dashboard_processes(
-            reason="requested via webapp --stop",
-            include_pids=webapp_pids,
-            scope_home=own_home,
-        )
-        raise SystemExit(1 if _webapp_pids() else 0)
+        raise SystemExit(1 if remaining else 0)
 
     from hermes_cli.webapp import WebappBuildError, prepare_webapp_renderer
 
