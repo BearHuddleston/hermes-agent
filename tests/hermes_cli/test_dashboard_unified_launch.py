@@ -94,6 +94,8 @@ class TestUnifiedDashboardRouting:
         assert env.get("HERMES_HOME") == str(get_default_hermes_root())
 
     def test_named_webapp_refuses_to_attach_to_dashboard_surface(self, main_mod, monkeypatch):
+        from gateway.restart import GATEWAY_FATAL_CONFIG_EXIT_CODE
+
         monkeypatch.delenv("HERMES_DESKTOP", raising=False)
         monkeypatch.delenv("HERMES_WEB_DIST", raising=False)
         monkeypatch.setattr(
@@ -112,7 +114,7 @@ class TestUnifiedDashboardRouting:
                 _args(no_open=False, skip_build=True, ui_surface="webapp")
             )
 
-        assert exc.value.code == 1
+        assert exc.value.code == GATEWAY_FATAL_CONFIG_EXIT_CODE
         assert opened == []
 
     def test_named_webapp_prints_route_without_opening_unauthorized_tab(self, main_mod, monkeypatch, capsys):
