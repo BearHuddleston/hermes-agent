@@ -499,6 +499,22 @@ describe('foreground profile appearance ownership', () => {
   )
 
   it.each(slots)(
+    'ends on the $field a peer saved after this window adopted an older read, though the peer left ($profile)',
+    async ({ profile: kind, field }) => {
+      const { config, load, peer, peerPick, pref, profile, shows, values } = await besidePeer(kind, field)
+      const [base, , theirs] = values
+      const peerPicked = peerPick(theirs)
+      // This window adopts a read served before the peer's save commits.
+      await act(() => load())
+      expect(state(profile)).toMatchObject(shows(base))
+      // The save lands unordered after the peer left for another profile, so the peer re-reads nothing here.
+      configs.A = config(theirs)
+      await answer(() => fromPeer(() => peer.settleAppearancePick(peerPicked, true, pref.own(profile))))
+      expect(state(profile)).toMatchObject(shows(theirs))
+    }
+  )
+
+  it.each(slots)(
     'never adopts a $field read served before a peer save landed ($profile)',
     async ({ profile: kind, field }) => {
       const { config, load, peerPick, peerSaved, profile, shows, values } = await besidePeer(kind, field)

@@ -661,6 +661,9 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
         // Only a newer pick supersedes this window's pending one; a peer's
         // config read leaves its failure to say so.
         if (peer.picked) { latestPick.delete(appearanceCacheKey(peer.profile, peer.field)) }
+
+        // The window that settled it re-reads only while it is still on the owner.
+        if (peer.reconcile) { reconcileProfileAppearance(peer.owner) }
       }
 
       if (event.key !== null && !APPEARANCE_KEYS.has(event.key)) {

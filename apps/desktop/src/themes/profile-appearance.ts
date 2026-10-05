@@ -20,8 +20,8 @@
  * so an owner's writes go out one at a time in pick order: the newest pick is
  * always the last PUT to land. Nothing orders another window's writes against
  * them (`{ ok }` carries no revision), so a settlement that raced one re-reads
- * the config once this window's writes for the owner drain, and again when a
- * later change keeps that read out.
+ * the config in every window still on the owner, once that window's writes for
+ * it drain, and again when a later change keeps that read out.
  */
 
 import { atom } from 'nanostores'
@@ -127,7 +127,8 @@ async function reconcile(owner: string): Promise<void> {
   unreconciled.delete(owner)
   const read = beginProfileAppearanceRead()
 
-  // The window moved to another owner; its own loads decide there.
+  // The window moved to another owner; its own loads decide there, and the
+  // peers still on this one re-read for it.
   if (read.owner !== owner) {
     return
   }

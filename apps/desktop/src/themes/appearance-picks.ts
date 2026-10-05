@@ -8,8 +8,8 @@ interface Picks {
   generation: string
   confirmed: string | null
   preview: { id: string; value: string } | null
-  /** The last save that landed, and the window that settled it. */
-  saved?: { id: string; window: string } | null
+  /** The last save that landed, the window that settled it, and whether it landed unordered. */
+  saved?: { id: string; window: string; reconcile?: boolean } | null
 }
 
 interface Pick {
@@ -36,6 +36,8 @@ export interface PeerPickChange {
   owner: string
   /** A new pick, which supersedes this window's pending one. */
   picked: boolean
+  /** A save landed unordered: every window still on the owner re-reads, as the one that settled it may have left. */
+  reconcile: boolean
 }
 
 // IDs identify UI writes only; they are not credentials.
@@ -90,8 +92,8 @@ export function beginAppearancePick(profile: string, field: AppearanceField, own
  * order unknown: such a save repaints nothing, moves `confirmed` only when it
  * is what this slot already paints, and asks for a fresh read. A failed save
  * changed nothing to re-read. Every landed save is recorded, so other
- * windows' pending picks and older reads learn of it. Another owner's slot is
- * not ours to settle.
+ * windows' pending picks and older reads learn of it, and an unordered one
+ * asks them for that read too. Another owner's slot is not ours to settle.
  */
 export function settleAppearancePick(pick: Pick, saved: boolean, cached: string | null): Settlement {
   const picks = read(pick.key)
@@ -106,7 +108,7 @@ export function settleAppearancePick(pick: Pick, saved: boolean, cached: string 
 
   if (saved) {
     if (tracked && (!unordered || picks.preview?.id === pick.id)) { picks.confirmed = pick.value }
-    picks.saved = { id: uniqueId(), window: thisWindow }
+    picks.saved = { id: uniqueId(), window: thisWindow, reconcile: unordered }
   }
 
   if (tracked && picks.preview?.id === pick.id) { picks.preview = null }
@@ -146,7 +148,9 @@ export function peerPickChange(event: StorageEvent): PeerPickChange | null {
   const picked = !!after.preview?.id && after.preview.id !== before?.preview?.id
   const saved = !!after.saved?.id && after.saved.id !== before?.saved?.id
 
-  return picked || saved ? { profile: slot[0], field: slot[1], owner: after.owner, picked } : null
+  const reconcile = saved && after.saved?.reconcile === true
+
+  return picked || saved ? { profile: slot[0], field: slot[1], owner: after.owner, picked, reconcile } : null
 }
 
 /** Coordination is discarded on delete/rename; in-flight writes must not follow a name. */
