@@ -761,3 +761,38 @@ it('keeps touch mount and turn completion from focusing the editor while accepti
     vi.unstubAllGlobals()
   }
 })
+
+// iOS treats a selection placed in a contenteditable during a tap as focus,
+// so clearing after Send must not put the caret back into a blurred editor.
+it('on touch, clears a sent draft without re-entering an editor whose keyboard was put away', () => {
+  vi.stubGlobal('matchMedia', vi.fn().mockReturnValue({ matches: true }))
+  let draft!: ReturnType<typeof useComposerDraft>
+
+  function TouchDraft() {
+    draft = useComposerDraft({
+      activeQueueSessionKey: 'touch-clear', focusKey: null, inputDisabled: false,
+      queueEditRef: { current: null }, sessionId: 'touch-clear'
+    })
+
+    return <div contentEditable data-slot="composer-rich-input" ref={draft.editorRef} tabIndex={0} />
+  }
+
+  try {
+    render(<TouchDraft />)
+    expect(getActiveComposer()).toBe('main')
+    window.getSelection()?.removeAllRanges()
+
+    act(() => draft.clearDraft())
+    expect(window.getSelection()?.rangeCount).toBe(0)
+
+    act(() => draft.focusInput())
+    act(() => draft.clearDraft())
+    expect(draft.editorRef.current?.contains(window.getSelection()?.anchorNode ?? null)).toBe(true)
+  } finally {
+    cleanup()
+    clearSessionDraft('touch-clear')
+    mainComposerScope.clear()
+    markActiveComposer('main')
+    vi.unstubAllGlobals()
+  }
+})

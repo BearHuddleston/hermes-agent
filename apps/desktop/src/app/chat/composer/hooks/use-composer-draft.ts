@@ -365,7 +365,14 @@ export function useComposerDraft({
     if (editorRef.current) {
       renderComposerContents(editorRef.current, '')
 
-      if (visibleRef.current && getActiveComposer() === target && !isElementInHiddenPane(editorRef.current)) {
+      // A caret placed inside a send tap focuses the editor, and on a phone
+      // raises the keyboard the user put away. Touch keeps it only if focused.
+      if (
+        visibleRef.current &&
+        getActiveComposer() === target &&
+        !isElementInHiddenPane(editorRef.current) &&
+        (!isTouchInteraction() || editorRef.current.contains(document.activeElement))
+      ) {
         placeCaretEnd(editorRef.current)
       }
     }
