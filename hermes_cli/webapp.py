@@ -85,14 +85,16 @@ def prepare_webapp_renderer(
 
     project_root = project_root.resolve()
     dist = webapp_dist_dir(project_root)
+    if skip_build:
+        # Reuse takes no build lock, like `hermes dashboard --skip-build`: the
+        # lock lives in the install root, which a read-only install cannot write.
+        if not (dist / "index.html").is_file():
+            raise WebappBuildError(
+                f"--skip-build was passed but no Webapp renderer exists at {dist}"
+            )
+        print(f"→ Reusing Hermes Webapp renderer at {dist} (--skip-build)")
+        return dist
     with _exclusive_build_lock(project_root / _LOCK_NAME):
-        if skip_build:
-            if not (dist / "index.html").is_file():
-                raise WebappBuildError(
-                    f"--skip-build was passed but no Webapp renderer exists at {dist}"
-                )
-            print(f"→ Reusing Hermes Webapp renderer at {dist} (--skip-build)")
-            return dist
         if not force and source_product_current(project_root, "webapp", dist):
             print(f"✓ Hermes Webapp renderer is up to date: {dist}")
             return dist

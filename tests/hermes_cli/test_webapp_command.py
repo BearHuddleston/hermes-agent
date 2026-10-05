@@ -57,6 +57,26 @@ def test_skip_build_requires_the_separate_webapp_bundle(tmp_path: Path):
         webapp.prepare_webapp_renderer(tmp_path, skip_build=True)
 
 
+def test_skip_build_writes_nothing_into_the_install_tree(tmp_path: Path):
+    """A read-only install can reuse a prebuilt renderer only if --skip-build
+    never writes the install tree, build lock included; a missing renderer is
+    still refused by its path."""
+    _workspace_tree(tmp_path)
+    dist = webapp.webapp_dist_dir(tmp_path)
+    dist.mkdir()
+    (dist / "index.html").write_text("<!doctype html>", encoding="utf-8")
+
+    install_tree = sorted(tmp_path.rglob("*"))
+    assert webapp.prepare_webapp_renderer(tmp_path, skip_build=True) == dist
+    assert sorted(tmp_path.rglob("*")) == install_tree
+
+    (dist / "index.html").unlink()
+    install_tree = sorted(tmp_path.rglob("*"))
+    with pytest.raises(webapp.WebappBuildError, match="no Webapp renderer exists"):
+        webapp.prepare_webapp_renderer(tmp_path, skip_build=True)
+    assert sorted(tmp_path.rglob("*")) == install_tree
+
+
 def _assert_build_lock_excludes_second_open(tmp_path: Path):
     from pm.filesystem import lock_fd
 
