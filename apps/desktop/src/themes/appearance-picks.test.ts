@@ -18,9 +18,9 @@ it.each(['theme', 'theme_mode'] as const)('settles independent writers against s
         const b = peer.beginAppearancePick(profile, field, owner, first, second)
         let cache: string | null = second
 
-        const settleA = () => { cache = settleAppearancePick(a, firstSucceeds, cache) ?? cache }
+        const settleA = () => { cache = settleAppearancePick(a, firstSucceeds, cache).value ?? cache }
 
-        const settleB = () => { cache = peer.settleAppearancePick(b, false, cache) ?? cache }
+        const settleB = () => { cache = peer.settleAppearancePick(b, false, cache).value ?? cache }
 
         if (reverse) { settleB(); settleA() } else { settleA(); settleB() }
         expect(cache).toBe(firstSucceeds ? first : base)
@@ -33,9 +33,9 @@ it('does not overwrite a different gateway or a newer authoritative read', () =>
   confirmAppearance('default', 'theme', 'A::default', 'ember')
   const old = beginAppearancePick('default', 'theme', 'A::default', 'ember', 'mono')
   confirmAppearance('default', 'theme', 'B::default', 'everforest')
-  expect(settleAppearancePick(old, false, 'everforest')).toBeUndefined()
+  expect(settleAppearancePick(old, false, 'everforest').value).toBeUndefined()
   confirmAppearance('default', 'theme', 'A::default', 'everforest')
-  expect(settleAppearancePick(old, true, 'everforest')).toBeUndefined()
+  expect(settleAppearancePick(old, true, 'everforest').value).toBeUndefined()
 })
 
 it.each(['theme', 'theme_mode'] as const)('profile lifecycle only discards its own %s writes', async field => {
@@ -54,12 +54,12 @@ it.each(['theme', 'theme_mode'] as const)('profile lifecycle only discards its o
       confirmAppearance('alpha', field, 'B::alpha', base)
       const pending = beginAppearancePick('alpha', field, 'B::alpha', base, preview)
       cleanup()
-      expect(settleAppearancePick(pending, false, preview)).toBe(base)
+      expect(settleAppearancePick(pending, false, preview).value).toBe(base)
     }
 
     confirmAppearance('alpha', field, 'B::alpha', base)
     const retired = beginAppearancePick('alpha', field, 'B::alpha', base, preview)
     dropTilesForProfile('alpha', { connectionId: 'B', profile: 'alpha' })
-    expect(settleAppearancePick(retired, false, preview)).toBeUndefined()
+    expect(settleAppearancePick(retired, false, preview).value).toBeUndefined()
   } finally { setApiRequestConnection(null) }
 })

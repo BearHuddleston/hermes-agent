@@ -18,13 +18,16 @@
  * after the owner's last local change and no write for it is in flight. A
  * slower, older GET can never snap a fresh pick back. Writes race each other,
  * so an owner's writes go out one at a time in pick order: the newest pick is
- * always the last PUT to land.
+ * always the last PUT to land. Nothing orders another window's writes against
+ * them (`{ ok }` carries no revision), so a settlement that raced one re-reads
+ * the config once this window's writes for the owner drain, and again when a
+ * later change keeps that read out.
  */
 
 import { atom } from 'nanostores'
 
 import { ambientOwnerConnectionId, connectionScoped, getApiRequestProfile } from '@/api/client'
-import { saveHermesConfig } from '@/api/config'
+import { getHermesConfig, saveHermesConfig } from '@/api/config'
 import { translateNow } from '@/i18n'
 
 import type { ThemeMode } from './context'
@@ -54,6 +57,9 @@ const localChangeAt = new Map<string, number>()
 const writesInFlight = new Map<string, number>()
 // Per owner: the settlement of its latest queued write.
 const writeQueues = new Map<string, Promise<unknown>>()
+// Owners to re-read once their writes drain, and when each re-read began.
+const unreconciled = new Set<string>()
+const reconciledAt = new Map<string, number>()
 
 const isThemeMode = (value: unknown): value is ThemeMode => value === 'light' || value === 'dark' || value === 'system'
 
@@ -100,6 +106,49 @@ export function appearanceIsCurrent(appearance: ProfileAppearance): boolean {
   return !writesInFlight.get(appearance.owner) && appearance.readAt > (localChangeAt.get(appearance.owner) ?? 0)
 }
 
+/** Re-read `owner`'s config once this window's writes for it drain: a GET begun
+ *  after they all landed carries the backend's own order. */
+export function reconcileProfileAppearance(owner: string): void {
+  // One that began after this window's last change already answers. Every
+  // request follows such a change (a drained write, or one that kept the last
+  // re-read out), so a failed one never blocks the next.
+  if ((reconciledAt.get(owner) ?? 0) > (localChangeAt.get(owner) ?? 0)) {
+    return
+  }
+
+  if (writesInFlight.get(owner)) {
+    unreconciled.add(owner)
+  } else {
+    void reconcile(owner)
+  }
+}
+
+async function reconcile(owner: string): Promise<void> {
+  unreconciled.delete(owner)
+  const read = beginProfileAppearanceRead()
+
+  // The window moved to another owner; its own loads decide there.
+  if (read.owner !== owner) {
+    return
+  }
+
+  reconciledAt.set(owner, read.readAt)
+
+  try {
+    // Published like any load, under the same admission: an unset field
+    // leaves the cached pick painted.
+    publishProfileAppearance(read, (await getHermesConfig())?.desktop)
+  } catch {
+    // Like any failed config load: the next one reconciles.
+  }
+
+  // A change since this read began (a pick here or in a peer, a peer's read)
+  // keeps it out, and the order it was asked for is still unknown: ask again.
+  if ((localChangeAt.get(owner) ?? 0) > read.readAt) {
+    reconcileProfileAppearance(owner)
+  }
+}
+
 /** Write a pick to the profile's config.yaml on the gateway it was picked on,
  *  after that owner's earlier writes settle. Sparse: PUT /api/config
  *  deep-merges, so echoing more would overwrite keys other surfaces changed. */
@@ -142,5 +191,9 @@ export async function saveProfileAppearance(profile: string, patch: ProfileAppea
     // A GET that began while this write was in flight may have been served
     // before it landed.
     localChangeAt.set(key, ++clock)
+
+    if (!writesInFlight.get(key) && unreconciled.has(key)) {
+      void reconcile(key)
+    }
   }
 }

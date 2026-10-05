@@ -24,7 +24,7 @@ import { $connection } from '@/store/session'
 import { setAppearance } from '@/store/translucency'
 
 import { $accentOverride } from './accent-override'
-import { beginAppearancePick, confirmAppearance, settleAppearancePick } from './appearance-picks'
+import { beginAppearancePick, confirmAppearance, peerPickChange, settleAppearancePick } from './appearance-picks'
 import {
   $backendCustomCSS,
   $backendThemes,
@@ -41,6 +41,7 @@ import {
   markLocalAppearanceChange,
   profileAppearanceOwner,
   type ProfileAppearancePatch,
+  reconcileProfileAppearance,
   saveProfileAppearance
 } from './profile-appearance'
 import { retintTheme } from './retint'
@@ -145,9 +146,9 @@ const APPEARANCE_PREFS: Record<AppearanceField, Pick<ReturnType<typeof profilePr
   theme_mode: modePref
 }
 
-// The boot cache keeps its existing per-profile format. Only the pick that
-// still owns a cache slot may roll it back: adopting another gateway's
-// config (even the same value) supersedes that pick.
+// The boot cache keeps its existing per-profile format. A failed pick says so
+// while it is the newest: a later pick here or in a peer window, or this
+// window adopting another gateway's config (even the same value), supersedes it.
 interface PendingPicks {
   owner: string
   profile: string
@@ -161,7 +162,8 @@ const appearanceCacheKey = (profile: string, field: AppearanceField) => `${profi
  * Cache a pick and write it to the profile's config.yaml. A failed write puts
  * the last confirmed pick back (unless a newer owner replaced it)
  * and says so, like every config-backed setting — otherwise the next config
- * load would silently undo it.
+ * load would silently undo it. A save that raced another window's save or
+ * read settles by re-reading the config.
  */
 function commitPick(profile: string, field: AppearanceField, value: string, onRollback: () => void): void {
   const pref = APPEARANCE_PREFS[field]
@@ -177,13 +179,15 @@ function commitPick(profile: string, field: AppearanceField, value: string, onRo
   pref.put(profile, value)
 
   const settle = (saved: boolean) => {
-    const confirmed = settleAppearancePick(sharedPick, saved, pref.own(profile))
+    const { reconcile, value: confirmed } = settleAppearancePick(sharedPick, saved, pref.own(profile))
 
     if (confirmed !== undefined) {
       pref.put(profile, confirmed)
 
       if (profileAppearanceOwner(profile) === owner) { onRollback() }
     }
+
+    if (reconcile) { reconcileProfileAppearance(owner) }
   }
 
   saveProfileAppearance(profile, { [field]: value }).then(() => {
@@ -645,20 +649,32 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
   // the OTHER windows, which is exactly the set that needs to catch up.
   useEffect(() => {
     const onStorage = (event: StorageEvent) => {
-      if ((event.storageArea && event.storageArea !== window.localStorage) || (event.key !== null && !APPEARANCE_KEYS.has(event.key))) {
+      if (event.storageArea && event.storageArea !== window.localStorage) {
+        return
+      }
+
+      const peer = peerPickChange(event)
+
+      if (peer) {
+        markLocalAppearanceChange(peer.profile, peer.owner)
+
+        // Only a newer pick supersedes this window's pending one; a peer's
+        // config read leaves its failure to say so.
+        if (peer.picked) { latestPick.delete(appearanceCacheKey(peer.profile, peer.field)) }
+      }
+
+      if (event.key !== null && !APPEARANCE_KEYS.has(event.key)) {
         return
       }
 
       const live = normalizeProfileKey($activeGatewayProfile.get())
 
       const adopt = (profile: string, field: AppearanceField) => {
-        const key = appearanceCacheKey(profile, field)
-        const pending = latestPick.get(key)
+        const pending = latestPick.get(appearanceCacheKey(profile, field))
 
         // The shared cache is per profile, but a pending request still belongs
         // to the connection captured when it began, even after navigation.
         if (pending) { markLocalAppearanceChange(profile, pending.owner) }
-        latestPick.delete(key)
         markLocalAppearanceChange(profile)
       }
 
