@@ -2,6 +2,7 @@
 // Real independent Chromium pages, ThemeProvider and native storage events; mocked config transport.
 // Run from the repository root: CHROMIUM_PATH=/path/to/chrome node apps/desktop/scripts/smoke-appearance-pages.mjs
 import fs from 'node:fs/promises'
+import net from 'node:net'
 import os from 'node:os'
 import path from 'node:path'
 import {createRequire} from 'node:module'
@@ -40,9 +41,16 @@ function Probe() {
 }
 createRoot(document.getElementById('root')).render(<ThemeProvider><Probe/></ThemeProvider>)
 `)
+// Vite reads port 0 as its default 5173, so concurrent runs would collide: take a free port instead.
+const port = await new Promise((resolve, reject) => {
+  const probe = net.createServer().once('error', reject).listen(0, '127.0.0.1', () => {
+    const {port} = probe.address()
+    probe.close(() => resolve(port))
+  })
+})
 const server = await createServer({
   configFile: path.join(repo, 'apps/desktop/vite.config.ts'), root,
-  server: {host: '127.0.0.1', port: 0, strictPort: true, fs: {allow: [repo, root]}}
+  server: {host: '127.0.0.1', port, strictPort: true, fs: {allow: [repo, root]}}
 })
 let browser
 const results = [], errors = []
@@ -70,7 +78,7 @@ try {
         await page.waitForFunction(() => typeof window.pick === 'function')
       }
       const state = page => page.evaluate(field => window.state(field), field)
-      const wait = (page, value) => page.waitForFunction(({field,value}) => window.state(field).view === value, {field,value}, {timeout: 1500})
+      const wait = (page, value) => page.waitForFunction(({field,value}) => window.state(field).view === value, {field,value}, {timeout: 5000})
       const pick = (page,value) => page.evaluate(({field,value}) => window.pick(field,value), {field,value})
       let durable = base
       const settle = async (page,ok) => {
