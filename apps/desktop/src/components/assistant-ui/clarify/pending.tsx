@@ -3,6 +3,7 @@
 import { useStore } from '@nanostores/react'
 import { type FormEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
+import { TurnHolderNote, useTurnHolder } from '@/app/chat/presence/turn-holder'
 import { Button } from '@/components/ui/button'
 import { Loader } from '@/components/ui/loader'
 import { useI18n } from '@/i18n'
@@ -256,7 +257,9 @@ export function ClarifyToolPending({
     questions
   })
 
-  const disabled = submitting || !ready
+  // A shared chat's turn sent by someone else: they answer its question, this window watches.
+  const holder = useTurnHolder(request?.sessionId)
+  const disabled = submitting || !ready || Boolean(holder)
 
   if (questions.length === 0) {
     return (
@@ -305,7 +308,11 @@ export function ClarifyToolPending({
         ))}
       </ClarifyShell>
 
-      {undelivered ? null : (
+      {undelivered ? null : holder ? (
+        <div className="flex justify-end">
+          <TurnHolderNote holder={holder} />
+        </div>
+      ) : (
         <div className="flex items-center justify-end gap-1">
           <Button disabled={disabled} onClick={() => void cancelAll()} size="xs" type="button" variant="text">
             {copy.skip}

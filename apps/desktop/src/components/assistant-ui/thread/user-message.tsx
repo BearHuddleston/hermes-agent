@@ -1,6 +1,9 @@
 import { ActionBarPrimitive, BranchPickerPrimitive, MessagePrimitive, useAuiState } from '@assistant-ui/react'
+import { useStore } from '@nanostores/react'
 import { type FC, type ReactNode, useCallback, useEffect, useRef, useState } from 'react'
 
+import { useTurnHolder } from '@/app/chat/presence/turn-holder'
+import { useSessionView } from '@/app/chat/session-view'
 import { DirectiveContent } from '@/components/assistant-ui/directive-text'
 import { isAttachmentRef } from '@/components/assistant-ui/reference-kinds'
 import {
@@ -22,12 +25,14 @@ import { Tip } from '@/components/ui/tooltip'
 import { useMediaQuery } from '@/hooks/use-media-query'
 import { useResizeObserver } from '@/hooks/use-resize-observer'
 import { useI18n } from '@/i18n'
+import type { MessageSender } from '@/lib/chat-messages'
 import { triggerHaptic } from '@/lib/haptics'
 import { StopFilled } from '@/lib/icons'
 import { LruCache } from '@/lib/lru-cache'
 import { TOUCH_POINTER_QUERY } from '@/lib/touch-interaction'
 import { cn } from '@/lib/utils'
 import { $gateway } from '@/store/gateway'
+import { $presenceSelf } from '@/store/presence'
 import { notifyThreadEditOpen } from '@/store/thread-scroll'
 import { isWatchWindow } from '@/store/windows'
 
@@ -288,6 +293,11 @@ export const UserMessage: FC<{
     return messageAttachmentRefs(custom.attachmentRefs)
   })
 
+  // Shared chats: who sent this message (display only) and who holds the running turn.
+  const sender = useAuiState(s => (s.message.metadata?.custom as { sender?: MessageSender } | undefined)?.sender)
+  const selfUser = useStore($presenceSelf)?.user
+  const turnHolder = useTurnHolder(useStore(useSessionView().$runtimeId))
+
   const [pickerOpen, setPickerOpen] = useState(false)
   const { enabled: reactionsEnabled, react, reactions: shownReactions } = useMessageReactions(messageId, 'user')
 
@@ -380,7 +390,7 @@ export const UserMessage: FC<{
   const hasBody = messageText.trim().length > 0
   const chipOnlyTurn = !hasBody && attachmentRefs.length > 0 && attachmentRefs.every(isAttachmentRef)
   const isLatestUser = messageId === latestUserId
-  const showStop = !readOnly && isLatestUser && threadRunning && Boolean(onCancel)
+  const showStop = !readOnly && !turnHolder && isLatestUser && threadRunning && Boolean(onCancel)
   // Restore (re-run this exact prompt) is available everywhere the Stop button
   // isn't — including mid-stream on older prompts, since the action interrupts
   // the live turn before rewinding.
@@ -437,6 +447,7 @@ export const UserMessage: FC<{
       >
         <ActionBarPrimitive.Root className="relative w-full max-w-full" data-slot="aui_user-bubble-actions">
           <div className="human-message-with-todos-wrapper flex w-full flex-col gap-0">
+            {sender && sender.id !== selfUser && <MessageSenderLabel sender={sender} />}
             <ReactionPicker
               onOpenChange={setPickerOpen}
               onSelect={pickEmoji}
@@ -635,5 +646,19 @@ export const UserMessage: FC<{
         </ActionBarPrimitive.Root>
       </StickyHumanMessageContainer>
     </MessagePrimitive.Root>
+  )
+}
+
+/** Who sent a message in a chat several signed-in people share. Display only; the model never sees it. */
+function MessageSenderLabel({ sender }: { sender: MessageSender }) {
+  return (
+    <span
+      className="mb-0.5 inline-flex max-w-full items-center gap-1.5 self-start px-1 text-[0.6875rem] font-medium text-(--ui-text-secondary)"
+      data-message-sender={sender.id}
+      data-slot="aui_user-sender"
+    >
+      <span aria-hidden className="size-2 shrink-0 rounded-full" style={{ backgroundColor: sender.color }} />
+      <span className="truncate">{sender.name}</span>
+    </span>
   )
 }

@@ -6177,8 +6177,12 @@ export const esOverrides = {
     windows: count => `${count} ventanas`,
     renameTitle: 'Tu nombre en este chat',
     renamePlaceholder: 'Nombre que ven los demás',
-    renameHint: 'Aparece junto a tu puntero y en tu avatar. Tu inicio de sesión decide quién eres; esto es solo la etiqueta.',
-    renameSave: 'Guardar'
+    renameHint:
+      'Aparece junto a tu puntero y en tu avatar. Tu inicio de sesión decide quién eres; esto es solo la etiqueta.',
+    renameSave: 'Guardar',
+    turnRunning: name => `Es el turno de ${name}. Tus mensajes esperarán a que termine.`,
+    waitingFor: name => `Esperando la respuesta de ${name}`,
+    chatCreator: 'quien creó el chat'
   },
   ui: {
     search: {

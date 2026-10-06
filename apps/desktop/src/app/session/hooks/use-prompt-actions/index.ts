@@ -39,6 +39,7 @@ import {
   setTurnStartedAt
 } from '@/store/session'
 import { $sessionStates, isLiveTurnAwaitingEvents, isSessionRemote } from '@/store/session-states'
+import { sessionTurnHolder } from '@/store/shared-turns'
 import { clearSessionSubagents } from '@/store/subagents'
 import { runGatewayRestart } from '@/store/system-actions'
 import { clearSessionTodos } from '@/store/todos'
@@ -122,9 +123,10 @@ export async function uploadComposerAttachment(
   // Edit-message drops bypass the main composer store, so also resolve their
   // source descriptor here. Absence means an older browser backend/native file
   // and retains the existing byte-upload rules.
-  const stagedUpload = attachment.kind === 'file'
-    ? attachment.stagedUpload ?? window.hermesDesktop?.getStagedFileForAttach?.(path)
-    : undefined
+  const stagedUpload =
+    attachment.kind === 'file'
+      ? (attachment.stagedUpload ?? window.hermesDesktop?.getStagedFileForAttach?.(path))
+      : undefined
 
   if (stagedUpload && stagedUpload.path !== path) {
     throw new Error(`Could not attach ${label}: staged source changed; select the file again`)
@@ -190,9 +192,7 @@ export async function uploadComposerAttachment(
       session_id: liveSessionId,
       // Omit path as well as bytes for the provenance-aware branch: an older
       // RPC implementation must reject it rather than ignore source ownership.
-      ...(stagedUpload
-        ? { staged_upload: stagedUpload }
-        : { path, ...(fileDataUrl ? { data_url: fileDataUrl } : {}) })
+      ...(stagedUpload ? { staged_upload: stagedUpload } : { path, ...(fileDataUrl ? { data_url: fileDataUrl } : {}) })
     })
 
     if (!result.attached || !result.ref_text) {
@@ -712,6 +712,12 @@ export function usePromptActions({
     // always reflects the current session — same pattern submitText uses.
     const sessionId = activeSessionIdRef.current
 
+    // A shared chat's turn belongs to whoever sent it: the gateway refuses
+    // anyone else's interrupt, so don't tear this window's view of it down.
+    if (sessionTurnHolder(sessionId)) {
+      return
+    }
+
     const releaseBusy = () => {
       setMutableRef(busyRef, false)
       setBusy(false)
@@ -792,6 +798,11 @@ export function usePromptActions({
   const redirectPrompt = useCallback(
     async (rawText: string): Promise<boolean> => {
       const text = sanitizeComposerInput(rawText).trim()
+
+      // Someone else's turn in a shared chat: never steered, the caller queues the words.
+      if (sessionTurnHolder(activeSessionIdRef.current)) {
+        return false
+      }
 
       // Ref, not the closure-captured prop — see cancelRun above. A redirect
       // reaches the live model mid-turn, so a stale target delivers the user's

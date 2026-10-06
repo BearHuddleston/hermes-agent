@@ -4684,6 +4684,11 @@ export interface Translations {
     renamePlaceholder: string
     renameHint: string
     renameSave: string
+    /** Shared chats: another person holds the running turn (tui_gateway/shared_turns.py). */
+    turnRunning: (name: string) => string
+    waitingFor: (name: string) => string
+    /** Stand-in name for the chat's creator when they are not in the room. */
+    chatCreator: string
   }
 
   ui: {

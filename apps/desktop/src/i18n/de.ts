@@ -6187,8 +6187,12 @@ export const deOverrides = {
     windows: count => `${count} Fenster`,
     renameTitle: 'Dein Name in diesem Chat',
     renamePlaceholder: 'Name, den andere sehen',
-    renameHint: 'Erscheint neben deinem Zeiger und an deinem Avatar. Wer du bist, bestimmt deine Anmeldung; dies ist nur die Beschriftung.',
-    renameSave: 'Speichern'
+    renameHint:
+      'Erscheint neben deinem Zeiger und an deinem Avatar. Wer du bist, bestimmt deine Anmeldung; dies ist nur die Beschriftung.',
+    renameSave: 'Speichern',
+    turnRunning: name => `${name} ist gerade dran. Deine Nachrichten warten, bis der Durchlauf endet.`,
+    waitingFor: name => `Warte auf die Antwort von ${name}`,
+    chatCreator: 'die Person, die den Chat erstellt hat'
   },
   ui: {
     search: {
