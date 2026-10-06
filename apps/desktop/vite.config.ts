@@ -35,6 +35,9 @@ import path from 'path'
 import { fileURLToPath } from 'url'
 
 import tailwindcss from '@tailwindcss/vite'
+// Static, not `await import()` inside the plugin: the Webapp build loads this config through Vite's
+// module runner (configLoader: 'runner'), which is closed by the time plugins run.
+import { build as buildRuntime } from 'esbuild'
 
 import { withCompilerCache } from './scripts/compiler-cache.mjs'
 
@@ -135,9 +138,47 @@ const emojibaseAssets = () => ({
   }
 })
 
+// The multiplayer runtime of chat apps (src/app/apps/frame-runtime.ts) runs inside
+// each app's sandboxed srcdoc frame, which has an opaque origin and cannot load
+// the renderer's own chunks. Bundle it on its own into one classic script and
+// hand the source text to the renderer, which inlines it (lazily: only pages
+// that use `hermes.state` / `hermes.text` pay for it).
+const APP_RUNTIME_ID = 'virtual:hermes-app-runtime'
+const APP_RUNTIME_ENTRY = path.resolve(__dirname, 'src/app/apps/frame-runtime.ts')
+
+const appRuntime = () => ({
+  name: 'hermes:app-runtime',
+  resolveId: (id: string) => (id === APP_RUNTIME_ID ? `\0${APP_RUNTIME_ID}` : null),
+  async load(this: { addWatchFile: (file: string) => void }, id: string) {
+    if (id !== `\0${APP_RUNTIME_ID}`) {
+      return null
+    }
+
+    const result = await buildRuntime({
+      bundle: true,
+      entryPoints: [APP_RUNTIME_ENTRY],
+      format: 'iife',
+      legalComments: 'none',
+      metafile: true,
+      minify: true,
+      target: 'es2020',
+      write: false
+    })
+
+    for (const input of Object.keys(result.metafile.inputs)) {
+      this.addWatchFile(path.resolve(input))
+    }
+
+    // Inlined between <script> tags: a literal "</script" would end the tag early.
+    const source = result.outputFiles[0].text.replace(/<\/(script)/gi, '<\\/$1')
+
+    return `export default ${JSON.stringify(source)}`
+  }
+})
+
 export default defineConfig(({ command }) => ({
   base: './',
-  plugins: [react(), cachedCompilerPass(command), tailwindcss(), emojibaseAssets()],
+  plugins: [react(), cachedCompilerPass(command), tailwindcss(), emojibaseAssets(), appRuntime()],
   css: {
     // Pin an explicit (empty) PostCSS config. Tailwind is handled entirely by
     // `@tailwindcss/vite`, so the renderer needs no PostCSS plugins — and

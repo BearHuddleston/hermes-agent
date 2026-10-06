@@ -1,12 +1,27 @@
 import { useStore } from '@nanostores/react'
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 
+import { usesAppRuntime } from '@/app/apps/protocol'
+import { bindAppRelay, disposeAppRelay } from '@/app/apps/relay'
+import { appRuntimeScripts, loadAppRuntime, loadedAppRuntime } from '@/app/apps/runtime-source'
 import { requestComposerSubmit } from '@/app/chat/composer/focus'
 import { useSessionView } from '@/app/chat/session-view'
 import { PreviewAttachment } from '@/components/chat/preview-attachment'
 import { useThemeEpoch } from '@/hooks/use-theme-epoch'
 import { isReadFileErrorResult, readDesktopFileText } from '@/lib/desktop-fs'
 import { localPreviewTarget } from '@/lib/local-preview'
+import { $activeGatewayProfile } from '@/store/profile'
+
+import {
+  adoptableFrame,
+  claimFrame,
+  type FrameKey,
+  type KeptFrame,
+  newFrameToken,
+  placeFrame,
+  releaseFrame,
+  setFrameDoc
+} from './kept-frames'
 
 /**
  * `::preview{file="…"}` — a workspace HTML file rendered LIVE inside the
@@ -118,9 +133,10 @@ export function intentScript(token: string): string {
     'parent.postMessage({type:' +
     JSON.stringify(INTENT_MESSAGE_TYPE) +
     ',token:t,id:id,prompt:p},"*")})}' +
-    'window.hermes={send:send,maxLength:' +
+    // Merged, not assigned: the multiplayer runtime (app/apps) may already have put state/text/presence there.
+    'window.hermes=Object.assign(window.hermes||{},{send:send,maxLength:' +
     String(MAX_INTENT_LENGTH) +
-    '};' +
+    '});' +
     'addEventListener("click",function(e){var el=e.target&&e.target.closest?' +
     'e.target.closest("[data-hermes-send]"):null;' +
     'if(el)send(el.getAttribute("data-hermes-send")||"")},true)})()</script>'
@@ -287,14 +303,15 @@ export function measurementScript(token: string): string {
 }
 
 /** Assemble the srcdoc: theme prelude first (so the page's own styles win),
+ *  then `head` (the multiplayer runtime, which the page's scripts call into),
  *  then the measuring + intent scripts before `</body>` when present so they
  *  run after the page's own markup, appended otherwise. */
-export function withInlineChrome(doc: string, token: string, prelude: string): string {
+export function withInlineChrome(doc: string, token: string, prelude: string, head = ''): string {
   const script = measurementScript(token) + intentScript(token)
   const bodyClose = /<\/body\s*>/i.exec(doc)
   const framed = bodyClose ? doc.slice(0, bodyClose.index) + script + doc.slice(bodyClose.index) : doc + script
 
-  return prelude + framed
+  return prelude + head + framed
 }
 
 export interface FrameSizeReport {
@@ -367,7 +384,10 @@ function InlineHtmlFrame({
   initialHeight: number | null
   streaming: boolean
 }) {
-  const cwd = useStore(useSessionView().$cwd)
+  const sessionView = useSessionView()
+  const cwd = useStore(sessionView.$cwd)
+  const storedSessionId = useStore(sessionView.$storedId)
+  const profile = useStore($activeGatewayProfile)
   const themeEpoch = useThemeEpoch()
   // vars/font/colorScheme come from one collectThemeBridge() call so they can
   // never disagree with each other, even while this lags a repaint behind
@@ -381,14 +401,84 @@ function InlineHtmlFrame({
   const [measured, setMeasured] = useState<number | null>(null)
   const [contentWidth, setContentWidth] = useState<number | null>(null)
 
-  // One token per mount: the message listener only trusts reports from the
-  // document THIS mount injected, so two previews in one transcript (or a
-  // hostile page inventing messages) can't move each other's frames.
-  const token = useMemo(() => Math.random().toString(36).slice(2), [])
+  // One token per frame: the message listener only trusts reports from the
+  // document THIS frame was given, so two previews in one transcript (or a
+  // hostile page inventing messages) can't move each other's frames. A mount
+  // that takes over a kept frame takes over its token too.
+  const [token, setToken] = useState(newFrameToken)
 
   // Resolve against THIS session's cwd (the file was written by its agent).
   const resolved = localPreviewTarget(file, cwd || undefined)
   const path = resolved?.path ?? null
+  const frameFile = path ? `${profile ?? ''}|${path}` : null
+
+  const frameKey = useMemo<FrameKey | null>(
+    () => (frameFile ? { file: frameFile, session: storedSessionId ?? '' } : null),
+    [frameFile, storedSessionId]
+  )
+
+  // Apps that use shared state get the multiplayer runtime and a relay to /api/apps (app/apps).
+  const multiplayer = doc !== null && usesAppRuntime(doc)
+  const [runtime, setRuntime] = useState<null | string>(loadedAppRuntime)
+
+  useEffect(() => {
+    if (!multiplayer || runtime !== null) {
+      return
+    }
+
+    let alive = true
+
+    void loadAppRuntime()
+      .then(source => alive && setRuntime(source))
+      .catch(() => alive && setRuntime(''))
+
+    return () => {
+      alive = false
+    }
+  }, [multiplayer, runtime])
+
+  useEffect(() => {
+    if (multiplayer) {
+      bindAppRelay(token, { enabled: true, file: path, profile, sessionId: storedSessionId })
+    }
+  }, [multiplayer, path, profile, storedSessionId, token])
+
+  const entryRef = useRef<KeptFrame | null>(null)
+  const hostRef = useRef<HTMLSpanElement | null>(null)
+
+  // A refresh that remounts this message parks its frame (kept-frames.ts): take it over, page and size
+  // included, before the first paint, so the widget keeps running instead of reloading.
+  useLayoutEffect(() => {
+    if (entryRef.current || !frameKey) {
+      return
+    }
+
+    const parked = adoptableFrame(frameKey)
+
+    if (parked) {
+      entryRef.current = claimFrame(frameKey, parked.token, parked.onDispose)
+      setToken(parked.token)
+      setDoc(parked.doc)
+      setMeasured(parked.height)
+      setContentWidth(parked.width)
+    }
+  }, [frameKey])
+
+  const tokenRef = useRef(token)
+  tokenRef.current = token
+
+  // A layout cleanup runs while the frame is still in the document, so it can still be moved without a reload.
+  useLayoutEffect(
+    () => () => {
+      if (entryRef.current) {
+        releaseFrame(entryRef.current) // disposes the relay with the frame
+        entryRef.current = null
+      } else {
+        disposeAppRelay(tokenRef.current)
+      }
+    },
+    []
+  )
 
   useEffect(() => {
     // Wait for turn settle: mid-stream the file is often mid-write, and a
@@ -495,12 +585,39 @@ function InlineHtmlFrame({
   // whichever changed a token or the scheme) so its native controls and
   // transparent canvas stay aligned with the app.
   const framedDoc = useMemo(() => {
-    if (doc === null) {
+    if (doc === null || (multiplayer && runtime === null)) {
       return null
     }
 
-    return withInlineChrome(doc, token, themePrelude(vars, font, colorScheme))
-  }, [vars, font, colorScheme, doc, token])
+    // A runtime that failed to load leaves the page as it was: its own scripts guard `hermes.state`.
+    const head = multiplayer && runtime ? appRuntimeScripts(token, runtime) : ''
+
+    return withInlineChrome(doc, token, themePrelude(vars, font, colorScheme), head)
+  }, [vars, font, colorScheme, doc, multiplayer, runtime, token])
+
+  // The frame lives outside React (kept-frames.ts); this mount shows it in its host and keeps it current.
+  useLayoutEffect(() => {
+    const host = hostRef.current
+
+    if (!host || framedDoc === null || !frameKey) {
+      return
+    }
+
+    const entry = (entryRef.current ??= claimFrame(frameKey, token, () => disposeAppRelay(token)))
+    entry.key = frameKey
+    entry.doc = doc
+    entry.frame.title = file
+    entry.frame.style.colorScheme = colorScheme
+    setFrameDoc(entry, framedDoc)
+    placeFrame(entry, host)
+  }, [colorScheme, doc, file, frameKey, framedDoc, token])
+
+  useEffect(() => {
+    if (entryRef.current) {
+      entryRef.current.height = measured
+      entryRef.current.width = contentWidth
+    }
+  }, [contentWidth, measured])
 
   if (!path || failed) {
     return <PreviewAttachment target={file} />
@@ -522,17 +639,9 @@ function InlineHtmlFrame({
       ) : (
         <span
           className="relative block max-w-full transition-[height] duration-200"
+          ref={hostRef}
           style={{ height, width: width ?? '100%' }}
-        >
-          <iframe
-            className="absolute inset-0 size-full border-0 bg-transparent"
-            loading="lazy"
-            sandbox="allow-scripts"
-            srcDoc={framedDoc}
-            style={{ colorScheme }}
-            title={file}
-          />
-        </span>
+        />
       )}
     </span>
   )
