@@ -1067,6 +1067,12 @@ DEFAULT_CONFIG = {
         # the OAuth path. Empty or malformed (no http(s):// + host, or quote/angle/whitespace chars)
         # = reconstruct from headers.
         "public_url": "",
+        # Chats several signed-in people share (Webapp + an OAuth provider). turn_control "sender": the
+        # person who sent a turn (or the chat's creator once they left) answers its approval / sudo /
+        # secret / clarify prompts and alone may stop or redirect it; anyone else's message queues behind
+        # it. "anyone": every attached window may, as SECURITY.md describes. Never applies to the loopback
+        # operator or a single user.
+        "shared_chats": {"turn_control": "sender"},
     },
 
     "privacy": {

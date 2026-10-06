@@ -1111,7 +1111,7 @@ def _run_prompt_submit(
     display_metadata: dict | None = None, image_paths: list[str] | None = None,
     queued_prompt_generation: int | None = None,
     terminal_callback: Callable[[dict[str, Any]], None] | None = None,
-    turn_author: dict | None = None) -> bool:
+    turn_author: dict | None = None, echo_prompt: bool = False) -> bool:
     if display_kind is None and not str(rid).startswith("__"):
         session["_wisdom_user_activity"] = time.time()
         if session.get("_wisdom_activity_tracking"):
@@ -1156,7 +1156,10 @@ def _run_prompt_submit(
         sid, session.get("session_key") or "", getattr(agent, "session_id", "") or "",
         display_kind or "user", len(text) if isinstance(text, str) else "-", len(images))
     if not muted:
-        _emit("message.start", sid)
+        # A human prompt rides on its turn's start so peer windows place it before the reply.
+        echo = _prompt_echo(text, display_kind, (session.get("_submit_user_row") or {}).get("_row_id"),
+                            display_metadata) if echo_prompt else None
+        _emit("message.start", sid, _message_start_payload(display_metadata, echo))
 
     def run_body():
         # RPC-dispatcher ContextVars do not follow onto this thread: rebind the transport

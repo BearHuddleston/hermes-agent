@@ -2409,6 +2409,9 @@ def _(rid, params: dict) -> dict:
         session, err = _sess_nowait(params, rid)
         if err:
             return err
+        if not _may_act_on_turn(session, current_transport()):
+            resume_wake = False
+            return _turn_refusal(rid, session)
         if expected := _str_param(params, "expected_hosted_task_id"):
             with session["history_lock"]:
                 task = session.get("_hosted_room_task")
@@ -2470,6 +2473,9 @@ def _correction_method(name: str, verb: str, accepted_status: str, supported, un
         session, err = _sess_nowait(params, rid)
         if err:
             return err
+        if session.get("running") and not _may_act_on_turn(session, current_transport()):
+            # Another person's turn: their run is not ours to correct. 'rejected' makes the client queue it.
+            return _ok(rid, {"status": "rejected", "text": text})
         agent = session.get("agent")
         # Redirect during the turn-build window (running=True, agent None): queue for the next turn instead of
         # a misleading 4010 the client swallows into a lost follow-up.

@@ -1094,6 +1094,14 @@ group_sessions_per_user: true
 # dashboard:
 #   startup_orphan_sweep: true
 
+# Chats several signed-in people share in the Webapp (Nous or self-hosted OIDC sign-in).
+# "sender": whoever sent a turn answers its approval/sudo/secret/clarify prompts and alone may
+# stop or redirect it (the chat's creator may once that person has left); other people's messages
+# queue behind it. "anyone": every attached window may act on every turn.
+# dashboard:
+#   shared_chats:
+#     turn_control: sender
+
 # ─────────────────────────────────────────────────────────────────────────────
 # API Server — per-client model routing
 # ─────────────────────────────────────────────────────────────────────────────

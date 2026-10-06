@@ -18766,6 +18766,36 @@
         "title": "MessageReactionPayload",
         "type": "object"
       },
+      "MessageStartPayload": {
+        "additionalProperties": false,
+        "description": "Absent on single-user turns. ``owner``: the signed-in person who sent the turn (shared chats).\n``user``: the human prompt the turn answers (omitted for hidden / synthesized input).",
+        "properties": {
+          "owner": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SenderCard"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "user": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TurnPromptEcho"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          }
+        },
+        "title": "MessageStartPayload",
+        "type": "object"
+      },
       "MoaAggregatingPayload": {
         "additionalProperties": false,
         "properties": {
@@ -28231,6 +28261,31 @@
         "title": "SeedMessage",
         "type": "object"
       },
+      "SenderCard": {
+        "additionalProperties": false,
+        "description": "A signed-in person as shown in a shared chat (``shared_turns._sender_card``). Display only.",
+        "properties": {
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "color": {
+            "title": "Color",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "color"
+        ],
+        "title": "SenderCard",
+        "type": "object"
+      },
       "SessionActivateParams": {
         "additionalProperties": false,
         "properties": {
@@ -30032,6 +30087,40 @@
             "default": null,
             "title": "Turn Started At"
           },
+          "turn_owner": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SenderCard"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "chat_owner": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Chat Owner"
+          },
+          "turn_control": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TurnControl"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
           "title": {
             "default": "",
             "title": "Title",
@@ -30898,6 +30987,40 @@
             ],
             "default": null,
             "title": "Turn Started At"
+          },
+          "turn_owner": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SenderCard"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "chat_owner": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Chat Owner"
+          },
+          "turn_control": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TurnControl"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
           },
           "title": {
             "default": "",
@@ -36885,6 +37008,52 @@
         "title": "TranscriptMessage",
         "type": "object"
       },
+      "TurnControl": {
+        "enum": [
+          "sender",
+          "anyone"
+        ],
+        "title": "TurnControl",
+        "type": "string"
+      },
+      "TurnPromptEcho": {
+        "additionalProperties": false,
+        "description": "The typed prompt a turn answers, so a window that did not send it shows it before the reply.",
+        "properties": {
+          "text": {
+            "title": "Text",
+            "type": "string"
+          },
+          "row_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Row Id"
+          },
+          "sender": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SenderCard"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          }
+        },
+        "required": [
+          "text"
+        ],
+        "title": "TurnPromptEcho",
+        "type": "object"
+      },
       "TurnStatus": {
         "description": "``prompt_turn._result_status``.",
         "enum": [
@@ -39784,13 +39953,12 @@
     },
     {
       "name": "message.start",
-      "summary": "A turn began streaming; no payload.",
+      "summary": "A turn began streaming; payload only when it carries owner/prompt.",
       "params": [
         {
           "name": "payload",
           "schema": {
-            "type": "object",
-            "additionalProperties": false
+            "$ref": "#/components/schemas/MessageStartPayload"
           }
         }
       ]

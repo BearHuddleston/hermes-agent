@@ -18,7 +18,7 @@ from __future__ import annotations
 from pydantic import Field
 
 from .base import JsonValue, Payload, WireEnum
-from .common import MessageReaction, SessionLiveInfo, SubagentStatus, ToolLabel, ToolLabelKind, Usage
+from .common import MessageReaction, SenderCard, SessionLiveInfo, SubagentStatus, ToolLabel, ToolLabelKind, Usage
 from .config_free_tier_control import SessionControlSnapshot
 from .registry import event
 
@@ -113,7 +113,23 @@ event("notice", NoticePayload, doc="Informational one-liner for the session (cap
 # ── turn stream ───────────────────────────────────────────────────────────────────────────────
 
 
-event("message.start", None, doc="A turn began streaming; no payload.")
+class TurnPromptEcho(Payload):
+    """The typed prompt a turn answers, so a window that did not send it shows it before the reply."""
+
+    text: str
+    row_id: int | None = None
+    sender: SenderCard | None = None
+
+
+class MessageStartPayload(Payload):
+    """Absent on single-user turns. ``owner``: the signed-in person who sent the turn (shared chats).
+    ``user``: the human prompt the turn answers (omitted for hidden / synthesized input)."""
+
+    owner: SenderCard | None = None
+    user: TurnPromptEcho | None = None
+
+
+event("message.start", MessageStartPayload, doc="A turn began streaming; payload only when it carries owner/prompt.")
 
 
 class StreamDeltaPayload(Payload):

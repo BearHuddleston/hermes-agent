@@ -532,6 +532,9 @@ export interface SessionLiveInfo {
   personality?: string
   running?: boolean
   turn_started_at?: number | null
+  turn_owner?: SenderCard | null
+  chat_owner?: string | null
+  turn_control?: TurnControl | null
   title?: string
   stored_session_id?: string
   desktop_contract?: number | string | null
@@ -554,6 +557,13 @@ export interface ProjectRef {
   name: string
   primary_path?: string | null
 }
+/** A signed-in person as shown in a shared chat (``shared_turns._sender_card``). Display only. */
+export interface SenderCard {
+  id: string
+  name: string
+  color: string
+}
+export type TurnControl = 'sender' | 'anyone'
 /** ``tui_gateway/server.py::_get_usage`` + ``agent/context_breakdown.py::context_usage_fields``. */
 export interface Usage {
   model?: string
@@ -3250,6 +3260,9 @@ export interface SessionCwdSetResult {
   personality?: string
   running?: boolean
   turn_started_at?: number | null
+  turn_owner?: SenderCard | null
+  chat_owner?: string | null
+  turn_control?: TurnControl | null
   title?: string
   stored_session_id?: string
   desktop_contract?: number | string | null
@@ -4568,6 +4581,17 @@ export interface ErrorPayload {
 export interface NoticePayload {
   message: string
 }
+/** Absent on single-user turns. ``owner``: the signed-in person who sent the turn (shared chats). ``user``: the human prompt the turn answers (omitted for hidden / synthesized input). */
+export interface MessageStartPayload {
+  owner?: SenderCard | null
+  user?: TurnPromptEcho | null
+}
+/** The typed prompt a turn answers, so a window that did not send it shows it before the reply. */
+export interface TurnPromptEcho {
+  text: string
+  row_id?: number | null
+  sender?: SenderCard | null
+}
 /** ``prompt_turn._invoke_agent._stream`` (message.delta: ``text`` + optional ``rendered``), ``agent_callbacks._agent_cbs`` (reasoning.delta / thinking.delta), ``tool_progress._progress_reasoning`` (reasoning.available). ``verbose`` rides only when the session's verbose reasoning mode is on. */
 export interface StreamDeltaPayload {
   text: string
@@ -5757,8 +5781,8 @@ export interface BackendGatewayEventMap {
   'message.interim': MessageInterimPayload
   /** The agent reacted to a message; paint it live. */
   'message.reaction': MessageReactionPayload
-  /** A turn began streaming; no payload. */
-  'message.start': Record<string, never>
+  /** A turn began streaming; payload only when it carries owner/prompt. */
+  'message.start': MessageStartPayload
   /** The MoA aggregator started. */
   'moa.aggregating': MoaAggregatingPayload
   /** MoA phase transition (currently only ``aggregator``). */
