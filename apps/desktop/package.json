@@ -31,6 +31,7 @@
     "build": "node scripts/build.mjs",
     "i18n:keys": "node scripts/i18n-keys.mjs",
     "smoke:browser-host": "node scripts/smoke-browser-host.mjs",
+    "smoke:shared-chat": "node scripts/smoke-shared-chat.mjs",
     "prebuilder": "node scripts/patch-electron-builder-mac-binary.mjs",
     "builder": "node scripts/run-electron-builder.mjs",
     "pack": "npm run build && npm run builder -- --dir --publish never",
