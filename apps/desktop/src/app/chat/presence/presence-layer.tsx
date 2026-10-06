@@ -1,14 +1,13 @@
 import { useStore } from '@nanostores/react'
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 
-import { useMediaQuery } from '@/hooks/use-media-query'
 import { useI18n } from '@/i18n'
 import { cursorAtPoint, pointForCursor, viewAnchor } from '@/lib/presence-anchor'
 import { presenceJoin, presenceNoteInput, presenceSetCursor } from '@/lib/presence-client'
-import { TOUCH_POINTER_QUERY } from '@/lib/touch-interaction'
 import { $presencePeers, PEER_TYPING_TTL_MS, type PresencePeer, presenceUsers } from '@/store/presence'
 
 import { PresenceAvatars } from './presence-avatars'
+import { useSharesPointer } from './use-shares-pointer'
 
 interface PresenceLayerProps {
   /** `data-composer-owner` of this surface's composer. */
@@ -36,10 +35,10 @@ export function PresenceLayer({ composerOwner, profile, room }: PresenceLayerPro
   useEffect(() => () => presenceJoin(null, null), [])
 
   // A finger has no hover position worth sharing: a touch window shares the message it is reading.
-  const touch = useMediaQuery(TOUCH_POINTER_QUERY)
+  const sharesPointer = useSharesPointer()
 
-  usePointerBroadcast(surface, composerOwner, Boolean(room) && !touch)
-  useViewBroadcast(surface, Boolean(room) && touch)
+  usePointerBroadcast(surface, composerOwner, Boolean(room) && sharesPointer)
+  useViewBroadcast(surface, Boolean(room) && !sharesPointer)
   useTypingBroadcast(composerOwner, Boolean(room))
 
   return (
