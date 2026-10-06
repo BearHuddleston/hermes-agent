@@ -129,7 +129,9 @@ def _refuses_prompt_answer(request_id: str, transport: Any) -> dict | None:
     if route is None or route[1] not in HUMAN_PROMPTS:
         return None
     session = _sessions.get(route[0])
-    return session if session is not None and not _may_act_on_turn(session, transport) else None
+    if session is None:
+        return None
+    return session if not (_may_act_on_turn(session, transport) and _member_may_send(session, transport)) else None
 
 
 def _shared_turn_refuses_response(frame: dict, transport: Any) -> bool:

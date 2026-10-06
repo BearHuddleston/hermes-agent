@@ -165,7 +165,35 @@ dashboard:
 This is a convenience for people who already share a Webapp, not a security
 boundary: every signed-in user can still run commands on the host as the
 account running Hermes (see the warning above). Give Webapp access only to
-people you would give that account to.
+people you would give that account to, or choose who sees what (below).
+
+**Choosing who sees which chat.** Until the agent has an owner, everyone who
+can sign in sees every chat. To restrict that:
+
+1. Sign in yourself, open a chat and choose **Share → Claim this agent**
+   before anyone else signs in. This records your account ID under
+   `dashboard.shared_chats.owners` in `config.yaml`; you can also write it there
+   yourself. Owners see every chat and use the whole app, as before.
+2. Give the other person access to sign in to this agent (for a Nous-hosted
+   agent, through the Nous Portal). When they sign in, they see no chats and
+   cannot start one, open settings, files or terminals.
+3. Open the chat, choose **Share**, and pick them from **Signed in recently**,
+   or paste the account ID shown in their own Share dialog. They join as a
+   **viewer**: they follow the chat live and their composer is locked.
+4. Change them to **participant** to let them send messages and answer the
+   prompts of their own turns. What a participant asks the agent to do runs
+   with the agent's tools and credentials, so promote only people you trust
+   with them. **Remove** takes effect immediately in their open windows.
+
+```yaml
+dashboard:
+  shared_chats:
+    owners: ["nous:usr_1a2b3c"]   # empty (default): everyone signed in sees everything
+```
+
+Access lists live in `shared_chats.json` beside `config.yaml` and follow a chat
+through compression. The loopback operator and the private launch link are
+never restricted.
 
 Useful build/lifecycle flags:
 

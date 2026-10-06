@@ -12,6 +12,7 @@ import type { PresenceCursor } from '@/lib/presence-anchor'
 import { resolveSiblingWsUrl } from '@/lib/sibling-ws-url'
 import { persistString, storedString } from '@/lib/storage'
 import { $presencePeers, $presenceSelf, type PresencePeer, type PresenceSelf } from '@/store/presence'
+import { onAccessChanged } from '@/store/sharing'
 
 const NAME_KEY = 'hermes.webapp.presence.name.v1'
 const CURSOR_INTERVAL_MS = 50
@@ -31,6 +32,7 @@ interface PeerState {
 }
 
 type PresenceFrame =
+  | { type: 'access'; room: string; removed: boolean }
   | { type: 'error'; code: string }
   | { type: 'peers'; room: string; updates: (PeerState | { id: string; gone: true })[] }
   | { type: 'room'; room: string; peers: PeerState[] }
@@ -237,6 +239,13 @@ class PresenceConnection {
       try {
         frame = JSON.parse(String(event.data)) as PresenceFrame
       } catch {
+        return
+      }
+
+      if (frame.type === 'access') {
+        // The chat's owner changed this person's role (or removed them): re-read it.
+        onAccessChanged(frame.room, frame.removed)
+
         return
       }
 

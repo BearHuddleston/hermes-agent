@@ -13,8 +13,9 @@ import json
 
 from fastapi import APIRouter, WebSocket
 
-from hermes_cli import web_presence
+from hermes_cli import web_presence, web_sharing
 from hermes_cli.web_server_chat import _ws_gate
+from hermes_cli.web_sharing_gate import ws_member
 
 router = APIRouter()
 
@@ -33,6 +34,9 @@ async def presence_ws(ws: WebSocket) -> None:
         return
     await ws.accept()
     hub = web_presence.HUB
+    # A shared-chat member joins only the rooms of chats shared with them (web_sharing.may_join_room).
+    member = ws_member(ws)
+    principal = web_sharing.principal_of(getattr(ws, "_hermes_auth_identity", None))
     client = hub.connect(
         user_key=web_presence.principal_key(getattr(ws, "_hermes_auth_identity", None)), send=ws.send_text)
     sender = asyncio.create_task(hub.run_sender(client))
@@ -52,7 +56,15 @@ async def presence_ws(ws: WebSocket) -> None:
                 frame = json.loads(text)
             except ValueError:
                 frame = None
+            if member is not None and isinstance(frame, dict) and frame.get("type") == "join" \
+                    and isinstance(frame.get("room"), str) and frame["room"] != client.room \
+                    and not await asyncio.to_thread(web_sharing.may_join_room, member, frame["room"]):
+                hub.refuse(client, "not_shared")
+                continue
             hub.handle(client, frame)
+            if principal is not None and isinstance(frame, dict) and frame.get("type") == "name":
+                # The people directory shows owners the name each person picked for themselves.
+                await asyncio.to_thread(web_sharing.STORE.note_person, principal, name=client.name)
     finally:
         # Nothing awaited past the peer's departure: the room hears "gone" in the same tick.
         sender.cancel()

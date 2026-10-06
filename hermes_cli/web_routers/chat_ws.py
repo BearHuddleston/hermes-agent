@@ -110,6 +110,12 @@ async def _close_unless_sidecar_allowed(ws: WebSocket, *, allow_internal: bool =
     if not _ws_request_is_allowed(ws):
         await ws.close(code=4403)
         return False
+    if ws.url.path != "/api/ws":
+        from hermes_cli.web_sharing_gate import ws_member
+        if ws_member(ws) is not None:
+            # The tool-call feed covers every chat; members follow their chats over /api/ws.
+            await ws.close(code=4403)
+            return False
     return True
 
 
