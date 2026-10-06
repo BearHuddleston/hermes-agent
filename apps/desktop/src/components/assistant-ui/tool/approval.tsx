@@ -5,6 +5,7 @@ import { useStore } from '@nanostores/react'
 import { AnimatePresence, motion, useReducedMotion } from 'motion/react'
 import { createContext, type FC, useCallback, useContext, useMemo, useRef, useState } from 'react'
 
+import { TurnHolderNote, useTurnHolder } from '@/app/chat/presence/turn-holder'
 import { useSessionView } from '@/app/chat/session-view'
 import { SCAFFOLD_LABEL_CLASS, ScaffoldRow } from '@/components/chat/scaffold-row'
 import { Button } from '@/components/ui/button'
@@ -197,6 +198,7 @@ export function ApprovalQueue({
   floating?: boolean
 }) {
   const { t } = useI18n()
+  const holder = useTurnHolder(requests[0]?.sessionId)
 
   return (
     <CardStack
@@ -214,7 +216,7 @@ export function ApprovalQueue({
         'rounded-xl border bg-(--ui-chat-surface-background)',
         floating ? 'border-(--stroke-nous) shadow-nous' : 'border-(--ui-stroke-secondary)'
       )}
-      swipeDirections={['left']}
+      swipeDirections={holder ? [] : ['left']}
     >
       {(request, action) => (
         <ApprovalCard
@@ -246,6 +248,8 @@ const ApprovalCard: FC<ApprovalCardProps> = ({ request, total, position, stack }
   const [confirmAlways, setConfirmAlways] = useState(false)
 
   const present = stack.active
+  // A shared chat's turn sent by someone else: they answer it, this window watches.
+  const holder = useTurnHolder(request.sessionId)
   const busy = submitting !== null || !present || stack.busy
   // Answering with the pointer moves focus onto the card, and the card then
   // unmounts, which parks focus on <body> — where type-to-focus routes the next
@@ -348,45 +352,51 @@ const ApprovalCard: FC<ApprovalCardProps> = ({ request, total, position, stack }
           {details}
         </pre>
       )}
-      <div className="flex items-center justify-end gap-1.5 px-2 pb-2 pt-1" data-slot="tool-approval-actions">
-        <Button data-approval-deny="" disabled={busy} onClick={() => void respond('deny')} size="sm" variant="text">
-          {submitting === 'deny' ? <Loader2 className="size-3 animate-spin" /> : copy.reject}
-        </Button>
-        {hasMoreOptions && (
-          <DropdownMenu>
-            <DropdownMenuTrigger asChild>
-              <Button aria-label={copy.moreOptions} disabled={busy} size="sm" variant="secondary">
-                {copy.alwaysAllowMenu}
-                <ChevronDown className="size-3" />
-              </Button>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent align="end" className="min-w-44">
-              {allowSession && (
-                <DropdownMenuItem onSelect={() => void respond('session')}>{copy.allowSession}</DropdownMenuItem>
-              )}
-              {allowAlways && (
-                <DropdownMenuItem
-                  onSelect={() => {
-                    // Defer one tick so the menu fully unmounts before the dialog
-                    // mounts — otherwise Radix's focus-return races the dialog and
-                    // dismisses it via onInteractOutside.
-                    setTimeout(() => setConfirmAlways(true), 0)
-                  }}
-                >
+      {holder ? (
+        <div className="flex justify-end px-2.5 pb-2 pt-1" data-slot="tool-approval-actions">
+          <TurnHolderNote holder={holder} />
+        </div>
+      ) : (
+        <div className="flex items-center justify-end gap-1.5 px-2 pb-2 pt-1" data-slot="tool-approval-actions">
+          <Button data-approval-deny="" disabled={busy} onClick={() => void respond('deny')} size="sm" variant="text">
+            {submitting === 'deny' ? <Loader2 className="size-3 animate-spin" /> : copy.reject}
+          </Button>
+          {hasMoreOptions && (
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button aria-label={copy.moreOptions} disabled={busy} size="sm" variant="secondary">
                   {copy.alwaysAllowMenu}
+                  <ChevronDown className="size-3" />
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end" className="min-w-44">
+                {allowSession && (
+                  <DropdownMenuItem onSelect={() => void respond('session')}>{copy.allowSession}</DropdownMenuItem>
+                )}
+                {allowAlways && (
+                  <DropdownMenuItem
+                    onSelect={() => {
+                      // Defer one tick so the menu fully unmounts before the dialog
+                      // mounts — otherwise Radix's focus-return races the dialog and
+                      // dismisses it via onInteractOutside.
+                      setTimeout(() => setConfirmAlways(true), 0)
+                    }}
+                  >
+                    {copy.alwaysAllowMenu}
+                  </DropdownMenuItem>
+                )}
+                <DropdownMenuItem onSelect={() => void respond('deny')} variant="destructive">
+                  {copy.reject}
                 </DropdownMenuItem>
-              )}
-              <DropdownMenuItem onSelect={() => void respond('deny')} variant="destructive">
-                {copy.reject}
-              </DropdownMenuItem>
-            </DropdownMenuContent>
-          </DropdownMenu>
-        )}
-        <Button data-approval-run="" disabled={busy} onClick={() => void respond('once')} size="sm">
-          {submitting === 'once' ? <Loader2 className="size-3 animate-spin" /> : copy.run}
-          <span className="opacity-60">↵</span>
-        </Button>
-      </div>
+              </DropdownMenuContent>
+            </DropdownMenu>
+          )}
+          <Button data-approval-run="" disabled={busy} onClick={() => void respond('once')} size="sm">
+            {submitting === 'once' ? <Loader2 className="size-3 animate-spin" /> : copy.run}
+            <span className="opacity-60">↵</span>
+          </Button>
+        </div>
+      )}
 
       <Dialog onOpenChange={setConfirmAlways} open={confirmAlways}>
         <DialogContent className="max-w-md">

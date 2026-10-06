@@ -79,6 +79,15 @@ export type ChatMessage = {
   serverRowSpan?: number
   /** Emoji reactions on this message — one per author (see MessageReaction). */
   reactions?: MessageReaction[]
+  /** Who sent this user message, in a chat several signed-in people share. Display only. */
+  sender?: MessageSender
+}
+
+/** A signed-in person as shown in a shared chat (`tui_gateway/shared_turns.py::_sender_card`). */
+export interface MessageSender {
+  id: string
+  name: string
+  color: string
 }
 
 export type GatewayEventPayload = {
@@ -131,6 +140,13 @@ export type GatewayEventPayload = {
   install_warning?: string
   personality?: string
   usage?: Partial<UsageStats>
+  // Shared chats (several sign-ins): message.start's turn owner and echoed prompt, and
+  // session.info's turn owner / chat creator / policy (tui_gateway/shared_turns.py).
+  owner?: MessageSender | null
+  user?: { text: string; row_id?: null | number; sender?: MessageSender | null } | null
+  turn_owner?: MessageSender | null
+  chat_owner?: null | string
+  turn_control?: 'anyone' | 'sender' | null
   // agent.terminal.output — live chunk for a read-only agent terminal tab
   process_id?: string
   chunk?: string

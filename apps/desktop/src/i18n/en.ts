@@ -5092,8 +5092,12 @@ export const en: Translations = {
     windows: count => `${count} windows`,
     renameTitle: 'Your name in this chat',
     renamePlaceholder: 'Name others see',
-    renameHint: 'Shown beside your pointer and on your avatar. Your sign-in decides who you are; this is only the label.',
-    renameSave: 'Save'
+    renameHint:
+      'Shown beside your pointer and on your avatar. Your sign-in decides who you are; this is only the label.',
+    renameSave: 'Save',
+    turnRunning: name => `${name}'s turn is running. Your messages will wait until it ends.`,
+    waitingFor: name => `Waiting for ${name} to answer`,
+    chatCreator: "the chat's creator"
   },
   ui: {
     search: {

@@ -39,10 +39,13 @@ import { sessionBlockingPrompt } from '@/store/prompts'
 import { toggleReview } from '@/store/review'
 import { $gatewayState } from '@/store/session'
 import { $botChatSessionIds, $sessionStates, $sessionTiles, isBotChatSession } from '@/store/session-states'
+import { sessionTurnHolder } from '@/store/shared-turns'
 import { useForcedTextDirection } from '@/store/text-direction'
 import { $threadScrolledUpBySession } from '@/store/thread-scroll'
 import { $autoSpeakReplies } from '@/store/voice-prefs'
 import { useTheme } from '@/themes'
+
+import { useTurnHolder } from '../presence/turn-holder'
 
 import { AttachmentList } from './attachments'
 import { deriveBusySubmitState } from './busy-submit-state'
@@ -192,6 +195,8 @@ export function ChatBar({
   // prompt owns its own dismissal (Skip, Reject, dialog close).
   const awaitingInput = useStore(scope.$awaitingInput)
   const blockingPrompt = useStore(useMemo(() => sessionBlockingPrompt(sessionId ?? null), [sessionId]))
+  // A shared chat's turn sent by someone else: queue behind it, never steer or stop it.
+  const turnHolder = useTurnHolder(sessionId)
   const activeQueueSessionKey = useComposerQueueScopeKey(queueSessionKey, sessionId, freshDraftKey)
   const { collapsed: statusDrawerCollapsed, toggle: toggleStatusDrawer } = useStatusDrawer(activeQueueSessionKey)
   const statusDrawerId = useId()
@@ -399,10 +404,14 @@ export function ChatBar({
   // busy) call the raw onCancel and keep draining on settle. Parked entries
   // stay in the panel until resumed, sent, edited, or deleted.
   const haltRun = useCallback(() => {
+    if (sessionTurnHolder(sessionId)) {
+      return
+    }
+
     parkQueuedPrompts(activeQueueSessionKeyRef.current)
 
     return onCancel()
-  }, [activeQueueSessionKeyRef, onCancel])
+  }, [activeQueueSessionKeyRef, onCancel, sessionId])
 
   const { compactPill, foldVoice, minimal, stacked, singleColumn } = useComposerMetrics({
     composerDockRef,
@@ -423,7 +432,8 @@ export function ChatBar({
     compacting,
     hasComposerPayload,
     hasSteerHandler: !!onSteer,
-    isSteerableText
+    isSteerableText,
+    turnHeldByOther: !!turnHolder
   })
 
   // The submit engine — the orchestration seam where draft + queue meet. Owns
@@ -462,7 +472,10 @@ export function ChatBar({
 
   // Resting / reconnecting / starting placeholder text, re-rolled only on a real
   // conversation change.
-  const placeholder = useComposerPlaceholder({ disabled, reconnecting, sessionId })
+  const restingPlaceholder = useComposerPlaceholder({ disabled, reconnecting, sessionId })
+
+  const placeholder =
+    turnHolder && busy ? t.presence.turnRunning(turnHolder.name || t.presence.chatCreator) : restingPlaceholder
 
   // Trigger / completion engine: @// detection, the adapter-driven item list,
   // popover selection, and chip insertion. The keydown nav block below consumes

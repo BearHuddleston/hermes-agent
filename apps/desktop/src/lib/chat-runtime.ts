@@ -435,7 +435,8 @@ export function toRuntimeMessage(message: ChatMessage): ThreadMessage {
   // established channel for per-message extras (attachmentRefs below).
   const reactionMeta = {
     ...(message.rowId !== undefined ? { rowId: message.rowId } : {}),
-    ...(message.reactions?.length ? { reactions: message.reactions } : {})
+    ...(message.reactions?.length ? { reactions: message.reactions } : {}),
+    ...(message.sender ? { sender: message.sender } : {})
   }
 
   const timelineMeta =
