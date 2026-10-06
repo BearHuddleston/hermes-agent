@@ -5630,7 +5630,8 @@ export const deOverrides = {
     renameSave: 'Speichern',
     turnRunning: name => `${name} ist gerade dran. Deine Nachrichten warten, bis der Durchlauf endet.`,
     waitingFor: name => `Warte auf die Antwort von ${name}`,
-    chatCreator: 'die Person, die den Chat erstellt hat'
+    chatCreator: 'die Person, die den Chat erstellt hat',
+    viewingHere: name => `${name} liest hier`
   },
   ui: {
     search: {

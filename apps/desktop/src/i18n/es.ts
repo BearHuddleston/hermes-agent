@@ -5621,7 +5621,8 @@ export const esOverrides = {
     renameSave: 'Guardar',
     turnRunning: name => `Es el turno de ${name}. Tus mensajes esperarán a que termine.`,
     waitingFor: name => `Esperando la respuesta de ${name}`,
-    chatCreator: 'quien creó el chat'
+    chatCreator: 'quien creó el chat',
+    viewingHere: name => `${name} está leyendo aquí`
   },
   ui: {
     search: {

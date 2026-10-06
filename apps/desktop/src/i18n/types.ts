@@ -4358,6 +4358,8 @@ export interface Translations extends NoticeTranslations {
     waitingFor: (name: string) => string
     /** Stand-in name for the chat's creator when they are not in the room. */
     chatCreator: string
+    /** A touch reader's marker at the message they are reading. */
+    viewingHere: (name: string) => string
   }
 
   ui: {
