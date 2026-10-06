@@ -125,6 +125,46 @@ complete terminal-screen snapshot: older output may be missing, and full-screen
 programs may need their own redraw command after reconnect. Hermes does not
 inject a redraw keystroke into the running shell or foreground program.
 
+### Sharing a chat with other people
+
+When the Webapp uses an OAuth/OIDC sign-in (Nous or a self-hosted provider),
+several people can have the same chat open at once. Each window shows who else
+is there:
+
+- **Avatars** of the people in the chat, top right. Click your own to change the
+  name others see. The name is only a label: your sign-in decides who you are.
+- **Pointers** with each person's name. A pointer is placed relative to the
+  message or the composer it hovers, so it lands on the same text in windows of
+  different sizes. Touch input shares no pointer.
+- **"Alice is typing"** above the composer while someone drafts a message.
+- **Who sent each message**, above the messages other people wrote.
+
+None of this reaches the model. Pointers and typing are never stored; the sender
+of a message is saved with it for display and stripped from every copy sent to
+the model.
+
+**Who controls a running turn.** The person who sent a turn owns it: only they
+answer its approval, clarify, sudo, secret and vault prompts, and only they can
+stop or redirect it. Everyone else sees the prompt with "Waiting for Alice to
+answer", and a message they send while the turn runs waits in the queue and
+runs after it, instead of interrupting it. If the sender closes every window,
+the person who created the chat can take over, so a turn never stalls on someone
+who left. Windows that are not signed in (the loopback operator, the private
+launch link) and chats only one person uses behave as before.
+
+To let every signed-in person answer and stop every turn instead:
+
+```yaml
+dashboard:
+  shared_chats:
+    turn_control: anyone   # default: sender
+```
+
+This is a convenience for people who already share a Webapp, not a security
+boundary: every signed-in user can still run commands on the host as the
+account running Hermes (see the warning above). Give Webapp access only to
+people you would give that account to.
+
 Useful build/lifecycle flags:
 
 - `--skip-build` reuses `apps/desktop/dist-webapp`.
