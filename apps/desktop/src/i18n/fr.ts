@@ -6204,7 +6204,8 @@ export const frOverrides = {
     renameSave: 'Enregistrer',
     turnRunning: name => `Tour de ${name} en cours. Vos messages attendront qu’il se termine.`,
     waitingFor: name => `En attente de la réponse de ${name}`,
-    chatCreator: 'la personne qui a créé la discussion'
+    chatCreator: 'la personne qui a créé la discussion',
+    viewingHere: name => `${name} lit ici`
   },
   ui: {
     search: {

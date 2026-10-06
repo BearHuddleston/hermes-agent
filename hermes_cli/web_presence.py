@@ -42,7 +42,7 @@ LOCAL_USER_KEY = "local:operator"
 _ROOM_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}:[A-Za-z0-9][A-Za-z0-9._-]{0,199}$")
 # Per-client control frames kept beside the peer deltas (NUL never appears in a client id).
 _CONTROL_KEYS = ("\0self", "\0error")
-_CURSOR_KINDS = frozenset({"turn", "viewport", "composer"})
+_CURSOR_KINDS = frozenset({"turn", "view", "viewport", "composer"})
 _MAX_TURN_FROM_END = 999
 
 
@@ -86,8 +86,9 @@ def clean_cursor(raw: Any) -> Optional[dict]:
     """Validate a pointer anchor; None hides the pointer.
 
     ``turn`` anchors count message groups from the newest (0) so two windows with different
-    amounts of loaded history agree; ``x``/``y`` are fractions of that element. ``viewport``
-    and ``composer`` are fractions of the thread viewport / composer box.
+    amounts of loaded history agree; ``x``/``y`` are fractions of that element. ``view`` is the
+    same shape from a touch window: the turn it is reading, not a pointer. ``viewport`` and
+    ``composer`` are fractions of the thread viewport / composer box.
     """
     if not isinstance(raw, dict) or raw.get("kind") not in _CURSOR_KINDS:
         return None
@@ -95,7 +96,7 @@ def clean_cursor(raw: Any) -> Optional[dict]:
     if x is None or y is None:
         return None
     cursor: dict[str, Any] = {"kind": raw["kind"], "x": round(x, 4), "y": round(y, 4)}
-    if raw["kind"] == "turn":
+    if raw["kind"] in ("turn", "view"):
         turn = raw.get("turn")
         if isinstance(turn, bool) or not isinstance(turn, int) or not 0 <= turn <= _MAX_TURN_FROM_END:
             return None

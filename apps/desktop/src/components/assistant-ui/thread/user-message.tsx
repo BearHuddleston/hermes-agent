@@ -32,7 +32,7 @@ import { LruCache } from '@/lib/lru-cache'
 import { TOUCH_POINTER_QUERY } from '@/lib/touch-interaction'
 import { cn } from '@/lib/utils'
 import { $gateway } from '@/store/gateway'
-import { $presenceSelf } from '@/store/presence'
+import { $presencePeers, $presenceSelf } from '@/store/presence'
 import { notifyThreadEditOpen } from '@/store/thread-scroll'
 import { isWatchWindow } from '@/store/windows'
 
@@ -649,16 +649,23 @@ export const UserMessage: FC<{
   )
 }
 
-/** Who sent a message in a chat several signed-in people share. Display only; the model never sees it. */
+/**
+ * Who sent a message in a chat several signed-in people share. Display only; the model never sees it.
+ * The card is stamped at send time, so a person still in the room shows under the name they use now.
+ */
 function MessageSenderLabel({ sender }: { sender: MessageSender }) {
+  const live = useStore($presencePeers).find(peer => peer.user === sender.id)
+  const name = live?.name ?? sender.name
+  const color = live?.color ?? sender.color
+
   return (
     <span
       className="mb-0.5 inline-flex max-w-full items-center gap-1.5 self-start px-1 text-[0.6875rem] font-medium text-(--ui-text-secondary)"
       data-message-sender={sender.id}
       data-slot="aui_user-sender"
     >
-      <span aria-hidden className="size-2 shrink-0 rounded-full" style={{ backgroundColor: sender.color }} />
-      <span className="truncate">{sender.name}</span>
+      <span aria-hidden className="size-2 shrink-0 rounded-full" style={{ backgroundColor: color }} />
+      <span className="truncate">{name}</span>
     </span>
   )
 }

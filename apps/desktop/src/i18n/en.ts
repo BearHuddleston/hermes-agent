@@ -5677,7 +5677,8 @@ export const en: Translations = {
     renameSave: 'Save',
     turnRunning: name => `${name}'s turn is running. Your messages will wait until it ends.`,
     waitingFor: name => `Waiting for ${name} to answer`,
-    chatCreator: "the chat's creator"
+    chatCreator: "the chat's creator",
+    viewingHere: name => `${name} is reading here`
   },
   ui: {
     search: {

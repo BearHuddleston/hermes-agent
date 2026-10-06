@@ -142,6 +142,7 @@ def test_a_chosen_name_follows_the_principal_into_every_window():
 @pytest.mark.parametrize("frame", [
     {"type": "join", "room": "../../etc"},
     {"type": "cursor", "cursor": {"kind": "turn", "turn": -1, "x": 0, "y": 0}},
+    {"type": "cursor", "cursor": {"kind": "view", "x": 0, "y": 0.5}},
     {"type": "name", "name": "\u200b\u0000"},
     {"type": "nope"},
     ["not", "a", "dict"],

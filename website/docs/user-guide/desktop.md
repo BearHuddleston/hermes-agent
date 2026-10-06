@@ -135,7 +135,9 @@ is there:
   name others see. The name is only a label: your sign-in decides who you are.
 - **Pointers** with each person's name. A pointer is placed relative to the
   message or the composer it hovers, so it lands on the same text in windows of
-  different sizes. Touch input shares no pointer.
+  different sizes. The name fades when the pointer rests so it does not cover
+  what you are reading. On a tablet or phone there is no pointer to share, so
+  others see a dot beside the message you are reading instead.
 - **"Alice is typing"** above the composer while someone drafts a message.
 - **Who sent each message**, above the messages other people wrote.
 

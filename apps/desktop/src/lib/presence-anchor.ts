@@ -8,6 +8,8 @@
  *   agreement when one has paged in more history.
  * - `composer`: a fraction of the composer box.
  * - `viewport`: a fraction of the thread viewport (space between turns).
+ * - `view`: where a touch window is reading (no pointer to share): the turn at
+ *   the middle of its viewport, shaped like `turn`.
  *
  * The geometry is pure (rects in, anchors/points out) so it is testable
  * without layout; the DOM readers below resolve only the one element needed.
@@ -23,6 +25,7 @@ export interface PresenceRect {
 export type PresenceCursor =
   | { kind: 'composer'; x: number; y: number }
   | { kind: 'turn'; turn: number; x: number; y: number }
+  | { kind: 'view'; turn: number; x: number; y: number }
   | { kind: 'viewport'; x: number; y: number }
 
 export const MAX_TURN_FROM_END = 999
@@ -100,6 +103,35 @@ export function cursorAtPoint(
   return { kind: 'viewport', ...fractionsIn(viewport, x, y) }
 }
 
+/** The turn at the middle of this window's transcript viewport, for a touch window with no pointer to share. */
+export function viewAnchor(surface: HTMLElement): null | PresenceCursor {
+  const viewportElement = surface.querySelector(VIEWPORT_SELECTOR)
+  const viewport = rectOf(viewportElement)
+
+  if (!viewportElement || !viewport) {
+    return null
+  }
+
+  const middle = viewport.top + viewport.height / 2
+  const turns = [...viewportElement.querySelectorAll(TURN_SELECTOR)]
+
+  for (let index = turns.length - 1; index >= 0; index--) {
+    const rect = rectOf(turns[index])
+    const fromEnd = turns.length - 1 - index
+
+    if (rect && rect.top <= middle && fromEnd <= MAX_TURN_FROM_END) {
+      return {
+        kind: 'view',
+        turn: fromEnd,
+        x: 0,
+        y: fractionsIn(rect, rect.left, Math.min(middle, rect.top + rect.height)).y
+      }
+    }
+  }
+
+  return null
+}
+
 /** Where a peer's anchor lands on `surface` (surface-relative px), or null when its target is not visible here. */
 export function pointForCursor(
   surface: HTMLElement,
@@ -120,6 +152,7 @@ export function pointForCursor(
   } else if (cursor.kind === 'viewport') {
     target = rectOf(viewportElement)
   } else {
+    // `turn` and `view` both name a transcript turn counted from the newest.
     const turns = viewportElement?.querySelectorAll(TURN_SELECTOR)
     target = turns ? rectOf(turns[turns.length - 1 - cursor.turn] ?? null) : null
   }
@@ -131,7 +164,7 @@ export function pointForCursor(
   const point = pointIn(target, cursor)
 
   // A turn scrolled out of the viewport has no visible spot to point at.
-  if (cursor.kind === 'turn') {
+  if (cursor.kind === 'turn' || cursor.kind === 'view') {
     const viewport = rectOf(viewportElement)
 
     if (!viewport || point.y < viewport.top || point.y > viewport.top + viewport.height) {
