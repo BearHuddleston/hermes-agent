@@ -5675,7 +5675,7 @@ export const en: Translations = {
     renameHint:
       'Shown beside your pointer and on your avatar. Your sign-in decides who you are; this is only the label.',
     renameSave: 'Save',
-    turnRunning: name => `${name}'s turn is running. Your messages will wait until it ends.`,
+    turnRunning: name => `${name}'s turn · your messages wait`,
     waitingFor: name => `Waiting for ${name} to answer`,
     chatCreator: "the chat's creator",
     viewingHere: name => `${name} is reading here`

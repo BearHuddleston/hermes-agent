@@ -6202,7 +6202,7 @@ export const frOverrides = {
     renameHint:
       'Affiché à côté de votre pointeur et sur votre avatar. Votre connexion détermine qui vous êtes ; ceci n’est qu’une étiquette.',
     renameSave: 'Enregistrer',
-    turnRunning: name => `Tour de ${name} en cours. Vos messages attendront qu’il se termine.`,
+    turnRunning: name => `Tour de ${name} · vos messages attendent`,
     waitingFor: name => `En attente de la réponse de ${name}`,
     chatCreator: 'la personne qui a créé la discussion',
     viewingHere: name => `${name} lit ici`

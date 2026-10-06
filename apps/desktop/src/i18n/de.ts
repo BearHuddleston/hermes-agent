@@ -6190,7 +6190,7 @@ export const deOverrides = {
     renameHint:
       'Erscheint neben deinem Zeiger und an deinem Avatar. Wer du bist, bestimmt deine Anmeldung; dies ist nur die Beschriftung.',
     renameSave: 'Speichern',
-    turnRunning: name => `${name} ist gerade dran. Deine Nachrichten warten, bis der Durchlauf endet.`,
+    turnRunning: name => `${name} ist dran · deine Nachrichten warten`,
     waitingFor: name => `Warte auf die Antwort von ${name}`,
     chatCreator: 'die Person, die den Chat erstellt hat',
     viewingHere: name => `${name} liest hier`

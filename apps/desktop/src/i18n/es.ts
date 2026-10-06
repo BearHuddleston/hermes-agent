@@ -6180,7 +6180,7 @@ export const esOverrides = {
     renameHint:
       'Aparece junto a tu puntero y en tu avatar. Tu inicio de sesión decide quién eres; esto es solo la etiqueta.',
     renameSave: 'Guardar',
-    turnRunning: name => `Es el turno de ${name}. Tus mensajes esperarán a que termine.`,
+    turnRunning: name => `Turno de ${name} · tus mensajes esperan`,
     waitingFor: name => `Esperando la respuesta de ${name}`,
     chatCreator: 'quien creó el chat',
     viewingHere: name => `${name} está leyendo aquí`
