@@ -6191,6 +6191,17 @@ export const frOverrides = {
     reloadWindow: 'Recharger la fenêtre',
     openLogs: 'Ouvrir les journaux'
   },
+  presence: {
+    you: 'vous',
+    typingOne: name => `${name} écrit`,
+    typingTwo: (first, second) => `${first} et ${second} écrivent`,
+    typingMany: count => `${count} personnes écrivent`,
+    windows: count => `${count} fenêtres`,
+    renameTitle: 'Votre nom dans cette discussion',
+    renamePlaceholder: 'Nom visible par les autres',
+    renameHint: 'Affiché à côté de votre pointeur et sur votre avatar. Votre connexion détermine qui vous êtes ; ceci n’est qu’une étiquette.',
+    renameSave: 'Enregistrer'
+  },
   ui: {
     search: {
       clear: 'Effacer la recherche'

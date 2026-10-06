@@ -6179,6 +6179,17 @@ export const deOverrides = {
     reloadWindow: 'Fenster neu laden',
     openLogs: 'Logs öffnen'
   },
+  presence: {
+    you: 'du',
+    typingOne: name => `${name} schreibt`,
+    typingTwo: (first, second) => `${first} und ${second} schreiben`,
+    typingMany: count => `${count} Personen schreiben`,
+    windows: count => `${count} Fenster`,
+    renameTitle: 'Dein Name in diesem Chat',
+    renamePlaceholder: 'Name, den andere sehen',
+    renameHint: 'Erscheint neben deinem Zeiger und an deinem Avatar. Wer du bist, bestimmt deine Anmeldung; dies ist nur die Beschriftung.',
+    renameSave: 'Speichern'
+  },
   ui: {
     search: {
       clear: 'Suche löschen'

@@ -4674,6 +4674,18 @@ export interface Translations {
     openLogs: string
   }
 
+  presence: {
+    you: string
+    typingOne: (name: string) => string
+    typingTwo: (first: string, second: string) => string
+    typingMany: (count: number) => string
+    windows: (count: number) => string
+    renameTitle: string
+    renamePlaceholder: string
+    renameHint: string
+    renameSave: string
+  }
+
   ui: {
     search: {
       clear: string

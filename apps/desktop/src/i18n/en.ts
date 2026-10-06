@@ -5664,6 +5664,17 @@ export const en: Translations = {
     openLogs: 'Open logs'
   },
 
+  presence: {
+    you: 'you',
+    typingOne: name => `${name} is typing`,
+    typingTwo: (first, second) => `${first} and ${second} are typing`,
+    typingMany: count => `${count} people are typing`,
+    windows: count => `${count} windows`,
+    renameTitle: 'Your name in this chat',
+    renamePlaceholder: 'Name others see',
+    renameHint: 'Shown beside your pointer and on your avatar. Your sign-in decides who you are; this is only the label.',
+    renameSave: 'Save'
+  },
   ui: {
     search: {
       clear: 'Clear search'

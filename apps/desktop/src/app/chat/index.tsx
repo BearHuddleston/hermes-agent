@@ -23,6 +23,8 @@ import type { ChatMessage } from '@/lib/chat-messages'
 import { NEW_SESSION_TITLE, quickModelOptions, sessionTitle } from '@/lib/chat-runtime'
 import { useIncrementalExternalStoreRuntime } from '@/lib/incremental-external-store-runtime'
 import { currentModelCapabilities, modelOptionsQueryKey, requestModelOptions } from '@/lib/model-options'
+import { isBrowserHostedDesktop } from '@/lib/platform'
+import { presenceRoom } from '@/lib/presence-client'
 import { useStoreSelector } from '@/lib/use-session-slice'
 import { cn } from '@/lib/utils'
 import { migrateSessionDraft } from '@/store/composer'
@@ -74,6 +76,7 @@ import { useHistoryWindow } from './history-window'
 import { type DroppedFile, partitionDroppedFiles } from './hooks/use-composer-actions'
 import { type DragKind, useFileDropZone } from './hooks/use-file-drop-zone'
 import { shouldShowIntro } from './intro-visibility'
+import { PresenceLayer } from './presence/presence-layer'
 import { ProfileTag } from './profile-tag'
 import { ResumeExhaustedOverlay } from './resume-exhausted-overlay'
 import { isRouteSessionMismatch } from './route-session-state'
@@ -123,6 +126,10 @@ interface ChatViewProps extends Omit<React.ComponentProps<'div'>, 'onSubmit'> {
   onTranscribeAudio?: (audio: Blob, owner?: ResolvedOwner) => Promise<string>
   onDismissError?: (messageId: string) => void
 }
+
+// Several people can only share a window's backend when it is served over the
+// web; an Electron window's backend is its own machine's.
+const PRESENCE_ENABLED = isBrowserHostedDesktop()
 
 interface ChatHeaderProps {
   activeSessionId: null | string
@@ -820,6 +827,14 @@ const ChatViewContent = memo(function ChatViewContent({
           onDeleteSelectedSession={onDeleteSelectedSession}
           onToggleSelectedPin={onToggleSelectedPin}
           selectedSessionId={selectedSessionId}
+        />
+      )}
+      {/* Co-presence (POC): browser-hosted windows only, primary surface only. */}
+      {isPrimary && PRESENCE_ENABLED && (
+        <PresenceLayer
+          composerOwner={composerSurfaceId ?? ''}
+          profile={modelOptionsProfile || activeGatewayProfile}
+          room={presenceRoom(modelOptionsProfile || activeGatewayProfile, queueSessionKey)}
         />
       )}
 

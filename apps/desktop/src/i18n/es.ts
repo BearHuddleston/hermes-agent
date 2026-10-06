@@ -6169,6 +6169,17 @@ export const esOverrides = {
     reloadWindow: 'Recargar ventana',
     openLogs: 'Abrir registros'
   },
+  presence: {
+    you: 'tú',
+    typingOne: name => `${name} está escribiendo`,
+    typingTwo: (first, second) => `${first} y ${second} están escribiendo`,
+    typingMany: count => `${count} personas están escribiendo`,
+    windows: count => `${count} ventanas`,
+    renameTitle: 'Tu nombre en este chat',
+    renamePlaceholder: 'Nombre que ven los demás',
+    renameHint: 'Aparece junto a tu puntero y en tu avatar. Tu inicio de sesión decide quién eres; esto es solo la etiqueta.',
+    renameSave: 'Guardar'
+  },
   ui: {
     search: {
       clear: 'Limpiar búsqueda'
