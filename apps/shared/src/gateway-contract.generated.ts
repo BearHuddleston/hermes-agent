@@ -532,6 +532,9 @@ export interface SessionLiveInfo {
   personality?: string
   running?: boolean
   turn_started_at?: number | null
+  turn_owner?: SenderCard | null
+  chat_owner?: string | null
+  turn_control?: TurnControl | null
   title?: string
   stored_session_id?: string
   desktop_contract?: number | string | null
@@ -554,6 +557,13 @@ export interface ProjectRef {
   name: string
   primary_path?: string | null
 }
+/** A signed-in person as shown in a shared chat (``shared_turns._sender_card``). Display only. */
+export interface SenderCard {
+  id: string
+  name: string
+  color: string
+}
+export type TurnControl = 'sender' | 'anyone'
 /** ``tui_gateway/server.py::_get_usage`` + ``agent/context_breakdown.py::context_usage_fields``. */
 export interface Usage {
   model?: string
@@ -3366,6 +3376,9 @@ export interface SessionCwdSetResult {
   personality?: string
   running?: boolean
   turn_started_at?: number | null
+  turn_owner?: SenderCard | null
+  chat_owner?: string | null
+  turn_control?: TurnControl | null
   title?: string
   stored_session_id?: string
   desktop_contract?: number | string | null
@@ -5518,12 +5531,20 @@ export interface ErrorPayload {
 export interface NoticePayload {
   message: string
 }
-/** ``message.start``. Empty from the TUI gateway's emitters and for an ordinary admission; ``gateway/session_authority._stamp_claim`` adds an automation admission's async-result card (``session_automation.admission_display``: a background-process completion) and its model text, so a viewer that did not submit the turn paints the same header the submitter would. */
+/** ``message.start``. Empty for a single-user ordinary turn. In a shared chat the TUI gateway's emitters add ``owner`` (the signed-in person who sent the turn) and ``user`` (the human prompt it answers; omitted for hidden / synthesized input). ``gateway/session_authority._stamp_claim`` adds an automation admission's async-result card (``session_automation.admission_display``: a background-process completion) and its model text, so a viewer that did not submit the turn paints the same header the submitter would. */
 export interface MessageStartPayload {
   display_kind?: string | null
   display_text?: string | null
   notification_category?: string | null
   text?: string | null
+  owner?: SenderCard | null
+  user?: TurnPromptEcho | null
+}
+/** The typed prompt a turn answers, so a window that did not send it shows it before the reply. */
+export interface TurnPromptEcho {
+  text: string
+  row_id?: number | null
+  sender?: SenderCard | null
 }
 /** ``message.delta``. A session-authority local-viewer turn also publishes ``text: null``: the reply segment boundary (the agent's ``stream_delta_callback(None)``, before tool lines) that closes the classic CLI's reply box. Every other viewer ignores an empty chunk. */
 export interface MessageDeltaPayload {
@@ -6894,7 +6915,7 @@ export interface BackendGatewayEventMap {
   'message.interim': MessageInterimPayload
   /** The agent reacted to a message; paint it live. */
   'message.reaction': MessageReactionPayload
-  /** A turn began streaming; an automation turn carries its async-result card. */
+  /** A turn began streaming; carries a shared turn's owner/prompt or an automation turn's async-result card. */
   'message.start': MessageStartPayload
   /** The MoA aggregator started. */
   'moa.aggregating': MoaAggregatingPayload

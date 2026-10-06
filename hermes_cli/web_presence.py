@@ -150,6 +150,10 @@ class PresenceHub:
     def room_members(self, room: str) -> list[PresenceClient]:
         return list(self._rooms.get(room, {}).values())
 
+    def display_name(self, user_key: str) -> str:
+        """The label ``user_key`` picked (read from turn threads too: a single dict read)."""
+        return self._names.get(user_key) or default_name(user_key)
+
     # ---- inbound ---------------------------------------------------------
 
     def handle(self, client: PresenceClient, frame: Any) -> Optional[str]:
@@ -288,6 +292,12 @@ _HANDLERS: dict[str, Callable[[PresenceHub, PresenceClient, dict], Optional[str]
 
 #: The process's hub. One server process serves every window, so one hub sees every room.
 HUB = PresenceHub()
+
+
+def sender_card(user_key: str) -> dict:
+    """How a signed-in person is shown on their messages: the label they picked in presence (else the
+    default guest label) and their stable color. Display only: never part of the model's text."""
+    return {"id": user_key, "name": HUB.display_name(user_key), "color": user_color(user_key)}
 
 
 def principal_key(identity: Any) -> str:

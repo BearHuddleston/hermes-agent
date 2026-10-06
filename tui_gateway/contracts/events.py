@@ -18,7 +18,7 @@ from __future__ import annotations
 from pydantic import Field
 
 from .base import JsonValue, Payload, WireEnum
-from .common import MessageReaction, SessionLiveInfo, SubagentStatus, ToolLabel, ToolLabelKind, Usage
+from .common import MessageReaction, SenderCard, SessionLiveInfo, SubagentStatus, ToolLabel, ToolLabelKind, Usage
 from .config_free_tier_control import FreeTierChallengePayload, SessionControlSnapshot
 from .registry import event
 
@@ -140,20 +140,32 @@ event("notice", NoticePayload, doc="Informational one-liner for the session (cap
 # ── turn stream ───────────────────────────────────────────────────────────────────────────────
 
 
+class TurnPromptEcho(Payload):
+    """The typed prompt a turn answers, so a window that did not send it shows it before the reply."""
+
+    text: str
+    row_id: int | None = None
+    sender: SenderCard | None = None
+
+
 class MessageStartPayload(Payload):
-    """``message.start``. Empty from the TUI gateway's emitters and for an ordinary admission;
-    ``gateway/session_authority._stamp_claim`` adds an automation admission's async-result card
-    (``session_automation.admission_display``: a background-process completion) and its model
-    text, so a viewer that did not submit the turn paints the same header the submitter would."""
+    """``message.start``. Empty for a single-user ordinary turn. In a shared chat the TUI gateway's
+    emitters add ``owner`` (the signed-in person who sent the turn) and ``user`` (the human prompt it
+    answers; omitted for hidden / synthesized input). ``gateway/session_authority._stamp_claim`` adds an
+    automation admission's async-result card (``session_automation.admission_display``: a
+    background-process completion) and its model text, so a viewer that did not submit the turn paints
+    the same header the submitter would."""
 
     display_kind: str | None = None
     display_text: str | None = None
     notification_category: str | None = None
     text: str | None = None
+    owner: SenderCard | None = None
+    user: TurnPromptEcho | None = None
 
 
 event("message.start", MessageStartPayload,
-      doc="A turn began streaming; an automation turn carries its async-result card.")
+      doc="A turn began streaming; carries a shared turn's owner/prompt or an automation turn's async-result card.")
 
 
 class StreamDeltaPayload(Payload):
