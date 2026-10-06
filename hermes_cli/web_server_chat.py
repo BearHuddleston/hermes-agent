@@ -448,7 +448,7 @@ async def _ws_gate(ws: WebSocket, kind: str) -> Optional[tuple[str, str, str]]:
 
 
 # Sockets a shared-chat member may open; each checks the chat itself (web_sharing.may_join_room).
-_MEMBER_SOCKET_KINDS = frozenset({"presence"})
+_MEMBER_SOCKET_KINDS = frozenset({"presence", "apps"})
 
 
 async def _pty_fail(ws: WebSocket, exc: BaseException, *, surface: str = "Chat") -> None:

@@ -110,6 +110,8 @@ async def sharing_set_role(request: Request, body: ChatAccessUpdate):
         await asyncio.to_thread(_detach_live_windows, ref.key, target)
     # Every window of that person in this chat re-reads its role; a removed one is sent out of the room.
     web_presence.HUB.access_changed(target, ref.key, removed=body.role is None)
+    from hermes_cli import web_apps
+    web_apps.HUB.access_changed(target, ref.key, removed=body.role is None)
     return {"chat": ref.key, "principal": target, "role": body.role}
 
 

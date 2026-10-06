@@ -780,6 +780,7 @@ from hermes_cli.web_routers import (  # noqa: E402
     dashboard_ui as _dashboard_ui_routes,
     webapp as _webapp_routes,
     presence as _presence_routes,
+    apps as _apps_routes,
     sharing as _sharing_routes,
     shared_metrics as _shared_metrics_routes,
 )
@@ -819,6 +820,7 @@ app.include_router(_chat_workspaces_routes.router)
 app.include_router(_dashboard_ui_routes.router)
 app.include_router(_webapp_routes.router)
 app.include_router(_presence_routes.router)
+app.include_router(_apps_routes.router)
 app.include_router(_sharing_routes.router)
 app.include_router(_shared_metrics_routes.router)
 

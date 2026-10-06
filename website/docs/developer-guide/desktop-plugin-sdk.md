@@ -898,6 +898,27 @@ prompt reaches the chat's composer, or `{ ok: false, error }` where `error` is
 or `undelivered` (no visible composer took it). Check it before showing a
 widget as saved.
 
+Previewed widgets can also be **multiplayer**. A page that uses any of the
+calls below gets a small runtime, and every window showing the same file in
+the same chat shares it live:
+
+- `hermes.state.set(key, value)` / `get(key)` / `on(key, fn)`: per-key JSON
+  values; the last write wins. Declaratively, `data-hermes-state="status"` binds
+  an `input`, `textarea` or `select` to a key, and on any other element shows
+  the key's value.
+- `hermes.text(key, element)` (or `<textarea data-hermes-text="notes">`): a text
+  box several people edit at once, merged character by character
+  (`@codemirror/collab`); the element's starting text seeds a new key once.
+- `hermes.presence.on(fn)`: who else has the app open, with their pointers;
+  `hermes.role` / `hermes.canEdit` / `hermes.onRole(fn)`: viewers of a shared
+  chat can read but not write.
+- `await hermes.ready`: resolves once the shared state has loaded.
+
+State is saved beside the page as `<name>.state.json`
+(`{"values": {...}, "texts": {...}}`). The agent can edit that file with its
+normal file tools and open windows pick the change up. Without a connection
+(an unsaved chat, an older backend) the same calls work for the one window.
+
 ### Mount-scoped chrome (`Contribute`)
 
 `ctx.register` is for **permanent** contributions. When chrome should live and
