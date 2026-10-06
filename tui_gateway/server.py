@@ -780,6 +780,8 @@ def _broadcast_global_event(event: str, payload: dict | None = None) -> None:
         return None
     frame = _event_frame(event, "", payload)
     for transport in targets:
+        if not _global_event_reaches(transport, event):
+            continue
         try:
             transport.write(frame)
         except Exception:  # one wedged peer must not stall the rest; disconnect teardown unregisters it
@@ -3745,7 +3747,7 @@ from . import (  # noqa: E402
     session_compression as _session_compression, model_switch as _model_switch,
     compute_host_bridge as _compute_host_bridge, session_workdir as _session_workdir,
     session_lifecycle as _session_lifecycle, session_reaper as _session_reaper,
-    session_transports as _session_transports, shared_turns as _shared_turns,
+    session_transports as _session_transports, shared_turns as _shared_turns, chat_access as _chat_access,
     methods_browser_control as _methods_browser_control, methods_bot_relay as _methods_bot_relay,
     methods_complete as _methods_complete, methods_config as _methods_config,
     methods_config_set as _methods_config_set, methods_images as _methods_images,
@@ -3760,7 +3762,7 @@ from . import (  # noqa: E402
     methods_shared_metrics as _methods_shared_metrics)
 
 for _m in (
-    _session_transports, _shared_turns, _session_reaper, _session_lifecycle, _session_workdir, _compute_host_bridge, _model_switch,
+    _session_transports, _shared_turns, _chat_access, _session_reaper, _session_lifecycle, _session_workdir, _compute_host_bridge, _model_switch,
     _session_compression, _change_watcher, _tool_progress, _session_notifications,
     _prompt_attachments, _session_history, _agent_callbacks, _session_auto_continue, _plugin_inject, _rpc_dispatch,
     _methods_complete_helpers, _methods_slash, _methods_voice, _methods_browser,

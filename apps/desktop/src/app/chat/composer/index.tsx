@@ -24,6 +24,7 @@ import { sanitizeComposerInput } from '@/lib/composer-input-sanitize'
 import { DATA_IMAGE_URL_RE } from '@/lib/embedded-images'
 import { triggerHaptic } from '@/lib/haptics'
 import { isMacPlatform } from '@/lib/platform'
+import { presenceRoom } from '@/lib/presence-client'
 import { useStoreSelector, useStoresSelector } from '@/lib/use-session-slice'
 import { cn } from '@/lib/utils'
 import { interceptsTypedVoiceStop } from '@/lib/voice-stop-word'
@@ -38,6 +39,7 @@ import { toggleReview } from '@/store/review'
 import { $gatewayState } from '@/store/session'
 import { $botChatSessionIds, $sessionStates, $sessionTiles, isBotChatSession } from '@/store/session-states'
 import { sessionTurnHolder } from '@/store/shared-turns'
+import { chatReadOnly } from '@/store/sharing'
 import { useForcedTextDirection } from '@/store/text-direction'
 import { $threadScrolledUpBySession } from '@/store/thread-scroll'
 import { $autoSpeakReplies } from '@/store/voice-prefs'
@@ -119,7 +121,7 @@ import { VoiceActivity, VoicePlaybackActivity } from './voice-activity'
 export function ChatBar({
   busy,
   cwd,
-  disabled,
+  disabled: disabledProp,
   focusKey,
   freshDraftKey,
   gateway,
@@ -211,6 +213,13 @@ export function ChatBar({
   const blockingPrompt = useStore(useMemo(() => sessionBlockingPrompt(sessionId ?? null), [sessionId]))
   // A shared chat's turn sent by someone else: queue behind it, never steer or stop it.
   const turnHolder = useTurnHolder(sessionId)
+
+  // A viewer of a shared chat follows it but cannot send (hermes_cli/web_sharing.py enforces it).
+  const viewOnly = useStore(
+    useMemo(() => chatReadOnly(presenceRoom(profile, queueSessionKey || sessionId)), [profile, queueSessionKey, sessionId])
+  )
+
+  const disabled = disabledProp || viewOnly
   const activeQueueSessionKey = queueSessionKey || sessionId || freshDraftKey || null
   const { collapsed: statusDrawerCollapsed, toggle: toggleStatusDrawer } = useStatusDrawer(activeQueueSessionKey)
   const statusDrawerId = useId()
@@ -476,8 +485,11 @@ export function ChatBar({
   // conversation change.
   const restingPlaceholder = useComposerPlaceholder({ disabled, reconnecting, sessionId })
 
-  const placeholder =
-    turnHolder && busy ? t.presence.turnRunning(turnHolder.name || t.presence.chatCreator) : restingPlaceholder
+  const placeholder = viewOnly
+    ? t.sharing.viewerComposer
+    : turnHolder && busy
+      ? t.presence.turnRunning(turnHolder.name || t.presence.chatCreator)
+      : restingPlaceholder
 
   // Trigger / completion engine: @// detection, the adapter-driven item list,
   // popover selection, and chip insertion. The keydown nav block below consumes

@@ -6185,6 +6185,36 @@ export const esOverrides = {
     chatCreator: 'quien creó el chat',
     viewingHere: name => `${name} está leyendo aquí`
   },
+  sharing: {
+    share: 'Compartir',
+    title: 'Compartir este chat',
+    description:
+      'Las personas que añadas ven este chat y sus apps en directo. Quien observa solo mira; quien participa también puede enviar mensajes.',
+    claimTitle: 'Primero haz tuyo este agente',
+    claimBody:
+      'Ahora mismo, cualquiera a quien tu Portal deje iniciar sesión ve todos los chats. Reclama el agente y los demás solo verán los chats que compartas con ellos.',
+    claim: 'Reclamar este agente',
+    claimFailed: 'No se pudo reclamar este agente',
+    yourId: 'Tu ID de cuenta',
+    yourIdHint: 'Envíaselo a quien tenga un chat para que pueda añadirte.',
+    copy: 'Copiar',
+    copied: 'Copiado',
+    addPerson: 'Añadir a una persona',
+    addPlaceholder: 'ID de cuenta, p. ej. nous:usr_1a2b',
+    add: 'Añadir',
+    signedInRecently: 'Han iniciado sesión en este agente',
+    nobodyYet: 'Nadie más ha iniciado sesión todavía. Cuando alguien lo haga, aparecerá aquí.',
+    sharedWith: 'Compartido con',
+    notShared: 'Solo tú ves este chat.',
+    roleViewer: 'Observa',
+    roleParticipant: 'Participa',
+    roleOwner: 'Propietario',
+    remove: 'Quitar',
+    changeFailed: 'No se pudo cambiar con quién se comparte este chat',
+    viewerComposer: 'Puedes ver este chat. Pide a su propietario que te deje enviar mensajes.',
+    viewerNote: 'Solo lectura',
+    accessRemoved: 'Este chat ya no se comparte contigo.'
+  },
   ui: {
     search: {
       clear: 'Limpiar búsqueda'

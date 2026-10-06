@@ -6195,6 +6195,36 @@ export const deOverrides = {
     chatCreator: 'die Person, die den Chat erstellt hat',
     viewingHere: name => `${name} liest hier`
   },
+  sharing: {
+    share: 'Teilen',
+    title: 'Diesen Chat teilen',
+    description:
+      'Hinzugefügte Personen sehen diesen Chat und seine Apps live. Lesende schauen zu; Teilnehmende können auch Nachrichten senden.',
+    claimTitle: 'Mach diesen Agenten zuerst zu deinem',
+    claimBody:
+      'Wen dein Portal anmelden lässt, sieht derzeit jeden Chat hier. Beanspruche den Agenten, dann sehen alle anderen nur die Chats, die du mit ihnen teilst.',
+    claim: 'Agenten beanspruchen',
+    claimFailed: 'Agent konnte nicht beansprucht werden',
+    yourId: 'Deine Konto-ID',
+    yourIdHint: 'Schick sie der Person, der ein Chat gehört, damit sie dich hinzufügen kann.',
+    copy: 'Kopieren',
+    copied: 'Kopiert',
+    addPerson: 'Person hinzufügen',
+    addPlaceholder: 'Konto-ID, z. B. nous:usr_1a2b',
+    add: 'Hinzufügen',
+    signedInRecently: 'Bei diesem Agenten angemeldet',
+    nobodyYet: 'Noch hat sich niemand sonst angemeldet. Sobald jemand das tut, erscheint die Person hier.',
+    sharedWith: 'Geteilt mit',
+    notShared: 'Nur du siehst diesen Chat.',
+    roleViewer: 'Lesend',
+    roleParticipant: 'Teilnehmend',
+    roleOwner: 'Besitzer',
+    remove: 'Entfernen',
+    changeFailed: 'Freigabe dieses Chats konnte nicht geändert werden',
+    viewerComposer: 'Du kannst diesen Chat ansehen. Bitte die besitzende Person, dich Nachrichten senden zu lassen.',
+    viewerNote: 'Nur ansehen',
+    accessRemoved: 'Dieser Chat ist nicht mehr mit dir geteilt.'
+  },
   ui: {
     search: {
       clear: 'Suche löschen'

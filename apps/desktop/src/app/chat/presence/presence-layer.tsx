@@ -5,8 +5,10 @@ import { useI18n } from '@/i18n'
 import { cursorAtPoint, pointForCursor, viewAnchor } from '@/lib/presence-anchor'
 import { presenceJoin, presenceNoteInput, presenceSetCursor } from '@/lib/presence-client'
 import { $presencePeers, PEER_TYPING_TTL_MS, type PresencePeer, presenceUsers } from '@/store/presence'
+import { refreshChatAccess, refreshSharingMe } from '@/store/sharing'
 
 import { PresenceAvatars } from './presence-avatars'
+import { ShareButton } from './share-dialog'
 import { useSharesPointer } from './use-shares-pointer'
 
 interface PresenceLayerProps {
@@ -34,6 +36,10 @@ export function PresenceLayer({ composerOwner, profile, room }: PresenceLayerPro
   // Leaving the chat surface entirely (unmount) leaves the room.
   useEffect(() => () => presenceJoin(null, null), [])
 
+  // Who this window is, and its role in this chat (the composer locks for a viewer).
+  useEffect(() => void refreshSharingMe(), [])
+  useEffect(() => void (room && refreshChatAccess(room)), [room])
+
   // A finger has no hover position worth sharing: a touch window shares the message it is reading.
   const sharesPointer = useSharesPointer()
 
@@ -49,7 +55,8 @@ export function PresenceLayer({ composerOwner, profile, room }: PresenceLayerPro
     >
       {/* The Webapp's tab strip replaces the chat header, so the roster floats on the surface itself. */}
       {room && (
-        <div className="absolute right-3 top-[calc(var(--titlebar-height,0px)+0.5rem)]">
+        <div className="absolute right-3 top-[calc(var(--titlebar-height,0px)+0.5rem)] flex items-center gap-2">
+          <ShareButton room={room} />
           <PresenceAvatars />
         </div>
       )}

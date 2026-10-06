@@ -4694,6 +4694,36 @@ export interface Translations {
     viewingHere: (name: string) => string
   }
 
+  /** Sharing a chat with other people signed in to this agent (hermes_cli/web_sharing.py). */
+  sharing: {
+    share: string
+    title: string
+    description: string
+    claimTitle: string
+    claimBody: string
+    claim: string
+    claimFailed: string
+    yourId: string
+    yourIdHint: string
+    copy: string
+    copied: string
+    addPerson: string
+    addPlaceholder: string
+    add: string
+    signedInRecently: string
+    nobodyYet: string
+    sharedWith: string
+    notShared: string
+    roleViewer: string
+    roleParticipant: string
+    roleOwner: string
+    remove: string
+    changeFailed: string
+    viewerComposer: string
+    viewerNote: string
+    accessRemoved: string
+  }
+
   ui: {
     search: {
       clear: string

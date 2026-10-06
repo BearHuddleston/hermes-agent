@@ -1072,7 +1072,10 @@ DEFAULT_CONFIG = {
         # secret / clarify prompts and alone may stop or redirect it; anyone else's message queues behind
         # it. "anyone": every attached window may, as SECURITY.md describes. Never applies to the loopback
         # operator or a single user.
-        "shared_chats": {"turn_control": "sender"},
+        # owners: account ids (e.g. "nous:usr_1a2b3c") that see every chat and run the host. Empty =
+        # sharing off: every signed-in person has full access. With owners set, anyone else reaches
+        # only the chats an owner shares with them (hermes_cli/web_sharing.py).
+        "shared_chats": {"turn_control": "sender", "owners": []},
     },
 
     "privacy": {

@@ -41,7 +41,7 @@ LOCAL_USER_KEY = "local:operator"
 # ``<profile>:<session id>``: an opaque key, but held to the shape of the ids it is built from.
 _ROOM_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}:[A-Za-z0-9][A-Za-z0-9._-]{0,199}$")
 # Per-client control frames kept beside the peer deltas (NUL never appears in a client id).
-_CONTROL_KEYS = ("\0self", "\0error")
+_CONTROL_KEYS = ("\0self", "\0error", "\0access")
 _CURSOR_KINDS = frozenset({"turn", "view", "viewport", "composer"})
 _MAX_TURN_FROM_END = 999
 
@@ -186,6 +186,23 @@ class PresenceHub:
         self._broadcast(client)
         self._queue_self(client)
         return None
+
+    def refuse(self, client: PresenceClient, code: str) -> None:
+        """Queue an error to ``client`` for a frame the router refused before the hub saw it."""
+        client.pending["\0error"] = {"type": "error", "code": code}
+        client.wake.set()
+
+    def access_changed(self, user_key: str, room: str, *, removed: bool) -> None:
+        """Tell ``user_key``'s windows in ``room`` their access changed, so they re-read their role. Removed
+        windows also leave the room (the rest of the room hears they are gone)."""
+        for client in list(self._rooms.get(room, {}).values()):
+            if client.user_key != user_key:
+                continue
+            client.pending["\0access"] = {"type": "access", "room": room, "removed": removed}
+            client.wake.set()
+            if removed:
+                self._leave(client)
+                client.cursor, client.typing_at = None, 0.0
 
     def _on_join(self, client: PresenceClient, frame: dict) -> Optional[str]:
         room = frame.get("room")

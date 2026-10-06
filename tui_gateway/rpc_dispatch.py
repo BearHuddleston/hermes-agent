@@ -31,7 +31,7 @@ def _handle_admitted_request(req: dict) -> dict | None:
             return _err(rid, 4000, problem)
     token = _current_rpc_method.set(method)
     try:
-        response = fn(rid, params)
+        response = _call_with_chat_access(rid, method, params, fn)
     except ProfileUnavailableError as exc:
         return _err(rid, 4064, str(exc))
     finally:

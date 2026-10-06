@@ -448,6 +448,16 @@ async def _plugin_api_runtime_gate(request: Request, call_next):
 
 
 @app.middleware("http")
+async def _shared_chat_gate(request: Request, call_next):
+    """What a signed-in member of a shared host reaches (``hermes_cli/web_sharing_gate.py``).
+
+    Registered BEFORE the auth gate so it runs AFTER it, on the verified ``request.state.session``.
+    """
+    from hermes_cli.web_sharing_gate import shared_chat_gate
+    return await shared_chat_gate(request, call_next)
+
+
+@app.middleware("http")
 async def _dashboard_auth_gate(request: Request, call_next):
     """OAuth gate — active only when start_server flags ``auth_required``; pass-through on loopback.
 
@@ -770,6 +780,7 @@ from hermes_cli.web_routers import (  # noqa: E402
     dashboard_ui as _dashboard_ui_routes,
     webapp as _webapp_routes,
     presence as _presence_routes,
+    sharing as _sharing_routes,
     shared_metrics as _shared_metrics_routes,
 )
 
@@ -808,6 +819,7 @@ app.include_router(_chat_workspaces_routes.router)
 app.include_router(_dashboard_ui_routes.router)
 app.include_router(_webapp_routes.router)
 app.include_router(_presence_routes.router)
+app.include_router(_sharing_routes.router)
 app.include_router(_shared_metrics_routes.router)
 
 # Plugin API routes and the dashboard auth routes (/login, /auth/*, /api/auth/*)
