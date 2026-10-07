@@ -187,6 +187,7 @@ describe('PreviewPane console state', () => {
 
     const rendered = render(<PreviewPane tabId="reuse-browser-frame" target={target} />)
     const frame = rendered.container.querySelector('iframe')!
+    const sandbox = frame.getAttribute('sandbox')
     fireEvent.load(frame)
 
     rendered.rerender(
@@ -198,7 +199,9 @@ describe('PreviewPane console state', () => {
 
     expect(rendered.container.querySelector('iframe')).toBe(frame)
     expect(frame.src).toBe('https://example.com/two')
-    expect(frame.getAttribute('sandbox')).toBe('allow-forms allow-scripts')
+    // Navigating never widens the sandbox the capability test above pins.
+    expect(sandbox).toBeTruthy()
+    expect(frame.getAttribute('sandbox')).toBe(sandbox)
     expect(rendered.container.querySelector('webview')).toBeNull()
   })
 

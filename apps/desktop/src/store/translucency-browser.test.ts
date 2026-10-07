@@ -1,17 +1,12 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-const platform = vi.hoisted(() => ({ value: 'Win32' }))
+const desktopWindow = window as unknown as { hermesDesktop?: Partial<Window['hermesDesktop']> }
 
-vi.hoisted(() => {
-  Object.defineProperty(globalThis.navigator, 'platform', {
-    configurable: true,
-    get: () => platform.value
-  })
-})
-
+// The bridge reports native capability as a fact, so no host OS is faked.
 async function loadTranslucency(host: 'browser' | 'electron') {
   document.documentElement.dataset.hermesDesktopHost = host
+  desktopWindow.hermesDesktop = { glassSupported: true, translucencySupported: true }
   vi.resetModules()
   return import('@/store/translucency')
 }
@@ -23,11 +18,12 @@ describe('browser translucency capability', () => {
   })
 
   afterEach(() => {
+    Reflect.deleteProperty(desktopWindow, 'hermesDesktop')
     vi.restoreAllMocks()
     vi.resetModules()
   })
 
-  it('disables native window translucency in the browser host even on Windows', async () => {
+  it('disables native window translucency in the browser host even when the bridge reports support', async () => {
     const translucency = await loadTranslucency('browser')
 
     expect(translucency.GLASS_SUPPORTED).toBe(false)

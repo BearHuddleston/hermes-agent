@@ -1,14 +1,5 @@
 // @vitest-environment jsdom
-import { beforeEach, describe, expect, it, vi } from 'vitest'
-
-const platform = vi.hoisted(() => ({ value: 'MacIntel' }))
-
-vi.hoisted(() => {
-  Object.defineProperty(globalThis.navigator, 'platform', {
-    configurable: true,
-    get: () => platform.value
-  })
-})
+import { beforeEach, describe, expect, it } from 'vitest'
 
 import { isBrowserHostedDesktop } from './platform'
 

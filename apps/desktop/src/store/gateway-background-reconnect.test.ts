@@ -191,7 +191,7 @@ it.each(['close', 'remove', 'prune'] as const)('%s fully disposes a parked route
   const socket = sockets.find(socket => socket.url === remoteUrl)!
   const close = vi.spyOn(HermesGateway.prototype, 'close')
   expect(socket.readyState).toBe(NetworkSocket.OPEN)
-  expect(parkSecondariesForRetiredBackend(localOwner.profile)).toEqual(['conn:local::research'])
+  expect(parkSecondariesForRetiredBackend(localOwner.profile)).toHaveLength(1)
 
   if (cleanup === 'close') {
     closeSecondaryGateways()

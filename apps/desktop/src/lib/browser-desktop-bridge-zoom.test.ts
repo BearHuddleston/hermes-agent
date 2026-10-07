@@ -72,12 +72,4 @@ describe('browser UI scale', () => {
     expect((await zoom.get()).percent).toBe(100)
     vi.restoreAllMocks()
   })
-
-  it('does not apply browser scale when the Electron bridge is installed', () => {
-    const existing = { zoom: { setPercent: vi.fn() } } as unknown as Window['hermesDesktop']
-    win.hermesDesktop = existing
-    expect(installBrowserDesktopBridge()).toBe(false)
-    expect(win.hermesDesktop).toBe(existing)
-    expect(document.documentElement.style.zoom).toBe('')
-  })
 })

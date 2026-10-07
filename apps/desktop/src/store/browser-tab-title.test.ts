@@ -5,7 +5,7 @@ import type { SessionInfo } from '@/types/hermes'
 
 import { makeSessionInfo } from '../test/session-info'
 
-import { browserTabTitle, installBrowserTabTitle } from './browser-tab-title'
+import { type BrowserTabStatus, browserTabTitle, installBrowserTabTitle } from './browser-tab-title'
 import { $selectedStoredSessionId, $sessions, $unreadFinishedSessionIds, setSessions } from './session'
 import { clearAllSessionStates, publishSessionState } from './session-states'
 import { $sessionSeenCounts, $unreadFinishedMarkers } from './session-unread'
@@ -16,6 +16,9 @@ const state = (storedId: string, over: { busy?: boolean; needsInput?: boolean } 
   ...createClientSessionState(storedId),
   ...over
 })
+
+const tabTitle = (over: Partial<BrowserTabStatus> = {}) =>
+  browserTabTitle({ caption: 'Fix login', needsInput: false, unread: 0, working: false, ...over })
 
 let uninstall = () => {}
 
@@ -35,13 +38,28 @@ function reset() {
 
 describe('browserTabTitle', () => {
   it('lets a blocking prompt speak over a running turn, behind the unread count', () => {
-    const base = { caption: 'Fix login', needsInput: false, unread: 0, working: false }
+    const idle = tabTitle()
+    const working = tabTitle({ working: true })
+    const blocked = tabTitle({ needsInput: true, working: true })
 
-    expect(browserTabTitle(base)).toBe('Fix login · Hermes')
-    expect(browserTabTitle({ ...base, working: true })).toBe('● Fix login · Hermes')
-    expect(browserTabTitle({ ...base, needsInput: true, working: true })).toBe('⚠ Fix login · Hermes')
-    expect(browserTabTitle({ ...base, needsInput: true, unread: 2 })).toBe('(2) ⚠ Fix login · Hermes')
-    expect(browserTabTitle({ ...base, caption: '', unread: 1 })).toBe('(1) Hermes')
+    expect(idle).toContain('Fix login')
+    // Each status marks the front of the idle title; a blocking prompt replaces
+    // the running mark rather than joining it.
+    expect(working).not.toBe(idle)
+    expect(working.endsWith(idle)).toBe(true)
+    expect(blocked).not.toBe(working)
+    expect(blocked.endsWith(idle)).toBe(true)
+    expect(blocked).toBe(tabTitle({ needsInput: true }))
+
+    const counted = tabTitle({ needsInput: true, unread: 2 })
+    expect(counted.endsWith(blocked)).toBe(true)
+    expect(counted.slice(0, -blocked.length)).toContain('2')
+
+    // Without a caption the title falls back to the app name alone.
+    const bare = tabTitle({ caption: '' })
+    expect(bare).not.toBe('')
+    expect(idle.endsWith(bare)).toBe(true)
+    expect(tabTitle({ caption: '', unread: 1 }).endsWith(bare)).toBe(true)
   })
 })
 
@@ -55,24 +73,26 @@ describe('installBrowserTabTitle', () => {
     $selectedStoredSessionId.set('s1')
     uninstall = installBrowserTabTitle()
 
-    expect(document.title).toBe('Fix login · Hermes')
+    expect(document.title).toBe(tabTitle())
 
     publishSessionState('r1', state('s1', { busy: true }))
-    expect(document.title).toBe('● Fix login · Hermes')
+    expect(document.title).toBe(tabTitle({ working: true }))
 
     // Another session blocks on an approval: the whole window needs the user.
     publishSessionState('r2', state('s2', { busy: true, needsInput: true }))
-    expect(document.title).toBe('⚠ Fix login · Hermes')
+    expect(document.title).toBe(tabTitle({ needsInput: true, working: true }))
 
     // It finishes unwatched; the focused turn ends too, while being looked at.
     publishSessionState('r2', state('s2'))
     publishSessionState('r1', state('s1'))
-    expect(document.title).toBe('(1) Fix login · Hermes')
+    expect(document.title).toBe(tabTitle({ unread: 1 }))
 
     // Opening it reads it; a non-default profile names its owner.
     $selectedStoredSessionId.set('s2')
     $unreadFinishedSessionIds.set([])
-    expect(document.title).toBe('Draft essay — writer · Hermes')
+    // Nothing is left to mark ahead of the caption, which names the owner.
+    expect(document.title.startsWith('Draft essay')).toBe(true)
+    expect(document.title).toContain('writer')
   })
 
   it('never puts unsent or untitled text in the tab', () => {

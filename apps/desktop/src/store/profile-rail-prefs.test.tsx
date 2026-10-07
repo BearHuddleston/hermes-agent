@@ -1,14 +1,17 @@
 // @vitest-environment jsdom
 import { act, cleanup, render, renderHook } from '@testing-library/react'
 import { MemoryRouter } from 'react-router'
-import { afterEach, expect, it, vi } from 'vitest'
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
 
 // Switching profiles has exactly one door at a time: the rail at the sidebar
 // foot, or the statusbar picker beside the gateway switcher when the user hides
 // the rail. The Webapp (browser-hosted Desktop) always draws the rail as its
 // dropdown, never the squares; native Desktop keeps the squares until the
 // dropdown threshold. The host is fixed per page load, so each case loads a
-// fresh module graph after declaring its host.
+// fresh module graph after declaring its host — in a hook, whose timeout
+// absorbs the cold sidebar/statusbar import.
+
+type SurfaceWindow = Window & { __HERMES_UI_SURFACE__?: string }
 
 const noop = () => {}
 
@@ -16,14 +19,12 @@ const noopAsync = async () => {}
 
 afterEach(() => {
   cleanup()
-  delete (window as Window & { __HERMES_UI_SURFACE__?: string }).__HERMES_UI_SURFACE__
   localStorage.clear()
-  vi.resetModules()
 })
 
-async function loadHost(webapp: boolean) {
+async function importHost(webapp: boolean) {
   if (webapp) {
-    ;(window as Window & { __HERMES_UI_SURFACE__?: string }).__HERMES_UI_SURFACE__ = 'webapp'
+    ;(window as SurfaceWindow).__HERMES_UI_SURFACE__ = 'webapp'
   }
 
   vi.resetModules()
@@ -38,6 +39,12 @@ async function loadHost(webapp: boolean) {
       import('@/store/profile-rail-prefs')
     ])
 
+  return { $layoutTree, ChatSidebar, group, prefs, SidebarProvider, useStatusbarItems }
+}
+
+type HostModules = Awaited<ReturnType<typeof importHost>>
+
+function renderDoors({ $layoutTree, ChatSidebar, group, SidebarProvider, useStatusbarItems }: HostModules) {
   // The sessions pane is on screen: both doors live with it.
   $layoutTree.set(group(['sessions'], { active: 'sessions', id: 'sessions-group' }))
 
@@ -88,19 +95,32 @@ async function loadHost(webapp: boolean) {
     rail: sidebar.container.querySelector('[data-slot="profile-rail"]') !== null
   })
 
-  return { doors, prefs }
+  return doors
 }
 
-it.each([
+describe.each([
   { host: 'Webapp', webapp: true, dropdown: true },
   { host: 'native Desktop', webapp: false, dropdown: false }
-])('$host keeps exactly one profile door, the Webapp as a dropdown', async ({ dropdown, webapp }) => {
-  const { doors, prefs } = await loadHost(webapp)
+])('$host', ({ dropdown, webapp }) => {
+  let host: HostModules
 
-  // The rail stays at the sidebar foot whether or not the statusbar is shown.
-  expect(doors()).toEqual({ dropdown, picker: false, rail: true })
+  beforeAll(async () => {
+    host = await importHost(webapp)
+  })
 
-  // Hiding the rail hands the door to the statusbar picker on either host.
-  act(() => prefs.toggleProfileRailVisible())
-  expect(doors()).toEqual({ dropdown: false, picker: true, rail: false })
+  afterAll(() => {
+    delete (window as SurfaceWindow).__HERMES_UI_SURFACE__
+    vi.resetModules()
+  })
+
+  it('keeps exactly one profile door, the Webapp as a dropdown', () => {
+    const doors = renderDoors(host)
+
+    // The rail stays at the sidebar foot whether or not the statusbar is shown.
+    expect(doors()).toEqual({ dropdown, picker: false, rail: true })
+
+    // Hiding the rail hands the door to the statusbar picker on either host.
+    act(() => host.prefs.toggleProfileRailVisible())
+    expect(doors()).toEqual({ dropdown: false, picker: true, rail: false })
+  })
 })

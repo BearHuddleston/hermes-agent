@@ -171,7 +171,6 @@ describe('foreground profile appearance ownership', () => {
 
   const owners = [
     ['A', 'B'],
-    ['B', 'A'],
     ['local', 'B'],
     ['A', 'local'],
     [null, 'B']

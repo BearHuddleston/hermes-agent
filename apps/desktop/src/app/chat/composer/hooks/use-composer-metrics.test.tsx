@@ -4,6 +4,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { COMPOSER_HEIGHT_VAR, COMPOSER_SURFACE_HEIGHT_VAR } from '@/app/chat/surface-vars'
 
+import { COMPOSER_MINIMAL_PX } from '../composer-utils'
+
 import { useComposerMetrics } from './use-composer-metrics'
 
 vi.mock('@assistant-ui/react', () => ({
@@ -115,10 +117,25 @@ describe('useComposerMetrics — published clearance survives an effect replay',
   })
 
   it('collapses extra controls earlier when touch targets consume more width', () => {
-    vi.spyOn(window, 'getComputedStyle').mockReturnValue({ getPropertyValue: () => '44px' } as unknown as CSSStyleDeclaration)
-    const { getByTestId } = render(<Harness dockHeight={200} surfaceHeight={120} width={220} />)
-    expect(JSON.parse(getByTestId('fit').textContent!)).toMatchObject({ minimal: true, foldVoice: true })
-    vi.restoreAllMocks()
+    const minimalAt = (controlPx: number) => {
+      const style = vi.spyOn(window, 'getComputedStyle').mockReturnValue({
+        getPropertyValue: (name: string) => (name === '--composer-control-size' ? `${controlPx}px` : '')
+      } as unknown as CSSStyleDeclaration)
+
+      // Just past the point where desktop-size controls still fit.
+      const { getByTestId, unmount } = render(
+        <Harness dockHeight={200} surfaceHeight={120} width={COMPOSER_MINIMAL_PX + 1} />
+      )
+
+      const { minimal } = JSON.parse(getByTestId('fit').textContent!) as { minimal: boolean }
+      unmount()
+      style.mockRestore()
+
+      return minimal
+    }
+
+    expect(minimalAt(24)).toBe(false)
+    expect(minimalAt(44)).toBe(true)
   })
 
   it('republishes the dock height after StrictMode replays the cleanup', () => {

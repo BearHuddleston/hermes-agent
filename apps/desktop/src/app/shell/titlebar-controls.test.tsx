@@ -265,13 +265,17 @@ describe('titlebar app-action cluster', () => {
     expect(within(right).queryByLabelText('Open settings')).toBeNull()
   })
 
-  it.each(['left', 'right'] as const)('keeps HUD hidden in the browser with app actions on the %s', side => {
+  it('keeps HUD hidden in the browser on either app-action side', () => {
     vi.stubGlobal('hermesDesktop', { ...window.hermesDesktop, hud: undefined })
-    setTitlebarAppActionsSide(side)
     renderControls('/')
 
     expect(screen.queryByLabelText('HUD mode')).toBeNull()
     expect(screen.getByLabelText('Open settings')).toBeTruthy()
+
+    // Each side assembles its own cluster, so the move must keep the filter.
+    act(() => setTitlebarAppActionsSide('left'))
+    expect(screen.queryByLabelText('HUD mode')).toBeNull()
+    expect(within(screen.getByLabelText('Window controls')).getByLabelText('Open settings')).toBeTruthy()
     expect(screen.getByLabelText('Layout editor')).toBeTruthy()
   })
 })

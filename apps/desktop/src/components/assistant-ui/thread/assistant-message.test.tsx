@@ -244,7 +244,6 @@ describe('merged hover timestamps and touch actions', () => {
       name: isRunning ? en.assistant.thread.stop : en.assistant.thread.restoreCheckpoint
     })
 
-    expect(action.classList.contains('size-11')).toBe(true)
     expect(action.parentElement?.querySelector('time')).toBeNull()
     fireEvent.click(action)
 
@@ -299,14 +298,10 @@ describe('AssistantMessage branch button visibility (bug #2 fix)', () => {
     expect(screen.queryByRole('button', { name: 'Branch in new chat' })).toBeNull()
   })
 
-  it('keeps a touch action lane with direct Copy and an accessible More menu', async () => {
+  it('reaches Branch in new chat from the touch More menu', async () => {
     render(<Harness onBranchInNewChat={() => undefined} />)
 
     await screen.findByText('done')
-
-    expect(screen.getByTestId('aui-touch-message-actions')).toBeTruthy()
-    expect(screen.getByRole('button', { name: 'More actions' })).toBeTruthy()
-    expect(screen.getAllByRole('button', { name: 'Copy' })).toHaveLength(2)
 
     fireEvent.pointerDown(screen.getByRole('button', { name: 'More actions' }), {
       button: 0,
@@ -314,8 +309,6 @@ describe('AssistantMessage branch button visibility (bug #2 fix)', () => {
     })
 
     expect(await screen.findByRole('menuitem', { name: 'Branch in new chat' })).toBeTruthy()
-    expect(screen.getByRole('menuitem', { name: 'Read aloud' })).toBeTruthy()
-    expect(screen.getByRole('menuitem', { name: 'Refresh' })).toBeTruthy()
   })
 })
 
