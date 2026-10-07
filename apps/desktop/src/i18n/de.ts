@@ -2,6 +2,7 @@ import { defineFieldCopy } from '@/app/settings/field-copy'
 
 import { deAuxTasks } from './de_aux_tasks'
 import { deBoot } from './de_boot'
+import { deGatewayHost } from './de_gateway_host'
 import { deLocalModels } from './de_local_models'
 import { deModelMenu } from './de_model_menu'
 import { deNotices } from './de_notices'
@@ -1754,8 +1755,7 @@ export const deOverrides = {
     },
     gateway: {
       loading: 'Gateway-Einstellungen werden geladen…',
-      unavailableTitle: 'Gateway-Einstellungen nicht verfügbar',
-      unavailableDesc: 'Die Desktop-IPC-Brücke stellt keine Gateway-Einstellungen bereit.',
+      ...deGatewayHost,
       title: 'Gateway-Verbindung',
       envOverride: 'ENV-Überschreibung',
       intro:

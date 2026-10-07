@@ -417,6 +417,52 @@ describe('GatewaySettings', () => {
     })
   })
 
+  // The Webapp is served by one Hermes host and can only reach that host, so no
+  // mode switch, Cloud sign-in or saved connection can act there. What applies
+  // is which host this is and, behind the sign-in gate, signing out of it.
+  describe('in the Webapp', () => {
+    const installWebapp = (credential: { __HERMES_AUTH_REQUIRED__: true } | { __HERMES_SESSION_TOKEN__: string }) => {
+      Reflect.deleteProperty(window, 'hermesDesktop')
+      Object.assign(window, credential)
+      const fetchMock = vi.fn().mockResolvedValue(new Response('', { status: 200 }))
+      vi.stubGlobal('fetch', fetchMock)
+      expect(installBrowserDesktopBridge()).toBe(true)
+
+      return fetchMock
+    }
+
+    afterEach(() => Reflect.deleteProperty(window, '__HERMES_SESSION_TOKEN__'))
+
+    it.each([false, true])('offers the serving host and its sign-out only (embedded: %s)', async embedded => {
+      const fetchMock = installWebapp({ __HERMES_AUTH_REQUIRED__: true })
+      const toLogin = vi.fn((event: Event) => event.preventDefault())
+      window.addEventListener('hermes:browser-reauth-required', toLogin, { once: true })
+
+      render(<GatewaySettings embedded={embedded} />)
+
+      const signOut = await screen.findByRole('button', { name: 'Sign out' })
+      expect(screen.getByText(window.location.origin)).toBeTruthy()
+      expect(screen.getAllByRole('button')).toEqual([signOut])
+      expect(fetchMock).not.toHaveBeenCalled()
+
+      fireEvent.click(signOut)
+
+      await waitFor(() => expect(toLogin).toHaveBeenCalledTimes(1))
+      const [requestUrl, init] = fetchMock.mock.calls[0] as [URL, RequestInit]
+      expect(requestUrl.pathname).toBe('/auth/logout')
+      expect(init.method).toBe('POST')
+    })
+
+    it('has nothing to sign out of on a token-launched host', async () => {
+      installWebapp({ __HERMES_SESSION_TOKEN__: 'served-token' })
+
+      render(<GatewaySettings />)
+
+      expect(await screen.findByText(window.location.origin)).toBeTruthy()
+      expect(screen.queryAllByRole('button')).toEqual([])
+    })
+  })
+
   it('loads the machine-level connection config (no profile scoping)', async () => {
     render(<GatewaySettings />)
     expect(await screen.findByText('Local gateway')).toBeTruthy()
@@ -478,45 +524,6 @@ describe('GatewaySettings', () => {
         cloud: { discover: vi.fn().mockResolvedValue({ agents: [] }), ...cloud }
       })
     }
-
-    it.each(['saved', 'discovered'] as const)(
-      'does not sign out the browser host while re-authenticating a %s Cloud row without a native registry',
-      async entryPoint => {
-        Reflect.deleteProperty(window, 'hermesDesktop')
-        Object.assign(window, { __HERMES_AUTH_REQUIRED__: true })
-        const fetchMock = vi.fn().mockRejectedValue(new Error('Unexpected browser request'))
-        vi.stubGlobal('fetch', fetchMock)
-        expect(installBrowserDesktopBridge()).toBe(true)
-        const desktop = window.hermesDesktop!
-        const logout = vi.spyOn(desktop, 'oauthLogoutConnectionConfig')
-        const login = vi.spyOn(desktop.cloud, 'login')
-        const agentSignIn = vi.spyOn(desktop.cloud, 'agentSignIn')
-        vi.spyOn(desktop, 'getConnectionConfig').mockResolvedValue({
-          ...localConnection,
-          mode: 'cloud',
-          remoteUrl: saved.url
-        } as Awaited<ReturnType<typeof desktop.getConnectionConfig>>)
-        vi.spyOn(desktop.cloud, 'status').mockResolvedValue({ portalBaseUrl: '', signedIn: true })
-        vi.spyOn(desktop.cloud, 'discover').mockResolvedValue({
-          agents: [{ id: 'discovered-a', name: 'Research', dashboardUrl: saved.url }]
-        } as Awaited<ReturnType<typeof desktop.cloud.discover>>)
-        registry.value = { connections: [saved] }
-        selectConnection.mockRejectedValueOnce(reauthError)
-
-        render(<GatewaySettings embedded />)
-        await waitFor(() => expect(screen.getAllByRole('button', { name: 'Use gateway' })).toHaveLength(2))
-        const buttons = screen.getAllByRole('button', { name: 'Use gateway' })
-        fireEvent.click(buttons[entryPoint === 'saved' ? 0 : 1])
-
-        await waitFor(() => expect(notifyError).toHaveBeenCalled())
-        expect(selectConnection).toHaveBeenCalledExactlyOnceWith(saved.id)
-        expect(logout).not.toHaveBeenCalled()
-        expect(login).not.toHaveBeenCalled()
-        expect(agentSignIn).not.toHaveBeenCalled()
-        expect(fetchMock).not.toHaveBeenCalled()
-        expect(notifyError).toHaveBeenCalledWith(reauthError, expect.any(String))
-      }
-    )
 
     it.each(['saved', 'discovered'] as const)(
       're-signs a lapsed %s gateway session via the portal cascade and retries the switch',

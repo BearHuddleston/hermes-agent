@@ -3222,6 +3222,8 @@
     "settings.gateway.tokenTitle",
     "settings.gateway.unavailableDesc",
     "settings.gateway.unavailableTitle",
+    "settings.gateway.webappHostDesc",
+    "settings.gateway.webappHostTitle",
     "settings.hudModifier.description",
     "settings.hudModifier.missingHelper",
     "settings.hudModifier.permission",

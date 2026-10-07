@@ -12,6 +12,7 @@ import type { AppTourTranslations, HandoffTourTranslations } from './types_app_t
 import type { AuxTaskCopyMap } from './types_aux_tasks'
 import type { BootTranslations } from './types_boot'
 import type { CatalogInstallTranslations } from './types_catalog_install'
+import type { GatewayHostTranslations } from './types_gateway_host'
 import type { ModelMenuTranslations } from './types_model_menu'
 import type { NoticeTranslations } from './types_notices'
 import type { SharedMetricsTranslations } from './types_shared_metrics'
@@ -1177,10 +1178,8 @@ export interface Translations extends NoticeTranslations {
       scopesRestored: (profiles: string) => string
       scopeNotRestored: (profile: string, error: string) => string
     }
-    gateway: {
+    gateway: GatewayHostTranslations & {
       loading: string
-      unavailableTitle: string
-      unavailableDesc: string
       title: string
       envOverride: string
       intro: string

@@ -3,6 +3,7 @@ import { defineFieldCopy } from '@/app/settings/field-copy'
 import { defineLocale } from './define-locale'
 import { introJa } from './intro-ja'
 import { jaAuxTasks } from './ja_aux_tasks'
+import { jaGatewayHost } from './ja_gateway_host'
 import { jaLocalModels } from './ja_local_models'
 import { jaModelMenu } from './ja_model_menu'
 import { jaNotices } from './ja_notices'
@@ -1084,8 +1085,7 @@ export const ja = defineLocale({
     },
     gateway: {
       loading: 'ゲートウェイ設定を読み込み中...',
-      unavailableTitle: 'ゲートウェイ設定は利用できません',
-      unavailableDesc: 'デスクトップ IPC ブリッジはゲートウェイ設定を公開していません。',
+      ...jaGatewayHost,
       title: 'ゲートウェイ接続',
       envOverride: 'env オーバーライド',
       intro:

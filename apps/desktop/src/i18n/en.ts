@@ -4,6 +4,7 @@ import { enAppTour, enHandoffTour } from './en_app_tour'
 import { enAuxTasks } from './en_aux_tasks'
 import { enBoot } from './en_boot'
 import { enCatalogInstall } from './en_catalog_install'
+import { enGatewayHost } from './en_gateway_host'
 import { enLocalModels } from './en_local_models'
 import { enModelMenu } from './en_model_menu'
 import { enNotices } from './en_notices'
@@ -1412,9 +1413,7 @@ export const en: Translations = {
     },
     gateway: {
       loading: 'Loading gateway settings...',
-      unavailableTitle: 'Gateway settings unavailable',
-      unavailableDesc:
-        'Connection settings can only be changed from the Hermes Desktop app on the computer running it.',
+      ...enGatewayHost,
       title: 'Gateway Connection',
       envOverride: 'env override',
       intro:

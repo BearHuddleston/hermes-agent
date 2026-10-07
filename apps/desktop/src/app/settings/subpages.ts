@@ -101,7 +101,7 @@ export function settingsSubpages(view: SettingsView): readonly SettingsSubpage[]
     return CONFIG_SUBPAGES[view.slice('config:'.length)] ?? []
   }
 
-  return OTHER_SUBPAGES[view] ?? []
+  return (OTHER_SUBPAGES[view] ?? []).filter(page => page.available?.() ?? true)
 }
 
 /** Shared by search serialization and saved links that predate subpages. */

@@ -2,6 +2,7 @@ import { defineFieldCopy } from '@/app/settings/field-copy'
 
 import { defineLocale } from './define-locale'
 import { ruAuxTasks } from './ru_aux_tasks'
+import { ruGatewayHost } from './ru_gateway_host'
 import { ruModelMenu } from './ru_model_menu'
 import { ruNotices } from './ru_notices'
 import { ruPluginSettings } from './ru_plugins'
@@ -1170,8 +1171,7 @@ export const ru = defineLocale({
     },
     gateway: {
       loading: 'Загрузка настроек шлюза…',
-      unavailableTitle: 'Настройки шлюза недоступны',
-      unavailableDesc: 'IPC-мост приложения не предоставляет настройки шлюза.',
+      ...ruGatewayHost,
       title: 'Подключение шлюза',
       envOverride: 'переопределение переменными окружения',
       intro:

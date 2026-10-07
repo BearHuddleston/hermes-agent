@@ -3,6 +3,7 @@ import { defineFieldCopy } from '@/app/settings/field-copy'
 import { defineLocale, type TranslationOverrides } from './define-locale'
 import { esAuxTasks } from './es_aux_tasks'
 import { esBoot } from './es_boot'
+import { esGatewayHost } from './es_gateway_host'
 import { esLocalModels } from './es_local_models'
 import { esModelMenu } from './es_model_menu'
 import { esNotices } from './es_notices'
@@ -1752,9 +1753,7 @@ export const esOverrides = {
     },
     gateway: {
       loading: 'Cargando ajustes del gateway...',
-      unavailableTitle: 'Ajustes del gateway no disponibles',
-      unavailableDesc:
-        'Los ajustes de conexión solo se pueden cambiar desde la app Hermes Desktop en el equipo que la ejecuta.',
+      ...esGatewayHost,
       title: 'Conexión del gateway',
       envOverride: 'anulación de entorno',
       intro:

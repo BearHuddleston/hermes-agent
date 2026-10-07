@@ -3,6 +3,7 @@ import { defineFieldCopy } from '@/app/settings/field-copy'
 import { defineLocale, type TranslationOverrides } from './define-locale'
 import { frAuxTasks } from './fr_aux_tasks'
 import { frBoot } from './fr_boot'
+import { frGatewayHost } from './fr_gateway_host'
 import { frLocalModels } from './fr_local_models'
 import { frModelMenu } from './fr_model_menu'
 import { frNotices } from './fr_notices'
@@ -1757,8 +1758,7 @@ export const frOverrides = {
     },
     gateway: {
       loading: 'Chargement des paramètres du gateway...',
-      unavailableTitle: 'Paramètres du gateway indisponibles',
-      unavailableDesc: "Le pont IPC du desktop n'expose pas les paramètres du gateway.",
+      ...frGatewayHost,
       title: 'Connexion au gateway',
       envOverride: "remplacement par variable d'environnement",
       intro:

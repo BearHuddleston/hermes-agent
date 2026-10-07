@@ -3,6 +3,7 @@ import { defineFieldCopy } from '@/app/settings/field-copy'
 import { defineLocale } from './define-locale'
 import { introZh } from './intro-zh'
 import { zhAuxTasks } from './zh_aux_tasks'
+import { zhGatewayHost } from './zh_gateway_host'
 import { zhLocalModels } from './zh_local_models'
 import { zhModelMenu } from './zh_model_menu'
 import { zhNotices } from './zh_notices'
@@ -1455,8 +1456,7 @@ export const zh = defineLocale({
     },
     gateway: {
       loading: '正在加载网关设置...',
-      unavailableTitle: '网关设置不可用',
-      unavailableDesc: '桌面 IPC 桥未暴露网关设置。',
+      ...zhGatewayHost,
       title: '网关连接',
       envOverride: '环境变量覆盖',
       intro:
