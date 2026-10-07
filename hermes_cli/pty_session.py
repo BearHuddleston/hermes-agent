@@ -19,8 +19,8 @@ WS_CLOSE_SUPERSEDED = 4409
 # the chat tab reads 1011 as a failed start and offers a new session instead.
 WS_CLOSE_VIEWER_STALLED = 1001
 WS_CLOSE_VIEWER_STALLED_REASON = "Terminal viewer stopped reading; reconnect"
-# How long a live-output frame may wait on the viewer before it counts as stalled.
-_LIVE_OUTPUT_SEND_TIMEOUT_SECONDS = 5.0
+# How long one frame (live output or replay) may wait on the viewer before it counts as stalled.
+_VIEWER_SEND_TIMEOUT_SECONDS = 5.0
 TUI_FORCE_REDRAW = b"\x0c"
 
 
@@ -123,7 +123,7 @@ class PtySession:
                 if ws is not None:
                     async with output_lock:
                         if self._ws is ws:
-                            await asyncio.wait_for(ws.send_bytes(chunk), timeout=_LIVE_OUTPUT_SEND_TIMEOUT_SECONDS)
+                            await asyncio.wait_for(ws.send_bytes(chunk), timeout=_VIEWER_SEND_TIMEOUT_SECONDS)
             except Exception:
                 # The viewer is gone; nothing else observes this failure (the handler's finally
                 # only runs once ws.receive() sees the disconnect). detach() is a no-op when a
@@ -215,14 +215,14 @@ class PtySession:
                 if self._ws is not ws:
                     return False
                 if initial_text is not None:
-                    await asyncio.wait_for(ws.send_text(initial_text), timeout=5.0)
+                    await asyncio.wait_for(ws.send_text(initial_text), timeout=_VIEWER_SEND_TIMEOUT_SECONDS)
                 if self._ws is not ws:
                     return False
                 # Metadata-bearing host clients treat exactly the next binary
                 # frame as replay. Send an empty snapshot too, so the first live
                 # frame never loses terminal-query replies on an empty history.
                 if snap or initial_text is not None:
-                    await asyncio.wait_for(ws.send_bytes(snap), timeout=5.0)
+                    await asyncio.wait_for(ws.send_bytes(snap), timeout=_VIEWER_SEND_TIMEOUT_SECONDS)
         except asyncio.CancelledError:
             self.detach(ws)
             raise

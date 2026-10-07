@@ -41,7 +41,7 @@ export function hasTextSelection(): boolean {
 /** Keep the platform's long-press menu on touch surfaces. Desktop right-click
  * remains the intentional reaction-picker gesture, while iOS/Android own
  * selection handles, Copy, and text actions after a long press. */
-export function preservesNativeTouchContextMenu(): boolean {
+function preservesNativeTouchContextMenu(): boolean {
   return Boolean(
     typeof window !== 'undefined' &&
     typeof window.matchMedia === 'function' &&

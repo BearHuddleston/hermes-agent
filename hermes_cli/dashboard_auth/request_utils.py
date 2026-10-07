@@ -52,18 +52,6 @@ def _http_origin(value: str) -> tuple[str, str, int] | None:
         return None
 
 
-def _no_page_sent_it(origins: list[str], fetch_sites: list[str]) -> bool:
-    """No Origin, and Fetch Metadata either ``none`` or absent: a native client, not a page.
-
-    Native Desktop's Electron ``net.request`` sends the session cookie but never an
-    Origin, with ``Sec-Fetch-Site: none`` to https and loopback targets and no Fetch
-    Metadata at all to a plain-http remote. A page cannot produce either shape for a
-    non-GET: browsers attach Origin to every page-initiated non-GET (``null`` at worst)
-    and keep ``none`` for user-typed navigations, which are GETs.
-    """
-    return not origins and fetch_sites in ([], ["none"])
-
-
 def cookie_origin_is_allowed(request: Request) -> bool:
     """Cookie writes must come from the dashboard's own origin, not just its site.
 
@@ -90,9 +78,13 @@ def cookie_origin_is_allowed(request: Request) -> bool:
         return False
     origins = request.headers.getlist("origin")
     fetch_sites = request.headers.getlist("sec-fetch-site")
+    if not origins:
+        # Electron's net.request sends Sec-Fetch-Site: none to https and loopback, and no Fetch
+        # Metadata to plain http. Pages attach Origin to every non-GET and keep none for typed GETs.
+        return fetch_sites in ([], ["none"])
     origin = _http_origin(origins[0]) if len(origins) == 1 else None
     if origin is None:
-        return _no_page_sent_it(origins, fetch_sites)
+        return False
     if fetch_sites:
         return fetch_sites == ["same-origin"]
     target = urlsplit(resolve_public_url() or str(request.url))

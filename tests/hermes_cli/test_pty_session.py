@@ -147,13 +147,6 @@ async def test_drain_send_failure_detaches_current_socket_but_not_a_replacement(
     await s.close()
 
 
-class StalledWS(FakeWS):
-    """A viewer that stopped reading: its sends never complete."""
-
-    async def send_bytes(self, data):
-        await asyncio.Event().wait()
-
-
 @pytest.mark.asyncio
 async def test_viewer_that_stops_reading_live_output_is_told_to_reconnect(monkeypatch):
     """The send limit drops a stalled viewer, not its session. 1011 makes the
@@ -162,11 +155,11 @@ async def test_viewer_that_stops_reading_live_output_is_told_to_reconnect(monkey
     from hermes_cli import pty_session
     from hermes_cli.pty_session import PtySessionRegistry
 
-    monkeypatch.setattr(pty_session, "_LIVE_OUTPUT_SEND_TIMEOUT_SECONDS", 0.1)
+    monkeypatch.setattr(pty_session, "_VIEWER_SEND_TIMEOUT_SECONDS", 0.1)
     registry = PtySessionRegistry(ttl=60.0, max_sessions=2, buffer_cap=1024, read_timeout=0.01)
     bridge = FakeBridge([])
     session, _ = await registry.attach_or_spawn("k", spawn=lambda: bridge)
-    stalled = StalledWS()
+    stalled = FailingWS(hold=True)  # stopped reading: its send never completes
     assert await session.attach(stalled)  # empty history: no replay frame to send
     bridge._chunks.append(b"live output")
     async with asyncio.timeout(15):

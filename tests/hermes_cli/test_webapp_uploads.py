@@ -325,7 +325,8 @@ def test_browser_file_upload_never_recreates_profile_deleted_after_resolution(
     assert not profile_home.exists()
 
 
-def _assert_browser_file_upload_cannot_publish_into_recreated_profile(
+@pytest.mark.platforms("linux", "windows")
+def test_browser_file_upload_cannot_publish_into_recreated_profile(
     tmp_path: Path, monkeypatch
 ):
     hermes_home = tmp_path / "hermes-home"
@@ -392,24 +393,6 @@ def _assert_browser_file_upload_cannot_publish_into_recreated_profile(
     assert current_path.read_bytes() == b"generation-b"
 
 
-def test_browser_file_upload_cannot_publish_into_recreated_profile(
-    tmp_path: Path, monkeypatch
-):
-    _assert_browser_file_upload_cannot_publish_into_recreated_profile(
-        tmp_path,
-        monkeypatch,
-    )
-
-
-@pytest.mark.platforms("windows")
-def test_windows_browser_file_upload_cannot_publish_into_recreated_profile(
-    tmp_path: Path, monkeypatch
-):
-    _assert_browser_file_upload_cannot_publish_into_recreated_profile(
-        tmp_path,
-        monkeypatch,
-    )
-
 
 @pytest.mark.parametrize(
     ("write_error", "expected_status"),
@@ -450,7 +433,8 @@ def test_browser_image_upload_cleanup_failure_does_not_mask_write_status(
         assert "image write failed" in response.json()["detail"]
 
 
-def _assert_browser_image_upload_cannot_publish_into_recreated_profile(
+@pytest.mark.platforms("linux", "windows")
+def test_browser_image_upload_cannot_publish_into_recreated_profile(
     tmp_path: Path, monkeypatch
 ):
     hermes_home = tmp_path / "hermes-home"
@@ -523,24 +507,6 @@ def _assert_browser_image_upload_cannot_publish_into_recreated_profile(
     assert current_path.parent == recreated_home / "images"
     assert current_path.read_bytes() == b"\x89PNG\r\n\x1a\n"
 
-
-def test_browser_image_upload_cannot_publish_into_recreated_profile(
-    tmp_path: Path, monkeypatch
-):
-    _assert_browser_image_upload_cannot_publish_into_recreated_profile(
-        tmp_path,
-        monkeypatch,
-    )
-
-
-@pytest.mark.platforms("windows")
-def test_windows_browser_image_upload_cannot_publish_into_recreated_profile(
-    tmp_path: Path, monkeypatch
-):
-    _assert_browser_image_upload_cannot_publish_into_recreated_profile(
-        tmp_path,
-        monkeypatch,
-    )
 
 
 def test_browser_image_upload_never_creates_a_missing_profile_home(

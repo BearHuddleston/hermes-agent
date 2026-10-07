@@ -494,20 +494,13 @@ def rollback_profile_retirement(
     allow_in_process_profile_resources(profile_dir, profile_incarnation)
 
 
-def begin_profile_retirement(
-    profile_dir: Path | str,
-    profile_incarnation: str | None,
-    *,
-    rollback_on_failure: bool = True,
-) -> int:
-    """Tombstone a generation and retire every process-local owner."""
+def begin_profile_retirement(profile_dir: Path | str, profile_incarnation: str | None) -> int:
+    """Tombstone a generation and retire every process-local owner.
+
+    A failure leaves the tombstone: the caller decides whether this attempt rolls it back.
+    """
     mark_profile_deleting(profile_dir, profile_incarnation)
-    try:
-        return retire_in_process_profile_resources(profile_dir, profile_incarnation)
-    except BaseException:
-        if rollback_on_failure:
-            rollback_profile_retirement(profile_dir, profile_incarnation)
-        raise
+    return retire_in_process_profile_resources(profile_dir, profile_incarnation)
 
 
 def verify_profile_resources_released(
@@ -552,7 +545,7 @@ def move_profile_generation(
     try:
         old_dir.rename(new_dir)
     except BaseException:
-        rollback_profile_retirement(old_dir, profile_incarnation)
+        # The old generation's tombstone is the caller's to roll back; only this one is ours.
         if not new_had_tombstone:
             clear_profile_deletion_marker(new_dir)
         raise

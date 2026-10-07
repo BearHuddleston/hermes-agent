@@ -1994,11 +1994,7 @@ def _delete_profile_confirmed(
     # Publish the tombstone BEFORE closing in-process sessions: finalization
     # may attempt one last DB write, and stale workers in this or another
     # process must fail closed rather than recreate the profile during rmtree.
-    retired = begin_profile_retirement(
-        profile_dir,
-        profile_incarnation,
-        rollback_on_failure=False,
-    )
+    retired = begin_profile_retirement(profile_dir, profile_incarnation)
     if retired:
         print(f"✓ Retired {retired} in-process profile resource(s)")
 
@@ -2679,6 +2675,7 @@ def rename_profile(old_name: str, new_name: str) -> Path:
                 profile_incarnation,
                 subject=f"Profile '{old_canon}'",
                 retry_action="rename",
+                rollback_on_failure=False,
             )
             move_profile_generation(
                 old_dir,
@@ -2687,9 +2684,9 @@ def rename_profile(old_name: str, new_name: str) -> Path:
                 lambda: _finish_profile_rename(old_canon, new_canon, old_dir, new_dir),
             )
         except BaseException:
-            # Anything ending the attempt before the home moved (a refusal, a failed step, a Ctrl-C
-            # in the holder census waits) must lift this attempt's tombstone: left behind, it hides
-            # the intact profile from list/show/-p and refuses every retry but delete.
+            # The one rollback owner for this attempt: anything ending it before the home moved (a
+            # refusal, a failed step, a Ctrl-C in the holder census waits) lifts its tombstone, which
+            # left behind hides the intact profile from list/show/-p and refuses every retry but delete.
             if old_dir.is_dir():
                 rollback_profile_retirement(old_dir, profile_incarnation)
             raise

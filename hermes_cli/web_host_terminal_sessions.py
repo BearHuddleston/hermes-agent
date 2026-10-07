@@ -21,7 +21,7 @@ from hermes_cli.profile_incarnation import (
 )
 from hermes_cli.pty_session import (
     WS_CLOSE_VIEWER_STALLED, WS_CLOSE_VIEWER_STALLED_REASON, PtySession, PtySessionRegistry,
-    RegistryFull, run_reaper,
+    RegistryFull, _close_ws, run_reaper,
 )
 from hermes_cli.web_host_terminal import META_PREFIX
 from hermes_constants import get_hermes_home, named_profile_home_is_unavailable
@@ -372,8 +372,7 @@ async def host_terminal(ws: WebSocket) -> None:
             token, owner, session, registry, reconnected=ws.query_params.get("attach") is not None)
         if not await session.attach(ws, initial_text=initial_text):
             if session._ws is None:
-                with suppress(Exception):
-                    await ws.close(code=WS_CLOSE_VIEWER_STALLED, reason=WS_CLOSE_VIEWER_STALLED_REASON)
+                await _close_ws(ws, WS_CLOSE_VIEWER_STALLED, WS_CLOSE_VIEWER_STALLED_REASON)
             return
         await _pump_input(ws, registry, token, session, owner)
     except TerminalDenied:

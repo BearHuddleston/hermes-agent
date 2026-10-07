@@ -1175,7 +1175,6 @@ const AssistantActionBar: FC<MessageActionProps & { durationS?: number }> = ({
         </div>
         <div
           className="aui-message-actions-touch items-center justify-end gap-1"
-          data-testid="aui-touch-message-actions"
         >
           <CopyButton
             appearance="icon"
@@ -1224,7 +1223,6 @@ const AssistantActionBar: FC<MessageActionProps & { durationS?: number }> = ({
           >
             <Button
               aria-label={copy.moreActions}
-              data-testid="aui-touch-more-actions"
               size="icon"
               type="button"
               variant="ghost"

@@ -105,9 +105,10 @@ def terminal_lc_ctype(env: Mapping[str, str], platform: str) -> Optional[str]:
     and LC_CTYPE outranks LANG, so forcing it on Linux breaks even a valid LANG.
     There a set LANG is left in charge (copying it would pin a value a login rc
     may still change) and only a missing one falls back to glibc's C.UTF-8.
-    Windows shells take their code page from the console, not LC_CTYPE.
+    Windows shells take their code page from the console, not LC_CTYPE. Desktop's
+    terminalLcCtype (electron/terminal-ipc.ts) shares the darwin and C.UTF-8 choices
+    but copies LANG into LC_CTYPE and does not defer to LC_ALL.
     """
-    # Keep in step with Desktop's terminalLcCtype in apps/desktop/electron/terminal-ipc.ts.
     if env.get("LC_ALL") or env.get("LC_CTYPE") or platform == "win32":
         return None
     if platform == "darwin":

@@ -63,6 +63,34 @@ function history(comments: string[]): SessionMessage[] {
   ]
 }
 
+// The gateway's live turn: per comment a delta, an interim when `interim(index)` and one
+// read_file tool round, then the reply.
+async function streamLiveTurn(
+  handle: (event: GatewayEvent) => void,
+  comments: readonly string[],
+  reply: string,
+  interim: (index: number) => boolean = () => true
+) {
+  const send = (type: GatewayEvent['type'], payload: GatewayEvent['payload'] = {}) =>
+    act(() => handle({ session_id: runtimeId, type, payload }))
+
+  send('message.start')
+  comments.forEach((text, index) => {
+    send('message.delta', { text: `${index ? '\n\n' : ''}${text}` })
+
+    if (interim(index)) {
+      send('message.interim', { text, already_streamed: true })
+    }
+
+    send('tool.start', { name: 'read_file', tool_id: `call-${index}`, args: {} })
+    send('tool.complete', { name: 'read_file', tool_id: `call-${index}`, result: 'fixture' })
+  })
+  send('message.delta', { text: `\n\n${reply}` })
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(150)
+  })
+}
+
 function mount(snapshot: SessionResumeResult) {
   const requestGateway = vi.fn().mockResolvedValue(snapshot)
 
@@ -198,24 +226,12 @@ it.each([
     }
 
     if (cacheKind === 'warm') {
-      const send = (type: GatewayEvent['type'], payload: GatewayEvent['payload'] = {}) =>
-        act(() => result.current.stream.handleGatewayEvent({ session_id: runtimeId, type, payload }))
-
-      send('message.start')
-      comments.forEach((text, index) => {
-        send('message.delta', { text: `${index ? '\n\n' : ''}${text}` })
-
-        if (!index || !repeated) {
-          send('message.interim', { text, already_streamed: true })
-        }
-
-        send('tool.start', { name: 'read_file', tool_id: `call-${index}`, args: {} })
-        send('tool.complete', { name: 'read_file', tool_id: `call-${index}`, result: 'fixture' })
-      })
-      send('message.delta', { text: `\n\n${race === 'snapshot-ahead' ? 'The res' : tail}` })
-      await act(async () => {
-        await vi.advanceTimersByTimeAsync(150)
-      })
+      await streamLiveTurn(
+        event => result.current.stream.handleGatewayEvent(event),
+        comments,
+        race === 'snapshot-ahead' ? 'The res' : tail,
+        index => !index || !repeated
+      )
     }
 
     const durable = history(comments)
@@ -458,20 +474,7 @@ it.each([
         )
       })
 
-      const send = (type: GatewayEvent['type'], payload: GatewayEvent['payload'] = {}) =>
-        act(() => result.current.stream.handleGatewayEvent({ session_id: runtimeId, type, payload }))
-
-      send('message.start')
-      comments.forEach((text, index) => {
-        send('message.delta', { text: `${index ? '\n\n' : ''}${text}` })
-        send('message.interim', { text, already_streamed: true })
-        send('tool.start', { name: 'read_file', tool_id: `call-${index}`, args: {} })
-        send('tool.complete', { name: 'read_file', tool_id: `call-${index}`, result: 'fixture' })
-      })
-      send('message.delta', { text: `\n\n${tail}` })
-      await act(async () => {
-        await vi.advanceTimersByTimeAsync(150)
-      })
+      await streamLiveTurn(event => result.current.stream.handleGatewayEvent(event), comments, tail)
     }
 
     for (let resume = 0; resume < 2; resume++) {
@@ -626,24 +629,7 @@ it.each([1, 2])('consumes %i durable runtime tool occurrences before recovering 
     await live.result.current.actions.resumeSession(storedId, true)
   })
 
-  const send = (type: GatewayEvent['type'], payload: GatewayEvent['payload'] = {}) =>
-    act(() => live.result.current.stream.handleGatewayEvent({ session_id: runtimeId, type, payload }))
-
-  send('message.start')
-  comments.forEach((text, index) => {
-    send('message.delta', { text: `${index ? '\n\n' : ''}${text}` })
-
-    if (!index) {
-      send('message.interim', { text, already_streamed: true })
-    }
-
-    send('tool.start', { name: 'read_file', tool_id: `call-${index}`, args: {} })
-    send('tool.complete', { name: 'read_file', tool_id: `call-${index}`, result: 'fixture' })
-  })
-  send('message.delta', { text: `\n\n${tail}` })
-  await act(async () => {
-    await vi.advanceTimersByTimeAsync(150)
-  })
+  await streamLiveTurn(event => live.result.current.stream.handleGatewayEvent(event), comments, tail, index => !index)
   persistInFlightTurnState(live.result.current.cache.sessionStateByRuntimeIdRef.current.get(runtimeId)!)
   await act(async () => {
     await vi.advanceTimersByTimeAsync(500)

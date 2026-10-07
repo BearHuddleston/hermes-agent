@@ -38,6 +38,8 @@ import type { SettingsView } from './types'
 export interface SettingsSubpage {
   id: string
   labelKey: string
+  /** Hidden when this returns false (e.g. a native-only task in the Webapp). */
+  available?: () => boolean
 }
 
 const SUBPAGE_ICONS: Record<string, IconComponent> = {
