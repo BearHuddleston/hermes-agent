@@ -3,8 +3,9 @@
  * Two-person smoke for a shared Webapp chat (presence + turn ownership).
  *
  * Starts, all on loopback and in a throwaway HOME:
- *  - a Nous Portal stand-in: authorization code + PKCE, RS256 JWTs, two test
- *    accounts, the claims plugins/dashboard_auth/nous verifies;
+ *  - a Nous Portal stand-in: authorization code + PKCE, RS256 JWTs, the claims
+ *    plugins/dashboard_auth/nous verifies; any name typed on its sign-in page is
+ *    an account, and the same name is always the same account;
  *  - a scripted OpenAI-compatible model ("clean" in the prompt -> one terminal
  *    call that needs approval);
  *  - `hermes webapp --skip-build` with the sign-in gate on and manual approvals.
@@ -65,7 +66,16 @@ const b64url = buffer => Buffer.from(buffer).toString('base64url')
 
 // ---- Nous Portal stand-in --------------------------------------------------
 
-const ACCOUNTS = { 'alice@example.test': 'usr_alice_smoke', 'bob@example.test': 'usr_bob_smoke' }
+// Any name typed on the sign-in page is an account, and a name always maps to the
+// same id (case and extra spaces ignored), as in the live harness's stand-in.
+const MAX_NAME = 40
+const cleanName = raw => String(raw ?? '').normalize('NFC').split(/\s+/).filter(Boolean).join(' ').slice(0, MAX_NAME).trim()
+const accountId = name =>
+  `usr_${crypto.createHash('sha256').update(`hermes-mock:${name.toLowerCase()}`).digest('hex').slice(0, 12)}`
+const slug = name => name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'person'
+const escapeHtml = text =>
+  String(text).replace(/[&<>"']/g, ch => ({ '"': '&quot;', '&': '&amp;', "'": '&#39;', '<': '&lt;', '>': '&gt;' })[ch])
+const AUTHORIZE_PARAMS = ['client_id', 'redirect_uri', 'state', 'code_challenge', 'code_challenge_method', 'scope']
 
 async function startPortal() {
   const { privateKey, publicKey } = crypto.generateKeyPairSync('rsa', { modulusLength: 2048 })
@@ -110,22 +120,39 @@ async function startPortal() {
       return send(200, { keys: [jwk] })
     }
 
-    if (url.pathname === '/oauth/authorize') {
+    if (url.pathname === '/oauth/authorize' || url.pathname === '/oauth/authorize/continue') {
       const q = Object.fromEntries(url.searchParams)
 
-      if (q.code_challenge_method !== 'S256' || !q.code_challenge) {
+      if (q.code_challenge_method !== 'S256' || !q.code_challenge || !q.redirect_uri || !q.client_id) {
         return send(400, { error: 'invalid_request' })
       }
 
-      const links = Object.entries(ACCOUNTS).map(([email, sub]) => {
+      const params = Object.fromEntries(AUTHORIZE_PARAMS.filter(k => k in q).map(k => [k, q[k]]))
+      const name = cleanName(q.name)
+
+      if (url.pathname === '/oauth/authorize/continue' && name) {
         const code = crypto.randomBytes(18).toString('base64url')
-        codes.set(code, { challenge: q.code_challenge, clientId: q.client_id, redirectUri: q.redirect_uri, sub })
-        const target = `${q.redirect_uri}?${new URLSearchParams({ code, state: q.state })}`
+        codes.set(code, { challenge: q.code_challenge, clientId: q.client_id, redirectUri: q.redirect_uri, sub: accountId(name) })
+        res.writeHead(302, { Location: `${q.redirect_uri}?${new URLSearchParams({ code, state: q.state ?? '' })}` })
 
-        return `<a data-account="${email}" href="${target.replaceAll('&', '&amp;')}">Continue as ${email}</a>`
-      })
+        return res.end()
+      }
 
-      return send(200, `<!doctype html><title>Portal stand-in</title>${links.join('<br>')}`, 'text/html')
+      const hidden = Object.entries(params)
+        .map(([k, v]) => `<input type="hidden" name="${escapeHtml(k)}" value="${escapeHtml(v)}">`)
+        .join('')
+      const links = ['Alice', 'Bob'].map(
+        known =>
+          `<a data-account="${slug(known)}@example.test" href="${escapeHtml(`/oauth/authorize/continue?${new URLSearchParams({ ...params, name: known })}`)}">Continue as ${known}</a>`
+      )
+
+      return send(
+        200,
+        `<!doctype html><title>Portal stand-in</title><form action="/oauth/authorize/continue">${hidden}` +
+          `<input id="account-name" name="name" maxlength="${MAX_NAME}" required><button id="account-continue">Continue</button>` +
+          `</form>${links.join('<br>')}`,
+        'text/html'
+      )
     }
 
     if (url.pathname === '/api/oauth/token' && req.method === 'POST') {
@@ -330,7 +357,8 @@ async function waitFor(read, pred, ms = 20_000) {
   return value
 }
 
-async function person(browser, origin, email) {
+// `email` picks a listed account; `{ typed }` types a name on the sign-in page instead.
+async function person(browser, origin, account) {
   const context = await browser.newContext({
     colorScheme: 'dark',
     locale: 'en-US',
@@ -338,7 +366,14 @@ async function person(browser, origin, email) {
   })
   const page = await context.newPage()
   await page.goto(`${origin}/`)
-  await page.click(`a[data-account="${email}"]`, { timeout: 30_000 })
+
+  if (typeof account === 'string') {
+    await page.click(`a[data-account="${account}"]`, { timeout: 30_000 })
+  } else {
+    await page.fill('#account-name', account.typed, { timeout: 30_000 })
+    await page.click('#account-continue')
+  }
+
   await page.waitForSelector('[contenteditable="true"]', { timeout: 60_000 })
   await sleep(2000)
 
@@ -403,7 +438,7 @@ async function scenario(origin, repo, alice, bob) {
     users => users.length === 1,
     10_000
   )
-  check('roster lists the other person', roster.length === 1 && roster[0].endsWith('usr_bob_smoke'), roster)
+  check('roster lists the other person', roster.length === 1 && roster[0] === `nous:${accountId('Bob')}`, roster)
 
   const box = await bob.locator('[data-slot="aui_message-group"]').last().boundingBox()
   await bob.mouse.move(box.x + 40, box.y + 20)
@@ -523,9 +558,10 @@ try {
     ],
     headless: process.env.HEADED !== '1'
   })
+  // Bob types his name, in other case and spacing: the roster check below proves it is still Bob's account.
   const [alice, bob] = await Promise.all([
     person(browser, webapp.origin, 'alice@example.test'),
-    person(browser, webapp.origin, 'bob@example.test')
+    person(browser, webapp.origin, { typed: '  bob ' })
   ])
   await scenario(webapp.origin, webapp.repo, alice.page, bob.page)
 } catch (error) {
