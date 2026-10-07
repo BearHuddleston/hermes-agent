@@ -6221,7 +6221,7 @@ export const deOverrides = {
     roleOwner: 'Besitzer',
     remove: 'Entfernen',
     changeFailed: 'Freigabe dieses Chats konnte nicht geändert werden',
-    viewerComposer: 'Du kannst diesen Chat ansehen. Bitte die besitzende Person, dich Nachrichten senden zu lassen.',
+    viewerComposer: 'Nur Ansicht. Frag nach Schreibrechten.',
     viewerNote: 'Nur ansehen',
     accessRemoved: 'Dieser Chat ist nicht mehr mit dir geteilt.'
   },

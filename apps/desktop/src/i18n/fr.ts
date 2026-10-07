@@ -6233,7 +6233,7 @@ export const frOverrides = {
     roleOwner: 'Propriétaire',
     remove: 'Retirer',
     changeFailed: 'Impossible de modifier le partage de cette discussion',
-    viewerComposer: 'Vous pouvez voir cette discussion. Demandez à sa propriétaire de vous laisser envoyer des messages.',
+    viewerComposer: 'Lecture seule. Demandez à pouvoir écrire.',
     viewerNote: 'Lecture seule',
     accessRemoved: 'Cette discussion n’est plus partagée avec vous.'
   },

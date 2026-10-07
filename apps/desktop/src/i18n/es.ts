@@ -6211,7 +6211,7 @@ export const esOverrides = {
     roleOwner: 'Propietario',
     remove: 'Quitar',
     changeFailed: 'No se pudo cambiar con quién se comparte este chat',
-    viewerComposer: 'Puedes ver este chat. Pide a su propietario que te deje enviar mensajes.',
+    viewerComposer: 'Solo lectura. Pide permiso para enviar.',
     viewerNote: 'Solo lectura',
     accessRemoved: 'Este chat ya no se comparte contigo.'
   },
