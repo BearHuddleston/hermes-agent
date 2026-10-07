@@ -262,3 +262,22 @@ def test_fresh_marker_waits_out_a_briefly_held_temp_file(tmp_path: Path, monkeyp
     assert released.is_set()
     assert read_profile_incarnation(profile_home) == token
     assert not list(profile_home.glob(f"{PROFILE_INCARNATION_FILENAME}.*.tmp"))
+
+
+def test_markers_rewritten_by_windows_tooling_keep_their_identity(tmp_path: Path, monkeypatch) -> None:
+    """Windows PowerShell and some editors prepend a UTF-8 BOM to a file they save; the
+    incarnation and deletion markers must still read as the same token, not as corruption."""
+    hermes_home = tmp_path / ".hermes"
+    profile_home = hermes_home / "profiles" / "worker"
+    profile_home.mkdir(parents=True)
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    token = profile_incarnation.write_fresh_profile_incarnation(profile_home)
+    marker = profile_home / PROFILE_INCARNATION_FILENAME
+    marker.write_bytes(b"\xef\xbb\xbf" + marker.read_bytes())
+
+    assert read_profile_incarnation(profile_home) == token
+
+    tombstone = profile_incarnation.profile_deletion_marker_path(profile_home)
+    tombstone.parent.mkdir(parents=True, exist_ok=True)
+    tombstone.write_bytes(b"\xef\xbb\xbf" + token.encode())
+    assert profile_incarnation.read_profile_deletion_incarnation(profile_home) == token
