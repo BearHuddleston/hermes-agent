@@ -161,6 +161,20 @@ def _global_event_reaches(transport: Any, event: str) -> bool:
 _MEMBER_GLOBAL_EVENTS = frozenset({"skin.changed"})
 
 
+def _refresh_chat_list(principal: str) -> int:
+    """Have ``principal``'s open windows refetch their chat list. The host-wide ``sessions.changed`` skips
+    members, so a chat shared with them (or taken back) would reach their sidebar only on a reload."""
+    frame = _event_frame("sessions.changed", "", {})
+    with _live_transports_lock:
+        targets = [t for t in _live_transports if _transport_auth_user_id(t) == principal]
+    for transport in targets:
+        try:
+            transport.write(frame)
+        except Exception:  # a wedged window must not fail the owner's change; disconnect teardown drops it
+            logger.debug("chat-list refresh write failed for %s", principal, exc_info=True)
+    return len(targets)
+
+
 def _revoke_chat_member(chat: str, principal: str) -> int:
     """Detach ``principal``'s windows from every live session of ``chat``; returns how many were detached."""
     detached = 0

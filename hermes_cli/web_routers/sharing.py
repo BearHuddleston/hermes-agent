@@ -106,8 +106,7 @@ async def sharing_set_role(request: Request, body: ChatAccessUpdate):
         await asyncio.to_thread(web_sharing.STORE.set_role, ref.key, target, body.role, by=principal)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    if body.role is None:
-        await asyncio.to_thread(_detach_live_windows, ref.key, target)
+    await asyncio.to_thread(_update_live_windows, ref.key, target, removed=body.role is None)
     # Every window of that person in this chat re-reads its role; a removed one is sent out of the room.
     web_presence.HUB.access_changed(target, ref.key, removed=body.role is None)
     from hermes_cli import web_apps
@@ -115,6 +114,9 @@ async def sharing_set_role(request: Request, body: ChatAccessUpdate):
     return {"chat": ref.key, "principal": target, "role": body.role}
 
 
-def _detach_live_windows(chat: str, principal: str) -> None:
+def _update_live_windows(chat: str, principal: str, *, removed: bool) -> None:
+    """Detach a removed person from the chat, then have all their windows refetch their chat list."""
     from tui_gateway import server
-    server._revoke_chat_member(chat, principal)
+    if removed:
+        server._revoke_chat_member(chat, principal)
+    server._refresh_chat_list(principal)

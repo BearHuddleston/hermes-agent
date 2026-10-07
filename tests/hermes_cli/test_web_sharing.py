@@ -112,6 +112,31 @@ def test_only_the_chat_owner_changes_who_it_is_shared_with(host):
     assert {p["principal"] for p in alice.get("/api/sharing/people").json()["people"]} >= {BOB}
 
 
+def test_sharing_or_taking_back_a_chat_refreshes_that_persons_chat_list(host, monkeypatch):
+    """Members never get the host-wide ``sessions.changed`` (it would reveal activity in other chats), so the
+    change itself must tell their open windows to refetch, or the chat reaches their sidebar only on a reload."""
+    from tui_gateway import server
+
+    class Window:
+        def __init__(self, user_id):
+            self.auth_identity, self.frames = {"provider": "stub", "user_id": user_id}, []
+
+        def write(self, frame):
+            self.frames.append(frame)
+            return True
+
+    bobs, eves = Window("usr_bob"), Window("usr_eve")
+    monkeypatch.setattr(server, "_live_transports", {bobs, eves})
+    refreshes = lambda window: [f["params"]["type"] for f in window.frames].count("sessions.changed")  # noqa: E731
+    alice = _client("usr_alice")
+    alice.post("/api/sharing/claim")
+
+    alice.put("/api/sharing/chat", json={"session_id": "20261006_090000_plan01", "principal": BOB, "role": "viewer"})
+    assert (refreshes(bobs), refreshes(eves)) == (1, 0)
+    alice.put("/api/sharing/chat", json={"session_id": "20261006_090000_plan01", "principal": BOB, "role": None})
+    assert (refreshes(bobs), refreshes(eves)) == (2, 0)
+
+
 def test_the_room_of_a_chat_admits_a_member_only_once_it_is_shared(host):
     _client("usr_alice").post("/api/sharing/claim")
     room = web_sharing.chat_key(None, "20261006_090000_plan01")
