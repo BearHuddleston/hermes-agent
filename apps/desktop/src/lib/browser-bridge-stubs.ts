@@ -69,13 +69,6 @@ export const BROWSER_BRIDGE_STUBS = {
   // Venv/plugin receipts live on the server host; a browser tab has none of its own.
   getSyncStatus: async () => null,
   getRemoteDisplayReason: async () => 'Browser-hosted Desktop uses this server as its backend',
-  getVersion: async () => ({
-    appVersion: 'browser-hosted',
-    electronVersion: '',
-    hermesRoot: '',
-    nodeVersion: '',
-    platform: 'browser'
-  }),
   // Browser pages have no native window compositor. Keep these explicit so
   // capability consumers do not fall back to the host OS (for example,
   // Windows) before the browser-host marker is available.

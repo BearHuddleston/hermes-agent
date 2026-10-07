@@ -110,6 +110,27 @@ describe('browser-hosted Desktop bridge', () => {
     expect(connection.wsUrl).toBe('')
   })
 
+  // About renders `Version <appVersion>` / `v<appVersion>`: it must carry the
+  // serving host's release, never a host-kind label.
+  it('reports the serving host version, unknown when the host cannot say', async () => {
+    const win = mutableWindow()
+    win.__HERMES_AUTH_REQUIRED__ = true
+    win.__HERMES_BASE_PATH__ = '/hermes'
+
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ displayVersion: '0.21.5+1913', version: '0.21.5' })))
+      .mockRejectedValueOnce(new Error('offline'))
+
+    vi.stubGlobal('fetch', fetchMock)
+    expect(installBrowserDesktopBridge()).toBe(true)
+
+    await expect(win.hermesDesktop!.getVersion()).resolves.toMatchObject({ appVersion: '0.21.5+1913' })
+    expect((fetchMock.mock.calls[0] as [URL])[0].pathname).toBe('/hermes/api/health')
+    // '' is About's "version unavailable" state.
+    await expect(win.hermesDesktop!.getVersion()).resolves.toMatchObject({ appVersion: '' })
+  })
+
   it('mints a fresh single-use ticket for each gated WebSocket URL', async () => {
     const win = mutableWindow()
     win.__HERMES_AUTH_REQUIRED__ = true
