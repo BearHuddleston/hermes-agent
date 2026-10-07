@@ -303,6 +303,7 @@ print(subprocess.run([sys.executable, "-c", probe], capture_output=True, text=Tr
     ("host.py", ("hermes_cli.main", "--profile", "work", "gateway", "run"), False),
     ("host.py", ("/opt/hermes/hermes_cli/main.py", "-p", "work", "gateway", "run"), False),
     ("hermes_cli/main.py", ("--profile", "work", "dashboard"), False),
+    ("hermes_cli/main.py", ("--profile", "work", "webapp"), False),
     ("host.py", ("-m", "hermes_cli.main", "--profile", "work", "dashboard"), True),
     ("host.py", ("hermes_cli.main", "status"), True),
 ])
