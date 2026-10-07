@@ -5683,7 +5683,8 @@ export const en: Translations = {
   sharing: {
     share: 'Share',
     title: 'Share this chat',
-    description: 'People you add see this chat and its apps live. Viewers follow along; participants can also send messages.',
+    description:
+      'People you add see this chat and its apps live. Viewers follow along; participants can also send messages.',
     claimTitle: 'Make this agent yours first',
     claimBody:
       'Anyone your Portal lets sign in can currently see every chat here. Claim the agent and everyone else sees only the chats you share with them.',
