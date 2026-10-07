@@ -504,7 +504,7 @@ def begin_profile_retirement(
     mark_profile_deleting(profile_dir, profile_incarnation)
     try:
         return retire_in_process_profile_resources(profile_dir, profile_incarnation)
-    except Exception:
+    except BaseException:
         if rollback_on_failure:
             rollback_profile_retirement(profile_dir, profile_incarnation)
         raise
@@ -519,20 +519,23 @@ def verify_profile_resources_released(
     rollback_on_failure: bool = True,
 ) -> None:
     """Prove holders drained, optionally rolling back this attempt's fence."""
-    if not wait_for_profile_state_db_release(profile_dir):
+    try:
+        if not wait_for_profile_state_db_release(profile_dir):
+            raise RuntimeError(
+                f"{subject} is still in use by this Hermes process; retry {retry_action}."
+            )
+        external_holders = wait_for_external_profile_file_release(profile_dir)
+        if external_holders:
+            raise RuntimeError(
+                f"{subject} is still in use by external process(es) "
+                f"{', '.join(str(pid) for pid in external_holders)}; retry {retry_action}."
+            )
+    except BaseException:
+        # The waits run for seconds while a holder lingers, the likeliest moment for a Ctrl-C;
+        # a refusal, a failed census and an interrupt all leave the home where it was.
         if rollback_on_failure:
             rollback_profile_retirement(profile_dir, profile_incarnation)
-        raise RuntimeError(
-            f"{subject} is still in use by this Hermes process; retry {retry_action}."
-        )
-    external_holders = wait_for_external_profile_file_release(profile_dir)
-    if external_holders:
-        if rollback_on_failure:
-            rollback_profile_retirement(profile_dir, profile_incarnation)
-        raise RuntimeError(
-            f"{subject} is still in use by external process(es) "
-            f"{', '.join(str(pid) for pid in external_holders)}; retry {retry_action}."
-        )
+        raise
 
 
 def move_profile_generation(
@@ -548,7 +551,7 @@ def move_profile_generation(
     mark_profile_deleting(new_dir)
     try:
         old_dir.rename(new_dir)
-    except Exception:
+    except BaseException:
         rollback_profile_retirement(old_dir, profile_incarnation)
         if not new_had_tombstone:
             clear_profile_deletion_marker(new_dir)
