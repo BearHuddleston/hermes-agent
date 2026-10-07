@@ -57,6 +57,10 @@ const MODE_KEY = 'hermes-desktop-mode-v1'
 // profile inherits the global default until it's given its own appearance.
 const PROFILE_SKINS_KEY = 'hermes-desktop-profile-themes-v1'
 const PROFILE_MODES_KEY = 'hermes-desktop-profile-modes-v1'
+// The user's most recent pick on any profile: what a profile with no pick of
+// its own inherits (#101216). Display-only; never uploaded to a config.
+const INHERITED_SKIN_KEY = 'hermes-desktop-inherited-theme-v1'
+const INHERITED_MODE_KEY = 'hermes-desktop-inherited-mode-v1'
 // Last active profile, recorded so the boot-time paint can pick that profile's
 // theme before the gateway reports which profile actually launched.
 const LAST_PROFILE_KEY = 'hermes-desktop-active-profile-v1'
@@ -89,12 +93,40 @@ const normalizeMode = (value: string | null): ThemeMode =>
 // unassigned profiles and pre-per-profile installs stay on the global value.
 // This is the local cache of the profile's config.yaml appearance
 // (./profile-appearance): the boot paint reads it before any fetch.
-const profilePref = <T extends string>(record: string, legacy: string, normalize: (v: string | null) => T) => {
+//
+// A user pick also records the inherited look, so a Bot Mode gateway hop onto
+// a never-themed bot shows what the user just picked (#101216). It is a
+// separate slot because the legacy one IS the default profile's own pick,
+// which syncs to its config.yaml. Adopting a config is not a pick.
+// A pre-existing install whose per-profile picks agree promotes that value
+// (write-on-read; idempotent; a no-op when they disagree).
+const promoteUnanimousPick = (record: string, legacy: string, inherited: string): void => {
+  if (storedString(inherited) != null || storedString(legacy) != null) {
+    return
+  }
+
+  const unique = [...new Set(Object.values(storedStringRecord(record)).filter(Boolean))]
+
+  if (unique.length === 1) {
+    persistString(inherited, unique[0])
+  }
+}
+
+const profilePref = <T extends string>(
+  record: string,
+  legacy: string,
+  inherited: string,
+  normalize: (v: string | null) => T
+) => {
   /** The profile's OWN pick — never the global value an unassigned profile inherits. */
   const own = (profile: string): string | null =>
     profile === 'default' ? storedString(legacy) : (storedStringRecord(record)[profile] ?? null)
 
-  const stored = (profile: string): string | null => own(profile) ?? storedString(legacy)
+  const stored = (profile: string): string | null => {
+    promoteUnanimousPick(record, legacy, inherited)
+
+    return own(profile) ?? storedString(inherited) ?? storedString(legacy)
+  }
 
   /** Write a raw pick, or drop the profile's own entry (`null`). */
   const put = (profile: string, value: null | string): void => {
@@ -108,18 +140,25 @@ const profilePref = <T extends string>(record: string, legacy: string, normalize
     persistStringRecord(record, value === null ? rest : { ...rest, [profile]: value })
   }
 
+  /** A user pick: the profile's own value and the look unassigned profiles inherit. */
+  const pick = (profile: string, value: string): void => {
+    put(profile, value)
+    persistString(inherited, value)
+  }
+
   return {
     /** The pick as written, un-normalized. */
     stored,
     own,
     put,
+    pick,
     resolve: (profile: string): T => normalize(stored(profile)),
-    assign: (profile: string, value: T): void => put(profile, value)
+    assign: (profile: string, value: T): void => pick(profile, value)
   }
 }
 
-export const skinPref = profilePref(PROFILE_SKINS_KEY, SKIN_KEY, normalizeSkin)
-export const modePref = profilePref(PROFILE_MODES_KEY, MODE_KEY, normalizeMode)
+export const skinPref = profilePref(PROFILE_SKINS_KEY, SKIN_KEY, INHERITED_SKIN_KEY, normalizeSkin)
+export const modePref = profilePref(PROFILE_MODES_KEY, MODE_KEY, INHERITED_MODE_KEY, normalizeMode)
 
 // The bridge's local skin is only a fallback for the profile this window booted
 // into. A desktop-side pick remains the source of truth, and switching to a
@@ -135,13 +174,20 @@ const storedSkin = (profile: string): string =>
   (profile === BOOT_PROFILE_KEY ? (localDisplaySkinName ?? DEFAULT_SKIN_NAME) : DEFAULT_SKIN_NAME)
 
 /** Everything a peer window could change that this one has to repaint for. */
-const APPEARANCE_KEYS = new Set([SKIN_KEY, PROFILE_SKINS_KEY, MODE_KEY, PROFILE_MODES_KEY])
+const APPEARANCE_KEYS = new Set([
+  SKIN_KEY,
+  PROFILE_SKINS_KEY,
+  MODE_KEY,
+  PROFILE_MODES_KEY,
+  INHERITED_SKIN_KEY,
+  INHERITED_MODE_KEY
+])
 
 const rememberActiveProfileKey = (profile: string) => persistString(LAST_PROFILE_KEY, profile)
 
 type AppearanceField = keyof ProfileAppearancePatch
 
-const APPEARANCE_PREFS: Record<AppearanceField, Pick<ReturnType<typeof profilePref>, 'own' | 'put'>> = {
+const APPEARANCE_PREFS: Record<AppearanceField, Pick<ReturnType<typeof profilePref>, 'own' | 'pick' | 'put'>> = {
   theme: skinPref,
   theme_mode: modePref
 }
@@ -176,7 +222,7 @@ function commitPick(profile: string, field: AppearanceField, value: string, onRo
 
   picks.latest = pick
   latestPick.set(key, picks)
-  pref.put(profile, value)
+  pref.pick(profile, value)
 
   const settle = (saved: boolean) => {
     const { reconcile, value: confirmed } = settleAppearancePick(sharedPick, saved, pref.own(profile))
@@ -688,6 +734,11 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
         const field = event.key === PROFILE_SKINS_KEY ? 'theme' : 'theme_mode'
 
         for (const profile of changedAppearanceProfiles(event)) { adopt(profile, field) }
+      } else if (event.key === INHERITED_SKIN_KEY || event.key === INHERITED_MODE_KEY) {
+        // No profile's own pick changed, only what an unassigned profile paints.
+        const field = event.key === INHERITED_SKIN_KEY ? 'theme' : 'theme_mode'
+
+        if (APPEARANCE_PREFS[field].own(live) === null) { markLocalAppearanceChange(live) }
       } else {
         const field = event.key === SKIN_KEY ? 'theme' : 'theme_mode'
         adopt('default', field)

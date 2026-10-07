@@ -135,6 +135,7 @@ export const BROWSER_BRIDGE_STUBS = {
   },
   touchBackend: async () => ({ ok: true }),
   uninstall: {
+    openAppsSettings: async () => undefined,
     run: async () => ({ error: 'Run `hermes uninstall` on the server host', ok: false }),
     summary: async () => ({
       agent_installed: true,
@@ -142,12 +143,20 @@ export const BROWSER_BRIDGE_STUBS = {
       code_removal_allowed: false,
       gui_installed: true,
       hermes_home: '',
+      // No OS package owns a browser tab either: About shows no uninstall section.
+      native_removal_instructions: null,
       packaged_app_paths: [],
       platform: 'browser',
       source_built_artifacts: [],
       userdata_dir: '',
       userdata_exists: true
     })
+  },
+  // Update holds are an Electron boot state; a browser boot never reports one.
+  updateHold: {
+    quit: async () => ({ ok: false }),
+    recheck: async () => ({ ok: false }),
+    startAnyway: async () => ({ ok: false })
   },
   updates: {
     apply: async () => ({ command: 'hermes update', manual: true, message: 'Run `hermes update` on the server host', ok: false }),
