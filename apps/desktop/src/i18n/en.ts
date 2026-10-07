@@ -5706,9 +5706,9 @@ export const en: Translations = {
     roleOwner: 'Owner',
     remove: 'Remove',
     changeFailed: 'Could not change who this chat is shared with',
-    viewerComposer: 'View only. Ask the owner to let you send.',
+    viewerComposer: 'View only. Ask to be a participant.',
     viewerNote: 'View only',
-    accessRemoved: 'This chat is no longer shared with you.'
+    accessRemoved: 'No longer shared with you.'
   },
   ui: {
     search: {

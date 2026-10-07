@@ -6233,9 +6233,9 @@ export const frOverrides = {
     roleOwner: 'Propriétaire',
     remove: 'Retirer',
     changeFailed: 'Impossible de modifier le partage de cette discussion',
-    viewerComposer: 'Lecture seule. Demandez à pouvoir écrire.',
+    viewerComposer: 'Lecture seule. Demandez l’accès.',
     viewerNote: 'Lecture seule',
-    accessRemoved: 'Cette discussion n’est plus partagée avec vous.'
+    accessRemoved: 'N’est plus partagée avec vous.'
   },
   ui: {
     search: {
