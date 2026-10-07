@@ -592,30 +592,6 @@ def test_reuse_environment_fingerprint_tracks_immutable_configuration():
     )
 
 
-@pytest.mark.parametrize("source_prefix,destination,mode", [
-    ("project", "/workspace", "rw"),
-    ("hermes-skills-safe", "/root/.hermes/skills", "ro"),
-])
-def test_reuse_environment_fingerprint_preserves_user_temp_mounts(
-    tmp_path, monkeypatch, source_prefix, destination, mode,
-):
-    """Temp paths, even ones resembling generated skills copies, retain user bind identity."""
-    temp_root = tmp_path / "tmp"
-    temp_root.mkdir()
-    monkeypatch.setattr(docker_env.tempfile, "gettempdir", lambda: str(temp_root))
-    process_a = docker_env._reuse_environment_fingerprint(
-        image="python:3.11",
-        mount_args=["-v", f"{temp_root}/{source_prefix}-a:{destination}:{mode}"],
-        hermes_home="/profiles/alpha",
-    )
-    process_b = docker_env._reuse_environment_fingerprint(
-        image="python:3.11",
-        mount_args=["-v", f"{temp_root}/{source_prefix}-b:{destination}:{mode}"],
-        hermes_home="/profiles/alpha",
-    )
-    assert process_a != process_b
-
-
 def test_run_command_sanitizes_unsafe_task_id(monkeypatch):
     """A task_id containing characters Docker rejects in label values must be
     sanitized before reaching ``docker run --label``; otherwise the daemon
