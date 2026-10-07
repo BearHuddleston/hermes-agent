@@ -54,20 +54,27 @@ async def _login(client):
 
 
 @pytest.mark.parametrize(
-    "origin",
+    "headers",
     [
-        None,
-        "null",
-        "https://evil.example.com",
-        "http://dashboard.example.com",
-        "https://dashboard.example.com:8443",
-        "file://",
-        "https://dashboard.example.com/path",
-        "https://dashboard.example.com:bad",
-        "https://dashboard.example.com, https://evil.example.com",
+        # No Origin, but Fetch Metadata names an initiating page: not a native client.
+        {"Sec-Fetch-Site": "same-site"},
+        {"Sec-Fetch-Site": "cross-site"},
+        *(
+            {"Origin": origin}
+            for origin in (
+                "null",
+                "https://evil.example.com",
+                "http://dashboard.example.com",
+                "https://dashboard.example.com:8443",
+                "file://",
+                "https://dashboard.example.com/path",
+                "https://dashboard.example.com:bad",
+                "https://dashboard.example.com, https://evil.example.com",
+            )
+        ),
     ],
 )
-def test_cookie_upload_requires_exact_http_origin(upload_app, origin):
+def test_cookie_upload_requires_exact_http_origin(upload_app, headers):
     home, spools = upload_app
 
     async def run():
@@ -78,7 +85,7 @@ def test_cookie_upload_requires_exact_http_origin(upload_app, origin):
             response = await client.post(
                 "/api/chat/file-upload",
                 files={"file": ("csrf.txt", b"unwanted")},
-                headers={} if origin is None else {"Origin": origin},
+                headers=headers,
             )
             assert response.status_code == 403, response.text
             assert not (home / "uploads").exists()
@@ -110,7 +117,11 @@ def test_cookie_same_origin_refresh_and_bearer_uploads_work(upload_app):
                 if cookie.name.endswith(SESSION_AT_COOKIE):
                     client.cookies.delete(cookie.name, domain=cookie.domain, path=cookie.path)
             assert any(k.endswith(SESSION_RT_COOKIE) for k in client.cookies)
-            response = await client.post("/api/chat/file-upload", files={"file": ("bad.txt", b"bad")})
+            response = await client.post(
+                "/api/chat/file-upload",
+                files={"file": ("bad.txt", b"bad")},
+                headers={"Origin": "https://dashboard.example.com:8443", "Sec-Fetch-Site": "same-site"},
+            )
             assert response.status_code == 403
             response = await client.post(
                 "/api/chat/file-upload",
@@ -149,7 +160,9 @@ def test_cookie_unsafe_methods_and_logout_but_not_auth_bootstrap(upload_app):
                 headers=[("Origin", "https://dashboard.example.com"), ("Origin", "https://evil.example.com")],
             )
             assert response.status_code == 403
-            response = await client.post("/auth/logout")
+            response = await client.post(
+                "/auth/logout", headers={"Origin": "null", "Sec-Fetch-Site": "same-site"}
+            )
             assert response.status_code == 403
             response = await client.post("/auth/logout", headers={"Origin": "https://dashboard.example.com"})
             assert response.status_code == 302

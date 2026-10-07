@@ -989,7 +989,10 @@ the dashboard's own origin. Current browsers prove that with the
 `Sec-Fetch-Site: same-origin` header, which works behind any proxy. For a
 browser that does not send it, the dashboard compares `Origin` with
 `public_url` (or, when unset, the scheme and Host it received), so set
-`public_url` when the proxy terminates TLS or rewrites `Host`.
+`public_url` when the proxy terminates TLS or rewrites `Host`. Hermes
+Desktop's own requests carry no `Origin` and either `Sec-Fetch-Site: none` or,
+over plain HTTP, no `Sec-Fetch-Site` at all; that shape passes after the same
+Host check, because a web page's writes always carry `Origin`.
 
 Declaring a non-loopback `public_url` always engages the dashboard auth gate,
 even when the backend binds to loopback. Configure a password or OAuth provider
