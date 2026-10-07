@@ -170,41 +170,6 @@ class TestWinPtyBridgeUnavailable:
         assert bridge._closed is True
 
     @pytest.mark.asyncio
-    async def test_cancelled_write_without_deadline_keeps_conpty(self):
-        """A host shell's write has no deadline: it waits while the foreground
-        program is not reading, and a re-attach that cancels it must leave the
-        shell and its job running, however long the input stays unread."""
-        class _UnreadProc:
-            pid = 1
-
-            def __init__(self):
-                self.release_write = threading.Event()
-                self.terminated = threading.Event()
-
-            def write(self, _text):
-                self.release_write.wait(timeout=5.0)
-
-            def terminate(self, force=False):
-                self.terminated.set()
-                self.release_write.set()
-
-        proc = _UnreadProc()
-        bridge = WinPtyBridge(proc)
-        try:
-            with patch.object(win_pty_bridge, "_WRITE_SHUTDOWN_GRACE", 0.05):
-                task = asyncio.create_task(bridge.write(b"x", timeout=None))
-                await asyncio.sleep(0.2)
-                assert not task.done()
-                task.cancel()
-                with pytest.raises(asyncio.CancelledError):
-                    await task
-                await asyncio.sleep(0.2)
-            assert not proc.terminated.is_set()
-            assert bridge._closed is False
-        finally:
-            proc.release_write.set()
-
-    @pytest.mark.asyncio
     async def test_leaked_write_worker_is_logged(self, caplog):
         """terminate() that fails to unblock pywinpty leaves a thread parked in
         the default executor; that must be observable, not swallowed."""
@@ -332,19 +297,15 @@ class TestWinPtyBridgeIO:
 
 
     @pytest.mark.asyncio
-    async def test_cancelled_host_write_leaves_the_job_running(self):
-        """A paste into a program that is not reading, cancelled by a re-attach,
-        must not end the shell: the program still finishes on its own."""
-        script = "import time; time.sleep(4); print('SURVI' + 'VED', flush=True)"
+    async def test_paste_to_a_program_that_is_not_reading_lands_at_once(self):
+        """ConPTY buffers input whether or not the child reads it, so a host shell's
+        paste lands at once and the job keeps running; only a wedged ConPTY can miss
+        the write deadline, which is why Windows writes keep one."""
+        script = "import time; time.sleep(1.5); print('SURVI' + 'VED', flush=True)"
         bridge = WinPtyBridge.spawn([sys.executable, "-c", script])
         try:
-            paste = b"".join(b"%05d %s\r" % (n, b"x" * 57) for n in range(1024))
-            writing = asyncio.create_task(bridge.write(paste, timeout=None))
-            await asyncio.sleep(0.5)
-            writing.cancel()
-            await asyncio.gather(writing, return_exceptions=True)
-            await asyncio.sleep(win_pty_bridge._WRITE_SHUTDOWN_GRACE + 0.5)
-            assert bridge.is_alive()
+            paste = b"".join(b"%05d %s\r" % (n, b"x" * 57) for n in range(16384))  # 1 MiB
+            assert await asyncio.wait_for(bridge.write(paste, timeout=None), timeout=2.0) is True
             output = await asyncio.to_thread(_read_until, bridge, b"SURVIVED", 15.0)
             assert b"SURVIVED" in output
         finally:

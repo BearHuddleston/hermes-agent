@@ -322,7 +322,8 @@ async def _pump_input(ws: WebSocket, registry: HostTerminalRegistry, token: str,
     ``npm install``) the PTY takes about 1 KB of input on macOS, so a paste waits for
     that program, in order, with any Ctrl-C behind it, as in native Desktop's terminal.
     A re-attach cancels the wait and keeps the shell; only a closed bridge (the shell
-    exited or the terminal was closed) or a retired profile drops the session.
+    exited or the terminal was closed) or a retired profile drops the session. ConPTY
+    buffers input itself, so Windows writes land at once and keep the bridge's deadline.
     """
     from hermes_cli.web_server_chat import _RESIZE_RE
     inbox: asyncio.Queue = asyncio.Queue(maxsize=_INPUT_BATCH_FRAMES)

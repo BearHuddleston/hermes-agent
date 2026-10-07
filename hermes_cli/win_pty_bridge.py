@@ -25,6 +25,7 @@ __all__ = ["WinPtyBridge", "PtyUnavailableError"]
 _MIN_DIMENSION = 1
 _MAX_COLS = 2000
 _MAX_ROWS = 1000
+_WRITE_TIMEOUT = 10.0
 _WRITE_SHUTDOWN_GRACE = 1.0
 
 
@@ -93,11 +94,8 @@ class WinPtyBridge:
         # default-executor thread (min(32, cpu count + 4)) from keystrokes and cleanup.
         try:
             readable, _, _ = select.select([self._proc], [], [], timeout)
-        except (OSError, ValueError):
-            return None
-        if not readable:
-            return b""
-        try:
+            if not readable:
+                return b""
             data = self._proc.read(65536)  # pywinpty returns str
         except Exception:
             return None
@@ -120,12 +118,15 @@ class WinPtyBridge:
             return False
         return True
 
-    async def write(self, data: bytes, *, timeout: Optional[float] = 10.0, fence=None) -> bool:
+    async def write(self, data: bytes, *, timeout: Optional[float] = _WRITE_TIMEOUT, fence=None) -> bool:
         """Write off-loop and tear down ConPTY when its input pipe wedges.
 
         ``fence`` (see ``PtyBridge.write``) wraps the whole blocking write, which
-        the timeout below bounds. ``timeout=None`` (host shells) waits for as
-        long as the child leaves its input unread and never terminates ConPTY.
+        the deadline below bounds. ConPTY takes input whether or not the child
+        reads it (conhost buffers it), so a write that misses the deadline means
+        ConPTY itself is wedged: ``timeout=None``, which on POSIX waits for the
+        child to read, still gets that deadline here and never holds the fence
+        open-ended.
 
         ``wait_for(to_thread(...))`` alone only cancels the asyncio wrapper;
         the worker remains blocked inside pywinpty. Keep the worker future,
@@ -144,17 +145,14 @@ class WinPtyBridge:
         write = self._write_blocking if fence is None else (
             lambda chunk: fence(lambda: self._write_blocking(chunk)))
         write_future = loop.run_in_executor(None, write, data)
+        deadline = _WRITE_TIMEOUT if timeout is None else max(0.0, timeout)
         try:
-            return await asyncio.wait_for(asyncio.shield(write_future), timeout=timeout)
+            return await asyncio.wait_for(asyncio.shield(write_future), timeout=deadline)
         except asyncio.TimeoutError:
             await self._stop_stalled_write(write_future)
             return False
         except asyncio.CancelledError:
-            # Without a deadline a pending write only means the program is not
-            # reading yet: the write lands when it does, or the session's close
-            # releases it. Terminating here would kill the shell and its job.
-            if timeout is not None:
-                await asyncio.shield(self._settle_or_stop_write(write_future))
+            await asyncio.shield(self._settle_or_stop_write(write_future))
             raise
 
     async def _settle_or_stop_write(self, write_future: asyncio.Future) -> None:
