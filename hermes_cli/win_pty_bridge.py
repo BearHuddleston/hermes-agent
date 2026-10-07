@@ -109,11 +109,12 @@ class WinPtyBridge:
             return False
         return True
 
-    async def write(self, data: bytes, *, timeout: float = 10.0, fence=None) -> bool:
+    async def write(self, data: bytes, *, timeout: Optional[float] = 10.0, fence=None) -> bool:
         """Write off-loop and tear down ConPTY when its input pipe wedges.
 
         ``fence`` (see ``PtyBridge.write``) wraps the whole blocking write, which
-        the timeout below bounds.
+        the timeout below bounds. ``timeout=None`` (host shells) waits for as
+        long as the child leaves its input unread and never terminates ConPTY.
 
         ``wait_for(to_thread(...))`` alone only cancels the asyncio wrapper;
         the worker remains blocked inside pywinpty. Keep the worker future,
@@ -133,15 +134,16 @@ class WinPtyBridge:
             lambda chunk: fence(lambda: self._write_blocking(chunk)))
         write_future = loop.run_in_executor(None, write, data)
         try:
-            return await asyncio.wait_for(
-                asyncio.shield(write_future),
-                timeout=max(0.0, timeout),
-            )
+            return await asyncio.wait_for(asyncio.shield(write_future), timeout=timeout)
         except asyncio.TimeoutError:
             await self._stop_stalled_write(write_future)
             return False
         except asyncio.CancelledError:
-            await asyncio.shield(self._settle_or_stop_write(write_future))
+            # Without a deadline a pending write only means the program is not
+            # reading yet: the write lands when it does, or the session's close
+            # releases it. Terminating here would kill the shell and its job.
+            if timeout is not None:
+                await asyncio.shield(self._settle_or_stop_write(write_future))
             raise
 
     async def _settle_or_stop_write(self, write_future: asyncio.Future) -> None:

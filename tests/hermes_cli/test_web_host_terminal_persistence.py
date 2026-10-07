@@ -50,6 +50,16 @@ def output_until(ws, marker):
     return output
 
 
+def output_field(ws, name):
+    """The digits/hex a command printed as ``NAME=value`` (markers split in source survive echo)."""
+    import re
+    pattern = re.compile(re.escape(name) + rb"=([0-9a-f:]+)\r?\n")
+    output = b""
+    while (match := pattern.search(output)) is None:
+        output += ws.receive_bytes()
+    return match[1]
+
+
 @pytest.mark.platforms("linux")
 @pytest.mark.parametrize("named_launch", [False, True])
 def test_shell_scopes_passthrough_after_eager_activation(
@@ -162,6 +172,34 @@ def test_real_shell_survives_disconnect_and_explicit_close(host_app, tmp_path):
             assert expired.value.code == 4410
 
 
+@pytest.mark.platforms("posix")
+def test_paste_waits_for_a_foreground_program_that_is_not_reading(host_app, tmp_path):
+    """A paste bigger than the PTY input queue (about 1 KB on macOS, 15 KB on Linux)
+    while ``sleep`` or ``npm install`` runs waits for the program, however long it
+    takes: the shell survives and the program then reads every byte in order."""
+    import hashlib
+    import shlex
+    import sys
+    paste = b"".join(b"%05d %s\n" % (n, b"x" * 57) for n in range(1024))  # 64 KiB
+    stall = 12  # longer than the chat TUI's 10 s write deadline
+    program = (
+        f"import hashlib,sys,time; print('BUS'+'Y=1', flush=True); time.sleep({stall}); "
+        f"data = sys.stdin.buffer.read({len(paste)}); "
+        "print('GOT=%d:%s' % (len(data), hashlib.sha256(data).hexdigest()), flush=True)")
+    with TestClient(host_app, base_url="http://localhost") as client:
+        with client.websocket_connect(url("&cwd=" + str(tmp_path))) as ws:
+            metadata(ws)
+            ws.send_bytes(b"stty -echo; printf 'SHE%s=%s\\n' LL $$\n")
+            shell = output_field(ws, b"SHELL")
+            ws.send_bytes(f"{shlex.quote(sys.executable)} -c {shlex.quote(program)}\n".encode())
+            output_field(ws, b"BUSY")
+            ws.send_bytes(paste)
+            got = output_field(ws, b"GOT")
+            assert got == b"%d:%s" % (len(paste), hashlib.sha256(paste).hexdigest().encode())
+            ws.send_bytes(b"printf 'SHE%s=%s\\n' LL $$\n")
+            assert output_field(ws, b"SHELL") == shell
+
+
 @pytest.mark.platforms("linux")
 @pytest.mark.parametrize("spawn_fails", [False, True])
 def test_route_cancelled_spawn_is_owned_through_lifespan(host_app, monkeypatch, spawn_fails):
@@ -231,7 +269,7 @@ class IdleBridge:
         self.closed.wait(timeout)
         return None if self.closed.is_set() else b""
 
-    async def write(self, data, *, fence=None):
+    async def write(self, data, *, timeout=10.0, fence=None):
         def record():
             self.writes.append(data)
             self.wrote.set()
@@ -496,7 +534,7 @@ def test_input_frames_that_arrive_together_share_one_ownership_check(tmp_path):
                     checks.append("thread")
                 return live
 
-        async def write(_ws, data, *, fence):
+        async def write(_ws, data, *, fence, **_bridge_options):
             return await asyncio.to_thread(fence, lambda: written.append(data) or True)
 
         async def remove(token):

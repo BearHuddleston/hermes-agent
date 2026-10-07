@@ -125,10 +125,11 @@ class PtySession:
                     self.detach(ws)
                     await _close_ws(ws, 1011)
 
-    async def write(self, ws, data: bytes, *, fence=None) -> bool:
+    async def write(self, ws, data: bytes, *, fence=None, **bridge_options) -> bool:
         """Serialize input and discard bytes from a superseded socket.
 
         ``fence`` is handed to the bridge (see ``PtyBridge.write``); what it raises propagates.
+        ``bridge_options`` (``timeout``) go to the bridge's ``write`` unchanged.
         """
         async with self._write_lock:
             if self._ws is not ws or not self.alive:
@@ -144,8 +145,9 @@ class PtySession:
 
                 return fence(admitted_write)
 
-            write = self.bridge.write(data) if fence is None else self.bridge.write(data, fence=viewer_fence)
-            task = self._input_task = asyncio.create_task(write)
+            if fence is not None:
+                bridge_options["fence"] = viewer_fence
+            task = self._input_task = asyncio.create_task(self.bridge.write(data, **bridge_options))
             try:
                 delivered = await task
             except asyncio.CancelledError:

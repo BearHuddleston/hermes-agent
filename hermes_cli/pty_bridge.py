@@ -191,9 +191,9 @@ class PtyBridge:
             raise
         return data or None
 
-    async def _wait_writable(self, timeout: float) -> bool:
-        """Wait without blocking the event loop until the master accepts input."""
-        if self._closed or timeout <= 0:
+    async def _wait_writable(self, timeout: Optional[float]) -> bool:
+        """Wait without blocking the event loop until the master accepts input (``None``: no limit)."""
+        if self._closed or (timeout is not None and timeout <= 0):
             return False
         loop = asyncio.get_running_loop()
         ready = loop.create_future()
@@ -233,7 +233,7 @@ class PtyBridge:
                 raise
 
     async def write(
-        self, data: bytes, *, timeout: float = 10.0,
+        self, data: bytes, *, timeout: Optional[float] = 10.0,
         fence: Optional[Callable[[Callable[[], Optional[int]]], Optional[int]]] = None,
     ) -> bool:
         """Write all raw bytes without ever blocking the dashboard event loop.
@@ -241,6 +241,8 @@ class PtyBridge:
         Returns ``False`` when the bridge closes or the child leaves its input
         buffer full for ``timeout`` seconds. Callers can then recycle only the
         affected terminal session while the rest of the dashboard stays live.
+        ``timeout=None`` waits for as long as the child leaves its input unread
+        (cancel the call to stop waiting), so ``False`` then means the bridge closed.
 
         ``fence`` wraps every non-blocking write attempt in a worker thread, so a
         caller can hold a lock around exactly the bytes that reach the child;
@@ -252,7 +254,7 @@ class PtyBridge:
             return True
 
         loop = asyncio.get_running_loop()
-        deadline = loop.time() + max(0.0, timeout)
+        deadline = None if timeout is None else loop.time() + max(0.0, timeout)
         view = memoryview(data)
         while view:
             if fence is None:
@@ -269,7 +271,7 @@ class PtyBridge:
                     await asyncio.sleep(0)
                 continue
 
-            remaining = deadline - loop.time()
+            remaining = None if deadline is None else deadline - loop.time()
             if not await self._wait_writable(remaining):
                 return False
         return True
