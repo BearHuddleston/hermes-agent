@@ -19,7 +19,10 @@ from fastapi import HTTPException, WebSocket, WebSocketDisconnect
 from hermes_cli.profile_incarnation import (
     ensure_profile_incarnation, profile_incarnation_lease, profile_incarnation_matches,
 )
-from hermes_cli.pty_session import PtySession, PtySessionRegistry, RegistryFull, run_reaper
+from hermes_cli.pty_session import (
+    WS_CLOSE_VIEWER_STALLED, WS_CLOSE_VIEWER_STALLED_REASON, PtySession, PtySessionRegistry,
+    RegistryFull, run_reaper,
+)
 from hermes_cli.web_host_terminal import META_PREFIX
 from hermes_constants import get_hermes_home, named_profile_home_is_unavailable
 
@@ -369,7 +372,7 @@ async def host_terminal(ws: WebSocket) -> None:
         if not await session.attach(ws, initial_text=initial_text):
             if session._ws is None:
                 with suppress(Exception):
-                    await ws.close(code=1011, reason="Terminal replay interrupted; reconnect")
+                    await ws.close(code=WS_CLOSE_VIEWER_STALLED, reason=WS_CLOSE_VIEWER_STALLED_REASON)
             return
         await _pump_input(ws, registry, token, session, owner)
     except TerminalDenied:

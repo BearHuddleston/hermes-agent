@@ -693,7 +693,7 @@ def test_route_lost_initial_delivery_detaches_and_expires(host_app, fake_bridges
                 metadata(ws)
             with pytest.raises(WebSocketDisconnect) as error:
                 ws.receive_bytes()
-            assert error.value.code == 1011
+            assert error.value.code == 1001  # reconnect; the shell is retained
         registry = host_app.state.host_terminals
         session = next(iter(registry._sessions.values()))
         assert not session.attached and session.last_detached_at is not None

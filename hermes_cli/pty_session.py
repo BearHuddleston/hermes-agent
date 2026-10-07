@@ -14,6 +14,11 @@ from typing import Callable, Dict, Optional, Tuple
 
 WS_CLOSE_PROCESS_EXITED = 4410
 WS_CLOSE_SUPERSEDED = 4409
+# Going Away: the viewer stopped taking output, but its session lives on and the same
+# token reattaches. The dashboard chat tab and the Webapp terminal both redial on 1001;
+# the chat tab reads 1011 as a failed start and offers a new session instead.
+WS_CLOSE_VIEWER_STALLED = 1001
+WS_CLOSE_VIEWER_STALLED_REASON = "Terminal viewer stopped reading; reconnect"
 TUI_FORCE_REDRAW = b"\x0c"
 
 
@@ -36,10 +41,10 @@ class RingBuffer:
         return bytes(self._buf)
 
 
-async def _close_ws(ws, code: int) -> None:
+async def _close_ws(ws, code: int, reason: Optional[str] = None) -> None:
     try:
         if ws is not None:
-            await asyncio.wait_for(ws.close(code=code), timeout=5.0)
+            await asyncio.wait_for(ws.close(code=code, reason=reason), timeout=5.0)
     except Exception:
         pass
 
@@ -123,7 +128,7 @@ class PtySession:
                 # replacement socket attached during the send, so the new viewer keeps its session.
                 if self._ws is ws:
                     self.detach(ws)
-                    await _close_ws(ws, 1011)
+                    await _close_ws(ws, WS_CLOSE_VIEWER_STALLED, WS_CLOSE_VIEWER_STALLED_REASON)
 
     async def write(self, ws, data: bytes, *, fence=None, **bridge_options) -> bool:
         """Serialize input and discard bytes from a superseded socket.
