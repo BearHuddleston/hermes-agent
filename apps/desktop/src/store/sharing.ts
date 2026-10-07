@@ -71,20 +71,29 @@ export function onAccessChanged(room: string, removed: boolean): void {
   void refreshChatAccess(room)
 }
 
-const readOnlyByRoom = new Map<string, ReadableAtom<boolean>>()
+/** Why this window may follow the chat but not send to it: a viewer, or someone whose access was just
+ *  removed. Null when it may send; unknown counts as allowed (the server still refuses what it must). */
+export type ChatLock = 'removed' | 'viewer' | null
 
-/** True when this window may follow the chat but not send to it: a viewer, or someone whose access was
- *  just removed. Unknown counts as allowed (the server still refuses what it must). */
-export function chatReadOnly(room: null | string): ReadableAtom<boolean> {
+const lockByRoom = new Map<string, ReadableAtom<ChatLock>>()
+
+export function chatLock(room: null | string): ReadableAtom<ChatLock> {
   const key = room ?? ''
-  let store = readOnlyByRoom.get(key)
+  let store = lockByRoom.get(key)
 
   if (!store) {
-    store = computed(
-      [$chatAccess, $accessRemoved],
-      (access, removed) => Boolean(key) && (access[key]?.role === 'viewer' || removed.has(key))
-    )
-    readOnlyByRoom.set(key, store)
+    store = computed([$chatAccess, $accessRemoved], (access, removed): ChatLock => {
+      if (!key) {
+        return null
+      }
+
+      if (removed.has(key)) {
+        return 'removed'
+      }
+
+      return access[key]?.role === 'viewer' ? 'viewer' : null
+    })
+    lockByRoom.set(key, store)
   }
 
   return store
