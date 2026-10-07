@@ -39,7 +39,7 @@ import { toggleReview } from '@/store/review'
 import { $gatewayState } from '@/store/session'
 import { $botChatSessionIds, $sessionStates, $sessionTiles, isBotChatSession } from '@/store/session-states'
 import { sessionTurnHolder } from '@/store/shared-turns'
-import { chatReadOnly } from '@/store/sharing'
+import { chatLock } from '@/store/sharing'
 import { useForcedTextDirection } from '@/store/text-direction'
 import { $threadScrolledUpBySession } from '@/store/thread-scroll'
 import { $autoSpeakReplies } from '@/store/voice-prefs'
@@ -214,11 +214,13 @@ export function ChatBar({
   // A shared chat's turn sent by someone else: queue behind it, never steer or stop it.
   const turnHolder = useTurnHolder(sessionId)
 
-  // A viewer of a shared chat follows it but cannot send (hermes_cli/web_sharing.py enforces it).
-  const viewOnly = useStore(
-    useMemo(() => chatReadOnly(presenceRoom(profile, queueSessionKey || sessionId)), [profile, queueSessionKey, sessionId])
+  // A viewer of a shared chat follows it but cannot send, and neither can someone whose access was just
+  // removed (hermes_cli/web_sharing.py enforces both).
+  const lock = useStore(
+    useMemo(() => chatLock(presenceRoom(profile, queueSessionKey || sessionId)), [profile, queueSessionKey, sessionId])
   )
 
+  const viewOnly = lock !== null
   const disabled = disabledProp || viewOnly
   const activeQueueSessionKey = queueSessionKey || sessionId || freshDraftKey || null
   const { collapsed: statusDrawerCollapsed, toggle: toggleStatusDrawer } = useStatusDrawer(activeQueueSessionKey)
@@ -485,8 +487,10 @@ export function ChatBar({
   // conversation change.
   const restingPlaceholder = useComposerPlaceholder({ disabled, reconnecting, sessionId })
 
-  const placeholder = viewOnly
-    ? t.sharing.viewerComposer
+  const placeholder = lock
+    ? lock === 'removed'
+      ? t.sharing.accessRemoved
+      : t.sharing.viewerComposer
     : turnHolder && busy
       ? t.presence.turnRunning(turnHolder.name || t.presence.chatCreator)
       : restingPlaceholder
