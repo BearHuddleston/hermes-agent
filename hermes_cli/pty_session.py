@@ -19,6 +19,8 @@ WS_CLOSE_SUPERSEDED = 4409
 # the chat tab reads 1011 as a failed start and offers a new session instead.
 WS_CLOSE_VIEWER_STALLED = 1001
 WS_CLOSE_VIEWER_STALLED_REASON = "Terminal viewer stopped reading; reconnect"
+# How long a live-output frame may wait on the viewer before it counts as stalled.
+_LIVE_OUTPUT_SEND_TIMEOUT_SECONDS = 5.0
 TUI_FORCE_REDRAW = b"\x0c"
 
 
@@ -121,7 +123,7 @@ class PtySession:
                 if ws is not None:
                     async with output_lock:
                         if self._ws is ws:
-                            await asyncio.wait_for(ws.send_bytes(chunk), timeout=5.0)
+                            await asyncio.wait_for(ws.send_bytes(chunk), timeout=_LIVE_OUTPUT_SEND_TIMEOUT_SECONDS)
             except Exception:
                 # The viewer is gone; nothing else observes this failure (the handler's finally
                 # only runs once ws.receive() sees the disconnect). detach() is a no-op when a

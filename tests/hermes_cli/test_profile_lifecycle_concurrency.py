@@ -51,7 +51,8 @@ def profile_pair(tmp_path, monkeypatch):
     return pair
 
 
-def _assert_unrelated_profile_db_opens(profile_pair, monkeypatch):
+@pytest.mark.platforms("any")  # real spawned processes and OS file locks: every OS lane runs it
+def test_unrelated_profile_db_opens(profile_pair, monkeypatch):
     alpha, beta = profile_pair
     monkeypatch.setattr(profile_lifecycle, "_PROFILE_LIFECYCLE_LOCK_TIMEOUT_SECONDS", 2)
     # A -> B -> A, real writable and read-only opens; B must complete BEFORE
@@ -63,7 +64,8 @@ def _assert_unrelated_profile_db_opens(profile_pair, monkeypatch):
                     assert db.get_session(available.name) is not None
 
 
-def _assert_waiter_deadlines_and_busy_error(profile_pair, monkeypatch):
+@pytest.mark.platforms("any")  # real spawned processes and OS file locks: every OS lane runs it
+def test_waiter_deadlines_and_busy_error(profile_pair, monkeypatch):
     alpha, _ = profile_pair
     token = ensure_profile_incarnation(alpha)
     waiting = threading.Event()
@@ -83,7 +85,8 @@ def _assert_waiter_deadlines_and_busy_error(profile_pair, monkeypatch):
 
     with _external_lease(alpha), ThreadPoolExecutor(max_workers=2) as pool:
         waiting.clear()
-        monkeypatch.setattr(profile_lifecycle, "_PROFILE_LIFECYCLE_LOCK_TIMEOUT_SECONDS", 8)
+        # The first budget outlasts the second by 2s, the margin a loaded runner needs.
+        monkeypatch.setattr(profile_lifecycle, "_PROFILE_LIFECYCLE_LOCK_TIMEOUT_SECONDS", 4)
         first = pool.submit(acquire)
         assert waiting.wait(5)
         monkeypatch.setattr(profile_lifecycle, "_PROFILE_LIFECYCLE_LOCK_TIMEOUT_SECONDS", 2)
@@ -92,39 +95,9 @@ def _assert_waiter_deadlines_and_busy_error(profile_pair, monkeypatch):
             second.result(timeout=5)
         assert not first.done(), "second waiter inherited the first waiter's deadline"
         with pytest.raises(TimeoutError, match="profile lifecycle lock"):
-            first.result(timeout=12)
+            first.result(timeout=8)
     with profile_incarnation_lease(alpha, token):
         assert ensure_profile_incarnation(alpha) == token
-
-
-@pytest.mark.platforms("linux")
-def test_unrelated_profile_db_opens_on_linux(profile_pair, monkeypatch):
-    _assert_unrelated_profile_db_opens(profile_pair, monkeypatch)
-
-
-@pytest.mark.platforms("macos")
-def test_unrelated_profile_db_opens_on_macos(profile_pair, monkeypatch):
-    _assert_unrelated_profile_db_opens(profile_pair, monkeypatch)
-
-
-@pytest.mark.platforms("windows")
-def test_unrelated_profile_db_opens_on_windows(profile_pair, monkeypatch):
-    _assert_unrelated_profile_db_opens(profile_pair, monkeypatch)
-
-
-@pytest.mark.platforms("linux")
-def test_waiter_deadlines_and_busy_error_on_linux(profile_pair, monkeypatch):
-    _assert_waiter_deadlines_and_busy_error(profile_pair, monkeypatch)
-
-
-@pytest.mark.platforms("macos")
-def test_waiter_deadlines_and_busy_error_on_macos(profile_pair, monkeypatch):
-    _assert_waiter_deadlines_and_busy_error(profile_pair, monkeypatch)
-
-
-@pytest.mark.platforms("windows")
-def test_waiter_deadlines_and_busy_error_on_windows(profile_pair, monkeypatch):
-    _assert_waiter_deadlines_and_busy_error(profile_pair, monkeypatch)
 
 
 def test_clone_copy_never_queues_source_readers_nor_publishes_a_replaced_source(tmp_path, monkeypatch):

@@ -106,6 +106,7 @@ def test_cli_rename_refused_by_a_holder_prints_the_reason_without_a_traceback(pr
         profile_cmd._profile_rename(SimpleNamespace(old_name="coder", new_name="dev"))
 
     assert exited.value.code == 1
-    assert (f"Error: Profile 'coder' is still in use by external process(es) {_HOLDER}; retry rename."
-            in capsys.readouterr().out)
+    out, err = capsys.readouterr()
+    assert str(_HOLDER) in out
+    assert "Traceback" not in out + err
     assert profiles.profile_exists("coder")

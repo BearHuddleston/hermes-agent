@@ -77,16 +77,16 @@ def test_obligation_armed_by_one_profile_is_owed_by_every_other(two_profiles, no
     assert fleet._pending_fleet_restart_needed() is False
 
 
-@pytest.mark.parametrize("kind", ["serve", "dashboard", "webapp"])
+# One kind: serve/dashboard/webapp reach this path only through the shared _SERVE_KINDS set.
 @pytest.mark.parametrize("condition", ["gone", "alive", "unknown", "unidentified", "write-error", "supervised", "unclassified"])
 def test_backend_obligation_keeps_its_owner_across_profiles(
-    two_profiles, no_live_fleet, monkeypatch, kind, condition
+    two_profiles, no_live_fleet, monkeypatch, condition
 ):
     """Backend debt is discharged or durably handed off, never mistaken for gateway debt."""
     from hermes_cli import process_identity
 
     runtime = {
-        "kind": kind, "profile": "coder", "pid": 4242,
+        "kind": "serve", "profile": "coder", "pid": 4242,
         "supervisor": "manual-serve", "restart_via": "respawn-argv",
         "detail": {"create_time": 1000.0},
     }
@@ -114,7 +114,7 @@ def test_backend_obligation_keeps_its_owner_across_profiles(
     if condition in ("alive", "unknown"):
         assert len(reminders) == 1
         row = json.loads(reminders[0].read_text(encoding="utf-8"))
-        assert (row["kind"], row["profile"], row["pid"], row["create_time"]) == (kind, "coder", 4242, 1000.0)
+        assert (row["kind"], row["profile"], row["pid"], row["create_time"]) == ("serve", "coder", 4242, 1000.0)
     else:
         assert reminders == []
 

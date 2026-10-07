@@ -155,12 +155,14 @@ class StalledWS(FakeWS):
 
 
 @pytest.mark.asyncio
-async def test_viewer_that_stops_reading_live_output_is_told_to_reconnect():
+async def test_viewer_that_stops_reading_live_output_is_told_to_reconnect(monkeypatch):
     """The send limit drops a stalled viewer, not its session. 1011 makes the
     dashboard chat tab offer a new session; 1001 is the code both it and the
     Webapp terminal redial on, and the same key then reattaches the same PTY."""
+    from hermes_cli import pty_session
     from hermes_cli.pty_session import PtySessionRegistry
 
+    monkeypatch.setattr(pty_session, "_LIVE_OUTPUT_SEND_TIMEOUT_SECONDS", 0.1)
     registry = PtySessionRegistry(ttl=60.0, max_sessions=2, buffer_cap=1024, read_timeout=0.01)
     bridge = FakeBridge([])
     session, _ = await registry.attach_or_spawn("k", spawn=lambda: bridge)
