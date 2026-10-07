@@ -38,6 +38,7 @@ export interface TerminalIpcApi {
 // every Linux pane would print `bash: warning: setlocale: LC_CTYPE: cannot
 // change locale (UTF-8)`. Reuse the user's LANG there, else the glibc-guaranteed
 // C.UTF-8. Pure: the platform arrives as data so tests need not fake the host.
+// Keep in step with the Webapp's terminal_lc_ctype in hermes_cli/web_host_terminal.py.
 export function terminalLcCtype(
   env: { LANG?: string; LC_CTYPE?: string },
   platform: NodeJS.Platform = process.platform

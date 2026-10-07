@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Optional
 
@@ -97,6 +98,23 @@ def safe_cwd(requested: Optional[str]) -> str:
     return str(fallback)
 
 
+def terminal_lc_ctype(env: Mapping[str, str], platform: str) -> Optional[str]:
+    """Return the LC_CTYPE a host shell's ``env`` needs added, or None to leave it alone.
+
+    macOS accepts the bare charset name ``UTF-8`` as a locale; glibc rejects it,
+    and LC_CTYPE outranks LANG, so forcing it on Linux breaks even a valid LANG.
+    There a set LANG is left in charge (copying it would pin a value a login rc
+    may still change) and only a missing one falls back to glibc's C.UTF-8.
+    Windows shells take their code page from the console, not LC_CTYPE.
+    """
+    # Keep in step with Desktop's terminalLcCtype in apps/desktop/electron/terminal-ipc.ts.
+    if env.get("LC_ALL") or env.get("LC_CTYPE") or platform == "win32":
+        return None
+    if platform == "darwin":
+        return "UTF-8"
+    return None if env.get("LANG") else "C.UTF-8"
+
+
 def resolve_argv(
     *, home: Path, requested_cwd: Optional[str] = None,
 ) -> tuple[list[str], str, dict[str, str], str]:
@@ -107,6 +125,7 @@ def resolve_argv(
     from hermes_constants import (
         get_process_hermes_home, reset_hermes_home_override, set_hermes_home_override,
     )
+    from hermes_platform.host.facts import os_family
     from tools.environments.local import build_subprocess_env, served_profile_child_env
     from tools.terminal_scope import enforce_no_refusal, get_terminal_scope
     from tui_gateway.launch_profile_policy import (
@@ -145,7 +164,8 @@ def resolve_argv(
     env["TERM_PROGRAM"] = "Hermes"
     env["TERM_PROGRAM_VERSION"] = __version__
     env["HERMES_DESKTOP_TERMINAL"] = "1"
-    env.setdefault("LC_CTYPE", "UTF-8")
+    if lc_ctype := terminal_lc_ctype(env, os_family()):
+        env["LC_CTYPE"] = lc_ctype
 
     argv, shell_name = shell_spec()
     return argv, safe_cwd(requested_cwd), env, shell_name
