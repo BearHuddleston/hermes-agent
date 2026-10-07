@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import select
 import sys
-import time
 from typing import Optional, Sequence
 
 try:
@@ -42,8 +42,8 @@ class PtyUnavailableError(RuntimeError):
 
 class WinPtyBridge:
     """pywinpty-backed bridge with the same interface as ``PtyBridge``. ``read`` runs inside
-    ``run_in_executor``; ConPTY has no selectable fd, so reads poll and writes run in a worker
-    thread to keep the same non-blocking event-loop contract as the POSIX bridge."""
+    ``run_in_executor`` and, like the POSIX bridge, returns within its timeout; writes run in a
+    worker thread to keep the same non-blocking event-loop contract as the POSIX bridge."""
 
     def __init__(self, proc: "PtyProcess") -> None:  # type: ignore[name-defined]
         self._proc = proc
@@ -81,17 +81,28 @@ class WinPtyBridge:
             return False
 
     def read(self, timeout: float = 0.2) -> Optional[bytes]:
-        """Up to 64 KiB of child output."""
+        """Up to 64 KiB of child output, waiting at most ``timeout`` seconds for it.
+
+        ``b""`` = nothing yet; ``None`` = EOF / closed (also after :meth:`close`).
+        """
         if self._closed:
             return None
+        # pywinpty's read is a blocking recv on the loopback socket its reader thread
+        # fills (``fileno()``). Unbounded, an idle shell would hold this executor
+        # thread until it next printed, and a few quiet terminals would take every
+        # default-executor thread (min(32, cpu count + 4)) from keystrokes and cleanup.
+        try:
+            readable, _, _ = select.select([self._proc], [], [], timeout)
+        except (OSError, ValueError):
+            return None
+        if not readable:
+            return b""
         try:
             data = self._proc.read(65536)  # pywinpty returns str
         except Exception:
             return None
         if not data:
-            # No fd to select on; sleep so the executor thread doesn't pin a core while idle.
-            time.sleep(min(timeout, 0.02))
-            return b""
+            return b""  # pywinpty's placeholder for an empty ConPTY read
         if isinstance(data, bytes):
             return data
         # pywinpty decodes internally, so a multibyte UTF-8 sequence can split across reads;
