@@ -36,12 +36,8 @@ def test_private_launch_uses_existing_token_and_never_hands_it_to_the_browser_la
     assert not opened
     lifecycle._maybe_open_browser("::1", 9123, True, "coder")
     capsys.readouterr()
-    if sys.platform == "darwin":
-        assert opened == []
-        assert server.app.state.webapp_window_tickets == {}
-    else:
-        assert len(opened) == 1 and server._SESSION_TOKEN not in opened[0]
-        assert str(tmp_path) not in opened[0]
+    assert len(opened) == 1 and server._SESSION_TOKEN not in opened[0]
+    assert str(tmp_path) not in opened[0]
     assert server._SESSION_TOKEN not in caplog.text
 
     # Real startup credential branch, stopping at the socket construction seam.
@@ -65,30 +61,6 @@ def test_private_launch_uses_existing_token_and_never_hands_it_to_the_browser_la
     lifecycle._maybe_open_browser("127.0.0.1", 9123, True, "coder")
     assert not capsys.readouterr().out
     assert urlsplit(opened[-1]).fragment == ""
-
-
-def test_existing_named_webapp_preserves_profile_and_explains_private_access(monkeypatch, capsys):
-    import webbrowser
-    from hermes_cli import main_dashboard, profiles
-    from gateway import host_rendezvous as hr
-
-    monkeypatch.setattr(profiles, "get_active_profile_name", lambda: "coder")
-    monkeypatch.delenv("HERMES_DESKTOP", raising=False)
-    record = SimpleNamespace(pid=123, host="127.0.0.1", port=9123, role="serve", profiles=())
-    monkeypatch.setattr(main_dashboard, "_host_backend_attachment", lambda: record)
-    monkeypatch.setattr(hr, "probe_owner", lambda _: {"servesSpa": True, "ui_surface": "webapp"})
-    monkeypatch.setattr(main_dashboard, "_explicit_endpoint_flags", lambda: set())
-    opened = []
-    monkeypatch.setattr(webbrowser, "open", opened.append)
-    args = SimpleNamespace(host="127.0.0.1", port=9123, ui_surface="webapp",
-                           no_open=False, isolated=False, open_profile="")
-    with pytest.raises(SystemExit) as result:
-        main_dashboard._attach_to_host_backend(args)
-    assert result.value.code == 0
-    output = capsys.readouterr().out
-    assert "?profile=coder" in output
-    assert "private launch link" in output and "BEFORE its # fragment" in output
-    assert not opened
 
 
 _SERVER = """

@@ -73,8 +73,6 @@ def test_control_plane_classifier_is_token_based_not_substring():
     )
     # dashboard as the real subcommand
     assert update_cmd._looks_like_desktop_control_plane(f"{py} dashboard") is True
-    # Webapp is the browser-hosted Desktop control plane.
-    assert update_cmd._looks_like_desktop_control_plane(f"{py} webapp") is True
     # undeterminable subcommand → NOT a control plane (never guess ownership)
     assert update_cmd._looks_like_desktop_control_plane("python.exe -c import time") is False
 

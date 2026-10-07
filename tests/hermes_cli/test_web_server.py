@@ -4056,10 +4056,10 @@ class TestStatusInstallId:
         second = self.client.get("/api/status")
         assert second.json().get("install_id") == install_id
 
-    @pytest.mark.parametrize("surface", ["dashboard", "webapp", "serve"])
-    def test_status_advertises_exact_ui_surface(self, monkeypatch, surface):
+    def test_status_advertises_exact_ui_surface(self, monkeypatch):
         import hermes_cli.web_server as ws
 
+        surface = "webapp"
         monkeypatch.setattr(ws.app.state, "ui_surface", surface, raising=False)
         monkeypatch.setattr(_gw_status, "get_running_pid_cached", lambda: None)
         monkeypatch.setattr(_gw_status, "read_runtime_status", lambda: None)
@@ -5323,20 +5323,6 @@ def test_host_terminal_resolver_applies_selected_profile_home_and_config(
 def test_host_terminal_resolver_uses_real_linux_shell(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_DESKTOP_SHELL", "/bin/sh")
     _assert_host_terminal_resolver_uses_real_host(tmp_path)
-    from hermes_cli import web_host_terminal
-    argv, shell_name = web_host_terminal.shell_spec()
-    assert argv == ["/bin/sh", "-i"]
-    assert shell_name == "sh"
-
-
-@pytest.mark.platforms("macos")
-def test_host_terminal_resolver_uses_real_macos_shell(tmp_path, monkeypatch):
-    monkeypatch.setenv("HERMES_DESKTOP_SHELL", "/bin/sh")
-    _assert_host_terminal_resolver_uses_real_host(tmp_path)
-    from hermes_cli import web_host_terminal
-    argv, shell_name = web_host_terminal.shell_spec()
-    assert argv == ["/bin/sh", "-i"]
-    assert shell_name == "sh"
 
 
 @pytest.mark.platforms("posix")

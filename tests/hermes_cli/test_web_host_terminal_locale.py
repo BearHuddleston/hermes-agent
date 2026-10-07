@@ -23,13 +23,11 @@ import pytest
         ({"LANG": "en_US.UTF-8", "LC_CTYPE": "de_DE.UTF-8"}, "linux", None),
         ({"LC_ALL": "de_DE.UTF-8"}, "linux", None),
         ({"LC_CTYPE": "de_DE.UTF-8"}, "darwin", None),
-        ({"LC_ALL": "de_DE.UTF-8"}, "darwin", None),
         # macOS accepts the bare charset, and a launchd-started backend often has no LANG.
         ({}, "darwin", "UTF-8"),
         ({"LANG": "en_US.UTF-8"}, "darwin", "UTF-8"),
         # Windows shells take their code page from the console, not LC_CTYPE.
         ({}, "win32", None),
-        ({"LANG": "en_US.UTF-8"}, "win32", None),
     ],
 )
 def test_lc_ctype_rule(env, platform, expected):

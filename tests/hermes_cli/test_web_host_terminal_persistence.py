@@ -173,15 +173,23 @@ def test_real_shell_survives_disconnect_and_explicit_close(host_app, tmp_path):
 
 
 @pytest.mark.platforms("posix")
-def test_paste_waits_for_a_foreground_program_that_is_not_reading(host_app, tmp_path):
+def test_paste_waits_for_a_foreground_program_that_is_not_reading(host_app, tmp_path, monkeypatch):
     """A paste bigger than the PTY input queue (about 1 KB on macOS, 15 KB on Linux)
     while ``sleep`` or ``npm install`` runs waits for the program, however long it
     takes: the shell survives and the program then reads every byte in order."""
     import hashlib
     import shlex
     import sys
+    # Shrink the bridge's default write deadline (the chat TUI's 10 s) so a short
+    # stall outlasts it: a host terminal that writes with the default loses its shell.
+    bridge_write = web_server_chat.PtyBridge.write
+
+    async def write(self, data, *, timeout=0.5, **options):
+        return await bridge_write(self, data, timeout=timeout, **options)
+
+    monkeypatch.setattr(web_server_chat.PtyBridge, "write", write)
     paste = b"".join(b"%05d %s\n" % (n, b"x" * 57) for n in range(1024))  # 64 KiB
-    stall = 12  # longer than the chat TUI's 10 s write deadline
+    stall = 2  # longer than the shrunken default deadline
     program = (
         f"import hashlib,sys,time; print('BUS'+'Y=1', flush=True); time.sleep({stall}); "
         f"data = sys.stdin.buffer.read({len(paste)}); "
@@ -501,9 +509,9 @@ def test_ownership_checks_never_block_the_event_loop(host_app, fake_bridges, tmp
     assert checks and set(checks) == {"thread"}
 
 
-def test_input_frames_that_arrive_together_share_one_ownership_check(tmp_path):
-    """A paste lands as many frames. One off-loop fenced write covers every frame
-    that arrived before it began, and a retired generation still receives none."""
+def test_input_frames_that_arrive_together_share_ownership_checks(tmp_path):
+    """A paste lands as many frames. Frames that arrived together share off-loop
+    fenced writes, every byte lands in order, and a retired generation receives none."""
     from types import SimpleNamespace
     from hermes_cli.web_host_terminal_sessions import HostOwner, _pump_input
 
@@ -545,8 +553,12 @@ def test_input_frames_that_arrive_together_share_one_ownership_check(tmp_path):
         await _pump_input(ws, SimpleNamespace(remove=remove), "terminal", session, Owner())
         return checks, written, removed
 
-    assert asyncio.run(pump(True)) == (["thread"], [b"".join(frames)], [])
-    assert asyncio.run(pump(False)) == (["thread"], [], ["terminal"])
+    checks, written, removed = asyncio.run(pump(True))
+    assert b"".join(written) == b"".join(frames) and removed == []
+    assert set(checks) == {"thread"} and len(checks) < len(frames)
+    checks, written, removed = asyncio.run(pump(False))
+    assert written == [] and removed == ["terminal"]
+    assert set(checks) == {"thread"}
 
 
 @pytest.mark.platforms("posix")

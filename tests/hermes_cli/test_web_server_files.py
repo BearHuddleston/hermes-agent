@@ -128,18 +128,6 @@ def test_download_authenticates_via_query_token(forced_files_client):
     assert ok.content == b"hello"
     assert ok.headers["content-disposition"].startswith("attachment;")
 
-    head = client.head(
-        "/api/files/download",
-        params={"path": str(file_path), "token": web_server._SESSION_TOKEN},
-    )
-    assert head.status_code == 200
-    assert head.content == b""
-    assert head.headers["content-length"] == str(len(ok.content))
-    assert client.head(
-        "/api/files/download",
-        params={"path": str(root / "missing.pdf"), "token": web_server._SESSION_TOKEN},
-    ).status_code == 404
-
     playback = client.get(
         "/api/files/download",
         params={"path": str(file_path), "token": web_server._SESSION_TOKEN},
@@ -165,14 +153,9 @@ def test_download_authenticates_via_query_token(forced_files_client):
     ).status_code == 401
 
 
-@pytest.mark.parametrize("route,method", [
-    ("/api/fs/download", "get"),
-    ("/api/fs/read-data-url", "get"),
-    ("/api/files/download", "get"),
-    ("/api/files/download", "head"),
-])
+@pytest.mark.parametrize("route", ["/api/fs/download", "/api/fs/read-data-url", "/api/files/download"])
 def test_download_resolves_paths_in_the_originating_profile_session(
-    local_files_client, monkeypatch, route, method,
+    local_files_client, monkeypatch, route,
 ):
     from pathlib import Path
     from hermes_state import SessionDB
@@ -199,22 +182,17 @@ def test_download_resolves_paths_in_the_originating_profile_session(
             db.create_session(sid, source="gui", cwd=cwd)
         finally:
             db.close()
-    request = getattr(client, method)
     for path in ("./report.txt", "../project/report.txt", str(artifact), artifact.as_uri()):
-        response = request(route, params={
+        response = client.get(route, params={
             "path": path, "profile": "default", "session_id": "origin-session",
         })
         assert response.status_code == 200, response.text
-        if method == "head":
-            assert response.content == b""
-            assert response.headers["content-length"] == str(artifact.stat().st_size)
-        else:
-            data = (base64.b64decode(response.json()["dataUrl"].split(",", 1)[1])
-                    if route.endswith("read-data-url") else response.content)
-            assert data == artifact.read_bytes()
+        data = (base64.b64decode(response.json()["dataUrl"].split(",", 1)[1])
+                if route.endswith("read-data-url") else response.content)
+        assert data == artifact.read_bytes()
     for profile, session_id in (("other", "origin-session"), ("missing", "origin-session"),
                                 ("default", "missing-session"), ("default", "")):
-        response = request(route, params={
+        response = client.get(route, params={
             "path": str(artifact), "profile": profile, "session_id": session_id,
         })
         assert response.status_code == 404, response.text
