@@ -45,7 +45,7 @@ import {
   saveProfileAppearance
 } from './profile-appearance'
 import { retintTheme } from './retint'
-import type { DesktopTheme, DesktopThemeColors } from './types'
+import type { DesktopTheme, DesktopThemeColors, DesktopThemeTypography } from './types'
 import { $userThemes, listAllThemes, resolveTheme } from './user-themes'
 
 // Legacy global skin (pre per-profile themes). Still the inheritance fallback
@@ -415,6 +415,28 @@ const mixesFor = (isDark: boolean): Record<string, string> => ({
   '--theme-mix-bubble': isDark ? '46%' : '0%'
 })
 
+const TYPOGRAPHY_KNOB_VARS = {
+  baseSize: '--dt-base-size',
+  lineHeight: '--dt-line-height',
+  letterSpacing: '--dt-letter-spacing'
+} as const
+
+// Optional typography knobs. They are the ONLY vars applyTheme may paint
+// inline conditionally: styles.css declares the same fallbacks on :root, so
+// a theme that stops providing one must drop the inline value — otherwise
+// the previous skin's size/leading/tracking sticks across a switch (#41766).
+function applyTypographyKnobs(root: HTMLElement, typo: Partial<DesktopThemeTypography>) {
+  for (const [key, cssVar] of Object.entries(TYPOGRAPHY_KNOB_VARS) as [keyof typeof TYPOGRAPHY_KNOB_VARS, string][]) {
+    const value = typo[key]
+
+    if (value) {
+      root.style.setProperty(cssVar, value)
+    } else {
+      root.style.removeProperty(cssVar)
+    }
+  }
+}
+
 function applyTheme(theme: DesktopTheme, mode: 'light' | 'dark', chatFontFamily = $chatFontFamily.get()) {
   if (typeof document === 'undefined') {
     return
@@ -492,6 +514,8 @@ function applyTheme(theme: DesktopTheme, mode: 'light' | 'dark', chatFontFamily 
   for (const [k, v] of Object.entries({ ...seeds, ...mixesFor(isDark), ...palette })) {
     root.style.setProperty(k, v)
   }
+
+  applyTypographyKnobs(root, typo)
 
   const chromeBg = chromeBackground(c.background, isDark)
 
