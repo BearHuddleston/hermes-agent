@@ -3,6 +3,9 @@ import { readJson, writeJson } from '@/lib/storage'
 
 export type AppearanceField = 'theme' | 'theme_mode'
 
+/** The `(connection, profile)` key every appearance read, write and pick is owned by. */
+export const appearanceOwnerKey = (connectionId: string, profile: string): string => `${connectionId}::${profile}`
+
 interface Picks {
   owner: string
   generation: string

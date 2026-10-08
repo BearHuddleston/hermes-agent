@@ -535,4 +535,84 @@ describe('foreground profile appearance ownership', () => {
       expect(state(profile)).toMatchObject(shows(theirs))
     }
   )
+
+  /** Start a config load whose answer the test gives; it began before whatever happens next. */
+  function staleRead(load: () => Promise<void>) {
+    const answered = deferred<unknown>()
+    nextRead = answered
+    let loading!: Promise<void>
+    act(() => {
+      loading = load()
+    })
+
+    return (config: unknown) =>
+      act(async () => {
+        answered.resolve(config)
+        await loading
+      })
+  }
+
+  it.each(slots)(
+    'never adopts a $field read served before a peer adopted a newer one ($profile)',
+    async ({ profile: kind, field }) => {
+      const { config, load, owner, peer, pref, profile, shows, values } = await besidePeer(kind, field)
+      const [base, , theirs] = values
+      const settleStale = staleRead(load)
+      // A peer's confirmed read reaches this window only through the cache.
+      fromPeer(() => {
+        peer.confirmAppearance(profile, field, owner, theirs)
+        pref.put(profile, theirs)
+      })
+      await settleStale(config(base))
+      expect(state(profile)).toMatchObject(shows(theirs))
+    }
+  )
+
+  // An unassigned profile paints the inherited look (a pick on any profile) or
+  // the default profile's own pick, neither of which is a pick of its own.
+  const inherits = (['theme', 'theme_mode'] as const).flatMap(field =>
+    (['inherited', 'default'] as const).map(source => ({ field, source }))
+  )
+
+  it.each(inherits)(
+    'keeps the $source $field a peer changed over an unassigned profile read begun before it',
+    async ({ field, source }) => {
+      const { config, pref, shows, values } = appearanceCase(field)
+      const [base, , theirs] = values
+      const profile = `unassigned-${++serial}`
+      configs.A = config(base)
+      on('A', profile)
+      const load = mountApp()
+      const settleStale = staleRead(load)
+      fromPeer(() => (source === 'inherited' ? pref.pick('other-profile', theirs) : pref.put('default', theirs)))
+      await settleStale(config(base))
+      expect(pref.own(profile)).toBeNull()
+      expect(field === 'theme' ? ctx.themeName : ctx.mode).toBe(theirs)
+      // A read begun after it speaks for the backend again.
+      await act(() => load())
+      expect(state(profile)).toMatchObject(shows(base))
+    }
+  )
+
+  it.each(['theme', 'theme_mode'] as const)(
+    'never refills a %s cache a peer cleared from a read begun before',
+    async field => {
+      const { config, pref, values } = appearanceCase(field)
+      const [base] = values
+      const profile = `cleared-${++serial}`
+      configs.A = config(base)
+      on('A', profile)
+      const load = mountApp()
+      await act(() => load())
+      const settleStale = staleRead(load)
+      act(() => {
+        window.localStorage.clear()
+        window.dispatchEvent(new StorageEvent('storage', { key: null }))
+      })
+      await settleStale(config(base))
+      expect(pref.own(profile)).toBeNull()
+      await act(() => load())
+      expect(pref.own(profile)).toBe(base)
+    }
+  )
 })

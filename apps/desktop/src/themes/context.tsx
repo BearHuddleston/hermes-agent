@@ -16,7 +16,7 @@ import { createContext, type ReactNode, useCallback, useContext, useEffect, useM
 import { $registryVersion } from '@/contrib/registry'
 import { matchesQuery, useMediaQuery } from '@/hooks/use-media-query'
 import { translateNow } from '@/i18n'
-import { persistString, persistStringRecord, storedString, storedStringRecord } from '@/lib/storage'
+import { parseStringRecord, persistString, persistStringRecord, storedString, storedStringRecord } from '@/lib/storage'
 import { recordFeatureUse } from '@/store/desktop-metrics'
 import { notifyError } from '@/store/notifications'
 import { $activeGatewayProfile, normalizeProfileKey } from '@/store/profile'
@@ -24,7 +24,13 @@ import { $connection } from '@/store/session'
 import { setAppearance } from '@/store/translucency'
 
 import { $accentOverride } from './accent-override'
-import { beginAppearancePick, confirmAppearance, peerPickChange, settleAppearancePick } from './appearance-picks'
+import {
+  type AppearanceField,
+  beginAppearancePick,
+  confirmAppearance,
+  peerPickChange,
+  settleAppearancePick
+} from './appearance-picks'
 import {
   $backendCustomCSS,
   $backendThemes,
@@ -38,6 +44,7 @@ import { BUILTIN_THEME_LIST, DEFAULT_SKIN_NAME, DEFAULT_TYPOGRAPHY, nousTheme, R
 import {
   $profileAppearance,
   appearanceIsCurrent,
+  isThemeMode,
   markLocalAppearanceChange,
   profileAppearanceOwner,
   type ProfileAppearancePatch,
@@ -83,8 +90,7 @@ const normalizeSkin = (name: string | null): string =>
  * setting — and with per-appearance translucency it also handed them light's
  * much heavier tint, tuned for a bright desktop they don't have.
  */
-const normalizeMode = (value: string | null): ThemeMode =>
-  value === 'light' || value === 'dark' || value === 'system' ? value : 'system'
+const normalizeMode = (value: string | null): ThemeMode => (isThemeMode(value) ? value : 'system')
 
 // ─── Per-profile appearance persistence ─────────────────────────────────────
 // Skin and mode are each stored per profile. "default" isn't a real profile —
@@ -173,19 +179,21 @@ const storedSkin = (profile: string): string =>
   skinPref.stored(profile) ??
   (profile === BOOT_PROFILE_KEY ? (localDisplaySkinName ?? DEFAULT_SKIN_NAME) : DEFAULT_SKIN_NAME)
 
-/** Everything a peer window could change that this one has to repaint for. */
-const APPEARANCE_KEYS = new Set([
-  SKIN_KEY,
-  PROFILE_SKINS_KEY,
-  MODE_KEY,
-  PROFILE_MODES_KEY,
-  INHERITED_SKIN_KEY,
-  INHERITED_MODE_KEY
+/**
+ * Everything a peer window could change that this one has to repaint for, and
+ * which slot it is: the legacy global (the default profile's own pick), the
+ * named-profile map, or the inherited look.
+ */
+const APPEARANCE_KEYS = new Map<string, { field: AppearanceField; slot: 'inherited' | 'legacy' | 'record' }>([
+  [SKIN_KEY, { field: 'theme', slot: 'legacy' }],
+  [MODE_KEY, { field: 'theme_mode', slot: 'legacy' }],
+  [PROFILE_SKINS_KEY, { field: 'theme', slot: 'record' }],
+  [PROFILE_MODES_KEY, { field: 'theme_mode', slot: 'record' }],
+  [INHERITED_SKIN_KEY, { field: 'theme', slot: 'inherited' }],
+  [INHERITED_MODE_KEY, { field: 'theme_mode', slot: 'inherited' }]
 ])
 
 const rememberActiveProfileKey = (profile: string) => persistString(LAST_PROFILE_KEY, profile)
-
-type AppearanceField = keyof ProfileAppearancePatch
 
 const APPEARANCE_PREFS: Record<AppearanceField, Pick<ReturnType<typeof profilePref>, 'own' | 'pick' | 'put'>> = {
   theme: skinPref,
@@ -255,20 +263,22 @@ function commitPick(profile: string, field: AppearanceField, value: string, onRo
   })
 }
 
+/** Adopt a config value: it supersedes any pending pick, and the cache follows it. */
+function confirmConfigAppearance(profile: string, owner: string, field: AppearanceField, value: string): void {
+  const pref = APPEARANCE_PREFS[field]
+
+  latestPick.delete(appearanceCacheKey(profile, field))
+  confirmAppearance(profile, field, owner, value)
+
+  if (pref.own(profile) !== value) {
+    pref.put(profile, value)
+  }
+}
+
 /** Storage events carry the whole named-profile map, including inactive profiles. */
 function changedAppearanceProfiles(event: StorageEvent): string[] {
-  const record = (raw: string | null): Record<string, string> => {
-    try {
-      const parsed: unknown = JSON.parse(raw || 'null')
-
-      return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
-        ? Object.fromEntries(Object.entries(parsed).filter((entry): entry is [string, string] => typeof entry[1] === 'string'))
-        : {}
-    } catch { return {} }
-  }
-
-  const before = record(event.oldValue)
-  const after = record(event.newValue)
+  const before = parseStringRecord(event.oldValue)
+  const after = parseStringRecord(event.newValue)
 
   return [...new Set([...Object.keys(before), ...Object.keys(after)])]
     .filter(profile => profile !== 'default' && before[profile] !== after[profile])
@@ -298,7 +308,7 @@ function seedFromLocalPick(appearance: { profile: string; theme: string; mode: s
 
   const patch: ProfileAppearancePatch = {
     ...(skin && !RETIRED_SKINS.has(skin) ? { theme: skin } : {}),
-    ...(mode === 'light' || mode === 'dark' || mode === 'system' ? { theme_mode: mode } : {})
+    ...(isThemeMode(mode) ? { theme_mode: mode } : {})
   }
 
   if (Object.keys(patch).length) {
@@ -689,24 +699,12 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
     const { mode: configMode, theme } = configAppearance
 
     if (theme) {
-      latestPick.delete(appearanceCacheKey(profileKey, 'theme'))
-      confirmAppearance(profileKey, 'theme', appearanceOwner, theme)
-
-      if (skinPref.own(profileKey) !== theme) {
-        skinPref.put(profileKey, theme)
-      }
-
+      confirmConfigAppearance(profileKey, appearanceOwner, 'theme', theme)
       setThemeNameState(theme)
     }
 
     if (configMode) {
-      latestPick.delete(appearanceCacheKey(profileKey, 'theme_mode'))
-      confirmAppearance(profileKey, 'theme_mode', appearanceOwner, configMode)
-
-      if (modePref.own(profileKey) !== configMode) {
-        modePref.put(profileKey, configMode)
-      }
-
+      confirmConfigAppearance(profileKey, appearanceOwner, 'theme_mode', configMode)
       setModeState(configMode)
     }
 
@@ -736,7 +734,9 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
         if (peer.reconcile) { reconcileProfileAppearance(peer.owner) }
       }
 
-      if (event.key !== null && !APPEARANCE_KEYS.has(event.key)) {
+      const changed = event.key === null ? undefined : APPEARANCE_KEYS.get(event.key)
+
+      if (event.key !== null && !changed) {
         return
       }
 
@@ -751,24 +751,17 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
         markLocalAppearanceChange(profile)
       }
 
-      if (event.key === null) {
+      if (!changed) {
         for (const pending of latestPick.values()) { adopt(pending.profile, pending.field) }
         markLocalAppearanceChange(live)
-      } else if (event.key === PROFILE_SKINS_KEY || event.key === PROFILE_MODES_KEY) {
-        const field = event.key === PROFILE_SKINS_KEY ? 'theme' : 'theme_mode'
-
-        for (const profile of changedAppearanceProfiles(event)) { adopt(profile, field) }
-      } else if (event.key === INHERITED_SKIN_KEY || event.key === INHERITED_MODE_KEY) {
-        // No profile's own pick changed, only what an unassigned profile paints.
-        const field = event.key === INHERITED_SKIN_KEY ? 'theme' : 'theme_mode'
-
-        if (APPEARANCE_PREFS[field].own(live) === null) { markLocalAppearanceChange(live) }
+      } else if (changed.slot === 'record') {
+        for (const profile of changedAppearanceProfiles(event)) { adopt(profile, changed.field) }
       } else {
-        const field = event.key === SKIN_KEY ? 'theme' : 'theme_mode'
-        adopt('default', field)
+        // The legacy slot is the default profile's own pick; the inherited slot
+        // is no profile's own. Unassigned named profiles paint either.
+        if (changed.slot === 'legacy') { adopt('default', changed.field) }
 
-        // Unassigned named profiles inherit the legacy/default slot.
-        if (APPEARANCE_PREFS[field].own(live) === null) { markLocalAppearanceChange(live) }
+        if (APPEARANCE_PREFS[changed.field].own(live) === null) { markLocalAppearanceChange(live) }
       }
 
       setThemeNameState(storedSkin(live))

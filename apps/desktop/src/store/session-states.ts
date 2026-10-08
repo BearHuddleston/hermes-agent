@@ -37,7 +37,7 @@ import { finalizeInterruptedMessages, sealOpenToolParts } from '@/lib/chat-messa
 import { tileFocusStampOnFocusChange } from '@/lib/session-timer-since'
 import { stableArray } from '@/lib/stable-array'
 import { readJson, writeJson } from '@/lib/storage'
-import { clearAppearancePicks } from '@/themes/appearance-picks'
+import { appearanceOwnerKey, clearAppearancePicks } from '@/themes/appearance-picks'
 import type { SessionInfo } from '@/types/hermes'
 
 import { dropStatusDrawersForProfile, migrateStatusDrawersForProfile } from './composer-status-drawer'
@@ -2748,7 +2748,7 @@ export function dropTilesForProfile(
 
   const name = normalizeProfileKey(profile)
   const appearanceConnection = route?.connectionId?.trim() || ambientOwnerConnectionId() || ''
-  clearAppearancePicks(name, `${appearanceConnection}::${name}`)
+  clearAppearancePicks(name, appearanceOwnerKey(appearanceConnection, name))
   dropPreviewArtifactsForProfile(name, route)
   dropStatusDrawersForProfile(name, route)
   // Route fields go through the SAME canonicalization as `name` below — a
@@ -2852,8 +2852,8 @@ export function migrateTilesForProfile(oldProfile: string, newProfile: string): 
     return
   }
 
-  clearAppearancePicks(from, `${LOCAL_CONNECTION_ID}::${from}`)
-  clearAppearancePicks(to, `${LOCAL_CONNECTION_ID}::${to}`)
+  clearAppearancePicks(from, appearanceOwnerKey(LOCAL_CONNECTION_ID, from))
+  clearAppearancePicks(to, appearanceOwnerKey(LOCAL_CONNECTION_ID, to))
 
   const isLocal = (owner: SessionProfileRoute | undefined) =>
     Boolean(owner) && (String(owner?.connectionId ?? '').trim() || 'local') === 'local'

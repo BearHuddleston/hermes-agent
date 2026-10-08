@@ -30,6 +30,7 @@ import { ambientOwnerConnectionId, connectionScoped, getApiRequestProfile } from
 import { getHermesConfig, saveHermesConfig } from '@/api/config'
 import { translateNow } from '@/i18n'
 
+import { appearanceOwnerKey } from './appearance-picks'
 import type { ThemeMode } from './context'
 
 export interface ProfileAppearance {
@@ -61,11 +62,13 @@ const writeQueues = new Map<string, Promise<unknown>>()
 const unreconciled = new Set<string>()
 const reconciledAt = new Map<string, number>()
 
-const isThemeMode = (value: unknown): value is ThemeMode => value === 'light' || value === 'dark' || value === 'system'
+export const isThemeMode = (value: unknown): value is ThemeMode =>
+  value === 'light' || value === 'dark' || value === 'system'
 
 // The connection an untagged request is served by right now ('local' for the
 // local pool). Identity for keys only; never sent as a request pin.
-export const profileAppearanceOwner = (profile: string): string => `${ambientOwnerConnectionId() ?? ''}::${profile}`
+export const profileAppearanceOwner = (profile: string): string =>
+  appearanceOwnerKey(ambientOwnerConnectionId() ?? '', profile)
 
 /** Record a local appearance change for `profile` on its captured or current connection (a
  *  pick, a settled write, a peer window's pick), so any value read before it
