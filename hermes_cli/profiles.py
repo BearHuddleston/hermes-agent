@@ -109,11 +109,7 @@ _CLONE_ALL_HISTORY_EXCLUDE_ROOT: frozenset[str] = frozenset({
 # seed_profile_skills() callers (fresh-create, `hermes update` all-profile sync, the
 # dashboard) skip bundled-skill seeding. Delete the file to opt back in.
 NO_BUNDLED_SKILLS_MARKER = ".no-bundled-skills"
-
-# ``profile.yaml`` ``role`` values. A role marks a backend-created profile (setup) and grants no toolset;
-# only the backend writes one, and a copy of a profile (clone-all, import) never inherits it.
-SETUP_ROLE = "setup"
-PROFILE_ROLES = frozenset({SETUP_ROLE})
+SETUP_PROFILE_MARKER = ".setup-profile.json"
 
 # Header seeded into a profile's empty .env so it owns a credentials file from day one.
 _PLACEHOLDER_ENV = (
@@ -710,8 +706,6 @@ class ProfileInfo:
     # appends here). Lets Bot Mode group chats re-link persisted member
     # descriptors to the renamed live profile (#110200).
     previous_names: List[str] = field(default_factory=list)
-    # Backend-assigned role (``SETUP_ROLE`` or None). Only ``hermes_cli.setup_profile`` writes it.
-    role: Optional[str] = None
 
 
 def _load_yaml_dict(path: Path) -> Optional[dict]:
@@ -944,7 +938,7 @@ def _cached_skill_count(profile_dir: Path) -> int:
     return cached[2] if cached is not None else 0
 
 
-# profile.yaml — per-profile metadata (description, role, etc.)
+# profile.yaml — per-profile metadata (description, etc.)
 # Deliberately tiny and separate from ``config.yaml`` (user-facing Hermes config, ~5000
 # lines of defaults): this is metadata ABOUT the profile. Missing file -> empty defaults,
 # never an error; the kanban decomposer falls back to the profile name.
@@ -968,7 +962,6 @@ def read_profile_meta(profile_dir: Path) -> dict:
             "display_name": str(data.get("display_name") or "").strip(),
             "bot_title": bot_title,
             "previous_names": _clean_previous_names(data.get("previous_names")),
-            "role": data.get("role") if data.get("role") in PROFILE_ROLES else None,
         }
 
     # A copy per caller (list included): the cached value is shared, and a caller that mutates
@@ -997,22 +990,16 @@ def _clean_previous_names(raw) -> List[str]:
 def write_profile_meta(
     profile_dir: Path, *, description: Optional[str] = None, description_auto: Optional[bool] = None,
     display_name: Optional[str] = None, previous_names: Optional[List[str]] = None,
-    role: Optional[str] = None,
 ) -> None:
     """Update ``profile.yaml`` in place: only passed fields are overwritten; the file is
-    created if missing. The profile directory itself must exist. ``role`` grants backend
-    capabilities, so no client-facing writer passes it through."""
+    created if missing. The profile directory itself must exist."""
     path = profile_dir / "profile.yaml"
     # Default/custom homes deliberately skip the named-generation lease, but
     # their metadata still needs serialized read/modify/write.
     with profile_shared_file_lease(path):
         if not profile_dir.is_dir() or profile_home_is_tombstoned(profile_dir):
             raise FileNotFoundError(f"profile directory does not exist or is being deleted: {profile_dir}")
-        if role is not None and role not in PROFILE_ROLES:
-            raise ValueError(f"unknown profile role: {role!r}")
         existing: dict = _load_yaml_dict(path) or {}
-        if role is not None:
-            existing["role"] = role
         if description is not None:
             existing["description"] = description.strip()
         if description_auto is not None:
@@ -1036,17 +1023,6 @@ def write_profile_meta(
         # See #51356.
         from utils import atomic_yaml_write
         atomic_yaml_write(path, existing, sort_keys=False)
-
-
-def drop_profile_role(profile_dir: Path) -> None:
-    """Remove ``role`` from a copied ``profile.yaml``: a copy is an ordinary profile."""
-    path = profile_dir / "profile.yaml"
-    existing = _load_yaml_dict(path)
-    if not existing or "role" not in existing:
-        return
-    existing.pop("role")
-    from utils import atomic_yaml_write
-    atomic_yaml_write(path, existing, sort_keys=False)
 
 
 def format_profile_label(name: str, display_name: Optional[str]) -> str:
@@ -1324,10 +1300,9 @@ def _copytree_keep_junctions(src: Path, dst: Path, ignore, dirs_exist_ok: bool =
 
 
 def _clone_all_into(source_dir: Path, profile_dir: Path, canon: str) -> None:
-    """--clone-all: full copytree minus infrastructure/history, then strip runtime files,
-    the backend-assigned role, and cloned single-use OAuth grants."""
+    """--clone-all: full copytree minus infrastructure/history, then strip runtime files
+    and cloned single-use OAuth grants."""
     _copytree_keep_junctions(source_dir, profile_dir, _clone_all_copytree_ignore(source_dir))
-    drop_profile_role(profile_dir)
     materialized = _materialize_symlinked_files(profile_dir)
     if materialized:
         logger.info("profile %s: materialized symlinked %s so the clone never writes through to %s",
@@ -1474,6 +1449,9 @@ def _initialize_profile(
         _clone_all_into(source_dir, profile_dir, canon)
     else:
         _bootstrap_profile_dir(profile_dir, source_dir, sync_imports=sync_imports)
+    if source_dir is not None:
+        from hermes_cli.setup_profile import release_setup_copy, setup_marker_state
+        release_setup_copy(profile_dir, setup_state=setup_marker_state(source_dir))
     if source_dir is not None and not clone_channels:
         from hermes_cli.profile_channels import strip_channel_settings
         stripped = strip_channel_settings(profile_dir, include_state=clone_all, source_dir=source_dir)
@@ -2522,7 +2500,8 @@ def _import_profile_into_home(
                         shutil.rmtree(child)
                     else:
                         child.unlink()
-            drop_profile_role(final_source)
+            from hermes_cli.setup_profile import release_setup_copy, setup_marker_state
+            release_setup_copy(final_source, setup_state=setup_marker_state(final_source))
             incarnation = write_fresh_profile_incarnation(final_source)
             shutil.move(str(final_source), str(profile_dir))
             return incarnation
