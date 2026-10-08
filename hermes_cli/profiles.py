@@ -1414,38 +1414,10 @@ def _prepare_profile_creation_target(canon: str, profile_dir: Path) -> None:
 
 
 def _initialize_profile(
-    canon: str, profile_dir: Path, source_dir: Optional[Path], *, clone_from: Optional[str],
-    clone_all: bool, clone_config: bool, no_skills: bool, description: Optional[str],
-    clone_channels: bool, sync_imports: bool,
+    canon: str, profile_dir: Path, source_dir: Optional[Path], *, clone_all: bool, no_skills: bool,
+    description: Optional[str], clone_channels: bool, sync_imports: bool,
 ) -> None:
-    """Initialize a staged profile directory before publication.
-
-    ``clone_from`` defaults to the active profile when cloning. ``clone_all`` copies all state;
-    ``clone_config`` copies config.yaml/.env/SOUL.md, installed skills, and identity files.
-    Either clone strips the source's messaging channels — bot tokens, allowlists, platform
-    sections, pairing/session state — unless ``clone_channels`` opts in: a copied bot credential
-    makes two gateways fight over one bot (``hermes_cli.profile_channels``; callers list what
-    was left behind with ``channel_platforms_configured(source_dir)``).
-    ``no_skills`` creates an empty profile and writes a marker so ``hermes update`` skips
-    re-seeding its skills; it is mutually exclusive with the clone options, which copy skills.
-    ``sync_imports`` (``--clone`` only; ``--clone-all`` copies the file anyway) also copies the
-    ``import-agent`` sync manifest so the clone can keep pulling the same external agent trees."""
-    if no_skills and (clone_from is not None or clone_config or clone_all):
-        raise ValueError(
-            "--no-skills is mutually exclusive with --clone / --clone-from / --clone-all "
-            "(cloning explicitly copies skills from the source profile)."
-        )
-    if sync_imports and not (clone_config or clone_all):
-        raise ValueError("--sync-imports requires --clone or --clone-from (there is no import "
-                         "manifest to carry over without a source profile).")
-    cloning = clone_from is not None or clone_all or clone_config
-    if clone_channels and not cloning:
-        raise ValueError("--clone-channels only applies to a clone (--clone, --clone-from or --clone-all).")
-    if source_dir is not None and clone_channels:
-        from hermes_cli.profile_channels import clone_channels_refusal
-        refusal = clone_channels_refusal(source_dir, clone_from or get_active_profile_name() or "default")
-        if refusal:
-            raise ValueError(refusal)
+    """Initialize a staged profile directory before publication (flags already validated)."""
     if clone_all and source_dir:
         _clone_all_into(source_dir, profile_dir, canon)
     else:
@@ -1525,13 +1497,42 @@ def create_profile(
     clone_channels: bool = False,
     sync_imports: bool = False,
 ) -> Path:
-    """Build a named profile behind a tombstone, then publish it atomically."""
+    """Build a named profile behind a tombstone, then publish it atomically; return its path.
+
+    ``clone_from`` defaults to the active profile when cloning. ``clone_all`` copies all state;
+    ``clone_config`` copies config.yaml/.env/SOUL.md, installed skills, and identity files.
+    Either clone strips the source's messaging channels — bot tokens, allowlists, platform
+    sections, pairing/session state — unless ``clone_channels`` opts in: a copied bot credential
+    makes two gateways fight over one bot (``hermes_cli.profile_channels``; callers list what
+    was left behind with ``channel_platforms_configured(source_dir)``).
+    ``no_skills`` creates an empty profile and writes a marker so ``hermes update`` skips
+    re-seeding its skills; it is mutually exclusive with the clone options, which copy skills.
+    ``sync_imports`` (``--clone`` only; ``--clone-all`` copies the file anyway) also copies the
+    ``import-agent`` sync manifest so the clone can keep pulling the same external agent trees.
+
+    Every refusal below runs before this function's first side effect (pinning the source
+    generation, the target lease, replacing a tombstoned shell, tombstoning the target)."""
+    cloning = clone_from is not None or clone_all or clone_config
+    if no_skills and cloning:
+        raise ValueError(
+            "--no-skills is mutually exclusive with --clone / --clone-from / --clone-all "
+            "(cloning explicitly copies skills from the source profile)."
+        )
+    if sync_imports and not (clone_config or clone_all):
+        raise ValueError("--sync-imports requires --clone or --clone-from (there is no import "
+                         "manifest to carry over without a source profile).")
+    if clone_channels and not cloning:
+        raise ValueError("--clone-channels only applies to a clone (--clone, --clone-from or --clone-all).")
     canon = _canon_valid(name)
     if canon == "default":
         raise ValueError("Cannot create a profile named 'default' — it is the built-in profile (~/.hermes).")
     profile_dir = get_profile_dir(canon)
-    cloning = clone_from is not None or clone_all or clone_config
     source_dir = _resolve_clone_source(clone_from) if cloning else None
+    if source_dir is not None and clone_channels:
+        from hermes_cli.profile_channels import clone_channels_refusal
+        refusal = clone_channels_refusal(source_dir, clone_from or get_active_profile_name() or "default")
+        if refusal:
+            raise ValueError(refusal)
     # Pin the source GENERATION (a short lease; legacy homes are backfilled), never hold its name
     # across the copy: every cold SessionDB open of the source takes that lease, and a --clone-all
     # copy is unbounded. None = default/custom source, which is not a reusable lifecycle object.
@@ -1542,9 +1543,8 @@ def create_profile(
         def initialize(staging_dir: Path) -> None:
             try:
                 _initialize_profile(
-                    canon, staging_dir, source_dir, clone_from=clone_from, clone_all=clone_all,
-                    clone_config=clone_config, no_skills=no_skills, description=description,
-                    clone_channels=clone_channels, sync_imports=sync_imports,
+                    canon, staging_dir, source_dir, clone_all=clone_all, no_skills=no_skills,
+                    description=description, clone_channels=clone_channels, sync_imports=sync_imports,
                 )
             finally:
                 # Also on failure: a copy racing the source's rmtree fails with one
