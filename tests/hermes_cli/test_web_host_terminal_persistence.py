@@ -472,6 +472,8 @@ def test_ownership_checks_never_block_the_event_loop(host_app, fake_bridges, tmp
     input and the reaper all check off-loop, and a retired generation still
     loses its attached shell."""
     import asyncio
+    from contextlib import contextmanager
+    from hermes_cli import web_host_terminal_sessions as sessions
     from hermes_cli.profile_incarnation import write_fresh_profile_incarnation
     from hermes_cli.profile_lifecycle import profile_lifecycle_lease
     from hermes_cli.web_host_terminal_sessions import HostOwner
@@ -480,17 +482,27 @@ def test_ownership_checks_never_block_the_event_loop(host_app, fake_bridges, tmp
     profile.mkdir(parents=True)
     (profile / "config.yaml").write_text("{}", encoding="utf-8")
     checks = []
-    original = HostOwner.current
+    original_current, original_lease = HostOwner.current, sessions.profile_incarnation_lease
 
-    def current(owner):
+    def record():
         try:
             asyncio.get_running_loop()
             checks.append("loop")
         except RuntimeError:
             checks.append("thread")
-        return original(owner)
+
+    def current(owner):
+        record()
+        return original_current(owner)
+
+    @contextmanager
+    def lease(*args, **kwargs):
+        record()
+        with original_lease(*args, **kwargs) as home:
+            yield home
 
     monkeypatch.setattr(HostOwner, "current", current)
+    monkeypatch.setattr(sessions, "profile_incarnation_lease", lease)
     with TestClient(host_app) as client:
         with client.websocket_connect(url("&profile=alpha")) as ws:
             token = metadata(ws)["terminalId"]
@@ -509,13 +521,29 @@ def test_ownership_checks_never_block_the_event_loop(host_app, fake_bridges, tmp
     assert checks and set(checks) == {"thread"}
 
 
-def test_input_frames_that_arrive_together_share_ownership_checks(tmp_path):
+def test_input_frames_that_arrive_together_share_ownership_checks(tmp_path, monkeypatch):
     """A paste lands as many frames. Frames that arrived together share off-loop
     fenced writes, every byte lands in order, and a retired generation receives none."""
+    from contextlib import contextmanager
     from types import SimpleNamespace
+    from hermes_cli import web_host_terminal_sessions as sessions
     from hermes_cli.web_host_terminal_sessions import HostOwner, _pump_input
 
     frames = [f"line {i}\n".encode() for i in range(40)]
+    checks = []
+    original_lease = sessions.profile_incarnation_lease
+
+    @contextmanager
+    def lease(*args, **kwargs):
+        try:
+            asyncio.get_running_loop()
+            checks.append("loop")
+        except RuntimeError:
+            checks.append("thread")
+        with original_lease(*args, **kwargs) as home:
+            yield home
+
+    monkeypatch.setattr(sessions, "profile_incarnation_lease", lease)
 
     class Socket:
         def __init__(self):
@@ -526,21 +554,11 @@ def test_input_frames_that_arrive_together_share_ownership_checks(tmp_path):
         async def receive(self):
             return self.inbound.pop(0)
 
-    async def pump(live):
-        checks, written, removed = [], [], []
-
-        class Owner:
-            # Not a named profile home, so the fence's lease is a no-op here.
-            home, incarnation = tmp_path, None
-            admit = HostOwner.admit
-
-            def current(self):
-                try:
-                    asyncio.get_running_loop()
-                    checks.append("loop")
-                except RuntimeError:
-                    checks.append("thread")
-                return live
+    async def pump(home):
+        checks.clear()
+        written, removed = [], []
+        # Not a named profile home: it stays owned while it exists.
+        owner = HostOwner(("loopback", "session-token"), home, None, "sh", str(tmp_path))
 
         async def write(_ws, data, *, fence, **_bridge_options):
             return await asyncio.to_thread(fence, lambda: written.append(data) or True)
@@ -550,13 +568,13 @@ def test_input_frames_that_arrive_together_share_ownership_checks(tmp_path):
 
         ws = Socket()
         session = SimpleNamespace(_ws=ws, alive=True, write=write, resize=lambda *args, **kwargs: None)
-        await _pump_input(ws, SimpleNamespace(remove=remove), "terminal", session, Owner())
-        return checks, written, removed
+        await _pump_input(ws, SimpleNamespace(remove=remove), "terminal", session, owner)
+        return written, removed
 
-    checks, written, removed = asyncio.run(pump(True))
+    written, removed = asyncio.run(pump(tmp_path))
     assert b"".join(written) == b"".join(frames) and removed == []
     assert set(checks) == {"thread"} and len(checks) < len(frames)
-    checks, written, removed = asyncio.run(pump(False))
+    written, removed = asyncio.run(pump(tmp_path / "deleted"))
     assert written == [] and removed == ["terminal"]
     assert set(checks) == {"thread"}
 
@@ -567,8 +585,10 @@ def test_retirement_between_check_and_write_never_reaches_the_shell(tmp_path, mo
     every byte the PTY accepts precedes the tombstone, and later input is refused."""
     import os
     import threading
+    from contextlib import contextmanager
     from types import SimpleNamespace
     from hermes_cli import pty_bridge
+    from hermes_cli import web_host_terminal_sessions as sessions
     from hermes_cli.profile_incarnation import ensure_profile_incarnation
     from hermes_cli.profile_lifecycle import mark_profile_deleting, profile_lifecycle_lease
     from hermes_cli.pty_session import PtySession
@@ -602,19 +622,20 @@ def test_retirement_between_check_and_write_never_reaches_the_shell(tmp_path, mo
             events.append(("tombstone", b""))
             published.set()
 
-    original = HostOwner.current
+    original_lease = sessions.profile_incarnation_lease
 
-    def current(owner):
-        verdict = original(owner)
-        if armed.is_set():
-            # Retire right after this check passes; a writer holding the lease
-            # keeps the tombstone out until its bytes have landed.
-            armed.clear()
-            threading.Thread(target=retire, daemon=True).start()
-            published.wait(1.0)
-        return verdict
+    @contextmanager
+    def lease(*args, **kwargs):
+        with original_lease(*args, **kwargs) as leased:
+            if armed.is_set():
+                # Retire right after this check passes; a writer holding the lease
+                # keeps the tombstone out until its bytes have landed.
+                armed.clear()
+                threading.Thread(target=retire, daemon=True).start()
+                published.wait(1.0)
+            yield leased
 
-    monkeypatch.setattr(HostOwner, "current", current)
+    monkeypatch.setattr(sessions, "profile_incarnation_lease", lease)
     bridge = pty_bridge.PtyBridge.spawn(["/bin/sh", "-c", "cat >/dev/null"])
     owner = HostOwner(("loopback", "session-token"), profile, incarnation, "sh", str(tmp_path))
 

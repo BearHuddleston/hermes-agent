@@ -485,21 +485,25 @@ class PtySessionRegistry:
         if s is not None:
             s.detach(ws)
 
+    def expired(self, s: PtySession, now: Optional[float] = None) -> bool:
+        """Whether ``s`` has had no viewer for longer than the retention TTL."""
+        return (not s.attached and s.last_detached_at is not None
+                and (time.monotonic() if now is None else now) - s.last_detached_at > self._ttl)
+
+    def _reapable(self, s: PtySession, now: Optional[float] = None) -> bool:
+        # EOF never arrives if a helper still holds the PTY slave after the child died (#76759);
+        # ask the process itself (a WNOHANG waitpid).
+        return not s.alive or not s.bridge.is_alive() or self.expired(s, now)
+
     async def reap_idle(self, now: Optional[float] = None) -> None:
         now = time.monotonic() if now is None else now
-        doomed = [
-            (key, s) for key, s in self._sessions.items()
-            if not s.alive or not s.bridge.is_alive()
-            or (not s.attached and s.last_detached_at is not None and (now - s.last_detached_at) > self._ttl)
-        ]
+        doomed = [(key, s) for key, s in self._sessions.items() if self._reapable(s, now)]
         for key, expected in doomed:
             # Reaps overlap (attach_or_spawn and the background reaper) and close()
             # awaits, so a concurrent reap can have popped this key already — skip
-            # it instead of raising KeyError into the websocket handler.
-            if self._sessions.get(key) is not expected:
-                continue
-            if expected.alive and expected.bridge.is_alive() and (expected.attached or expected.last_detached_at is None
-                                   or now - expected.last_detached_at <= self._ttl):
+            # it instead of raising KeyError into the websocket handler. A viewer can
+            # also re-attach during an earlier close, so re-check before closing.
+            if self._sessions.get(key) is not expected or not self._reapable(expected, now):
                 continue
             session = self._sessions.pop(key, None)
             if session is not None:
@@ -513,10 +517,11 @@ class PtySessionRegistry:
         self._sessions.pop(oldest.key, None)
         self._close_in_background(oldest)
 
-    def _close_in_background(self, session: "PtySession") -> None:
+    def _close_in_background(self, session: "PtySession") -> asyncio.Task:
         task = asyncio.create_task(session.close())
         self._background_closes.add(task)
         task.add_done_callback(self._background_closes.discard)
+        return task
 
     async def close_all(self) -> None:
         self._closed = True

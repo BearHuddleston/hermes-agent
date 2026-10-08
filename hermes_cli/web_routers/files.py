@@ -481,7 +481,7 @@ async def upload_chat_image(payload: ChatImageUpload, profile: Optional[str] = N
     dir ``clipboard.paste`` / ``image.attach`` use).
     """
     def _run():
-        from hermes_constants import mkdir_under_hermes_home, named_profile_home_is_unavailable
+        from hermes_constants import mkdir_under_hermes_home
 
         data, mime_type, ext = _decode_chat_image_upload(payload)
         home, expected_incarnation = _resolve_upload_generation(profile)
@@ -504,14 +504,9 @@ async def upload_chat_image(payload: ChatImageUpload, profile: Optional[str] = N
                 ts = datetime.now().strftime("%Y%m%d_%H%M%S")
                 target = img_dir / f"dashboard_{ts}_{secrets.token_hex(4)}_{stem}{ext}"
 
-                with _removed_on_failure(target):
-                    with _io_errors("Image directory is not writable", "Could not write image"):
-                        target.write_bytes(data)
-                    if named_profile_home_is_unavailable(home) or not target.is_file():
-                        raise HTTPException(
-                            status_code=404,
-                            detail="Profile was deleted during upload",
-                        )
+                # A named home's retirement tombstones under this same lease, so it is ordered after the write.
+                with _removed_on_failure(target), _io_errors("Image directory is not writable", "Could not write image"):
+                    target.write_bytes(data)
         except FileNotFoundError as exc:
             raise HTTPException(
                 status_code=404,
@@ -670,11 +665,11 @@ def _open_ticket_file(request: Request, authority: file_tickets.FileAuthority, *
 async def issue_file_ticket(payload: FileTicketRequest, request: Request):
     """Ticket a browser download/media URL instead of putting the session token in it."""
     from hermes_cli.profile_incarnation import ensure_profile_incarnation
-    from hermes_cli.web_server_cron import _cron_profile_home
+    from hermes_cli.web_routers.sessions import _history_profile_home
     from hermes_constants import named_profile_home
 
     def owner_generation():
-        home = _cron_profile_home(payload.profile)[1] if payload.profile else get_hermes_home()
+        home = _history_profile_home(payload.profile)
         return Path(home), ensure_profile_incarnation(home)
 
     def capture():

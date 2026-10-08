@@ -45,33 +45,14 @@ def shell_spec() -> tuple[list[str], str]:
     not ride on ``HERMES_*`` environment variables.
     """
     if os.name == "nt":
-        command = shell_command("pwsh.exe") or shell_command("pwsh")
-        if not command:
-            system_root = (
-                os.environ.get("SystemRoot")
-                or os.environ.get("windir")
-                or r"C:\Windows"
-            )
-            command = shell_command(
-                str(
-                    Path(system_root)
-                    / "System32"
-                    / "WindowsPowerShell"
-                    / "v1.0"
-                    / "powershell.exe"
-                )
-            )
-        command = command or shell_command("powershell.exe")
-        command = command or shell_command(os.environ.get("COMSPEC", "")) or "cmd.exe"
+        system_root = os.environ.get("SystemRoot") or os.environ.get("windir") or r"C:\Windows"
+        windows_powershell = Path(system_root) / "System32" / "WindowsPowerShell" / "v1.0" / "powershell.exe"
+        ladder = ("pwsh.exe", "pwsh", str(windows_powershell), "powershell.exe", os.environ.get("COMSPEC", ""))
+        fallback = "cmd.exe"
     else:
-        command = shell_command(os.environ.get("SHELL", "")) or next(
-            (
-                resolved
-                for candidate in ("/bin/zsh", "/bin/bash", "/bin/sh")
-                if (resolved := shell_command(candidate))
-            ),
-            "/bin/sh",
-        )
+        ladder = (os.environ.get("SHELL", ""), "/bin/zsh", "/bin/bash", "/bin/sh")
+        fallback = "/bin/sh"
+    command = next(filter(None, map(shell_command, ladder)), fallback)
 
     name = Path(command).name.lower()
     if name.startswith(("pwsh", "powershell")):

@@ -599,27 +599,40 @@ def test_browser_file_upload_does_not_report_a_path_after_tombstone_wins(
     assert not upload_root.exists() or list(upload_root.iterdir()) == []
 
 
-def test_browser_image_upload_does_not_report_a_path_after_tombstone_wins(
+def test_browser_image_upload_holds_the_retirement_lease_through_its_write(
     tmp_path: Path, monkeypatch
 ):
+    """Deletion tombstones a profile under its lifecycle lease. The image upload holds
+    that lease from its generation check through the write, so a retirement cannot
+    land between the bytes and the path the response reports."""
     profile_home = tmp_path / "hermes-home" / "profiles" / "worker"
     profile_home.mkdir(parents=True)
     image_dir = profile_home / "images"
+    attempts: list[str] = []
 
     @contextmanager
     def profile_scope(_profile):
         yield profile_home
 
+    def try_retire() -> str:
+        try:
+            with profile_lifecycle.profile_lifecycle_lease(profile_home, timeout=0):
+                profile_lifecycle.mark_profile_deleting(profile_home)
+        except TimeoutError:
+            return "refused"
+        return "tombstoned"
+
     real_write_bytes = Path.write_bytes
 
-    def tombstone_after_write(path: Path, data: bytes):
+    def retire_after_write(path: Path, data: bytes):
         written = real_write_bytes(path, data)
         if path.parent == image_dir:
-            profile_lifecycle.mark_profile_deleting(profile_home)
+            with ThreadPoolExecutor(max_workers=1) as pool:
+                attempts.append(pool.submit(try_retire).result(timeout=_BARRIER_TIMEOUT_SECONDS))
         return written
 
     monkeypatch.setattr(web_server_profiles, "_profile_scope", profile_scope)
-    monkeypatch.setattr(Path, "write_bytes", tombstone_after_write)
+    monkeypatch.setattr(Path, "write_bytes", retire_after_write)
     with _client(tmp_path, monkeypatch) as client:
         response = client.post(
             "/api/chat/image-upload?profile=worker",
@@ -630,5 +643,7 @@ def test_browser_image_upload_does_not_report_a_path_after_tombstone_wins(
             headers={_SESSION_HEADER: "webapp-test-token"},
         )
 
-    assert response.status_code == 404
-    assert not image_dir.exists() or list(image_dir.iterdir()) == []
+    assert attempts == ["refused"]
+    assert response.status_code == 200
+    assert Path(response.json()["path"]).parent == image_dir
+    assert try_retire() == "tombstoned"  # released once the image was published
