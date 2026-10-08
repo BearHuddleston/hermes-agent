@@ -16,7 +16,7 @@ import hermes_state
 import hermes_state_repair
 import tui_gateway.server as srv
 from hermes_cli import config, config_home, profile_lifecycle, profiles
-from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+from hermes_constants import named_profile_is_deleted, reset_hermes_home_override, set_hermes_home_override
 from hermes_state import SessionDB
 
 
@@ -58,7 +58,7 @@ def test_provider_auth_write_cannot_resurrect_deleted_profile(home: Path) -> Non
         reset_hermes_home_override(token)
 
     assert not profile_dir.exists()
-    assert profile_lifecycle.profile_home_is_tombstoned(profile_dir) is True
+    assert named_profile_is_deleted(profile_dir) is True
 
 
 def test_direct_auth_store_save_cannot_resurrect_deleted_profile(home: Path) -> None:
@@ -75,7 +75,7 @@ def test_direct_auth_store_save_cannot_resurrect_deleted_profile(home: Path) -> 
         reset_hermes_home_override(token)
 
     assert not profile_dir.exists()
-    assert profile_lifecycle.profile_home_is_tombstoned(profile_dir) is True
+    assert named_profile_is_deleted(profile_dir) is True
 
 
 def test_credential_mirror_rewrite_cannot_recreate_profile_deleted_before_commit(
@@ -110,7 +110,7 @@ def test_credential_mirror_rewrite_cannot_recreate_profile_deleted_before_commit
         reset_hermes_home_override(token)
 
     assert not profile_dir.exists()
-    assert profile_lifecycle.profile_home_is_tombstoned(profile_dir) is True
+    assert named_profile_is_deleted(profile_dir) is True
 
 
 def test_invalid_db_quarantine_cannot_recreate_profile_deleted_after_precheck(
@@ -143,7 +143,7 @@ def test_invalid_db_quarantine_cannot_recreate_profile_deleted_after_precheck(
 
     assert deleted, "the startup header probe must exercise the deletion race"
     assert not profile_dir.exists()
-    assert profile_lifecycle.profile_home_is_tombstoned(profile_dir) is True
+    assert named_profile_is_deleted(profile_dir) is True
 
 
 def test_schema_repair_lock_cannot_recreate_profile_deleted_after_precheck(
@@ -161,7 +161,7 @@ def test_schema_repair_lock_cannot_recreate_profile_deleted_after_precheck(
             pytest.fail("repair lock must not publish for a deleted profile")
 
     assert not profile_dir.exists()
-    assert profile_lifecycle.profile_home_is_tombstoned(profile_dir) is True
+    assert named_profile_is_deleted(profile_dir) is True
 
 
 def test_stale_profiles_list_cannot_resurrect_deleted_profile(
@@ -226,7 +226,7 @@ def test_delete_retires_live_session_and_blocks_stale_writable_db_open(
     with srv._sessions_lock:
         assert "worker-live" not in srv._sessions
     assert agent.closed is True
-    assert profile_lifecycle.profile_home_is_tombstoned(profile_dir) is True
+    assert named_profile_is_deleted(profile_dir) is True
     with srv._session_db({"profile_home": str(profile_dir)}) as db:
         assert db is None
     late_agent = Agent()
@@ -276,7 +276,7 @@ def test_explicit_recreate_clears_profile_deletion_tombstone(home: Path) -> None
     profile_dir.mkdir(parents=True)
     SessionDB(db_path=profile_dir / "state.db").close()
     profiles.delete_profile("worker", yes=True)
-    assert profile_lifecycle.profile_home_is_tombstoned(profile_dir) is True
+    assert named_profile_is_deleted(profile_dir) is True
 
     created = profiles.create_profile(
         "worker",
@@ -287,7 +287,7 @@ def test_explicit_recreate_clears_profile_deletion_tombstone(home: Path) -> None
 
     assert created == profile_dir
     assert profiles.profile_exists("worker") is True
-    assert profile_lifecycle.profile_home_is_tombstoned(profile_dir) is False
+    assert named_profile_is_deleted(profile_dir) is False
     assert srv._profile_home_rejected(profile_dir) is False
     assert profiles.read_profile_meta(profile_dir)["description"] == "restored profile"
 
@@ -721,7 +721,7 @@ def test_new_profile_stays_unpublished_until_initialization_completes(
     assert paused.wait(timeout=10)
 
     assert not profile_dir.exists()
-    assert profile_lifecycle.profile_home_is_tombstoned(profile_dir) is True
+    assert named_profile_is_deleted(profile_dir) is True
     assert profiles.profile_exists("worker") is False
     assert all(row.name != "worker" for row in profiles.list_profiles())
     assert srv._profile_home_rejected(profile_dir) is True
@@ -731,7 +731,7 @@ def test_new_profile_stays_unpublished_until_initialization_completes(
     assert not thread.is_alive()
     assert errors == []
     assert profiles.profile_exists("worker") is True
-    assert profile_lifecycle.profile_home_is_tombstoned(profile_dir) is False
+    assert named_profile_is_deleted(profile_dir) is False
     assert profiles.read_profile_meta(profile_dir)["description"] == "published only when ready"
 
 
@@ -759,7 +759,7 @@ def test_failed_profile_initialization_publishes_no_partial_home(
         )
 
     assert not profile_dir.exists()
-    assert profile_lifecycle.profile_home_is_tombstoned(profile_dir) is prior_tombstone
+    assert named_profile_is_deleted(profile_dir) is prior_tombstone
     staging_root = home / "profiles" / ".profile-creating"
     assert not staging_root.exists() or list(staging_root.iterdir()) == []
 
@@ -804,8 +804,8 @@ def test_rename_tombstones_old_home_and_publishes_new_home(
         assert "rename-live" not in srv._sessions
     assert agent.closed is True
     assert released_memory_homes == [old_dir]
-    assert profile_lifecycle.profile_home_is_tombstoned(old_dir) is True
-    assert profile_lifecycle.profile_home_is_tombstoned(new_dir) is False
+    assert named_profile_is_deleted(old_dir) is True
+    assert named_profile_is_deleted(new_dir) is False
     assert srv._profile_home_rejected(old_dir) is True
     assert srv._profile_home_rejected(new_dir) is False
     assert profiles.profile_exists("worker") is False
@@ -946,7 +946,7 @@ def test_failed_partial_delete_stays_tombstoned(
         profiles.delete_profile("worker", yes=True)
 
     assert profile_dir.is_dir()
-    assert profile_lifecycle.profile_home_is_tombstoned(profile_dir) is True
+    assert named_profile_is_deleted(profile_dir) is True
     assert profiles.profile_exists("worker") is False
     assert srv._profile_home_rejected(profile_dir) is True
     with pytest.raises(FileNotFoundError, match="missing or being deleted"):
@@ -1087,7 +1087,7 @@ def test_untracked_live_sessiondb_makes_delete_fail_closed_until_retry(
         profiles.delete_profile("worker", yes=True)
 
     assert profile_dir.is_dir()
-    assert profile_lifecycle.profile_home_is_tombstoned(profile_dir) is False
+    assert named_profile_is_deleted(profile_dir) is False
     assert profiles.profile_exists("worker") is True
     assert srv._profile_home_rejected(profile_dir) is False
     db.close()
@@ -1130,7 +1130,7 @@ def test_external_profile_handle_blocks_rename_until_released(
             profiles.rename_profile("worker", "research")
 
         assert old_dir.is_dir()
-        assert profile_lifecycle.profile_home_is_tombstoned(old_dir) is False
+        assert named_profile_is_deleted(old_dir) is False
         assert srv._profile_home_rejected(old_dir) is False
     finally:
         process.communicate("close\n", timeout=10)
@@ -1158,7 +1158,7 @@ def test_post_move_rename_failure_still_publishes_new_profile(
 
     assert not old_dir.exists()
     assert new_dir.is_dir()
-    assert profile_lifecycle.profile_home_is_tombstoned(new_dir) is False
+    assert named_profile_is_deleted(new_dir) is False
     assert profiles.profile_exists("research") is True
     assert srv._profile_home_rejected(new_dir) is False
     assert profiles.get_active_profile() == "research"
@@ -1187,7 +1187,7 @@ def test_failed_rename_preserves_prior_destination_tombstone(
 
     assert old_dir.is_dir()
     assert not new_dir.exists()
-    assert profile_lifecycle.profile_home_is_tombstoned(new_dir) is True
+    assert named_profile_is_deleted(new_dir) is True
 
 
 def test_concurrent_profile_use_cannot_restore_retired_name(
@@ -1262,7 +1262,7 @@ def test_failed_reimport_preserves_prior_deletion_tombstone(
         )
 
     assert not profile_dir.exists()
-    assert profile_lifecycle.profile_home_is_tombstoned(profile_dir) is True
+    assert named_profile_is_deleted(profile_dir) is True
     assert srv._profile_home_rejected(profile_dir) is True
 
 
@@ -1295,7 +1295,7 @@ def test_failed_fresh_import_hides_partial_destination(
         )
 
     assert profile_dir.is_dir()
-    assert profile_lifecycle.profile_home_is_tombstoned(profile_dir) is True
+    assert named_profile_is_deleted(profile_dir) is True
     assert profiles.profile_exists("worker") is False
 
 
@@ -1334,7 +1334,7 @@ def test_delete_waits_for_active_turn_before_removing_profile(
         profiles.delete_profile("worker", yes=True)
 
     assert profile_dir.is_dir()
-    assert profile_lifecycle.profile_home_is_tombstoned(profile_dir) is True
+    assert named_profile_is_deleted(profile_dir) is True
     release.set()
     thread.join(timeout=2)
     assert not thread.is_alive()

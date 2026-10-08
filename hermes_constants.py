@@ -316,10 +316,6 @@ def profile_tombstone_path(profile_home: Path) -> Path:
     return profile_home.parent / _DELETED_PROFILES_DIR / profile_home.name
 
 
-def named_profile_is_deleted(profile_home: str | Path) -> bool:
-    return profile_tombstone_path(Path(profile_home)).exists()
-
-
 # A directory under profiles/ is a profile only when something identifies it as one.
 # Runtime side-effects (cron heartbeats, log rotation, caches) create dirs that carry
 # none of these; a pre-tombstone ghost shell or a stray infrastructure dir must never be
@@ -364,16 +360,6 @@ def named_profile_is_live(profile_home: str | Path) -> bool:
     never be started as a backend (whose ``ensure_hermes_home`` would rebuild the full tree)."""
     home = Path(profile_home)
     return home.is_dir() and named_profile_has_identity(home) and not named_profile_is_deleted(home)
-
-
-def mark_named_profile_deleted(profile_home: str | Path) -> None:
-    marker = profile_tombstone_path(Path(profile_home))
-    marker.parent.mkdir(parents=True, exist_ok=True)
-    marker.write_text("deleted\n", encoding="utf-8")
-
-
-def clear_named_profile_deleted(profile_home: str | Path) -> None:
-    profile_tombstone_path(Path(profile_home)).unlink(missing_ok=True)
 
 
 def _named_profile_spelling(path: Path) -> tuple[Path, Path | None]:
@@ -432,6 +418,20 @@ def profile_deletion_marker_path(profile_home: Path | str) -> Path | None:
     return profile_tombstone_path(named_home)
 
 
+def _tombstone_published(marker: Path | None) -> bool:
+    # The lifecycle writers (``hermes_cli.profile_lifecycle``) only ever publish a regular file.
+    return marker is not None and marker.is_file()
+
+
+def named_profile_is_deleted(profile_home: str | Path) -> bool:
+    """True when *profile_home* is a named profile home whose deletion tombstone is published.
+
+    Reads the canonical marker, so a symlink/junction alias of a home sees the tombstone the
+    lifecycle fence wrote for it; a path that is not a named home is never deleted.
+    """
+    return _tombstone_published(profile_deletion_marker_path(profile_home))
+
+
 def named_profile_home_is_unavailable(profile_home: Path | str, *, marker: Path | None = None) -> bool:
     """True when a named profile is absent or durably marked for deletion.
 
@@ -441,7 +441,7 @@ def named_profile_home_is_unavailable(profile_home: Path | str, *, marker: Path 
     home = Path(profile_home)
     if marker is None:
         marker = profile_deletion_marker_path(home)
-    return marker is not None and (not home.is_dir() or marker.is_file())
+    return marker is not None and (not home.is_dir() or _tombstone_published(marker))
 
 
 def assert_named_profile_home_available(profile_home: Path | str, *, marker: Path | None = None) -> None:

@@ -10,7 +10,7 @@ import threading
 import pytest
 
 from hermes_cli import clipboard, profile_incarnation
-from hermes_constants import clear_named_profile_deleted, mark_named_profile_deleted
+from hermes_cli.profile_lifecycle import clear_profile_deletion_marker, mark_profile_deleting
 from tui_gateway import server
 
 
@@ -130,13 +130,13 @@ def test_clipboard_rejects_profile_deleted_during_extraction(
         staging_paths.append(path)
         path.write_bytes(PNG_BYTES)
         with profile_incarnation.profile_incarnation_lease(profile_home, generation):
-            mark_named_profile_deleted(profile_home)
+            mark_profile_deleting(profile_home)
             shutil.rmtree(profile_home)
             if recreate:
                 profile_home.mkdir()
                 replacement = profile_incarnation.write_fresh_profile_incarnation(profile_home)
                 assert replacement != generation
-                clear_named_profile_deleted(profile_home)
+                clear_profile_deletion_marker(profile_home)
         return True
 
     monkeypatch.setattr(clipboard, "save_clipboard_image", delete_during_extract)

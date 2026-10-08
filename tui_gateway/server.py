@@ -26,7 +26,7 @@ from typing import Any, Callable, NamedTuple, Optional  # noqa: F401  (Callable:
 from agent.secret_scope import build_profile_secret_scope, reset_secret_scope, set_secret_scope  # noqa: F401
 from hermes_constants import (
     get_hermes_home, get_hermes_home_override, get_process_hermes_home, profile_name_for_home,
-    reset_hermes_home_override, set_hermes_home_override)
+    named_profile_is_deleted, reset_hermes_home_override, set_hermes_home_override)
 from hermes_cli.env_loader import load_hermes_dotenv
 from utils import file_signature, is_truthy_value
 from hermes_state_ids import new_session_id
@@ -548,7 +548,7 @@ def _canonical_profile_request(name: str) -> str:
         if not home.is_dir():
             # A deleted named profile keeps its tombstone until a successor is
             # published, so it is never a legacy alias for the default home.
-            if profiles_mod.profile_home_is_tombstoned(home):
+            if named_profile_is_deleted(home):
                 return name
             return "default"
     return name
@@ -609,7 +609,7 @@ def _profile_home(profile: str | None) -> Path | None:
         if _profile_home_rejected(home):
             raise ProfileUnavailableError(missing)
         return None
-    if profiles_mod.profile_home_is_tombstoned(home) or not profiles_mod.profile_exists(canon):
+    if named_profile_is_deleted(home) or not profiles_mod.profile_exists(canon):
         raise ProfileUnavailableError(missing)
     try:
         profile_incarnation = _capture_profile_incarnation(home)

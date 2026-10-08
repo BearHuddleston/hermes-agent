@@ -38,8 +38,6 @@ def test_readonly_roster_remains_available_during_mutation_lease(profile, busy_p
 
 
 def test_warm_hit_rechecks_retirement_before_publication(profile, monkeypatch):
-    import hermes_constants
-
     warm = {}
     srv._profile_session_fields(warm, profile)
     assert warm["last_session"]["title"] == "steady chat"
@@ -57,7 +55,7 @@ def test_warm_hit_rechecks_retirement_before_publication(profile, monkeypatch):
         srv._profile_session_fields(row, profile)
         assert row == dict(last_session=None, worker_session=None, canonical_session=None)
     finally:
-        hermes_constants.clear_named_profile_deleted(profile)
+        profile_lifecycle.clear_profile_deletion_marker(profile)
     monkeypatch.setattr(cache, "cached_session_fields", real)
     recovered = {}
     srv._profile_session_fields(recovered, profile)

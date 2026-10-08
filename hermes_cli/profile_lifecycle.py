@@ -25,7 +25,7 @@ import threading
 import time
 from typing import Callable, Iterable, Iterator
 
-from hermes_constants import get_default_hermes_root, profile_deletion_marker_path
+from hermes_constants import get_default_hermes_root, named_profile_is_deleted, profile_deletion_marker_path
 from pm.filesystem import lock_fd, unlock_fd
 
 logger = logging.getLogger(__name__)
@@ -226,12 +226,6 @@ def clear_profile_deletion_marker(profile_dir: Path | str) -> None:
     # parent can race another publisher between mkdir and atomic replace.
 
 
-def profile_home_is_tombstoned(profile_dir: Path | str) -> bool:
-    """Return whether profile deletion has been committed for this home."""
-    marker = profile_deletion_marker_path(Path(profile_dir))
-    return marker is not None and marker.is_file()
-
-
 def retire_in_process_profile_resources(
     profile_dir: Path | str,
     profile_incarnation: str | None = None,
@@ -422,7 +416,7 @@ def create_profile_generation(
     if profile_dir.exists():
         raise FileExistsError(f"Profile '{canon}' already exists at {profile_dir}")
 
-    prior_tombstone = profile_home_is_tombstoned(profile_dir)
+    prior_tombstone = named_profile_is_deleted(profile_dir)
     mark_profile_deleting(profile_dir)
     staging_root = profiles_root / ".profile-creating"
     staging_parent = staging_root / f"{canon}-{os.getpid()}-{secrets.token_hex(6)}"
@@ -467,7 +461,7 @@ def import_profile_generation(
     profile_dir = Path(profile_dir)
     if profile_dir.exists():
         raise FileExistsError(f"Profile '{canon}' already exists at {profile_dir}")
-    had_tombstone = profile_home_is_tombstoned(profile_dir)
+    had_tombstone = named_profile_is_deleted(profile_dir)
     mark_profile_deleting(profile_dir)
     try:
         incarnation = build_and_move()
@@ -534,7 +528,7 @@ def move_profile_generation(
     """Move a retired generation and publish only its new pathname."""
     old_dir = Path(old_dir)
     new_dir = Path(new_dir)
-    new_had_tombstone = profile_home_is_tombstoned(new_dir)
+    new_had_tombstone = named_profile_is_deleted(new_dir)
     mark_profile_deleting(new_dir)
     try:
         old_dir.rename(new_dir)

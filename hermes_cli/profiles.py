@@ -26,8 +26,6 @@ from hermes_cli.profile_lifecycle import (
     create_profile_generation,
     import_profile_generation,
     move_profile_generation,
-    profile_deletion_marker,
-    profile_home_is_tombstoned,
     profile_lifecycle_lease,
     profile_selection_lease,
     profile_shared_file_lease,
@@ -998,7 +996,7 @@ def write_profile_meta(
     # Default/custom homes deliberately skip the named-generation lease, but
     # their metadata still needs serialized read/modify/write.
     with profile_shared_file_lease(path):
-        if not profile_dir.is_dir() or profile_home_is_tombstoned(profile_dir):
+        if not profile_dir.is_dir() or named_profile_is_deleted(profile_dir):
             raise FileNotFoundError(f"profile directory does not exist or is being deleted: {profile_dir}")
         existing: dict = _load_yaml_dict(path) or {}
         if description is not None:
@@ -1718,7 +1716,7 @@ def _profile_directory_identity(profile_dir: Path) -> tuple[int, int, str | None
 def _profile_delete_confirmation_identity(profile_dir: Path) -> tuple[int, int, str | None]:
     # Backfill live legacy homes while briefly holding the mutation lease, then
     # release it before prompting. Never mint an identity behind a deletion fence.
-    if not profile_home_is_tombstoned(profile_dir):
+    if not named_profile_is_deleted(profile_dir):
         ensure_profile_incarnation(profile_dir)
     return _profile_directory_identity(profile_dir)
 
@@ -1818,7 +1816,7 @@ def _delete_profile_confirmed(
     # while an active turn settles. Its marker was minted before that first
     # tombstone, so a retry reads it rather than trying to backfill through a
     # deletion fence.
-    had_tombstone = profile_home_is_tombstoned(profile_dir)
+    had_tombstone = named_profile_is_deleted(profile_dir)
     profile_incarnation = read_profile_incarnation(profile_dir)
     if profile_incarnation is None:
         if had_tombstone:
@@ -2409,7 +2407,7 @@ def rename_profile(old_name: str, new_name: str) -> Path:
     with profile_lifecycle_lease(old_dir, new_dir):
         if not old_dir.is_dir():
             raise _unknown_profile_error(old_canon)
-        if profile_home_is_tombstoned(old_dir):
+        if named_profile_is_deleted(old_dir):
             raise RuntimeError(f"Profile '{old_canon}' is being deleted and cannot be renamed.")
         if new_dir.exists():
             raise _profile_exists_error(new_canon)
@@ -2460,7 +2458,7 @@ def rename_profile(old_name: str, new_name: str) -> Path:
         finally:
             # Publication happens inside move_profile_generation before this sticky
             # selection update, so set_active_profile can resolve the new name.
-            if new_dir.is_dir() and not profile_home_is_tombstoned(new_dir):
+            if new_dir.is_dir() and not named_profile_is_deleted(new_dir):
                 from hermes_cli.profile_identity import _migrate_profile_identity, _record_profile_rename
                 # Metadata writes reject tombstoned homes. Record the rename only
                 # after publication, including when post-move alias updates failed.
@@ -2474,7 +2472,7 @@ def rename_profile(old_name: str, new_name: str) -> Path:
                 if service_removed:
                     print(f"⚠ The gateway service was removed. Reinstall it with: hermes -p {new_canon} gateway install")
             else:
-                if live_mux and not profile_home_is_tombstoned(old_dir):
+                if live_mux and not named_profile_is_deleted(old_dir):
                     # A failed move or drain restored the old generation's admission.
                     _notify_multiplexer(old_canon)
                 if old_dir.is_dir():

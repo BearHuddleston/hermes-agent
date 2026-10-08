@@ -18,6 +18,7 @@ from hermes_cli import gateway_migrate as gm
 from hermes_cli.profile_channels import (
     channel_platforms_configured, shared_channel_credentials, strip_channel_config, strip_channel_env_file,
 )
+from hermes_cli.profile_lifecycle import mark_profile_deleting
 from hermes_cli.profiles import create_profile
 
 _SOURCE_ENV = (
@@ -214,7 +215,7 @@ def test_refused_create_touches_neither_source_nor_target(home, monkeypatch, fla
     (source / PROFILE_INCARNATION_FILENAME).unlink()  # a legacy home predating incarnation markers
     shell = home / "profiles" / "dst"
     (shell / "cron").mkdir(parents=True)
-    hermes_constants.mark_named_profile_deleted(shell)
+    mark_profile_deleting(shell)
     monkeypatch.setattr(served_mod, "recorded_served_profiles", lambda root=None: ["default", "src"])
 
     with pytest.raises(ValueError):

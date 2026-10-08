@@ -1072,7 +1072,7 @@ class TestRenameProfile:
             # Snapshot the world at each multiplexer signal to pin ordering.
             calls.append((name, old_dir.exists(), new_dir.exists(), profiles.named_profile_is_deleted(old_dir)))
             if name == "newname":
-                assert not profiles.profile_home_is_tombstoned(new_dir)
+                assert not profiles.named_profile_is_deleted(new_dir)
                 assert profiles.read_profile_meta(new_dir)["previous_names"] == ["oldname"]
             if name == "oldname" and old_dir.exists():
                 # A still-live component of the multiplexer writing into the old home mid-teardown.
@@ -1240,8 +1240,8 @@ class TestRenameProfile:
             with pytest.raises(RuntimeError, match="alias update failed"):
                 rename_profile("oldname", "newname")
 
-        assert profiles.profile_home_is_tombstoned(old_dir)
-        assert not profiles.profile_home_is_tombstoned(new_dir)
+        assert profiles.named_profile_is_deleted(old_dir)
+        assert not profiles.named_profile_is_deleted(new_dir)
         assert profiles.read_profile_incarnation(new_dir) == incarnation
         assert profiles.read_profile_meta(new_dir)["previous_names"] == ["oldname"]
         info = next(p for p in list_profiles() if p.name == "newname")

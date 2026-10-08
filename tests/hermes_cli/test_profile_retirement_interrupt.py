@@ -14,6 +14,7 @@ from types import SimpleNamespace
 import pytest
 
 from hermes_cli import profile_cmd, profile_lifecycle, profiles
+from hermes_constants import named_profile_is_deleted
 
 _HOLDER = 424242
 
@@ -76,7 +77,7 @@ def test_interrupted_rename_leaves_the_profile_live_and_retryable(profile_env, m
     with pytest.raises(exc_type):
         profiles.rename_profile("coder", "dev")
 
-    assert not profile_lifecycle.profile_home_is_tombstoned(old_dir)
+    assert not named_profile_is_deleted(old_dir)
     assert profiles.profile_exists("coder") and _listed("coder")
     assert not profiles.profile_exists("dev")
 
@@ -93,7 +94,7 @@ def test_delete_interrupted_during_holder_wait_restores_the_profile(profile_env,
         profiles.delete_profile("coder", yes=True)
 
     assert profile_dir.is_dir()
-    assert not profile_lifecycle.profile_home_is_tombstoned(profile_dir)
+    assert not named_profile_is_deleted(profile_dir)
     assert profiles.profile_exists("coder") and _listed("coder")
 
 

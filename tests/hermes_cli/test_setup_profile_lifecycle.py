@@ -6,6 +6,7 @@ import tarfile
 import pytest
 
 from hermes_cli import profile_lifecycle, profiles, setup_profile
+from hermes_constants import named_profile_is_deleted
 from hermes_cli.profile_incarnation import read_profile_incarnation
 
 
@@ -65,7 +66,7 @@ def test_setup_copies_drop_marker_before_fresh_generation_publication(profile_ro
 
     def publish(home, incarnation):
         assert Path(home) == target
-        assert profile_lifecycle.profile_home_is_tombstoned(home)
+        assert named_profile_is_deleted(home)
         assert not _is_setup_profile(Path(home))
         assert incarnation is not None and incarnation != source_incarnation
         assert read_profile_incarnation(home) == incarnation

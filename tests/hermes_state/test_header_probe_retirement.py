@@ -12,6 +12,7 @@ import psutil
 import pytest
 
 from hermes_cli import profile_lifecycle, profiles
+from hermes_constants import named_profile_is_deleted
 from hermes_cli.sqlite_safe_read import connect_tracked, has_live_connection
 from hermes_state import SessionDB
 from hermes_state_dbfile import _pread_db_header
@@ -89,7 +90,7 @@ def test_closed_child_allows_profile_delete_but_live_sibling_refuses(tmp_path, m
             assert child.pid in profile_lifecycle.external_profile_file_holders(home)
             with pytest.raises(RuntimeError, match="external process"):
                 profiles.delete_profile(name, yes=True)
-            assert home.is_dir() and not profiles.profile_home_is_tombstoned(home)
+            assert home.is_dir() and not named_profile_is_deleted(home)
             pipe.send("close")
             assert not _receive(pipe)["live"]
             assert child.is_alive()
