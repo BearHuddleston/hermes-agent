@@ -304,7 +304,6 @@ def test_webapp_stop_only_targets_the_invoking_home(
     assert exc.value.code == expected_exit
     assert killed == ([{
         "include_pids": {111},
-        "scope_home": own_home,
         "reason": "requested via webapp --stop",
     }] if own_running else [])
 

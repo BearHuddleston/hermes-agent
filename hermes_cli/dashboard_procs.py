@@ -109,13 +109,8 @@ def _ledger_web_server_processes() -> dict[int, str]:
     """Positively identified live web servers for this Hermes install."""
     from hermes_cli.process_identity import ledger_entries
 
-    try:
-        entries = ledger_entries(verified_only=True)
-    except OSError:
-        return {}
-
     processes: dict[int, str] = {}
-    for entry in entries:
+    for entry in ledger_entries(verified_only=True):
         if entry.get("purpose") not in WEB_SERVER_PURPOSES:
             continue
         pid = entry.get("pid")

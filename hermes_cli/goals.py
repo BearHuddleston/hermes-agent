@@ -624,10 +624,7 @@ def release_session_db_for_home(home: Path | str) -> bool:
             _release_session_db(late_db)
     if db is None:
         return False
-    try:
-        db.close()
-    except Exception:
-        logger.debug("Failed to close cached SessionDB for %s", key, exc_info=True)
+    _release_session_db(db)
     return True
 
 

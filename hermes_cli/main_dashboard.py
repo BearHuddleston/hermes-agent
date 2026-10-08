@@ -856,10 +856,10 @@ def cmd_webapp(args):
         if not webapp_pids:
             print("No Hermes Webapp processes running for this profile.")
             raise SystemExit(0)
+        # include_pids is already scoped to this home (unreadable ownership excluded).
         _kill_stale_dashboard_processes(
             reason="requested via webapp --stop",
             include_pids=webapp_pids,
-            scope_home=own_home,
         )
         raise SystemExit(1 if _webapp_pids() else 0)
 

@@ -380,19 +380,16 @@ def reapable_ledger_identities() -> dict[int, float]:
     rather than guessing from argv.
     """
     identities: dict[int, float] = {}
-    try:
-        for entry in ledger_entries():
-            pid, created = entry.get("pid"), entry.get("create_time")
-            if (
-                entry.get("purpose") in REAPABLE_PURPOSES
-                and isinstance(pid, int)
-                and pid > 0
-                and isinstance(created, (int, float))
-                and not isinstance(created, bool)
-            ):
-                identities[pid] = float(created)
-    except OSError:
-        return {}
+    for entry in ledger_entries():
+        pid, created = entry.get("pid"), entry.get("create_time")
+        if (
+            entry.get("purpose") in REAPABLE_PURPOSES
+            and isinstance(pid, int)
+            and pid > 0
+            and isinstance(created, (int, float))
+            and not isinstance(created, bool)
+        ):
+            identities[pid] = float(created)
     return identities
 
 

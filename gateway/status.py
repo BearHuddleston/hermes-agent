@@ -791,16 +791,13 @@ def _get_code_identity_fields() -> dict[str, Any]:
         return {}
 
 
-def _pid_record_belongs_to_current_profile(
-    record: Optional[dict[str, Any]], *, expected_home: Optional[Path | str] = None
-) -> bool:
+def _pid_record_belongs_to_current_profile(record: Optional[dict[str, Any]]) -> bool:
     """True when the record's ``hermes_home`` matches the current process (legacy records: True);
     another HERMES_HOME's record must be ignored or the default gateway assumes its identity."""
     if not isinstance(record, dict):
         return False
     record_home = record.get("hermes_home")
-    target_home = expected_home if expected_home is not None else _get_process_hermes_home()
-    return not record_home or _same_hermes_home(record_home, target_home)
+    return not record_home or _same_hermes_home(record_home, _get_process_hermes_home())
 
 
 def _build_runtime_status_record() -> dict[str, Any]:
