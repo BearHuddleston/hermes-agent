@@ -63,6 +63,34 @@ function history(comments: string[]): SessionMessage[] {
   ]
 }
 
+// The gateway's live turn: per comment a delta, an interim when `interim(index)` and one
+// read_file tool round, then the reply.
+async function streamLiveTurn(
+  handle: (event: GatewayEvent) => void,
+  comments: readonly string[],
+  reply: string,
+  interim: (index: number) => boolean = () => true
+) {
+  const send = (type: GatewayEvent['type'], payload: GatewayEvent['payload'] = {}) =>
+    act(() => handle({ session_id: runtimeId, type, payload }))
+
+  send('message.start')
+  comments.forEach((text, index) => {
+    send('message.delta', { text: `${index ? '\n\n' : ''}${text}` })
+
+    if (interim(index)) {
+      send('message.interim', { text, already_streamed: true })
+    }
+
+    send('tool.start', { name: 'read_file', tool_id: `call-${index}`, args: {} })
+    send('tool.complete', { name: 'read_file', tool_id: `call-${index}`, result: 'fixture' })
+  })
+  send('message.delta', { text: `\n\n${reply}` })
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(150)
+  })
+}
+
 function mount(snapshot: SessionResumeResult) {
   const requestGateway = vi.fn().mockResolvedValue(snapshot)
 
@@ -198,24 +226,12 @@ it.each([
     }
 
     if (cacheKind === 'warm') {
-      const send = (type: GatewayEvent['type'], payload: GatewayEvent['payload'] = {}) =>
-        act(() => result.current.stream.handleGatewayEvent({ session_id: runtimeId, type, payload }))
-
-      send('message.start')
-      comments.forEach((text, index) => {
-        send('message.delta', { text: `${index ? '\n\n' : ''}${text}` })
-
-        if (!index || !repeated) {
-          send('message.interim', { text, already_streamed: true })
-        }
-
-        send('tool.start', { name: 'read_file', tool_id: `call-${index}`, args: {} })
-        send('tool.complete', { name: 'read_file', tool_id: `call-${index}`, result: 'fixture' })
-      })
-      send('message.delta', { text: `\n\n${race === 'snapshot-ahead' ? 'The res' : tail}` })
-      await act(async () => {
-        await vi.advanceTimersByTimeAsync(150)
-      })
+      await streamLiveTurn(
+        event => result.current.stream.handleGatewayEvent(event),
+        comments,
+        race === 'snapshot-ahead' ? 'The res' : tail,
+        index => !index || !repeated
+      )
     }
 
     const durable = history(comments)
@@ -407,6 +423,85 @@ it.each([prompt, 'Inspect the next file'])(
   }
 )
 
+it.each([
+  ['cold', 1],
+  ['cold', 2],
+  ['warm', 1],
+  ['warm', 2]
+] as const)(
+  'shows a queue-drained turn once when its prompt predates the turn start (%s, %i tool rounds)',
+  async (cacheKind, rounds) => {
+    // The gateway's queue drain writes the drained prompt's row before it records
+    // turn_started_at, so the prompt sits just before the backend boundary. A goal
+    // round precedes it, as it does for nearly every drain under an active goal.
+    const comments = [commentary, 'Checking another phase.'].slice(0, rounds)
+
+    const goalRound: SessionMessage[] = [
+      {
+        id: 10,
+        role: 'user',
+        content: '[Continuing toward your standing goal]',
+        display_kind: 'hidden',
+        user_originated: false,
+        timestamp: -2
+      },
+      { id: 11, role: 'assistant', content: 'Goal round done.', timestamp: -1 }
+    ]
+
+    const durable = [...goalRound, ...history(comments)]
+
+    const snapshot: SessionResumeResult = {
+      session_id: runtimeId,
+      resumed: storedId,
+      messages: [],
+      message_count: 0,
+      running: true,
+      turn_started_at: user.timestamp! + 0.5,
+      inflight: { user: prompt, user_originated: true, assistant: [...comments, tail].join('\n\n'), streaming: true }
+    }
+
+    vi.mocked(getLatestSessionMessages).mockResolvedValue({ session_id: storedId, messages: durable })
+    const { result } = mount(snapshot)
+
+    if (cacheKind === 'warm') {
+      act(() => {
+        result.current.cache.activeSessionIdRef.current = runtimeId
+        result.current.cache.selectedStoredSessionIdRef.current = storedId
+        result.current.cache.updateSessionState(
+          runtimeId,
+          state => ({ ...state, messages: toChatMessages([...goalRound, user]) }),
+          storedId
+        )
+      })
+
+      await streamLiveTurn(event => result.current.stream.handleGatewayEvent(event), comments, tail)
+    }
+
+    for (let resume = 0; resume < 2; resume++) {
+      await act(async () => {
+        await result.current.actions.resumeSession(storedId, true)
+      })
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(150)
+      })
+      const rows = result.current.cache.sessionStateByRuntimeIdRef.current.get(runtimeId)!.messages
+
+      // Each round's narration, then its tool card, then the reply: once each, in order.
+      const transcript = rows
+        .filter(row => row.role === 'assistant')
+        .flatMap(row => row.parts)
+        .map(part => (part.type === 'tool-call' ? `[${part.toolCallId}]` : part.type === 'text' ? part.text : ''))
+
+      expect(rows.filter(row => row.role === 'user').map(chatMessageText)).toEqual([prompt])
+      expect(transcript.join('').replace(/\s+/g, '')).toBe(
+        ['Goal round done.', ...comments.flatMap((text, index) => [text, `[call-${index}]`]), tail]
+          .join('')
+          .replace(/\s+/g, '')
+      )
+    }
+  }
+)
+
 it('settles a retained idle error once across repeated resume and a changed error snapshot', async () => {
   const partial = 'The partial result'
 
@@ -534,24 +629,7 @@ it.each([1, 2])('consumes %i durable runtime tool occurrences before recovering 
     await live.result.current.actions.resumeSession(storedId, true)
   })
 
-  const send = (type: GatewayEvent['type'], payload: GatewayEvent['payload'] = {}) =>
-    act(() => live.result.current.stream.handleGatewayEvent({ session_id: runtimeId, type, payload }))
-
-  send('message.start')
-  comments.forEach((text, index) => {
-    send('message.delta', { text: `${index ? '\n\n' : ''}${text}` })
-
-    if (!index) {
-      send('message.interim', { text, already_streamed: true })
-    }
-
-    send('tool.start', { name: 'read_file', tool_id: `call-${index}`, args: {} })
-    send('tool.complete', { name: 'read_file', tool_id: `call-${index}`, result: 'fixture' })
-  })
-  send('message.delta', { text: `\n\n${tail}` })
-  await act(async () => {
-    await vi.advanceTimersByTimeAsync(150)
-  })
+  await streamLiveTurn(event => live.result.current.stream.handleGatewayEvent(event), comments, tail, index => !index)
   persistInFlightTurnState(live.result.current.cache.sessionStateByRuntimeIdRef.current.get(runtimeId)!)
   await act(async () => {
     await vi.advanceTimersByTimeAsync(500)

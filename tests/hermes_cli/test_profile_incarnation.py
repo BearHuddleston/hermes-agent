@@ -24,10 +24,8 @@ def _backfill_worker(profile_home: str, gate, results) -> None:
     results.put(ensure_profile_incarnation(profile_home))
 
 
-def _assert_concurrent_process_backfill(
-    tmp_path: Path,
-    monkeypatch,
-) -> None:
+@pytest.mark.platforms("any")  # real spawned processes and OS file locks: every OS lane runs it
+def test_concurrent_process_backfill(tmp_path: Path, monkeypatch) -> None:
     hermes_home = tmp_path / ".hermes"
     profile_home = hermes_home / "profiles" / "worker"
     profile_home.mkdir(parents=True)
@@ -65,22 +63,8 @@ def _assert_concurrent_process_backfill(
         results.join_thread()
 
 
-@pytest.mark.platforms("linux")
-def test_concurrent_process_backfill_on_linux(tmp_path: Path, monkeypatch) -> None:
-    _assert_concurrent_process_backfill(tmp_path, monkeypatch)
-
-
-@pytest.mark.platforms("macos")
-def test_concurrent_process_backfill_on_macos(tmp_path: Path, monkeypatch) -> None:
-    _assert_concurrent_process_backfill(tmp_path, monkeypatch)
-
-
-@pytest.mark.platforms("windows")
-def test_concurrent_process_backfill_on_windows(tmp_path: Path, monkeypatch) -> None:
-    _assert_concurrent_process_backfill(tmp_path, monkeypatch)
-
-
-def _assert_legacy_backfill_excludes_profile_recreation(
+@pytest.mark.platforms("any")  # real spawned processes and OS file locks: every OS lane runs it
+def test_legacy_backfill_excludes_profile_recreation(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -147,7 +131,8 @@ def _assert_legacy_backfill_excludes_profile_recreation(
     assert real_read(profile_home) == observed[0]
 
 
-def _assert_resource_lease_timeout_fails_closed(
+@pytest.mark.platforms("any")  # real spawned processes and OS file locks: every OS lane runs it
+def test_resource_lease_timeout_fails_closed(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -186,54 +171,6 @@ def _assert_resource_lease_timeout_fails_closed(
     assert result.returncode == 0, result.stdout + result.stderr
 
 
-@pytest.mark.platforms("linux")
-def test_legacy_backfill_excludes_profile_recreation_on_linux(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    _assert_legacy_backfill_excludes_profile_recreation(tmp_path, monkeypatch)
-
-
-@pytest.mark.platforms("macos")
-def test_legacy_backfill_excludes_profile_recreation_on_macos(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    _assert_legacy_backfill_excludes_profile_recreation(tmp_path, monkeypatch)
-
-
-@pytest.mark.platforms("windows")
-def test_legacy_backfill_excludes_profile_recreation_on_windows(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    _assert_legacy_backfill_excludes_profile_recreation(tmp_path, monkeypatch)
-
-
-@pytest.mark.platforms("linux")
-def test_resource_lease_timeout_fails_closed_on_linux(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    _assert_resource_lease_timeout_fails_closed(tmp_path, monkeypatch)
-
-
-@pytest.mark.platforms("macos")
-def test_resource_lease_timeout_fails_closed_on_macos(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    _assert_resource_lease_timeout_fails_closed(tmp_path, monkeypatch)
-
-
-@pytest.mark.platforms("windows")
-def test_resource_lease_timeout_fails_closed_on_windows(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    _assert_resource_lease_timeout_fails_closed(tmp_path, monkeypatch)
-
-
 @pytest.mark.platforms("windows")
 def test_fresh_marker_waits_out_a_briefly_held_temp_file(tmp_path: Path, monkeypatch) -> None:
     """Antivirus and indexers open a just-written file, and Windows refuses to rename it
@@ -262,3 +199,22 @@ def test_fresh_marker_waits_out_a_briefly_held_temp_file(tmp_path: Path, monkeyp
     assert released.is_set()
     assert read_profile_incarnation(profile_home) == token
     assert not list(profile_home.glob(f"{PROFILE_INCARNATION_FILENAME}.*.tmp"))
+
+
+def test_markers_rewritten_by_windows_tooling_keep_their_identity(tmp_path: Path, monkeypatch) -> None:
+    """Windows PowerShell and some editors prepend a UTF-8 BOM to a file they save; the
+    incarnation and deletion markers must still read as the same token, not as corruption."""
+    hermes_home = tmp_path / ".hermes"
+    profile_home = hermes_home / "profiles" / "worker"
+    profile_home.mkdir(parents=True)
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    token = profile_incarnation.write_fresh_profile_incarnation(profile_home)
+    marker = profile_home / PROFILE_INCARNATION_FILENAME
+    marker.write_bytes(b"\xef\xbb\xbf" + marker.read_bytes())
+
+    assert read_profile_incarnation(profile_home) == token
+
+    tombstone = profile_incarnation.profile_deletion_marker_path(profile_home)
+    tombstone.parent.mkdir(parents=True, exist_ok=True)
+    tombstone.write_bytes(b"\xef\xbb\xbf" + token.encode())
+    assert profile_incarnation.read_profile_deletion_incarnation(profile_home) == token

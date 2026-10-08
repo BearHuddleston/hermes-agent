@@ -81,13 +81,6 @@ export type ChatMessage = {
   reactions?: MessageReaction[]
   /** Who sent this user message, in a chat several signed-in people share. Display only. */
   sender?: MessageSender
-  /** Backend-authored transcript notice rather than a message any view sent: a
-   *  model switch, an auto-continue, a background-process completion. It renders
-   *  on the timeline like any other system row but belongs to no view, so the
-   *  stale-transcript compare must not count it (see
-   *  `messagesIfTranscriptBehind`) — counting it made one model switch report a
-   *  second window ahead and refuse every send. */
-  systemNotice?: boolean
 }
 
 /** A signed-in person as shown in a shared chat (`tui_gateway/shared_turns.py::_sender_card`). */
@@ -173,7 +166,7 @@ export type GatewayEventPayload = {
   // approval server request (dangerous command / execute_code) — session-keyed
   command?: string
   description?: string
-  // False when a tirith content-security warning forbids a permanent allow.
+  // False when the backend forbids a permanent allow.
   allow_permanent?: boolean
   smart_denied?: boolean
   // secret.request (skill credential capture)
@@ -243,6 +236,8 @@ export type GatewayEventPayload = {
   // message.complete — a transform_llm_output hook rewrote the final text after streaming;
   // it authoritatively replaces the current turn's streamed text even without a prefix match.
   response_transformed?: MessageCompletePayload['response_transformed']
+  // message.complete — `text` is a response this turn already delivered: it adds no text.
+  response_reused?: MessageCompletePayload['response_reused']
   persisted_turn?: PersistedTurn | null
   // message.complete — history-commit note the gateway surfaced instead of dropping.
   warning?: string

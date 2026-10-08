@@ -19,6 +19,8 @@ import { createBrowserWindowOpener, sessionWindowTarget } from '@/lib/browser-wi
 import { createBrowserZoom } from '@/lib/browser-zoom'
 import { $connection } from '@/store/session'
 
+import { resolveGatewayVersion } from '../../electron/gateway-version'
+
 /**
  * Install a capability-limited Desktop bridge when the real renderer is served
  * directly by Hermes' authenticated web server.
@@ -90,6 +92,15 @@ export function installBrowserDesktopBridge(): boolean {
     }),
     ...uploads,
     api,
+    // This renderer is built from the serving checkout, so its version is the
+    // server's, read the way native Desktop reads its runtime's.
+    getVersion: async () => ({
+      appVersion: await resolveGatewayVersion(path => api({ path, timeoutMs: 5000 })),
+      electronVersion: '',
+      hermesRoot: '',
+      nodeVersion: '',
+      platform: 'browser'
+    }),
     findInPage: async (query: string) => {
       const find = (window as Window & { find?: (value: string) => boolean }).find
 

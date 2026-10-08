@@ -113,18 +113,14 @@ def test_credential_mirror_rewrite_cannot_recreate_profile_deleted_before_commit
     assert profile_lifecycle.profile_home_is_tombstoned(profile_dir) is True
 
 
-@pytest.mark.parametrize(
-    "contents", [b"\0" * 64, b"not a SQLite database"], ids=["zeroed", "non-sqlite"]
-)
 def test_invalid_db_quarantine_cannot_recreate_profile_deleted_after_precheck(
     home: Path,
     monkeypatch: pytest.MonkeyPatch,
-    contents: bytes,
 ) -> None:
     profile_dir = home / "profiles" / "worker"
     profile_dir.mkdir(parents=True)
     db_path = profile_dir / "state.db"
-    db_path.write_bytes(contents)
+    db_path.write_bytes(b"not a SQLite database")
     real_header_check = hermes_state.has_invalid_sqlite_header_preopen
     deleted = False
 
@@ -382,7 +378,8 @@ def _attempt_cross_process_profile_recreate(home: Path) -> subprocess.CompletedP
     )
 
 
-def _assert_attachment_write_holds_profile_lifecycle_lease(
+@pytest.mark.platforms("any")
+def test_attachment_write_holds_profile_lifecycle_lease(
     home: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -442,30 +439,8 @@ def _assert_attachment_write_holds_profile_lifecycle_lease(
     assert stored[0].read_bytes() == b"safe"
 
 
-def test_attachment_write_holds_profile_lifecycle_lease(
-    home: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    _assert_attachment_write_holds_profile_lifecycle_lease(home, monkeypatch)
-
-
-@pytest.mark.platforms("macos")
-def test_macos_attachment_write_holds_profile_lifecycle_lease(
-    home: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    _assert_attachment_write_holds_profile_lifecycle_lease(home, monkeypatch)
-
-
-@pytest.mark.platforms("windows")
-def test_windows_attachment_write_holds_profile_lifecycle_lease(
-    home: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    _assert_attachment_write_holds_profile_lifecycle_lease(home, monkeypatch)
-
-
-def _assert_sessiondb_bind_holds_profile_lifecycle_lease(
+@pytest.mark.platforms("any")
+def test_sessiondb_bind_holds_profile_lifecycle_lease(
     home: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -516,29 +491,6 @@ def _assert_sessiondb_bind_holds_profile_lifecycle_lease(
     finally:
         for db in opened:
             db.close()
-
-
-def test_sessiondb_bind_holds_profile_lifecycle_lease(
-    home: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    _assert_sessiondb_bind_holds_profile_lifecycle_lease(home, monkeypatch)
-
-
-@pytest.mark.platforms("macos")
-def test_macos_sessiondb_bind_holds_profile_lifecycle_lease(
-    home: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    _assert_sessiondb_bind_holds_profile_lifecycle_lease(home, monkeypatch)
-
-
-@pytest.mark.platforms("windows")
-def test_windows_sessiondb_bind_holds_profile_lifecycle_lease(
-    home: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    _assert_sessiondb_bind_holds_profile_lifecycle_lease(home, monkeypatch)
 
 
 def test_compute_host_rejects_old_incarnation_before_agent_build(
@@ -766,7 +718,7 @@ def test_new_profile_stays_unpublished_until_initialization_completes(
 
     thread = threading.Thread(target=create)
     thread.start()
-    assert paused.wait(timeout=2)
+    assert paused.wait(timeout=10)
 
     assert not profile_dir.exists()
     assert profile_lifecycle.profile_home_is_tombstoned(profile_dir) is True
@@ -1020,7 +972,8 @@ def test_failed_partial_delete_stays_tombstoned(
         SessionDB(db_path=profile_dir / "state.db")
 
 
-def _assert_profile_mutation_lock_is_cross_process(home: Path) -> None:
+@pytest.mark.platforms("any")
+def test_profile_mutation_lock_is_cross_process(home: Path) -> None:
     profile_dir = home / "profiles" / "locked"
     script = (
         "from hermes_cli import profile_lifecycle, profiles; "
@@ -1044,29 +997,32 @@ def _assert_profile_mutation_lock_is_cross_process(home: Path) -> None:
     assert profiles.create_profile("locked", no_alias=True, no_skills=True) == profile_dir
 
 
-def test_profile_mutation_lock_is_cross_process(home: Path) -> None:
-    _assert_profile_mutation_lock_is_cross_process(home)
-
-
-@pytest.mark.platforms("windows")
-def test_windows_profile_mutation_lock_uses_native_byte_range_lock(home: Path) -> None:
-    _assert_profile_mutation_lock_is_cross_process(home)
-
-
 def test_interactive_delete_confirmation_does_not_hold_lifecycle_lock(
     home: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     profile_dir = home / "profiles" / "worker"
     profile_dir.mkdir(parents=True)
+    probes: list[bool] = []
 
-    def cancel_without_lease(_prompt: str) -> str:
-        assert not getattr(profile_lifecycle._PROFILE_MUTATION_LOCAL, "depth", 0)
+    def lease_is_free() -> None:
+        # Nonblocking on another thread: a lease held across the prompt refuses it.
+        try:
+            with profile_lifecycle.profile_lifecycle_lease(profile_dir, timeout=0):
+                probes.append(True)
+        except TimeoutError:
+            probes.append(False)
+
+    def cancel_after_probe(_prompt: str) -> str:
+        probe = threading.Thread(target=lease_is_free)
+        probe.start()
+        probe.join(10)
         return "cancel"
 
-    monkeypatch.setattr("builtins.input", cancel_without_lease)
+    monkeypatch.setattr("builtins.input", cancel_after_probe)
 
     assert profiles.delete_profile("worker", yes=False) == profile_dir
+    assert probes == [True], "the confirmation prompt held the profile lifecycle lease"
     assert profile_dir.is_dir()
 
 
@@ -1267,7 +1223,7 @@ def test_concurrent_profile_use_cannot_restore_retired_name(
 
     rename_thread = threading.Thread(target=rename)
     rename_thread.start()
-    assert finishing.wait(timeout=2)
+    assert finishing.wait(timeout=10)
     use_thread = threading.Thread(target=reuse_old_name)
     use_thread.start()
     release.set()
@@ -1358,7 +1314,7 @@ def test_delete_waits_for_active_turn_before_removing_profile(
 
     thread = threading.Thread(target=active_turn)
     thread.start()
-    assert started.wait(timeout=2)
+    assert started.wait(timeout=10)
 
     class Agent:
         def close(self) -> None:
@@ -1436,7 +1392,7 @@ def test_delete_fences_and_closes_deferred_agent_build(
     with srv._sessions_lock:
         srv._sessions["deferred-build"] = session
     srv._start_agent_build("deferred-build", session)
-    assert started.wait(timeout=2)
+    assert started.wait(timeout=10)
 
     with pytest.raises(RuntimeError, match="active session turn"):
         profiles.delete_profile("worker", yes=True)

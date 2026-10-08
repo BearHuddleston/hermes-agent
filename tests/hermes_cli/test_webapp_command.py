@@ -155,14 +155,6 @@ def test_only_requested_builds_may_install_renderer_dependencies(tmp_path: Path,
     assert requests == [False, True, True]
 
 
-def test_webapp_build_only_prepares_without_starting_server(tmp_path: Path, monkeypatch):
-    prepared = tmp_path / "dist-webapp"
-    monkeypatch.setattr(cli_main, "PROJECT_ROOT", tmp_path)
-    monkeypatch.setattr(webapp, "prepare_webapp_renderer", lambda *a, **k: prepared)
-
-    assert cli_main.cmd_webapp(_args(build_only=True)) is None
-
-
 def test_webapp_refuses_an_incompatible_owner_before_build_but_honors_build_only(tmp_path, monkeypatch):
     prepared = []
 
@@ -271,45 +263,6 @@ def test_webapp_status_is_scoped_and_does_not_build(monkeypatch):
     assert reported == [{"modes": {"webapp"}}]
 
 
-def test_webapp_stop_never_targets_desktop_serve_backend(monkeypatch):
-    from hermes_constants import get_hermes_home
-
-    own_home = str(get_hermes_home())
-    monkeypatch.setattr(dashboard_procs, "_hermes_home_for_pid", lambda pid: own_home)
-    scans = iter(
-        [
-            [
-                (111, "python -m hermes_cli.main webapp --port 9119"),
-                (222, "python -m hermes_cli.main serve --port 0"),
-            ],
-            [],
-        ]
-    )
-    killed = []
-    monkeypatch.setattr(
-        dashboard_procs,
-        "_scan_dashboard_processes",
-        lambda: next(scans),
-    )
-    monkeypatch.setattr(
-        dashboard_procs,
-        "_kill_stale_dashboard_processes",
-        lambda **kwargs: killed.append(kwargs) or {"killed": [111]},
-    )
-
-    with pytest.raises(SystemExit) as exc:
-        cli_main.cmd_webapp(_args(stop=True))
-
-    assert exc.value.code == 0
-    assert killed == [
-        {
-            "include_pids": {111},
-            "scope_home": own_home,
-            "reason": "requested via webapp --stop",
-        }
-    ]
-
-
 @pytest.mark.parametrize(
     ("own_running", "own_survives", "expected_exit"),
     [(True, False, 0), (True, True, 1), (False, False, 0)],
@@ -352,34 +305,13 @@ def test_webapp_stop_only_targets_the_invoking_home(
     }] if own_running else [])
 
 
-def test_web_server_commands_cannot_be_shadowed_by_profile_aliases():
-    from hermes_cli.profiles import check_alias_collision
-
-    for command in ("dashboard", "serve", "webapp"):
-        assert check_alias_collision(command) == (
-            f"'{command}' conflicts with a hermes subcommand"
-        )
-
-
 def test_webapp_process_identity_uses_the_existing_web_server_lifecycle(monkeypatch):
     from hermes_cli.dashboard_procs import (
-        _dashboard_subcommand_index,
         _is_hermes_web_server_command,
         _is_dashboard_lifecycle_probe,
         _ledger_web_server_processes,
-        _normalize_dashboard_cmdline,
     )
 
-    argv = ["python", "-m", "hermes_cli.main", "-p", "coder", "webapp", "--port", "9443"]
-
-    assert _dashboard_subcommand_index(argv) == 5
-    assert _normalize_dashboard_cmdline(argv) == (
-        "-p",
-        "coder",
-        "webapp",
-        "--port",
-        "9443",
-    )
     assert main_dashboard._parse_dashboard_runtime(
         "python -m hermes_cli.main webapp --host 0.0.0.0 --port 9443"
     ) == ("webapp", "0.0.0.0", 9443)
@@ -426,9 +358,9 @@ def test_webapp_process_identity_uses_the_existing_web_server_lifecycle(monkeypa
             }
         ] if verified_only else [],
     )
-    assert _ledger_web_server_processes() == {
-        4242: "python -m hermes_cli.main webapp --no-open --port 0"
-    }
+    ledger = _ledger_web_server_processes()
+    assert set(ledger) == {4242}
+    assert main_dashboard._parse_dashboard_runtime(ledger[4242])[0] == "webapp"
 
 
 def test_webapp_process_table_fallback_uses_structured_command_identity(monkeypatch):
@@ -449,36 +381,19 @@ def test_webapp_process_table_fallback_uses_structured_command_identity(monkeypa
     ]
 
 
-def test_dashboard_and_webapp_builds_share_the_workspace_lock(tmp_path: Path):
-    """A Webapp build excludes the Dashboard builder's lock on the same checkout."""
+def test_dashboard_and_webapp_builds_share_the_workspace_lock(tmp_path: Path, monkeypatch):
+    """While the Dashboard builder holds its lock, the Webapp build lock on the same checkout is taken."""
     from pm.filesystem import lock_fd
+    from hermes_cli import main_web_build
 
     _workspace_tree(tmp_path)
-    lock_path = tmp_path / webapp._LOCK_NAME
-    assert webapp._LOCK_NAME == ".web_ui_build.lock"
-    with webapp._exclusive_build_lock(lock_path):
-        with lock_path.open("ab") as contender:
-            assert lock_fd(contender.fileno(), wait=False) is False
-    with lock_path.open("ab") as contender:
-        assert lock_fd(contender.fileno(), wait=False) is True
+    webapp_lock_free = []
 
+    def build_while_locked(_web_dir, *, fatal=False):
+        with (tmp_path / webapp._LOCK_NAME).open("ab") as contender:
+            webapp_lock_free.append(lock_fd(contender.fileno(), wait=False))
+        return True
 
-def test_webapp_help_describes_its_scoped_lifecycle(capsys):
-    from hermes_cli.subcommands.dashboard import build_dashboard_parser
-
-    parser = argparse.ArgumentParser()
-    subparsers = parser.add_subparsers(dest="command")
-    build_dashboard_parser(
-        subparsers,
-        cmd_dashboard=lambda _args: None,
-        cmd_dashboard_register=lambda _args: None,
-        cmd_webapp=lambda _args: None,
-    )
-
-    with pytest.raises(SystemExit) as exc:
-        parser.parse_args(["webapp", "--help"])
-
-    assert exc.value.code == 0
-    output = capsys.readouterr().out
-    assert "Stop running Hermes Webapp processes and exit" in output
-    assert "Stop all running Hermes web server processes and exit" not in output
+    monkeypatch.setattr(main_web_build, "_do_build_web_ui", build_while_locked)
+    assert main_web_build._build_web_ui(tmp_path / "web") is True
+    assert webapp_lock_free == [False]

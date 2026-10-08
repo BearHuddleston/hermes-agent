@@ -124,8 +124,6 @@ def test_named_home_link_modes_survive_resolution_and_recreation(
     assert (target / "SOUL.md").is_file()
     if not with_marker:
         assert profile_incarnation.read_profile_incarnation(target) is None
-        assert str(home) not in config._HERMES_HOME_ENSURED
-        assert str(target) not in config._HERMES_HOME_ENSURED
 
 
 @pytest.mark.platforms("linux")

@@ -19,7 +19,10 @@ from fastapi import HTTPException, WebSocket, WebSocketDisconnect
 from hermes_cli.profile_incarnation import (
     ensure_profile_incarnation, profile_incarnation_lease, profile_incarnation_matches,
 )
-from hermes_cli.pty_session import PtySession, PtySessionRegistry, RegistryFull, run_reaper
+from hermes_cli.pty_session import (
+    WS_CLOSE_VIEWER_STALLED, WS_CLOSE_VIEWER_STALLED_REASON, PtySession, PtySessionRegistry,
+    RegistryFull, _close_ws, run_reaper,
+)
 from hermes_cli.web_host_terminal import META_PREFIX
 from hermes_constants import get_hermes_home, named_profile_home_is_unavailable
 
@@ -314,6 +317,13 @@ async def _pump_input(ws: WebSocket, registry: HostTerminalRegistry, token: str,
     admitted first. The fence reads files and takes the profile lease, so it runs off
     the loop, once per run of keystrokes in a batch (the frames that queued while the
     previous batch was written): a paste of many frames costs a few fences, not one each.
+
+    Writes have no deadline. While the foreground program is not reading (``sleep``,
+    ``npm install``) the PTY takes about 1 KB of input on macOS, so a paste waits for
+    that program, in order, with any Ctrl-C behind it, as in native Desktop's terminal.
+    A re-attach cancels the wait and keeps the shell; only a closed bridge (the shell
+    exited or the terminal was closed) or a retired profile drops the session. ConPTY
+    buffers input itself, so Windows writes land at once and keep the bridge's deadline.
     """
     from hermes_cli.web_server_chat import _RESIZE_RE
     inbox: asyncio.Queue = asyncio.Queue(maxsize=_INPUT_BATCH_FRAMES)
@@ -330,7 +340,7 @@ async def _pump_input(ws: WebSocket, registry: HostTerminalRegistry, token: str,
                     session.resize(ws, cols=item[0], rows=item[1])
                     continue
                 try:
-                    delivered = await session.write(ws, item, fence=owner.admit)
+                    delivered = await session.write(ws, item, fence=owner.admit, timeout=None)
                 except (TerminalExpired, FileNotFoundError):
                     await registry.remove(token)
                     return
@@ -362,8 +372,7 @@ async def host_terminal(ws: WebSocket) -> None:
             token, owner, session, registry, reconnected=ws.query_params.get("attach") is not None)
         if not await session.attach(ws, initial_text=initial_text):
             if session._ws is None:
-                with suppress(Exception):
-                    await ws.close(code=1011, reason="Terminal replay interrupted; reconnect")
+                await _close_ws(ws, WS_CLOSE_VIEWER_STALLED, WS_CLOSE_VIEWER_STALLED_REASON)
             return
         await _pump_input(ws, registry, token, session, owner)
     except TerminalDenied:

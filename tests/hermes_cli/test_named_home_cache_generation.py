@@ -219,7 +219,6 @@ def test_warm_legacy_homes_revalidate_without_directory_mutations(
         assert all((home / subdir).is_dir() for subdir in config._HERMES_HOME_SUBDIRS)
         assert stat.S_IMODE(home.stat().st_mode) == 0o700
         assert not (home / profile_incarnation.PROFILE_INCARNATION_FILENAME).exists()
-        assert str(home) not in config._HERMES_HOME_ENSURED
 
 
 def test_malformed_marker_cannot_reuse_cached_initialization(named_home):

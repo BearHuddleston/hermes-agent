@@ -494,20 +494,13 @@ def rollback_profile_retirement(
     allow_in_process_profile_resources(profile_dir, profile_incarnation)
 
 
-def begin_profile_retirement(
-    profile_dir: Path | str,
-    profile_incarnation: str | None,
-    *,
-    rollback_on_failure: bool = True,
-) -> int:
-    """Tombstone a generation and retire every process-local owner."""
+def begin_profile_retirement(profile_dir: Path | str, profile_incarnation: str | None) -> int:
+    """Tombstone a generation and retire every process-local owner.
+
+    A failure leaves the tombstone: the caller decides whether this attempt rolls it back.
+    """
     mark_profile_deleting(profile_dir, profile_incarnation)
-    try:
-        return retire_in_process_profile_resources(profile_dir, profile_incarnation)
-    except Exception:
-        if rollback_on_failure:
-            rollback_profile_retirement(profile_dir, profile_incarnation)
-        raise
+    return retire_in_process_profile_resources(profile_dir, profile_incarnation)
 
 
 def verify_profile_resources_released(
@@ -519,20 +512,23 @@ def verify_profile_resources_released(
     rollback_on_failure: bool = True,
 ) -> None:
     """Prove holders drained, optionally rolling back this attempt's fence."""
-    if not wait_for_profile_state_db_release(profile_dir):
+    try:
+        if not wait_for_profile_state_db_release(profile_dir):
+            raise RuntimeError(
+                f"{subject} is still in use by this Hermes process; retry {retry_action}."
+            )
+        external_holders = wait_for_external_profile_file_release(profile_dir)
+        if external_holders:
+            raise RuntimeError(
+                f"{subject} is still in use by external process(es) "
+                f"{', '.join(str(pid) for pid in external_holders)}; retry {retry_action}."
+            )
+    except BaseException:
+        # The waits run for seconds while a holder lingers, the likeliest moment for a Ctrl-C;
+        # a refusal, a failed census and an interrupt all leave the home where it was.
         if rollback_on_failure:
             rollback_profile_retirement(profile_dir, profile_incarnation)
-        raise RuntimeError(
-            f"{subject} is still in use by this Hermes process; retry {retry_action}."
-        )
-    external_holders = wait_for_external_profile_file_release(profile_dir)
-    if external_holders:
-        if rollback_on_failure:
-            rollback_profile_retirement(profile_dir, profile_incarnation)
-        raise RuntimeError(
-            f"{subject} is still in use by external process(es) "
-            f"{', '.join(str(pid) for pid in external_holders)}; retry {retry_action}."
-        )
+        raise
 
 
 def move_profile_generation(
@@ -548,8 +544,8 @@ def move_profile_generation(
     mark_profile_deleting(new_dir)
     try:
         old_dir.rename(new_dir)
-    except Exception:
-        rollback_profile_retirement(old_dir, profile_incarnation)
+    except BaseException:
+        # The old generation's tombstone is the caller's to roll back; only this one is ours.
         if not new_had_tombstone:
             clear_profile_deletion_marker(new_dir)
         raise

@@ -71,31 +71,18 @@ def attachment_input(kind, tmp_path, monkeypatch, payload=PNG):
             return True
         monkeypatch.setattr(clipboard, "save_clipboard_image", extract)
         return "clipboard.paste", {}
-    # Exercise the real PDF renderer and the shared image sink, not a mocked queue.
-    import shutil
-    if shutil.which("pdftoppm") is None:
-        pytest.skip("PDF attachment integration requires pdftoppm")
-    path = tmp_path / "input.pdf"
-    objects = [
-        b"<< /Type /Catalog /Pages 2 0 R >>",
-        b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
-        b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 20 20] /Resources << >> >>",
-    ]
-    pdf = b"%PDF-1.4\n"
-    offsets = [0]
-    for index, body in enumerate(objects, 1):
-        offsets.append(len(pdf))
-        pdf += f"{index} 0 obj\n".encode() + body + b"\nendobj\n"
-    xref = len(pdf)
-    pdf += b"xref\n0 4\n0000000000 65535 f \n"
-    pdf += b"".join(f"{offset:010d} 00000 n \n".encode() for offset in offsets[1:])
-    pdf += f"trailer\n<< /Size 4 /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n".encode()
-    path.write_bytes(pdf)
-    return "pdf.attach", {"path": str(path)}
 
 
-@pytest.mark.parametrize("kind", ["file-path", "file-data", "image-bytes", "clipboard", "pdf"])
-@pytest.mark.parametrize("retirement", ["live", "close", "replace", "rebind", "finalize"])
+KINDS = ("file-path", "file-data", "image-bytes", "clipboard")
+
+
+# Every handler must capture its owner before disk I/O (live/rebind per kind); close, replace
+# and finalize all reach the same owner recheck in the shared publish sink.
+@pytest.mark.parametrize(
+    ("retirement", "kind"),
+    [(retirement, kind) for retirement in ("live", "rebind") for kind in KINDS]
+    + [(retirement, "image-bytes") for retirement in ("close", "replace", "finalize")],
+)
 def test_disk_write_leaves_sessions_available_and_rechecks_owner(
     runtime, tmp_path, monkeypatch, kind, retirement,
 ):
@@ -156,7 +143,7 @@ def test_disk_write_leaves_sessions_available_and_rechecks_owner(
     if retirement == "live":
         assert "error" not in response, response
         result = response["result"]
-        target = Path(result["pages"][0]["path"] if kind == "pdf" else result["path"])
+        target = Path(result["path"])
         assert target.parent == root
         assert target.read_bytes().startswith(b"\x89PNG")
         assert list(root.iterdir()) == [target]
@@ -171,41 +158,27 @@ def test_disk_write_leaves_sessions_available_and_rechecks_owner(
         assert len(other["attached_images"]) == other["image_counter"] == 1
 
 
-@pytest.mark.parametrize("kind", ["file-path", "file-data", "image-bytes", "clipboard", "pdf"])
-@pytest.mark.parametrize("extra_bytes", [1, 9])
-def test_attachment_caps_bound_actual_input_without_restricting_pdf_pages(
+# cap+9 only differs from cap+1 for base64 input: it trips the pre-decode length bound.
+@pytest.mark.parametrize(
+    ("extra_bytes", "kind"),
+    [(1, kind) for kind in KINDS] + [(9, "file-data"), (9, "image-bytes")],
+)
+def test_attachment_caps_bound_actual_input(
     runtime, tmp_path, monkeypatch, kind, extra_bytes,
 ):
     add, _ = runtime
     session = add("first")
     root = Path(session["profile_home"]) / ("attachments" if kind.startswith("file-") else "images")
     # Small configured limits exercise the exact-cap and cap+1 boundaries without
-    # allocating hundreds of MB. PDF rendered pages intentionally exceed the
-    # image upload cap, which applies only to image.attach_bytes.
+    # allocating hundreds of MB.
     monkeypatch.setattr(server, "_ATTACHMENT_MAX_BYTES", len(PNG), raising=False)
     monkeypatch.setattr(server, "_ATTACH_BYTES_MAX_BYTES", len(PNG), raising=False)
-    if kind == "pdf":
-        method, params = attachment_input(kind, tmp_path, monkeypatch)
-        read_bytes = server._read_attachment_bytes
-        page_payload = [PNG]
-
-        def rendered_page(path, limit):
-            if path.name.startswith("page-"):
-                path.write_bytes(page_payload[0])
-            return read_bytes(path, limit)
-
-        monkeypatch.setattr(server, "_read_attachment_bytes", rendered_page)
-        monkeypatch.setattr(server, "_ATTACH_BYTES_MAX_BYTES", 1)
-    else:
-        method, params = attachment_input(kind, tmp_path, monkeypatch)
+    method, params = attachment_input(kind, tmp_path, monkeypatch)
     accepted = request(method, **params)
     assert "error" not in accepted, accepted
     prior_files = set(root.iterdir())
     prior_queue = list(session["attached_images"])
-    if kind == "pdf":
-        page_payload[0] = PNG + b"x" * extra_bytes
-    else:
-        method, params = attachment_input(kind, tmp_path, monkeypatch, PNG + b"x" * extra_bytes)
+    method, params = attachment_input(kind, tmp_path, monkeypatch, PNG + b"x" * extra_bytes)
     refused = request(method, **params)
     assert "error" in refused, refused
     assert "too large" in refused["error"]["message"]

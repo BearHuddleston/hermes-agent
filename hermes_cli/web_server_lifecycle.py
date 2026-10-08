@@ -227,10 +227,10 @@ def _maybe_open_browser(host: str, actual_port: int, open_browser: bool, initial
     from hermes_cli.web_server_surface import private_launch
     from urllib.parse import quote, urlencode
 
+    from hermes_cli.url_utils import format_url_host
+
     display_host = host if host not in ("0.0.0.0", "::") else "127.0.0.1"
-    if ":" in display_host:
-        display_host = f"[{display_host}]"
-    origin = f"http://{display_host}:{actual_port}"
+    origin = f"http://{format_url_host(display_host)}:{actual_port}"
     query = f"?profile={quote(initial_profile, safe='')}" if initial_profile else ""
     _open_url = f"{origin}/{query}" if query else origin
     private = private_launch(app.state)

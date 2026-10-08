@@ -31,6 +31,7 @@ import {
   RefreshCw,
   Terminal
 } from '@/lib/icons'
+import { isBrowserHostedDesktop } from '@/lib/platform'
 import { coerceRemoteUrlScheme } from '@/lib/remote-url'
 import { selectableCardClass } from '@/lib/selectable-card'
 import { cn } from '@/lib/utils'
@@ -51,6 +52,7 @@ import { EmptyState, ListRow, Pill, SettingsContent, SettingsSkeleton, ToggleRow
 import { SETTING_IDS, settingElementId } from './settings-manifest'
 import { enrichSelectedSshHost, selectSshHost } from './ssh-host-selection'
 import { useSettingDeepLink } from './use-setting-deep-link'
+import { WebappGatewaySettings } from './webapp-gateway-settings'
 
 type Mode = 'local' | 'remote' | 'cloud' | 'ssh'
 type AuthMode = 'oauth' | 'token'
@@ -173,6 +175,10 @@ interface GatewaySettingsProps {
 
 export function GatewaySettings({ embedded = false, subpage }: GatewaySettingsProps = {}) {
   useSettingDeepLink('gateway', page => subpage === undefined || page === subpage)
+
+  if (isBrowserHostedDesktop()) {
+    return <WebappGatewaySettings embedded={embedded} />
+  }
 
   // Recovery always keeps the complete connection form, regardless of a
   // settings destination. Other tasks never mount that form or its probes.
@@ -458,9 +464,7 @@ function GatewayConnectionSettings({ embedded, standalone }: { embedded: boolean
 
       // Cloud registry URLs are the persisted agent dashboardUrl. Keep saved
       // rows usable without discovery, but never run the cascade against ''.
-      // The browser bridge has no native registry: its logout would sign out
-      // the current Webapp host instead of this saved Cloud gateway.
-      if (!desktop?.cloud || !desktop.connections || !dashboardUrl) {
+      if (!desktop?.cloud || !dashboardUrl) {
         throw error
       }
 
@@ -618,6 +622,7 @@ function GatewayConnectionSettings({ embedded, standalone }: { embedded: boolean
         'auth-failed': g.sshErrAuth,
         'hermes-not-found': g.sshErrNotInstalled,
         'host-key-changed': g.sshErrHostKey,
+        'interactive-auth': g.sshErrInteractiveAuth,
         timeout: g.sshErrTimeout,
         unreachable: g.sshErrUnreachable,
         'unsupported-platform': g.sshErrPlatform,
@@ -1026,6 +1031,7 @@ function GatewayConnectionSettings({ embedded, standalone }: { embedded: boolean
           'auth-failed': g.sshErrAuth,
           'hermes-not-found': g.sshErrNotInstalled,
           'host-key-changed': g.sshErrHostKey,
+          'interactive-auth': g.sshErrInteractiveAuth,
           timeout: g.sshErrTimeout,
           unreachable: g.sshErrUnreachable,
           'unsupported-platform': g.sshErrPlatform,

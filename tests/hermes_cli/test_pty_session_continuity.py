@@ -46,7 +46,7 @@ class Socket:
     async def send_bytes(self, data):
         self.frames.append(data)
 
-    async def close(self, code):
+    async def close(self, code, reason=None):
         self.closed = code
 
 
@@ -104,7 +104,7 @@ async def test_concurrent_attach_claims_before_slow_old_close():
     entered, release = asyncio.Event(), asyncio.Event()
 
     class SlowClose(Socket):
-        async def close(self, code):
+        async def close(self, code, reason=None):
             entered.set()
             await release.wait()
             await super().close(code)
@@ -362,7 +362,7 @@ async def test_cancelled_close_still_reaps_child():
     entered, release = asyncio.Event(), asyncio.Event()
 
     class SlowClose(Socket):
-        async def close(self, code):
+        async def close(self, code, reason=None):
             entered.set()
             await release.wait()
 

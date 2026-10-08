@@ -18,9 +18,13 @@ _NEXT_DENY_PREFIXES = ("/login", "/auth/", "/api/auth/")
 
 
 def client_ip(request: Request) -> str:
-    """First ``X-Forwarded-For`` hop, else the peer address."""
-    fwd = request.headers.get("x-forwarded-for", "")
-    return fwd.split(",")[0].strip() if fwd else (request.client.host if request.client else "")
+    """ASGI peer address for rate limits, native pending caps, and auth audit.
+
+    Never parse client-supplied ``X-Forwarded-For`` here: direct clients can
+    spoof it. Trusted proxy normalization belongs upstream, where the server
+    may rewrite ``request.client`` only for operator-configured trusted peers.
+    """
+    return request.client.host if request.client else ""
 
 
 def extract_bearer(request: Request) -> str:
@@ -52,7 +56,9 @@ def cookie_origin_is_allowed(request: Request) -> bool:
     """Cookie writes must come from the dashboard's own origin, not just its site.
 
     ``SameSite=Lax`` keeps cross-site pages from sending the session cookies but
-    still admits same-site siblings (another port or subdomain). The browser's
+    still admits same-site siblings (another port or subdomain). A write without
+    Origin passes only in a shape no page can produce (native Desktop's own
+    requests), and only after the Host guard. With an Origin, the browser's
     ``Sec-Fetch-Site`` verdict decides when present: pages cannot set it, and the
     browser computes it against the URL it actually addressed, so it stays right
     behind a TLS-terminating or Host-rewriting proxy where this server's view of
@@ -64,17 +70,21 @@ def cookie_origin_is_allowed(request: Request) -> bool:
     from hermes_cli.dashboard_auth.prefix import resolve_public_url
     from hermes_cli.web_server import _is_accepted_host
 
-    origins = request.headers.getlist("origin")
-    origin = _http_origin(origins[0]) if len(origins) == 1 else None
-    if origin is None:
-        return False
     bound_host = getattr(request.app.state, "bound_host", None)
     if bound_host and not _is_accepted_host(
         request.headers.get("host", ""), bound_host,
         getattr(request.app.state, "trusted_public_hosts", frozenset()),
     ):
         return False
+    origins = request.headers.getlist("origin")
     fetch_sites = request.headers.getlist("sec-fetch-site")
+    if not origins:
+        # Electron's net.request sends Sec-Fetch-Site: none to https and loopback, and no Fetch
+        # Metadata to plain http. Pages attach Origin to every non-GET and keep none for typed GETs.
+        return fetch_sites in ([], ["none"])
+    origin = _http_origin(origins[0]) if len(origins) == 1 else None
+    if origin is None:
+        return False
     if fetch_sites:
         return fetch_sites == ["same-origin"]
     target = urlsplit(resolve_public_url() or str(request.url))

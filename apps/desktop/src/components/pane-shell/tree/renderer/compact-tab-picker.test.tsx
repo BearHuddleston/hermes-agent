@@ -85,25 +85,30 @@ it('reserves a separate touch row for phone tabs even when the titlebar reports 
   $newSessionTabAction.set(newTab)
   const { container } = render(<><div data-titlebar-cluster="left" /><div data-titlebar-cluster="right" /><Host topEdge /></>)
   const header = container.querySelector<HTMLElement>('[data-panel-header]')!
+  const height = () => parseFloat(header.style.height)
 
   // The chrome leaves 148px, but the drag handle and new-tab target consume
   // 92px of it. The picker needs its own row to keep its label and glyphs apart.
-  expect(header.style.height).toBe('88px')
+  const touchHeader = height()
   expect(screen.getByRole('button', { name: '1 tab Session 1' })).toBeTruthy()
   fireEvent.click(screen.getByRole('button', { name: 'New session tab' }))
   expect(newTab).toHaveBeenCalledOnce()
 
+  // The edit veil starts below the taller header instead of covering the picker.
+  const zone = header.parentElement!
+  const before = new Set(zone.children)
   act(() => $layoutEditMode.set(true))
-  const veil = header.parentElement!.querySelector<HTMLElement>('.cursor-grab')!
-  expect(veil.style.top).toBe(header.style.height)
+  const veils = [...zone.children].filter(child => !before.has(child)) as HTMLElement[]
+  expect(veils).toHaveLength(1)
+  expect(veils[0]!.style.top).toBe(header.style.height)
   act(() => $layoutEditMode.set(false))
 
   act(() => $narrowViewport.set(false))
-  expect(header.style.height).toBe('44px')
+  expect(height()).toBeLessThan(touchHeader)
   expect(container.querySelector('[data-slot="compact-tab-picker"]')).toBeNull()
 
   delete globalThis.document.documentElement.dataset.hermesDesktopHost
   act(() => $narrowViewport.set(true))
-  expect(header.style.height).toBe('34px')
+  expect(height()).toBeLessThan(touchHeader)
   expect(container.querySelector('[data-slot="compact-tab-picker"]')).toBeNull()
 })

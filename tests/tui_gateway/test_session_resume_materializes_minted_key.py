@@ -39,7 +39,7 @@ def real_db(monkeypatch, tmp_path):
     monkeypatch.setattr(server, "_maybe_schedule_auto_continue", lambda *a, **k: None)
     monkeypatch.setattr(server, "_default_session_cwd", lambda *a, **k: str(tmp_path))
     monkeypatch.setattr(server, "_profile_configured_cwd", lambda _home: str(tmp_path))
-    monkeypatch.setattr(server, "_child_run_active", lambda _key, _home=None: False)
+    monkeypatch.setattr(server, "_child_run_active", lambda _key, _home=None, _incarnation=None: False)
     known = set(server._sessions)
     yield db
     with server._sessions_lock:

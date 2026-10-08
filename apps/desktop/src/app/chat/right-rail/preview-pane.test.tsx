@@ -187,6 +187,7 @@ describe('PreviewPane console state', () => {
 
     const rendered = render(<PreviewPane tabId="reuse-browser-frame" target={target} />)
     const frame = rendered.container.querySelector('iframe')!
+    const sandbox = frame.getAttribute('sandbox')
     fireEvent.load(frame)
 
     rendered.rerender(
@@ -198,7 +199,9 @@ describe('PreviewPane console state', () => {
 
     expect(rendered.container.querySelector('iframe')).toBe(frame)
     expect(frame.src).toBe('https://example.com/two')
-    expect(frame.getAttribute('sandbox')).toBe('allow-forms allow-scripts')
+    // Navigating never widens the sandbox the capability test above pins.
+    expect(sandbox).toBeTruthy()
+    expect(frame.getAttribute('sandbox')).toBe(sandbox)
     expect(rendered.container.querySelector('webview')).toBeNull()
   })
 
@@ -646,6 +649,34 @@ describe('PreviewPane console state', () => {
 
     await waitFor(() => expect(rendered.container.textContent).toContain('ERR_NAME_NOT_RESOLVED'))
     expect(rendered.container.textContent).not.toContain('machine running your agent')
+  })
+
+  it('ignores a failed subframe after the main page has loaded', async () => {
+    const pageUrl = 'https://example.com'
+
+    let rendered!: ReturnType<typeof render>
+    await act(async () => {
+      rendered = render(<PreviewPane target={{ kind: 'url', label: 'Preview', source: pageUrl, url: pageUrl }} />)
+    })
+
+    const webview = rendered.container.querySelector('webview') as HTMLElement
+
+    act(() => {
+      webview.dispatchEvent(Object.assign(new Event('did-navigate'), { url: pageUrl }))
+      webview.dispatchEvent(new Event('did-stop-loading'))
+      webview.dispatchEvent(
+        Object.assign(new Event('did-fail-load'), {
+          errorCode: -105,
+          errorDescription: 'ERR_NAME_NOT_RESOLVED',
+          isMainFrame: false,
+          validatedURL: 'https://ads.example.invalid/sync.html'
+        })
+      )
+    })
+
+    expect(rendered.container.textContent).not.toContain('ERR_NAME_NOT_RESOLVED')
+    expect(rendered.container.textContent).not.toContain('Preview failed to load')
+    expect(webview.parentElement?.className).not.toContain('opacity-0')
   })
 
   it('surfaces a rejected navigation as a load error', async () => {

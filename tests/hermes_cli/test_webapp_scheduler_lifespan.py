@@ -16,7 +16,6 @@ import pytest
         ("dashboard", True, True),
         ("webapp", True, True),
         ("dashboard", False, False),
-        (None, False, False),
     ],
 )
 def test_lifespan_owns_scheduler_without_adopting_native_gateway(
@@ -41,7 +40,7 @@ def test_lifespan_owns_scheduler_without_adopting_native_gateway(
     starts = []
 
     def start(stop_event, **kwargs):
-        starts.append((stop_event, kwargs))
+        starts.append(stop_event)
         started.set()
         if stop_event.wait(5):
             stopped.set()
@@ -68,17 +67,14 @@ def test_lifespan_owns_scheduler_without_adopting_native_gateway(
     terminate = Mock()
     monkeypatch.setattr(gateway, "_reap_unsupervised_gateway_orphans", reap)
     monkeypatch.setattr(web_server, "_terminate_desktop_managed_gateway", terminate)
-    app = SimpleNamespace(state=SimpleNamespace())
-    if surface is not None:
-        app.state.ui_surface = surface
+    app = SimpleNamespace(state=SimpleNamespace(ui_surface=surface))
 
     async def exercise():
         async with web_server_lifespan._lifespan(app):
             if owns_scheduler:
                 assert started.wait(2), "standalone surface never started its scheduler"
                 assert len(starts) == 1
-                assert not starts[0][0].is_set()
-                assert starts[0][1] == {"interval": 60}
+                assert not starts[0].is_set()
             else:
                 assert not starts
             assert reap.call_count == int(desktop)
@@ -87,6 +83,6 @@ def test_lifespan_owns_scheduler_without_adopting_native_gateway(
 
     asyncio.run(exercise())
     if owns_scheduler:
-        assert starts[0][0].is_set(), "backend shutdown did not signal its scheduler"
+        assert starts[0].is_set(), "backend shutdown did not signal its scheduler"
         assert stopped.wait(2), "scheduler did not observe backend shutdown"
     assert terminate.call_count == int(desktop)

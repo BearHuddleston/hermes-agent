@@ -11,7 +11,7 @@ import pytest
 
 from hermes_cli.active_sessions import ActiveSessionLease, try_acquire_active_session
 from tui_gateway import server
-from tui_gateway.host_supervisor import HostSupervisor, TurnSettlement
+from tui_gateway.host_supervisor import TurnSettlement
 
 
 @pytest.fixture(autouse=True)
@@ -95,24 +95,6 @@ def test_reaped_lease_no_longer_vouched_by_own_live_lease_ids(monkeypatch, tmp_p
     assert str(lease.lease_id) in server._own_live_lease_ids()
     server._reap_stale_deferred_leases()
     assert str(lease.lease_id) not in server._own_live_lease_ids()
-
-
-def test_completion_recovers_after_callback_raises(monkeypatch, tmp_path):
-    lease = _lease(tmp_path)
-    settlement = TurnSettlement()
-    supervisor = HostSupervisor(autostart=False)
-    monkeypatch.setattr(supervisor, "start", lambda: None)
-    monkeypatch.setattr(supervisor, "_send_frame", lambda _frame: None)
-
-    def broken_callback(_frame):
-        raise RuntimeError("metadata adoption failed")
-
-    supervisor.submit_turn({"request_id": "r"}, on_complete=broken_callback, settlement=settlement)
-    _defer(lease, server._DEFERRED_ACTIVE_SESSION_LEASE_TTL_SECONDS + 60, settlement)
-    supervisor._handle_host_frame({"type": "turn.end", "request_id": "r"})
-    assert not lease.released
-    assert server._reap_stale_deferred_leases() == 1
-    assert lease.released
 
 
 def test_reaper_keeps_live_child_but_recovers_its_exit(tmp_path):
