@@ -1883,6 +1883,7 @@ cmd_debug = _forward_command("cmd_debug", "hermes_cli.debug", "run_debug", doc='
 cmd_skin = _forward_command("cmd_skin", "hermes_cli.skin_cmd", "skin_command", doc='Skin management (list / use / set).')
 cmd_import = _forward_command("cmd_import", "hermes_cli.backup", "run_import", forward_return=True, doc='Restore a Hermes backup from a zip file.')
 cmd_dashboard_register = _forward_command("cmd_dashboard_register", "hermes_cli.dashboard_register", "cmd_dashboard_register", doc='Register a self-hosted dashboard OAuth client with Nous Portal.')
+cmd_webapp = _forward_command("cmd_webapp", "hermes_cli.main_dashboard", "cmd_webapp", forward_return=True, doc='Build the Desktop browser bundle, then hand off to the web server.')
 cmd_gateway_enroll = _forward_command("cmd_gateway_enroll", "hermes_cli.gateway_enroll", "cmd_gateway_enroll", doc='Enroll a self-hosted gateway with a relay connector.')
 cmd_prompt_size = _forward_command("cmd_prompt_size", "hermes_cli.prompt_size", "cmd_prompt_size", doc='Show a byte/char breakdown of the system prompt + tool schemas.')
 cmd_pairing = _forward_command("cmd_pairing", "hermes_cli.pairing", "pairing_command")
@@ -2474,7 +2475,6 @@ def cmd_update(args):
         _finalize_update_output(_update_io_state)
 
 
-
 def _coalesce_session_name_args(argv: list) -> list:
     """Join unquoted multi-word session names after -c/--continue and -r/--resume.
 
@@ -2551,10 +2551,7 @@ def _dashboard_validate_serve_args(args, token_file):
     # auto-detection can adopt unnamed .env credentials (issue #81952).
     # Same policy + escape hatch as _guard_noninteractive_user_config.
     if headless:
-        from hermes_cli.config import (
-            InvalidUserConfigError,
-            require_parseable_user_config,
-        )
+        from hermes_cli.config import InvalidUserConfigError, require_parseable_user_config
 
         try:
             require_parseable_user_config(
@@ -2702,11 +2699,6 @@ def _dashboard_prepare_runtime(args) -> bool:
             exc_info=True,
         )
     return False
-
-
-def cmd_webapp(args):
-    from hermes_cli.main_dashboard import cmd_webapp as run
-    return run(args)
 
 
 def cmd_dashboard(args):

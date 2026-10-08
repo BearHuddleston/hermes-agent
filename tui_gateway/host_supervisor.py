@@ -148,7 +148,7 @@ class TurnSettlement:
             return True
         try:
             return self.process is not None and self.process.poll() is not None
-        except Exception:
+        except OSError:
             return False  # Uncertain liveness is not permission to release a writer's fence.
 
 

@@ -101,8 +101,8 @@ class ProfileLifecycleFence:
             named_marker = profile_deletion_marker_path(profile_home)
             if named_profile_home_is_unavailable(profile_home):
                 return True
-        except Exception:
-            return True
+        except (OSError, RuntimeError, ValueError):
+            return True  # An unresolvable or unreadable home fails closed.
         if named_marker is None:
             return False
         if expected_incarnation is None:

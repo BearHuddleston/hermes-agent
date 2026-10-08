@@ -562,52 +562,20 @@ def _ensure_default_soul_md(home: Path) -> None:
     _secure_file(soul_path)
 
 
-# Named homes need a persisted generation: filesystems can reuse inode and ctime together.
-# No ctime either: every create/import mints a fresh token, while every write in the profile
-# root (config.yaml, auth.json, state.db -wal/-shm) moves ctime and would force a re-init.
+# Home path -> identity (``config_home._hermes_home_identity``) of its last successful skeleton pass.
+# A raised managed-mode/missing-profile error records nothing, so later loads keep re-checking.
 _HERMES_HOME_ENSURED: dict[str, tuple[int, int, str | None]] = {}
 _HERMES_HOME_SUBDIRS = (
     "cron", "sessions", "logs", "logs/curator", "memories",
     "pairing", "hooks", "image_cache", "audio_cache", "skills")
 
 
-def _hermes_home_identity(
-    home: Path, *, named_profile: bool,
-) -> tuple[int, int, str | None] | None:
-    try:
-        value = home.stat()
-        incarnation = None
-        if named_profile:
-            from hermes_cli.profile_incarnation import PROFILE_INCARNATION_FILENAME, read_incarnation_marker
-
-            # Callers already derived named_profile, so read the marker directly (this runs on
-            # every load). A tokenless home cannot prove a reusable cache identity until
-            # initialize_home adopts a marker, which it does whenever the lifecycle lease is free.
-            incarnation = read_incarnation_marker(home / PROFILE_INCARNATION_FILENAME)
-            if incarnation is None:
-                return None
-    except OSError:
-        return None
-    return (value.st_dev, value.st_ino, incarnation)
-
-
 def ensure_hermes_home():
     """Ensure the ~/.hermes directory skeleton exists with secure permissions.
     Memoized per home path: this runs on EVERY ``load_config()`` and the ~14 mkdir/chmod syscalls
     made repeated loads the dominant cost of hot read paths."""
-    home = get_hermes_home()
-    key = str(home)
-
-    # Named profiles must be created explicitly. Check tombstones BEFORE the memo so a stale
-    # empty shell cannot skip the deleted-profile guard.
-    from hermes_constants import assert_named_profile_home_available, profile_deletion_marker_path
-    named_profile = profile_deletion_marker_path(home) is not None
-    assert_named_profile_home_available(home)
-    current_identity = _hermes_home_identity(home, named_profile=named_profile)
-    if current_identity is not None and _HERMES_HOME_ENSURED.get(key) == current_identity:
-        return
-    from hermes_cli.config_home import initialize_home
-    initialize_home(home, _HERMES_HOME_SUBDIRS, _HERMES_HOME_ENSURED)
+    from hermes_cli.config_home import ensure_home
+    ensure_home(get_hermes_home(), _HERMES_HOME_SUBDIRS, _HERMES_HOME_ENSURED)
 
 
 # ---- Config loading/saving ----

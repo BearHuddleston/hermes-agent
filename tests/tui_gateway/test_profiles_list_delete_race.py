@@ -15,7 +15,7 @@ import pytest
 import hermes_state
 import hermes_state_repair
 import tui_gateway.server as srv
-from hermes_cli import config, profile_lifecycle, profiles
+from hermes_cli import config, config_home, profile_lifecycle, profiles
 from hermes_constants import reset_hermes_home_override, set_hermes_home_override
 from hermes_state import SessionDB
 
@@ -959,7 +959,7 @@ def test_failed_partial_delete_stays_tombstoned(
     with pytest.raises(FileNotFoundError):
         profiles.resolve_profile_env("worker")
     token = set_hermes_home_override(profile_dir)
-    identity = config._hermes_home_identity(profile_dir, named_profile=True)
+    identity = config_home._hermes_home_identity(profile_dir, named_profile=True)
     assert identity is not None
     config._HERMES_HOME_ENSURED[str(profile_dir)] = identity
     try:

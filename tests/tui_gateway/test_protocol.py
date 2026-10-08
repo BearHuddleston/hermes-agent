@@ -77,8 +77,6 @@ def server(tmp_path):
     mod._live_transports.clear()
 
 
-
-
 @pytest.fixture()
 def capture(server):
     """Redirect server's real stdout to a StringIO and return (server, buf)."""
@@ -93,10 +91,6 @@ def capture(server):
 def test_unknown_method(server):
     resp = server.handle_request({"id": "1", "method": "bogus"})
     assert resp["error"]["code"] == -32601
-
-
-
-
 
 
 @pytest.mark.parametrize("kind", ["legacy", "hard-only", "dynamic-getattr"])
@@ -146,9 +140,7 @@ def test_session_interrupt_uses_explicit_stop_compatibility(server, monkeypatch,
     assert calls == ["hard" if kind == "hard-only" else "legacy"]
 
 
-# ── write_json ────────────────────────────────────────────────
-
-
+# ── live-session payload replay ───────────────────────────────
 
 
 def test_live_session_payload_replays_pending_approval(server, monkeypatch):
@@ -213,8 +205,6 @@ def test_live_session_payload_replays_open_requests(server):
                                          "params": {"session_id": "runtime-session", "question": "Which?", "choices": ["a", "b"]}}]
     assert payload["open_requests"][0]["params"] is not req.params
     assert "open_requests" not in other
-
-
 
 
 # ── _emit ────────────────────────────────────────────────────────────
@@ -732,11 +722,6 @@ def test_approval_respond_4001_when_nothing_resolves(server, monkeypatch):
     )
 
     assert response["error"]["code"] == 4001
-
-
-# ── Session lookup ───────────────────────────────────────────────────
-
-
 
 
 # ── session.resume payload ────────────────────────────────────────────
@@ -1774,8 +1759,6 @@ def test_command_dispatch_queue_sends_message(server):
     result = resp["result"]
     assert result["type"] == "send"
     assert result["message"] == "tell me about quantum computing"
-
-
 
 
 # ── dispatch(): pool routing for long handlers (#12546) ──────────────
