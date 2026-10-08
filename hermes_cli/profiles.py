@@ -1832,41 +1832,48 @@ def _delete_profile_confirmed(
     # Publish the tombstone BEFORE closing in-process sessions: finalization
     # may attempt one last DB write, and stale workers in this or another
     # process must fail closed rather than recreate the profile during rmtree.
+    # A refusal here (a turn that did not settle) keeps the fence while it drains.
     retired = begin_profile_retirement(profile_dir, profile_incarnation)
     if retired:
         print(f"✓ Retired {retired} in-process profile resource(s)")
 
-    # 1. Disable service (prevents auto-restart)
-    _cleanup_gateway_service(canon, profile_dir)
-    # 1b. Phase 4: unregister the s6 service slot (container path).
-    # On host this is a no-op; on container it removes
-    # /run/service/gateway-<profile>/ so s6-supervise drops it.
-    _maybe_unregister_gateway_service(canon)
+    try:
+        # 1. Disable service (prevents auto-restart)
+        _cleanup_gateway_service(canon, profile_dir)
+        # 1b. Phase 4: unregister the s6 service slot (container path).
+        # On host this is a no-op; on container it removes
+        # /run/service/gateway-<profile>/ so s6-supervise drops it.
+        _maybe_unregister_gateway_service(canon)
 
-    # 2. Stop running gateway
-    if gw_running:
-        _stop_gateway_process(profile_dir)
+        # 2. Stop running gateway
+        if gw_running:
+            _stop_gateway_process(profile_dir)
 
-    # 2b. Stop any other backends bound to this profile (Desktop-spawned
-    # serve/dashboard processes the gateway.pid file never names). They hold
-    # the profile's SQLite connection open and keep writing files, which makes
-    # the rmtree below fail with ENOTEMPTY and — before the ensure_hermes_home
-    # guard — resurrected the deleted tree.
-    _stop_profile_backends(canon, profile_dir)
-    _stop_bot_desktop(profile_dir)
+        # 2b. Stop any other backends bound to this profile (Desktop-spawned
+        # serve/dashboard processes the gateway.pid file never names). They hold
+        # the profile's SQLite connection open and keep writing files, which makes
+        # the rmtree below fail with ENOTEMPTY and — before the ensure_hermes_home
+        # guard — resurrected the deleted tree.
+        _stop_profile_backends(canon, profile_dir)
+        _stop_bot_desktop(profile_dir)
 
-    # The retirement tombstone tells the multiplexer to stop this profile's adapters and
-    # release its handles before we remove the directory.
-    _notify_multiplexer(canon)
+        # The retirement tombstone tells the multiplexer to stop this profile's adapters and
+        # release its handles before we remove the directory.
+        _notify_multiplexer(canon)
 
-    _release_process_profile_handles(profile_dir)
-    verify_profile_resources_released(
-        profile_dir,
-        profile_incarnation,
-        subject=f"Profile '{canon}'",
-        retry_action="deletion",
-        rollback_on_failure=not had_tombstone,
-    )
+        _release_process_profile_handles(profile_dir)
+        verify_profile_resources_released(profile_dir, subject=f"Profile '{canon}'", retry_action="deletion")
+    except BaseException:
+        # The one rollback owner from a settled retirement until removal begins: a holder
+        # refusal, a failed teardown step or a Ctrl-C anywhere in it lifts the tombstone this
+        # attempt raised, which left behind hides the intact profile from list/show/-p and
+        # refuses every retry but delete. A fence from an earlier attempt stays; so does this
+        # one once rmtree may have run.
+        if not had_tombstone:
+            rollback_profile_retirement(profile_dir, profile_incarnation)
+            # Re-serve it now rather than at the multiplexer's next periodic rescan.
+            _notify_multiplexer(canon)
+        raise
 
     # 3. Remove wrapper script
     if has_wrapper:
@@ -2435,13 +2442,7 @@ def rename_profile(old_name: str, new_name: str) -> Path:
                 _notify_multiplexer(old_canon)
 
             _release_process_profile_handles(old_dir)
-            verify_profile_resources_released(
-                old_dir,
-                profile_incarnation,
-                subject=f"Profile '{old_canon}'",
-                retry_action="rename",
-                rollback_on_failure=False,
-            )
+            verify_profile_resources_released(old_dir, subject=f"Profile '{old_canon}'", retry_action="rename")
             move_profile_generation(
                 old_dir,
                 new_dir,

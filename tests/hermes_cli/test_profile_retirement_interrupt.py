@@ -61,6 +61,17 @@ def _mcp_shutdown_interrupted_once(monkeypatch, exc_type):
     monkeypatch.setattr(mcp_tool_lifecycle, "shutdown_mcp_servers", shutdown)
 
 
+def _backend_stop_interrupted_once(monkeypatch, exc_type):
+    """*exc_type* lands after delete's tombstone, while the profile's backends stop."""
+    pending = [exc_type("interrupted while stopping profile backends")]
+
+    def stop(*_args):
+        if pending:
+            raise pending.pop()
+
+    monkeypatch.setattr(profiles, "_stop_profile_backends", stop)
+
+
 def _listed(name: str) -> bool:
     return name in [p.name for p in profiles.list_profiles()]
 
@@ -86,16 +97,39 @@ def test_interrupted_rename_leaves_the_profile_live_and_retryable(profile_env, m
     assert profiles.profile_exists("dev") and not profiles.profile_exists("coder")
 
 
-def test_delete_interrupted_during_holder_wait_restores_the_profile(profile_env, monkeypatch):
+@pytest.mark.parametrize(("interrupt", "exc_type"), [
+    pytest.param(_holder_wait_interrupted_once, KeyboardInterrupt, id="ctrl-c-in-holder-wait"),
+    pytest.param(_backend_stop_interrupted_once, KeyboardInterrupt, id="ctrl-c-stopping-backends"),
+    pytest.param(_backend_stop_interrupted_once, RuntimeError, id="backend-stop-failed"),
+])
+def test_interrupted_delete_restores_the_profile(profile_env, monkeypatch, interrupt, exc_type):
     profile_dir = profiles.create_profile("coder", no_alias=True, no_skills=True)
-    _holder_wait_interrupted_once(monkeypatch, KeyboardInterrupt)
+    interrupt(monkeypatch, exc_type)
 
-    with pytest.raises(KeyboardInterrupt):
+    with pytest.raises(exc_type):
         profiles.delete_profile("coder", yes=True)
 
     assert profile_dir.is_dir()
     assert not named_profile_is_deleted(profile_dir)
     assert profiles.profile_exists("coder") and _listed("coder")
+    # Not refused as "being deleted": an action other than delete still reaches it.
+    assert profiles.rename_profile("coder", "dev") == profiles.get_profile_dir("dev")
+
+
+def test_delete_interrupted_once_removal_began_keeps_the_fence(profile_env, monkeypatch):
+    profile_dir = profiles.create_profile("coder", no_alias=True, no_skills=True)
+
+    def interrupted_rmtree(*_args):
+        raise KeyboardInterrupt("interrupted while removing the profile")
+
+    monkeypatch.setattr(profiles, "_rmtree_with_retry", interrupted_rmtree)
+
+    with pytest.raises(KeyboardInterrupt):
+        profiles.delete_profile("coder", yes=True)
+
+    # rmtree may have removed part of the tree; a half-deleted home must stay hidden.
+    assert named_profile_is_deleted(profile_dir)
+    assert not profiles.profile_exists("coder") and not _listed("coder")
 
 
 def test_cli_rename_refused_by_a_holder_prints_the_reason_without_a_traceback(profile_env, monkeypatch, capsys):

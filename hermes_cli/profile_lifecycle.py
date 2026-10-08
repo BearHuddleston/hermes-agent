@@ -498,30 +498,24 @@ def begin_profile_retirement(profile_dir: Path | str, profile_incarnation: str |
 
 def verify_profile_resources_released(
     profile_dir: Path | str,
-    profile_incarnation: str | None,
     *,
     subject: str,
     retry_action: str,
-    rollback_on_failure: bool = True,
 ) -> None:
-    """Prove holders drained, optionally rolling back this attempt's fence."""
-    try:
-        if not wait_for_profile_state_db_release(profile_dir):
-            raise RuntimeError(
-                f"{subject} is still in use by this Hermes process; retry {retry_action}."
-            )
-        external_holders = wait_for_external_profile_file_release(profile_dir)
-        if external_holders:
-            raise RuntimeError(
-                f"{subject} is still in use by external process(es) "
-                f"{', '.join(str(pid) for pid in external_holders)}; retry {retry_action}."
-            )
-    except BaseException:
-        # The waits run for seconds while a holder lingers, the likeliest moment for a Ctrl-C;
-        # a refusal, a failed census and an interrupt all leave the home where it was.
-        if rollback_on_failure:
-            rollback_profile_retirement(profile_dir, profile_incarnation)
-        raise
+    """Prove holders drained; the caller's rollback owner lifts its fence on any failure.
+
+    The waits run for seconds while a holder lingers, the likeliest moment for a Ctrl-C.
+    """
+    if not wait_for_profile_state_db_release(profile_dir):
+        raise RuntimeError(
+            f"{subject} is still in use by this Hermes process; retry {retry_action}."
+        )
+    external_holders = wait_for_external_profile_file_release(profile_dir)
+    if external_holders:
+        raise RuntimeError(
+            f"{subject} is still in use by external process(es) "
+            f"{', '.join(str(pid) for pid in external_holders)}; retry {retry_action}."
+        )
 
 
 def move_profile_generation(
