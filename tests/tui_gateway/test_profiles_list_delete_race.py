@@ -855,7 +855,7 @@ def test_named_profile_config_never_mkdir_after_validation_race(
     profile_dir.mkdir(parents=True)
     checked = False
 
-    def remove_after_validation(_profile_home: Path | str) -> bool:
+    def remove_after_validation(_profile_home: Path | str, **_kwargs) -> bool:
         nonlocal checked
         if not checked:
             checked = True

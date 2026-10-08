@@ -26,7 +26,7 @@ import time
 from typing import Callable, Iterable, Iterator
 
 from hermes_constants import get_default_hermes_root, profile_deletion_marker_path
-from pm.filesystem import lock_fd
+from pm.filesystem import lock_fd, unlock_fd
 
 logger = logging.getLogger(__name__)
 
@@ -83,18 +83,7 @@ def _cross_process_profile_mutation_lock(lock_path: Path, *, deadline: float) ->
         yield
     finally:
         if acquired:
-            try:
-                if sys.platform == "win32":
-                    import msvcrt
-
-                    handle.seek(0)
-                    msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
-                else:
-                    import fcntl
-
-                    fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
-            except OSError:
-                pass
+            unlock_fd(handle.fileno())
         handle.close()
 
 
@@ -187,6 +176,15 @@ def profile_deletion_marker(profile_dir: Path | str) -> Path:
     return marker
 
 
+def _write_token_file(path: Path, token: str, mode: int) -> None:
+    """Create *path* exclusively and flush *token* to disk before the caller publishes it."""
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, mode)
+    with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as handle:
+        handle.write(token + "\n")
+        handle.flush()
+        os.fsync(handle.fileno())
+
+
 def mark_profile_deleting(
     profile_dir: Path | str,
     profile_incarnation: str | None = None,
@@ -207,11 +205,7 @@ def mark_profile_deleting(
             f".{marker.name}.{os.getpid()}.{secrets.token_hex(6)}.tmp"
         )
         try:
-            fd = os.open(temp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, file_mode)
-            with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as handle:
-                handle.write(profile_incarnation + "\n")
-                handle.flush()
-                os.fsync(handle.fileno())
+            _write_token_file(temp, profile_incarnation, file_mode)
             from utils import atomic_replace
 
             atomic_replace(temp, marker)
@@ -250,12 +244,10 @@ def retire_in_process_profile_resources(
     retire_sessions = getattr(gateway_server, "retire_profile_home", None)
     if callable(retire_sessions):
         try:
-            result = retire_sessions(
+            retired += retire_sessions(
                 profile_dir,
                 profile_incarnation=profile_incarnation,
             )
-            if isinstance(result, int) and not isinstance(result, bool):
-                retired += max(0, result)
         except Exception as exc:
             logger.debug("Failed to retire in-process profile sessions", exc_info=True)
             retire_error = exc
@@ -264,7 +256,7 @@ def retire_in_process_profile_resources(
     release_goals_db = getattr(goals_module, "release_session_db_for_home", None)
     if callable(release_goals_db):
         try:
-            retired += int(bool(release_goals_db(profile_dir)))
+            retired += release_goals_db(profile_dir)
         except Exception:
             logger.debug("Failed to release cached profile SessionDB", exc_info=True)
 
@@ -272,7 +264,7 @@ def retire_in_process_profile_resources(
         from plugins.memory import import_provider_module
 
         memory_store = import_provider_module("holographic", "store").MemoryStore
-        retired += max(0, int(memory_store.release_all_under(profile_dir) or 0))
+        retired += memory_store.release_all_under(profile_dir)
     except Exception:
         logger.debug("Failed to release profile memory-store connections", exc_info=True)
     if retire_error is not None:

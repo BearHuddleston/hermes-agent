@@ -121,8 +121,10 @@ def ensure_home(home: Path, subdirs: tuple[str, ...], ensured: dict[str, tuple[i
     # Named profiles must be created explicitly. Check tombstones BEFORE the memo so a stale
     # empty shell cannot skip the deleted-profile guard.
     from hermes_constants import assert_named_profile_home_available, profile_deletion_marker_path
-    named_profile = profile_deletion_marker_path(home) is not None
-    assert_named_profile_home_available(home)
+    marker = profile_deletion_marker_path(home)
+    named_profile = marker is not None
+    if named_profile:  # Only a named home can be unavailable; skip re-resolving every other one.
+        assert_named_profile_home_available(home, marker=marker)
     current_identity = _hermes_home_identity(home, named_profile=named_profile)
     if current_identity is not None and ensured.get(str(home)) == current_identity:
         return

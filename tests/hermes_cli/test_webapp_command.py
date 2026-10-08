@@ -78,7 +78,7 @@ def test_skip_build_writes_nothing_into_the_install_tree(tmp_path: Path):
 
 
 def _assert_build_lock_excludes_second_open(tmp_path: Path):
-    from pm.filesystem import lock_fd
+    from pm.filesystem import lock_fd, unlock_fd
 
     lock_path = tmp_path / "webapp.lock"
 
@@ -88,7 +88,11 @@ def _assert_build_lock_excludes_second_open(tmp_path: Path):
 
     with lock_path.open("a+b") as contender:
         assert lock_fd(contender.fileno(), wait=False) is True
-        webapp._unlock_file(contender)
+        unlock_fd(contender.fileno())
+        # Released while its handle stays open, the lock is free for the next open.
+        with lock_path.open("a+b") as successor:
+            assert lock_fd(successor.fileno(), wait=False) is True
+            unlock_fd(successor.fileno())
 
 
 def test_webapp_build_lock_excludes_a_second_open(tmp_path: Path):

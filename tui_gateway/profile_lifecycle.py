@@ -61,9 +61,7 @@ class ProfileLifecycleFence:
         with self._lock:
             return (key, incarnation) in self.retired_incarnations
 
-    def capture(self, profile_home: Path | str | None) -> str | None:
-        if profile_home is None:
-            return None
+    def capture(self, profile_home: Path | str) -> str | None:
         # The lazy backfill refuses tombstoned homes, so it cannot revive a retirement.
         incarnation = ensure_profile_incarnation(profile_home)
         if self._is_retired(profile_home, incarnation):
@@ -71,18 +69,12 @@ class ProfileLifecycleFence:
         return incarnation
 
     @contextmanager
-    def lease(
-        self,
-        profile_home: Path | str,
-        expected_incarnation: str | None,
-        *,
-        require_incarnation: bool = True,
-    ) -> Iterator[Path]:
+    def lease(self, profile_home: Path | str, expected_incarnation: str | None) -> Iterator[Path]:
         """Bind one profile resource without crossing a mutation boundary."""
         with profile_incarnation_lease(
             profile_home,
             expected_incarnation,
-            require_incarnation=require_incarnation,
+            require_incarnation=True,
         ) as home:
             if self._is_retired(home, expected_incarnation):
                 raise FileNotFoundError(f"Profile incarnation is retired: {home}")
@@ -98,16 +90,17 @@ class ProfileLifecycleFence:
         if self._is_retired(profile_home, expected_incarnation):
             return True
         try:
-            named_marker = profile_deletion_marker_path(profile_home)
-            if named_profile_home_is_unavailable(profile_home):
+            # Every session RPC lands here: resolve the marker once for both checks below.
+            marker = profile_deletion_marker_path(profile_home)
+            if marker is None:
+                return False
+            if named_profile_home_is_unavailable(profile_home, marker=marker):
                 return True
         except (OSError, RuntimeError, ValueError):
             return True  # An unresolvable or unreadable home fails closed.
-        if named_marker is None:
-            return False
         if expected_incarnation is None:
             return require_incarnation
-        return not profile_incarnation_matches(profile_home, expected_incarnation)
+        return not profile_incarnation_matches(profile_home, expected_incarnation, named=True)
 
     def retire(
         self,
