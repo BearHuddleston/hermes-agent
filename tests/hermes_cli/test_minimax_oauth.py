@@ -105,7 +105,7 @@ def test_pkce_pair_produces_valid_s256():
     assert len(state) >= 8
 
     # Two calls must return different values (randomness)
-    v2, c2, s2 = _minimax_pkce_pair()
+    v2, _c2, s2 = _minimax_pkce_pair()
     assert verifier != v2
     assert state != s2
 

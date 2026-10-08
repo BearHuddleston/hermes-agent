@@ -142,8 +142,8 @@ def friendly_wait(seconds: Any) -> str:
     if s < 90:
         return "about a minute"
     if s < 3600:
-        return f"about {int(round(s / 60))} minutes"
-    hours = int(round(s / 3600))
+        return f"about {round(s / 60)} minutes"
+    hours = round(s / 3600)
     return "about an hour" if hours <= 1 else f"about {hours} hours"
 
 
@@ -485,7 +485,7 @@ class MintFailure:
         """The wire shape every status RPC carries: ``{error_code, error, retryable, retry_after}``
         with ``retry_after`` the seconds still to wait (whole, rounded up)."""
         return {"error_code": self.code, "error": self.message, "retryable": self.retryable,
-                "retry_after": int(math.ceil(self.remaining())) if self.retryable else 0}
+                "retry_after": math.ceil(self.remaining()) if self.retryable else 0}
 
 
 _mint_failures: dict[str, MintFailure] = {}

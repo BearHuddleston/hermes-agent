@@ -245,7 +245,7 @@ class ThreadSafeAsyncQueue(asyncio.Queue):
     """``asyncio.Queue`` a non-loop thread (run_conversation's executor) can push into via
     ``put_threadsafe``; the SSE consumer's ``await get()`` is woken by ``call_soon_threadsafe``."""
 
-    def put_threadsafe(self, item, *, loop: asyncio.AbstractEventLoop = None) -> None:
+    def put_threadsafe(self, item, *, loop: asyncio.AbstractEventLoop | None = None) -> None:
         (loop or self._loop_ref).call_soon_threadsafe(self.put_nowait, item)
 
     def __init__(self, *args, **kwargs):
@@ -256,7 +256,7 @@ class ThreadSafeAsyncQueue(asyncio.Queue):
 
 
 def _sse_frame(
-    data: Any, *, event: str = None, ensure_ascii: bool = True, id: Optional[int] = None
+    data: Any, *, event: str | None = None, ensure_ascii: bool = True, id: Optional[int] = None
 ) -> bytes:
     """Encode one SSE frame (``id:``/``event:`` lines if given, then ``data: <json>\n\n``) for
     every SSE writer. ``ensure_ascii=False`` keeps raw non-ASCII on the wire."""
@@ -696,7 +696,7 @@ class ResponseStore:
     """SQLite-backed LRU store for Responses API state (full conversation history per response
     for ``previous_response_id`` chaining). Persists across restarts; in-memory fallback."""
 
-    def __init__(self, max_size: int = MAX_STORED_RESPONSES, db_path: str = None):
+    def __init__(self, max_size: int = MAX_STORED_RESPONSES, db_path: str | None = None):
         self._max_size = max_size
         if db_path is None:
             db_path = ":memory:"
@@ -903,7 +903,7 @@ def _redact_api_error_text(value: Any, *, limit: int | None = None) -> str:
     return redacted[:limit] if limit is not None else redacted
 
 
-def _openai_error(message: str, err_type: str = "invalid_request_error", param: str = None, code: str = None) -> dict[str, Any]:
+def _openai_error(message: str, err_type: str = "invalid_request_error", param: str | None = None, code: str | None = None) -> dict[str, Any]:
     """OpenAI-style error envelope."""
     return {"error": {
         "message": _redact_api_error_text(message), "type": err_type, "param": param, "code": code}}
@@ -911,7 +911,7 @@ def _openai_error(message: str, err_type: str = "invalid_request_error", param: 
 
 def _error_response(
     message: str, status: int, *, err_type: str = "invalid_request_error",
-    param: str = None, code: str = None, headers: Optional[dict[str, str]] = None,
+    param: str | None = None, code: str | None = None, headers: Optional[dict[str, str]] = None,
 ) -> "web.Response":
     """``web.json_response(_openai_error(...), status=...)`` in one call."""
     return web.json_response(_openai_error(message, err_type, param, code), status=status, headers=headers)
@@ -3237,7 +3237,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
     async def _handle_delete_session(self, request: "web.Request") -> "web.Response":
         """DELETE /api/sessions/{session_id}."""
         session_id = request.match_info["session_id"]
-        session, err = await self._get_existing_session_or_404(session_id)
+        _session, err = await self._get_existing_session_or_404(session_id)
         if err:
             return err
         db = await self._ensure_session_db_async()
@@ -3644,7 +3644,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             if delta:
                 events.enqueue("assistant.delta", {"message_id": message_id, "delta": delta})
 
-        def _tool_progress(event_type: str, tool_name: str = None, preview: str = None, args=None, **kwargs) -> None:
+        def _tool_progress(event_type: str, tool_name: str | None = None, preview: str | None = None, args=None, **kwargs) -> None:
             if event_type == "reasoning.available":
                 events.enqueue("tool.progress", {"message_id": message_id, "tool_name": tool_name or "_thinking", "delta": preview or ""})
             elif event_type in {"tool.started", "tool.completed", "tool.failed"}:

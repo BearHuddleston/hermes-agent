@@ -829,8 +829,8 @@ def _run_dir_mode(input_path: Path, output: Optional[str], compression_config: C
     print("\n✅ Compression complete!")
 
 
-def main(input: str, output: str = None, config: str = "configs/trajectory_compression.yaml", target_max_tokens: int = None,
-         tokenizer: str = None, sample_percent: float = None, seed: int = 42, dry_run: bool = False):
+def main(input: str, output: str | None = None, config: str = "configs/trajectory_compression.yaml", target_max_tokens: int | None = None,
+         tokenizer: str | None = None, sample_percent: float | None = None, seed: int = 42, dry_run: bool = False):
     """
     Compress agent trajectories to fit within a target token budget.
     

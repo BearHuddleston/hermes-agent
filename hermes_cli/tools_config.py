@@ -772,7 +772,7 @@ def _provider_env_ready(provider: dict) -> bool:
 
 
 def _toolset_has_keys(
-    ts_key: str, config: dict = None, *, force_fresh: bool = False, features: Optional[NousSubscriptionFeatures] = None,
+    ts_key: str, config: dict | None = None, *, force_fresh: bool = False, features: Optional[NousSubscriptionFeatures] = None,
 ) -> bool:
     """Check if a toolset's required API keys are configured."""
     if config is None:
@@ -1065,7 +1065,7 @@ def _configure_platforms(config: dict, platform_keys: list[str], *, all_platform
     return True
 
 
-def tools_command(args=None, first_install: bool = False, config: dict = None):
+def tools_command(args=None, first_install: bool = False, config: dict | None = None):
     """Entry point for `hermes tools` / `hermes setup tools`. ``first_install`` skips the menu (checklist + key
     prompts); a wizard-passed ``config`` receives platform_toolsets so its final save_config() keeps them."""
     if config is None:

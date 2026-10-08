@@ -259,7 +259,7 @@ class SessionMaintenanceMixin:
         # segment stays, deleting it would cut the start off a chat that is still in use.
         return f"{where} AND s.id NOT IN ({_continued_ancestors_sql(where)})", [*params, *params]
 
-    def list_prune_candidates(self, older_than_days: Optional[float] = None, source: str = None, *,
+    def list_prune_candidates(self, older_than_days: Optional[float] = None, source: str | None = None, *,
                               whole_lineages: bool = False, **filters) -> list[dict[str, Any]]:
         """Dry-run: sessions a matching prune/archive would touch, oldest first (``older_than_days``
         = inactivity threshold: freshest of ``last_activity_at`` / latest message / ``started_at``)."""
@@ -271,7 +271,7 @@ class SessionMaintenanceMixin:
                     FROM sessions s WHERE {where}
                     ORDER BY last_active ASC, s.started_at ASC""", params)]
 
-    def count_prune_matches(self, older_than_days: Optional[float] = None, source: str = None, *,
+    def count_prune_matches(self, older_than_days: Optional[float] = None, source: str | None = None, *,
                             pinned_only: bool = False, **filters) -> int:
         """Count-only :meth:`list_prune_candidates`; ``pinned_only`` counts rows carrying the pin
         itself, not the continuations it protects (CLI reports spared pinned sessions)."""
@@ -282,7 +282,7 @@ class SessionMaintenanceMixin:
             where += " AND COALESCE(s.pinned, 0) = 1"
         return int(self._read_one(f"SELECT COUNT(*) FROM sessions s WHERE {where}", params)[0])
 
-    def count_open_prune_matches(self, older_than_days: Optional[float] = None, source: str = None,
+    def count_open_prune_matches(self, older_than_days: Optional[float] = None, source: str | None = None,
                                  **filters) -> int:
         """Count open sessions a matching prune skips (``ended_at`` guard inverted); visibility-only."""
         where, params = self._prune_where(older_than_days, source, filters)
@@ -319,7 +319,7 @@ class SessionMaintenanceMixin:
             self._auto_archive_lineage(row[0])
         return len(rows)
 
-    def prune_sessions(self, older_than_days: Optional[float] = 90, source: str = None,
+    def prune_sessions(self, older_than_days: Optional[float] = 90, source: str | None = None,
                        sessions_dir: Optional[Path] = None, exclude_active_write_guards: bool = False,
                        **filters) -> int:
         """Delete ended sessions inactive for ``older_than_days`` (an explicit ``started_before`` /

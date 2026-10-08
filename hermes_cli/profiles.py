@@ -1034,7 +1034,7 @@ def format_profile_label(name: str, display_name: Optional[str]) -> str:
 def set_profile_display_name(profile_name: str, display_name: str) -> str:
     """Set (or clear, with ``""``) a presentation-only display name. Returns the stored value;
     raises ``ValueError`` over 64 chars."""
-    canon, profile_dir = _existing_profile_dir(profile_name)
+    _canon, profile_dir = _existing_profile_dir(profile_name)
     cleaned = (display_name or "").strip()
     if len(cleaned) > 64:
         raise ValueError(f"Display name too long ({len(cleaned)} chars, max 64).")

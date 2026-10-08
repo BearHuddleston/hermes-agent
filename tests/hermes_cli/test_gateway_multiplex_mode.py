@@ -152,7 +152,7 @@ def test_explicit_true_is_never_second_guessed_and_explicit_false_is_retired(fle
 def test_migration_plan_treats_the_unset_default_as_not_yet_multiplexed(fleet):
     """The fleet the boot guard refuses is exactly the one ``hermes gateway migrate --multiplex`` folds:
     an unset flag must not read as "already multiplexed" or the migration would short-circuit."""
-    root, services, pids = fleet
+    _root, services, pids = fleet
     pids.update({"coder": 4101, "ops": 4102})
     services.update({"coder": [("systemd", False)], "ops": [("systemd", False)]})
     plan = gm.build_migration_plan()

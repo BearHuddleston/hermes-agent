@@ -904,7 +904,7 @@ class TestScopedLocks:
         # unrelated process's name.  This confirms the PID was reused.
         monkeypatch.setattr(status, "_read_process_cmdline", lambda pid: "/usr/libexec/bluetoothuserd")
 
-        acquired, existing = status.acquire_scoped_lock("telegram-bot-token", "secret", metadata={"platform": "telegram"})
+        acquired, _existing = status.acquire_scoped_lock("telegram-bot-token", "secret", metadata={"platform": "telegram"})
 
         assert acquired is True
         payload = json.loads(lock_path.read_text())
@@ -1055,7 +1055,7 @@ class TestScopedLocks:
         # Post-#21561: simulate "PID gone" via _pid_exists returning False.
         monkeypatch.setattr(status, "_pid_exists", lambda pid: False)
 
-        acquired, existing = status.acquire_scoped_lock("telegram-bot-token", "secret", metadata={"platform": "telegram"})
+        acquired, _existing = status.acquire_scoped_lock("telegram-bot-token", "secret", metadata={"platform": "telegram"})
 
         assert acquired is True
         payload = json.loads(lock_path.read_text())
@@ -1095,7 +1095,7 @@ class TestScopedLocks:
         monkeypatch.setenv("HERMES_GATEWAY_LOCK_DIR", str(tmp_path / "locks"))
         monkeypatch.setenv("HERMES_HOME", str(tmp_path / "profiles" / "lead-gen-outreach"))
 
-        acquired, existing = status.acquire_scoped_lock(
+        acquired, _existing = status.acquire_scoped_lock(
             "telegram-bot-token", "secret", metadata={"platform": "telegram"}
         )
 

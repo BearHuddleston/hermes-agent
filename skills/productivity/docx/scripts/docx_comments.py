@@ -257,7 +257,7 @@ def main() -> int:
         return 0
 
     if args.cmd == "add":
-        para, runs = find_anchor_runs(doc, args.target)
+        _para, runs = find_anchor_runs(doc, args.target)
         if not runs:
             print(json.dumps({"ok": False,
                               "error": f"target not found: {args.target}"}))

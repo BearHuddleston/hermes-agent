@@ -594,7 +594,7 @@ class SignalAdapter(BasePlatformAdapter):
                  else cache_audio_from_bytes_async if _is_audio_ext(ext) else cache_document_from_bytes_async)
         return await cache(raw_data, ext), ext
 
-    async def _rpc(self, method: str, params: dict, rpc_id: str = None, *, log_failures: bool = True,
+    async def _rpc(self, method: str, params: dict, rpc_id: str | None = None, *, log_failures: bool = True,
                    raise_on_rate_limit: bool = False, timeout: float = 30.0) -> Any:
         """Send a JSON-RPC 2.0 request to signal-cli. ``log_failures=False`` logs failures at DEBUG (typing
         path: silence NETWORK_FAILURE spam); ``raise_on_rate_limit=True`` raises ``SignalRateLimitError``

@@ -4566,9 +4566,15 @@ def try_shrink_image_parts_in_messages(api_messages: list, *, max_dimension: int
 
 
 __all__ = [
-    "COMPACTION_STATUS", "COMPACTION_DONE_STATUS", "COMPACTION_HEARTBEAT_STATUS", "COMPACTION_STATUS_MARKER", "is_compaction_progress_status",
-    "check_compression_model_feasibility", "ensure_compression_feasibility_checked",
-    "revalidate_compression_feasibility", "replay_compression_warning",
+    "COMPACTION_DONE_STATUS",
+    "COMPACTION_HEARTBEAT_STATUS",
+    "COMPACTION_STATUS",
+    "COMPACTION_STATUS_MARKER",
+    "check_compression_model_feasibility",
     "compress_context",
+    "ensure_compression_feasibility_checked",
+    "is_compaction_progress_status",
+    "replay_compression_warning",
+    "revalidate_compression_feasibility",
     "try_shrink_image_parts_in_messages",
 ]

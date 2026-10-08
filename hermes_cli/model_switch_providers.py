@@ -1222,7 +1222,7 @@ def _build_curated_lists(current_provider: str, current_base_url: str, current_m
 
 
 def list_authenticated_providers(
-    current_provider: str = "", current_base_url: str = "", user_providers: dict = None,
+    current_provider: str = "", current_base_url: str = "", user_providers: dict | None = None,
     custom_providers: list | None = None, *, force_fresh_nous_tier: bool = False,
     max_models: int | None = None, current_model: str = "", refresh: bool = False,
     probe_custom_providers: bool = True, probe_current_custom_provider: bool = False,
@@ -1362,7 +1362,7 @@ def _prepend_moa_picker_provider(providers: list[dict], current_provider: str = 
 
 
 def list_picker_providers(
-    current_provider: str = "", current_base_url: str = "", user_providers: dict = None,
+    current_provider: str = "", current_base_url: str = "", user_providers: dict | None = None,
     custom_providers: list | None = None, max_models: int | None = None, current_model: str = "",
     include_moa: bool = False, excluded_providers: list | None = None,
     non_blocking_catalogs: bool = False, probe_custom_providers: bool = True,

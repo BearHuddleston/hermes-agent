@@ -1209,7 +1209,7 @@ class TestApiRequestErrorHook:
             retryable=True,
             error={"type": "APIError", "message": "secret prompt echo sk-abc"},
         )
-        meta = [u["metadata"] for u in gen.updates if "metadata" in u][0]
+        meta = next(u["metadata"] for u in gen.updates if "metadata" in u)
         assert isinstance(meta["error_message"], dict)
         assert meta["error_message"]["omitted"] is True
 

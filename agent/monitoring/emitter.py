@@ -164,4 +164,4 @@ def reset_emitter_for_tests(emitter: Optional[MonitoringEmitter] = None) -> None
         _EMITTER = emitter
 
 
-__all__ = ["MonitoringEmitter", "get_emitter", "emit", "reset_emitter_for_tests"]
+__all__ = ["MonitoringEmitter", "emit", "get_emitter", "reset_emitter_for_tests"]

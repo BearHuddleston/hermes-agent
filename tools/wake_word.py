@@ -628,8 +628,8 @@ class WakeWordDetector:
         cap, rate = _Capture(np=np), details.get("default_samplerate")
         if isinstance(rate, (int, float)) and not isinstance(rate, bool) and rate > 0:
             with suppress(OverflowError, ValueError):
-                cap.rate = int(round(rate))
-        cap.frame_length = max(1, int(round(frame_length * cap.rate / SAMPLE_RATE)))
+                cap.rate = round(rate)
+        cap.frame_length = max(1, round(frame_length * cap.rate / SAMPLE_RATE))
         logger.info("wake word: opening microphone device=%s selector=%r hostapi=%s "
                     "default_rate=%s capture_rate=%d engine_rate=%d", details.get("name") or "system default",
                     self.input_device, details.get("hostapi") or "unknown",

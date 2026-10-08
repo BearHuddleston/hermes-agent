@@ -1348,7 +1348,7 @@ def _record_task_failure(
     error: str,
     *,
     outcome: str,
-    failure_limit: int = None,
+    failure_limit: int | None = None,
     force_trip: bool = False,
     release_claim: bool = False,
     end_run: bool = False,

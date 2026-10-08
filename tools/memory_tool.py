@@ -211,8 +211,8 @@ def _background_delete_gate(store, action, operations, target="memory", content=
             "batch); 'add' is still available.", success=False)
 
 
-def memory_tool(action: str = None, target: str = "memory", content: str = None, old_text: str = None,
-                new_text: str = None, operations: Optional[list[dict[str, Any]]] = None,
+def memory_tool(action: str | None = None, target: str = "memory", content: str | None = None, old_text: str | None = None,
+                new_text: str | None = None, operations: Optional[list[dict[str, Any]]] = None,
                 store: Optional[MemoryStore] = None) -> str:
     """Tool entry point; returns a JSON string. Single op (action + content/old_text)
     or batch (``operations``, atomic against the final budget). ``new_text``

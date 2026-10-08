@@ -337,7 +337,15 @@ def build_bearer_http_client(token_provider: Callable[[], str], **httpx_kwargs: 
 
 
 __all__ = [
-    "EntraIdentityConfig", "SCOPE_AI_AZURE_DEFAULT", "build_bearer_http_client", "build_credential",
-    "build_token_provider", "describe_active_credential", "has_azure_identity_credentials",
-    "has_azure_identity_installed", "is_token_provider", "materialize_bearer_for_http", "reset_credential_cache",
+    "SCOPE_AI_AZURE_DEFAULT",
+    "EntraIdentityConfig",
+    "build_bearer_http_client",
+    "build_credential",
+    "build_token_provider",
+    "describe_active_credential",
+    "has_azure_identity_credentials",
+    "has_azure_identity_installed",
+    "is_token_provider",
+    "materialize_bearer_for_http",
+    "reset_credential_cache",
 ]

@@ -172,7 +172,7 @@ def _sync_codex_pool_entries(
 
 
 def _save_codex_tokens(
-    tokens: dict[str, str], last_refresh: str = None, label: str = None, *,
+    tokens: dict[str, str], last_refresh: str | None = None, label: str | None = None, *,
     set_active: bool = True, write_through: bool = False,
 ) -> None:
     """Save Codex OAuth tokens to the auth store the grant was resolved FROM.

@@ -324,7 +324,7 @@ def _make_run_event_callback(self, run_id: str, loop: "asyncio.AbstractEventLoop
             with suppress(Exception):
                 loop.call_soon_threadsafe(q.put_nowait, event)
 
-    def _callback(event_type: str, tool_name: str = None, preview: str = None, args=None, **kwargs):
+    def _callback(event_type: str, tool_name: str | None = None, preview: str | None = None, args=None, **kwargs):
         # _thinking / subagent.tool / subagent_progress are deliberately dropped (UI noise);
         # lifecycle boundaries must land so clients can observe delegate_task failures.
         fields = _FIXED_EVENT_FIELDS.get(event_type)

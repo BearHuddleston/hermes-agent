@@ -215,7 +215,7 @@ _TELEGRAM_IMAGE_EXT_TO_MIME = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg
 def _coerce_duration_seconds(value: Any) -> Optional[int]:
     """Round a raw length to whole positive seconds, or None if unusable."""
     try:
-        secs = int(round(float(value)))
+        secs = round(float(value))
     except (TypeError, ValueError):
         return None
     return secs if secs > 0 else None
@@ -1963,7 +1963,7 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
             # the except below classifies it as a network error → background recovery.
             # Same watchdog bound as the reconnect ladders: a wedged httpx connection pool can hang
             # start_polling() forever at bootstrap too (#59614).
-            generation, progress = await self._start_polling_once(
+            _generation, progress = await self._start_polling_once(
                 self._app, drop_pending_updates=drop_pending_updates, error_callback=effective_callback,
                 abandon_app_on_timeout=require_progress,
                 # The strict gate IS the cold-start verifier; a background one would race it.

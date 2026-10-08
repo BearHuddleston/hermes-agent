@@ -671,7 +671,7 @@ def transitions(env: dict) -> None:
     receipt = env.get("RECEIPT", "")
     if receipt not in RECEIPT_TARGETS:
         raise ValueError(f"Unknown receipt: {receipt}")
-    tag, commit, claim = stable_context(env)
+    _tag, _commit, claim = stable_context(env)
     base = env["CLOUDFLARE_R2_PUBLIC_URL"].rstrip("/")
     archive = claim["claim_tag"]
     previous = _published_baseline(env, base)

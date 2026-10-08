@@ -124,7 +124,7 @@ class TurnRunner:
 
     # ── progress_callback (agent thread → progress queue) ───────────────────────────────────
 
-    def progress_callback(self, event_type: str, tool_name: str = None, preview: str = None, args: dict = None, **kwargs):
+    def progress_callback(self, event_type: str, tool_name: str | None = None, preview: str | None = None, args: dict | None = None, **kwargs):
         """Callback invoked by agent on tool lifecycle events."""
         ctx = self._ctx
         # Failed subagent → one clean user-facing notice, handled FIRST, before every progress-queue

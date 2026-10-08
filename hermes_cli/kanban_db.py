@@ -2058,7 +2058,7 @@ def _resume_status_from_events(conn: sqlite3.Connection, task_id: str) -> str:
     return "ready"
 
 
-def recompute_ready(conn: sqlite3.Connection, failure_limit: int = None) -> int:
+def recompute_ready(conn: sqlite3.Connection, failure_limit: int | None = None) -> int:
     """Promote ``todo``/``blocked`` tasks whose parents are all done/archived;
     returns the count. Opens its own IMMEDIATE txn — call OUTSIDE any write txn.
 

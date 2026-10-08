@@ -889,7 +889,7 @@ def _dispatch_browser_command(
 def _run_browser_command(
     task_id: str,
     command: str,
-    args: list[str] = None,
+    args: list[str] | None = None,
     timeout: Optional[int] = None,
     _engine_override: Optional[str] = None,
 ) -> dict[str, Any]:

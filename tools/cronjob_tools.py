@@ -1009,7 +1009,7 @@ def cronjob(
     monitor_url: Optional[str] = None,
     reasoning_effort: Optional[str] = None,
     failure_deliver: Optional[Union[str, list[str]]] = None,
-    task_id: str = None,
+    task_id: str | None = None,
     session_id: Optional[str] = None,
     paused: bool = False,
     paused_reason: Optional[str] = None,

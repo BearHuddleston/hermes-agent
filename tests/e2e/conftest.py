@@ -389,7 +389,7 @@ def make_fake_thread(thread_id: int = THREAD_ID, name: str = "test-thread", pare
 
 def make_discord_message(
     *, content: str = "hello", author=None, channel=None, mentions=None,
-    attachments=None, message_id: int = None,
+    attachments=None, message_id: int | None = None,
 ):
     if message_id is None:
         message_id = _next_message_id()

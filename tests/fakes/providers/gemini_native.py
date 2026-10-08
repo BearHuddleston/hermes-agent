@@ -38,6 +38,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Callable
 from urllib.parse import parse_qs, urlsplit
+import itertools
 
 GEMINI_HOST = "generativelanguage.googleapis.com"
 MODEL_ID = "gemini-3-flash-preview"
@@ -342,7 +343,7 @@ def validate_generate_request(body: Any, version: str, model: str, issued: set[s
             raise InvalidArgument(f"* GenerateContentRequest.contents[{ci}].parts: contents.parts must not be empty.")
         norm.append({"role": role, "parts": [_validate_part(p, f"contents[{ci}].parts[{pi}]")
                                               for pi, p in enumerate(parts)]})
-    for a, b in zip(norm, norm[1:]):
+    for a, b in itertools.pairwise(norm):
         if a["role"] == b["role"]:
             raise InvalidArgument("Please ensure that multiturn requests alternate between user and model.")
     if norm[-1]["role"] != "user":

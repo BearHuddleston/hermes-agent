@@ -564,4 +564,4 @@ class _SupervisorRegistry:
 SUPERVISOR_REGISTRY = _SupervisorRegistry()
 
 
-__all__ = ["CDPSupervisor", "SUPERVISOR_REGISTRY", "SupervisorSnapshot", "_SupervisorRegistry"]
+__all__ = ["SUPERVISOR_REGISTRY", "CDPSupervisor", "SupervisorSnapshot", "_SupervisorRegistry"]

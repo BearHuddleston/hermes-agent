@@ -309,7 +309,7 @@ class StreamingContextScrubber:
     def _ends_at_block_boundary(self, text: str) -> bool:
         """Whether emitting ``text`` leaves the stream at a line start (blank tail after the last newline;
         no newline at all -> only whitespace and already at a boundary)."""
-        head, sep, tail = text.rpartition("\n")
+        _head, sep, tail = text.rpartition("\n")
         return tail.strip() == "" and (bool(sep) or self._at_block_boundary)
 
     def _append_visible(self, out: list[str], text: str) -> None:

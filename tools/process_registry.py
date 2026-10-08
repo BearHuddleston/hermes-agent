@@ -1194,8 +1194,8 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin):
         return session
 
     def spawn_local(
-        self, command: str, cwd: str = None, task_id: str = "", session_key: str = "",
-        env_vars: dict = None, use_pty: bool = False, owner_task_id: str = "",
+        self, command: str, cwd: str | None = None, task_id: str = "", session_key: str = "",
+        env_vars: dict | None = None, use_pty: bool = False, owner_task_id: str = "",
         persist_on_release: bool = False) -> ProcessSession:
         """Spawn a background process locally (TERMINAL_ENV=local; other backends use
         spawn_via_env()). ``use_pty`` requests a pseudo-terminal via ptyprocess/pywinpty
@@ -1287,7 +1287,7 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin):
         return session
 
     def spawn_via_env(
-        self, env: Any, command: str, cwd: str = None, task_id: str = "", session_key: str = "",
+        self, env: Any, command: str, cwd: str | None = None, task_id: str = "", session_key: str = "",
         timeout: int = 10, owner_task_id: str = "", persist_on_release: bool = False) -> ProcessSession:
         """Spawn a background process inside a non-local backend's sandbox.
         The command is wrapped to capture its in-sandbox PID and redirect output to a
@@ -2079,7 +2079,7 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin):
             self._completion_consumed.add(session_id)
         return result
 
-    def wait(self, session_id: str, timeout: int = None) -> dict:
+    def wait(self, session_id: str, timeout: int | None = None) -> dict:
         """Block until the process exits, the timeout elapses, the user interrupts, or a
         mid-turn user message (steer/redirect → ``request_yield``) releases the wait.
         ``timeout`` defaults to (and is clamped by) TERMINAL_TIMEOUT. Returns a dict
@@ -2389,7 +2389,7 @@ class ProcessRegistry(ProcessTerminationMixin, ProcessCheckpointMixin):
         """O(1) running count for status-bar polling; dict ``len()`` is atomic, no lock."""
         return len(self._running)
 
-    def list_sessions(self, task_id: str = None, session_key: str = None, *, include_retained: bool = False) -> list:
+    def list_sessions(self, task_id: str | None = None, session_key: str | None = None, *, include_retained: bool = False) -> list:
         """Running and recently-finished processes for ``task_id`` and/or ``session_key``;
         cross-task entries sharing the gateway session (a forgotten preview server
         blocking session reset) are flagged ``"session_scoped": true``.

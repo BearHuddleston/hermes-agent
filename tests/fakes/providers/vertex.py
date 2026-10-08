@@ -703,7 +703,22 @@ def signatures_on_wire(body: dict[str, Any]) -> list[str]:
 
 
 __all__ = [
-    "MODEL", "PROJECT", "REGION", "SA_EMBEDDED_PROJECT", "hermes_setup",
-    "Call", "Drop", "Fail", "FakeVertex", "GRPC_STATUS", "Say", "ServiceAccount", "TokenPolicy",
-    "make_service_account", "make_tls_material", "signatures_on_wire", "validate_chat_body", "verify_jwt_assertion",
+    "GRPC_STATUS",
+    "MODEL",
+    "PROJECT",
+    "REGION",
+    "SA_EMBEDDED_PROJECT",
+    "Call",
+    "Drop",
+    "Fail",
+    "FakeVertex",
+    "Say",
+    "ServiceAccount",
+    "TokenPolicy",
+    "hermes_setup",
+    "make_service_account",
+    "make_tls_material",
+    "signatures_on_wire",
+    "validate_chat_body",
+    "verify_jwt_assertion",
 ]

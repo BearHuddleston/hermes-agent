@@ -2752,7 +2752,7 @@ class GatewayTurnMixin:
 
     async def _run_agent_via_proxy(
         self, message: str, context_prompt: str, history: list[dict[str, Any]],
-        source: "SessionSource", session_id: str, session_key: str = None,
+        source: "SessionSource", session_id: str, session_key: str | None = None,
         run_generation: Optional[int] = None, event_message_id: Optional[str] = None,
         scheduled_heartbeat: bool = False,
     ) -> dict[str, Any]:
@@ -4264,7 +4264,7 @@ class GatewayTurnMixin:
 
     async def _run_agent_inner(
         self, message: str, context_prompt: str, history: list[dict[str, Any]],
-        source: SessionSource, session_id: str, session_key: str = None,
+        source: SessionSource, session_id: str, session_key: str | None = None,
         run_generation: Optional[int] = None, _interrupt_depth: int = 0,
         event_message_id: Optional[str] = None, inbound_message_id: Optional[str] = None,
         channel_prompt: Optional[str] = None, moa_config: Optional[dict] = None,

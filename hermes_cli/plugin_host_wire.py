@@ -152,7 +152,7 @@ def decode(value: Any, resolve: Optional[Callable[[dict], Any]] = None) -> Any:
 def is_async_callable(fn: Any) -> bool:
     import inspect
     target = getattr(fn, "__func__", fn)
-    return inspect.iscoroutinefunction(target) or inspect.iscoroutinefunction(getattr(fn, "__call__", None))
+    return inspect.iscoroutinefunction(target) or inspect.iscoroutinefunction(getattr(fn, "__call__", None))  # noqa: B004 -- __call__ feeds iscoroutinefunction (async instances), not a callability test
 
 
 def describe_signature(fn: Any) -> Optional[list]:

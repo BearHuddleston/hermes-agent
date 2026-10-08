@@ -778,4 +778,4 @@ def _diagnostic_key(d: dict[str, Any]) -> str:
     ])
 
 
-__all__ = ["LSPClient", "file_uri", "uri_to_path", "INITIALIZE_TIMEOUT", "DIAGNOSTICS_DOCUMENT_WAIT", "DIAGNOSTICS_FULL_WAIT"]
+__all__ = ["DIAGNOSTICS_DOCUMENT_WAIT", "DIAGNOSTICS_FULL_WAIT", "INITIALIZE_TIMEOUT", "LSPClient", "file_uri", "uri_to_path"]

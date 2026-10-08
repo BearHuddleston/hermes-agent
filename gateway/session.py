@@ -1064,7 +1064,7 @@ class SessionStore(
         )
 
     def update_session(
-        self, session_key: str, last_prompt_tokens: int = None, touch_activity: bool = True,
+        self, session_key: str, last_prompt_tokens: int | None = None, touch_activity: bool = True,
     ) -> None:
         """Update lightweight session metadata after an interaction; internal turns pass
         ``touch_activity=False`` so the reset-policy clock does not advance."""

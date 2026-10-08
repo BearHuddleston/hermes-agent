@@ -1628,7 +1628,7 @@ class TestSystemServiceIdentityRootHandling:
         root_info = pwd.getpwnam("root")
         root_group = grp.getgrgid(root_info.pw_gid).gr_name
 
-        username, group, home, _uid = gateway_cli._system_service_identity(run_as_user="root")
+        username, _group, home, _uid = gateway_cli._system_service_identity(run_as_user="root")
         assert username == "root"
         assert home == root_info.pw_dir
 
@@ -2160,8 +2160,7 @@ class TestLegacyHermesUnitDetection:
             "ExecStart=/venv/bin/python /opt/hermes/gateway/run.py",
         ]
         for i, execstart in enumerate(variants):
-            name = "hermes.service" if i == 0 else "hermes.service"  # same name
-            # Test each variant fresh
+            # Test each variant fresh (every variant ships the same unit name)
             (user_dir / "hermes.service").write_text(
                 f"[Unit]\nDescription=Old Hermes\n[Service]\n{execstart}\n",
                 encoding="utf-8",

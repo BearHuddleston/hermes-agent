@@ -246,7 +246,7 @@ def _downscale_cells(frame, *, target_cols: int) -> list[list[Cell]]:
     from PIL import Image
 
     target_cols = max(4, target_cols)
-    target_rows = max(2, int(round(target_cols * (frame.height / max(1, frame.width)) * 0.5)) * 2)
+    target_rows = max(2, round(target_cols * (frame.height / max(1, frame.width)) * 0.5) * 2)
     px = frame.resize((target_cols, target_rows), Image.LANCZOS).convert("RGBA").load()
     return [
         [(px[x, y], px[x, y + 1] if y + 1 < target_rows else (0, 0, 0, 0)) for x in range(target_cols)]

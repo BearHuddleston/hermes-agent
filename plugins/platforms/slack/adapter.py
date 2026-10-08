@@ -5577,7 +5577,7 @@ class SlackAdapter(BasePlatformAdapter):
         started = await self._begin_interaction(ack, body, action, "slash-confirm")
         if started is None:
             return
-        team_id, action_id, value, message, msg_ts, channel_id, user_name, user_id = started
+        team_id, action_id, value, message, msg_ts, channel_id, user_name, _user_id = started
         if "|" not in value:
             logger.warning("[Slack] Malformed slash-confirm value: %s", value)
             return
@@ -5620,7 +5620,7 @@ class SlackAdapter(BasePlatformAdapter):
         started = await self._begin_interaction(ack, body, action, "approval")
         if started is None:
             return
-        team_id, action_id, session_key, message, msg_ts, channel_id, user_name, user_id = started
+        team_id, action_id, session_key, message, msg_ts, channel_id, user_name, _user_id = started
         choice = self._APPROVAL_CHOICES.get(action_id, "deny")
         # Double-click guard (atomic pop). Also accept the bare ts: the approval may
         # have been stored without a team id while the click carries one.
@@ -5675,7 +5675,7 @@ class SlackAdapter(BasePlatformAdapter):
         started = await self._begin_interaction(ack, body, action, "clarify", team_scoped=False)
         if started is None:
             return
-        _team_id, action_id, value, message, msg_ts, channel_id, user_name, user_id = started
+        _team_id, action_id, value, message, msg_ts, channel_id, user_name, _user_id = started
         if "|" not in value:  # value packs ``clarify_id|<idx|other>``
             logger.warning("[Slack] Malformed clarify value: %s", value)
             return

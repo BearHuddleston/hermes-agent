@@ -543,7 +543,7 @@ def _orphaned_desktop_backend_pids(matches: list[tuple[int, str, str]]) -> list[
             proc = psutil.Process(int(pid))
             # Fingerprint from the SAME psutil handle, centisecond-quantized like
             # gateway.status.get_process_start_time so pid_is_hermes round-trips at kill time.
-            process_start_time = int(round(proc.create_time() * 100))
+            process_start_time = round(proc.create_time() * 100)
         except psutil.NoSuchProcess:
             continue  # exited during classification — nothing to reap
         except Exception:
@@ -1061,7 +1061,7 @@ def _stop_windows_gateways(running_pids, profile_processes, service_gateway_pids
     from hermes_cli.update_cmd import _m
     mapped = [int(p) for p in running_pids if int(p) not in service_gateway_pids and int(p) in profile_processes]
     born = {**{int(k): v for k, v in (born or {}).items()},
-            **{p: int(round(float(profile_processes[p].create_time) * 100)) for p in mapped
+            **{p: round(float(profile_processes[p].create_time) * 100) for p in mapped
                if float(getattr(profile_processes[p], "create_time", 0) or 0) > 0}}
     # Resolve venv-side launchers before any request: the launcher keeps ``.pyd`` mapped and would trip the
     # venv-holder guard, so it is killed with the survivors, under the identity it has now.

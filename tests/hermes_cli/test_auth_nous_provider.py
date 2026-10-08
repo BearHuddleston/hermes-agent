@@ -477,7 +477,7 @@ class TestLoginNousSkipKeepsCurrent:
         import hermes_yaml as yaml
         from hermes_cli.auth import PROVIDER_REGISTRY, _login_nous
 
-        hermes_home, config_path, auth_path = self._setup_home_with_openrouter(
+        _hermes_home, config_path, auth_path = self._setup_home_with_openrouter(
             tmp_path, monkeypatch,
         )
         self._patch_login_internals(monkeypatch, prompt_returns=None)
@@ -508,7 +508,7 @@ class TestLoginNousSkipKeepsCurrent:
         import hermes_yaml as yaml
         from hermes_cli.auth import PROVIDER_REGISTRY, _login_nous
 
-        hermes_home, config_path, auth_path = self._setup_home_with_openrouter(
+        _hermes_home, config_path, auth_path = self._setup_home_with_openrouter(
             tmp_path, monkeypatch,
         )
         self._patch_login_internals(

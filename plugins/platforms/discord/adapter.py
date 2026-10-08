@@ -710,7 +710,7 @@ class VoiceReceiver:
     CHANNELS = 2               # Discord sends stereo
     REKEY_FAILURE_STREAK = 25  # consecutive NaCl failures → re-resolve creds
 
-    def __init__(self, voice_client, allowed_user_ids: set = None):
+    def __init__(self, voice_client, allowed_user_ids: set | None = None):
         self._vc = voice_client
         self._allowed_user_ids = allowed_user_ids or set()
         self._running = False
@@ -968,7 +968,7 @@ class VoiceReceiver:
                 logger.debug("Skipped non-RTP: byte0=0x%02x byte1=0x%02x", data[0], data[1])
             return
         first_byte = data[0]
-        _, _, seq, timestamp, ssrc = struct.unpack_from(">BBHII", data, 0)
+        _, _, seq, _timestamp, ssrc = struct.unpack_from(">BBHII", data, 0)
         if ssrc == self._bot_ssrc:
             return
         # Calculate dynamic RTP header size (RFC 9335 / rtpsize mode)
@@ -3398,7 +3398,7 @@ class DiscordAdapter(DiscordMediaMixin, DiscordThreadTitlesMixin, DiscordVoiceIn
         except Exception as e:
             logger.error("[%s] Failed to create forum thread in %s: %s", self.name, forum_channel.id, e)
             return SendResult(success=False, error=f"Forum thread creation failed: {e}")
-        thread_channel, thread_id, starter_msg, message_id = self._forum_thread_parts(thread)
+        thread_channel, thread_id, _starter_msg, message_id = self._forum_thread_parts(thread)
         message_ids = [message_id]
         warnings: list[str] = []
         for chunk in chunks[1:]:
@@ -3442,7 +3442,7 @@ class DiscordAdapter(DiscordMediaMixin, DiscordThreadTitlesMixin, DiscordVoiceIn
                 getattr(forum_channel, "id", "?"), e,
             )
             return SendResult(success=False, error=f"Forum thread creation failed: {e}")
-        thread_channel, thread_id, starter_msg, message_id = self._forum_thread_parts(thread)
+        _thread_channel, thread_id, starter_msg, message_id = self._forum_thread_parts(thread)
         if file is not None or files:
             attachments = getattr(starter_msg, "attachments", None) or []
             if not attachments:
@@ -3831,7 +3831,7 @@ class DiscordAdapter(DiscordMediaMixin, DiscordThreadTitlesMixin, DiscordVoiceIn
         mixers = getattr(self, "_voice_mixers", None)
         return bool(mixers) and mixers.get(guild_id) is not None
 
-    async def join_voice_channel(self, channel, *, text_channel_id: int = None, source: dict = None) -> bool:
+    async def join_voice_channel(self, channel, *, text_channel_id: int | None = None, source: dict | None = None) -> bool:
         """Join a voice channel; returns True on success. ``text_channel_id`` stores the
         transcription-routing binding so programmatic joins work without ``/voice join``."""
         if not self._client or not DISCORD_AVAILABLE:

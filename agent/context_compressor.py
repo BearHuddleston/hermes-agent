@@ -2897,7 +2897,7 @@ class ContextCompressor(SummaryDispatchMixin, PreLlmSkipMixin, MicroCompactionMi
 
     def __init__(
         self, model: str, threshold_percent: float = 0.50, protect_first_n: int = 3, protect_last_n: int = 20,
-        summary_target_ratio: float = 0.20, quiet_mode: bool = False, summary_model_override: str = None,
+        summary_target_ratio: float = 0.20, quiet_mode: bool = False, summary_model_override: str | None = None,
         base_url: str = "", api_key: str = "", config_context_length: int | None = None, provider: str = "",
         api_mode: str = "", abort_on_summary_failure: bool = False, max_tokens: int | None = None,
         model_thresholds: dict[str, float] | None = None, threshold_tokens_cap: Any = None,
@@ -3086,11 +3086,11 @@ class ContextCompressor(SummaryDispatchMixin, PreLlmSkipMixin, MicroCompactionMi
             return False
         return not self._provider_omits_usage
 
-    def should_compress(self, prompt_tokens: int = None) -> bool:
+    def should_compress(self, prompt_tokens: int | None = None) -> bool:
         """True when compression should run now (anti-thrash included; see :meth:`should_compress_info` for the reason)."""
         return self.should_compress_info(prompt_tokens)[0]
 
-    def should_compress_info(self, prompt_tokens: int = None) -> "tuple[bool, str | None]":
+    def should_compress_info(self, prompt_tokens: int | None = None) -> "tuple[bool, str | None]":
         """Return ``(should_compress, reason)``.
         ``reason`` is None unless compression is needed but blocked: ``"cooldown:<seconds>"`` or
         ``"ineffective"``. Callers should surface a warning when it is non-None."""

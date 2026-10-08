@@ -195,7 +195,7 @@ class TestOpenCodeGoGLM52Reasoning:
 
     @pytest.mark.parametrize("model", ["glm-5-2", "glm-5p2"])
     def test_alias_spellings_recognized(self, opencode_go_profile, model):
-        extra_body, top_level = opencode_go_profile.build_api_kwargs_extras(
+        _extra_body, top_level = opencode_go_profile.build_api_kwargs_extras(
             reasoning_config={"enabled": True, "effort": "max"},
             model=model,
         )

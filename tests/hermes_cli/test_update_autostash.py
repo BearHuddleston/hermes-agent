@@ -690,7 +690,7 @@ def test_untracked_file_replaced_by_the_update_keeps_the_stash(tmp_path, local_s
 def test_untracked_file_the_update_does_not_track_is_never_reported_replaced(tmp_path, capsys):
     """#70127: an untracked file still in the tree after the stash (it could not be deleted) and
     changed since is not the update's file; HEAD does not track it, so the restore completes."""
-    git, stash_ref = _repo_with_stash(tmp_path, "X = 2\n")
+    _git, stash_ref = _repo_with_stash(tmp_path, "X = 2\n")
     # The occupant survived the stash and was edited during the update window.
     (tmp_path / "notes.md").write_text("edited while locked\n", encoding="utf-8")
 
