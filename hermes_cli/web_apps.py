@@ -192,6 +192,7 @@ def authorize_open(principal: Optional[str], profile: Optional[str], session_id:
     try:
         ref = web_sharing.resolve_chat(profile, session_id)
     except Exception:
+        logger.debug("apps: chat %s of profile %r did not resolve", session_id, profile, exc_info=True)
         return "not_found"
     if ref is None:
         return "not_found"
@@ -313,6 +314,7 @@ class AppsHub:
     def __init__(self) -> None:
         self.apps: dict[str, App] = {}
         self._loading: dict[str, asyncio.Future] = {}
+        self._leaving: set[asyncio.Task] = set()  # the loop holds tasks weakly
 
     # ---- lifecycle --------------------------------------------------------------------------
 
@@ -492,7 +494,9 @@ class AppsHub:
                 role = None if removed else web_sharing.role_in_chat(principal, chat, app.creator)
                 if role is None:
                     member.conn.push({"type": "closed", "handle": member.handle, "reason": "access"})
-                    asyncio.create_task(self._leave(member))
+                    task = asyncio.create_task(self._leave(member))
+                    self._leaving.add(task)
+                    task.add_done_callback(self._leaving.discard)
                 else:
                     member.role = role
                     member.conn.push({"type": "role", "handle": member.handle, "role": role})

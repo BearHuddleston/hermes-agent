@@ -138,6 +138,26 @@ def test_a_state_file_saved_with_a_byte_order_mark_still_loads(app_file):
     assert (values, texts) == ({"votes": 3}, {"notes": "hi"})
 
 
+def test_a_person_removed_from_the_chat_is_sent_out_of_its_apps(app_file):
+    async def scenario():
+        hub = web_apps.AppsHub()
+        conns, inbox = await _people(hub, "alice", "bob")
+        hub.access_changed("nous:bob", "default:s1", removed=True)
+        await asyncio.sleep(0.05)
+        refused = await hub.handle(conns["bob"], {"type": "set", "handle": "h", "key": "count", "value": 1})
+        app = hub.apps["default:s1|" + str(app_file)]
+        left = {m.conn.principal for m in app.members.values()}
+        for conn in conns.values():
+            await hub.disconnect(conn)
+        return refused, left, inbox
+
+    refused, left, inbox = asyncio.run(scenario())
+    assert {"type": "closed", "handle": "h", "reason": "access"} in inbox["bob"]
+    assert left == {"nous:alice"}
+    assert refused is not None, "a removed window can no longer write"
+    assert any(f["type"] == "peer" and f.get("gone") for f in inbox["alice"]), "the others hear they left"
+
+
 def test_an_edit_the_agent_writes_to_the_state_file_reaches_open_windows(app_file):
     async def scenario():
         hub = web_apps.AppsHub()
