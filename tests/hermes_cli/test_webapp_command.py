@@ -348,9 +348,6 @@ def test_webapp_process_identity_uses_the_existing_web_server_lifecycle(monkeypa
         "python -m hermes_cli.main dashboard --status"
     ) is True
     assert _is_dashboard_lifecycle_probe(
-        "/bin/sh -c '\"python -m hermes_cli.main webapp --stop\"'"
-    ) is True
-    assert _is_dashboard_lifecycle_probe(
         "python -m hermes_cli.main webapp --host 127.0.0.1 --port 9443"
     ) is False
     assert _is_hermes_web_server_command(
@@ -390,6 +387,26 @@ def test_webapp_process_table_fallback_uses_structured_command_identity(monkeypa
     assert dashboard_procs._scan_dashboard_processes() == [
         (4242, "python -m hermes_cli.main webapp --host 127.0.0.1 --port 9119")
     ]
+
+
+def test_scan_spares_lifecycle_probes_from_an_apostrophe_install_path(monkeypatch):
+    """Process-table rows are ``list2cmdline``-quoted, which leaves an apostrophe in an install
+    path bare. The holder classifier still recognises those rows as Hermes web-server commands, so
+    the probe check must parse them too or a ``--stop`` / ``--status`` probe is reaped as a server."""
+    servers = [
+        (4242, "/Users/O'Brien/.venv/bin/python -m hermes_cli.main webapp --port 9119"),
+        (4243, "/Users/O'Brien/.venv/bin/hermes serve --port 0"),
+    ]
+    probes = [
+        (4244, "/Users/O'Brien/.venv/bin/python -m hermes_cli.main webapp --stop"),
+        (4245, "/Users/O'Brien/.venv/bin/hermes -p coder dashboard --status"),
+        # A shell carrying a probe as one quoted token is not a Hermes process at all.
+        (4246, "/bin/sh -c \"/Users/O'Brien/.venv/bin/hermes webapp --stop\""),
+    ]
+    monkeypatch.setattr(dashboard_procs, "_ledger_web_server_processes", lambda: {})
+    monkeypatch.setattr(dashboard_procs, "_iter_process_table", lambda: servers + probes)
+
+    assert dashboard_procs._scan_dashboard_processes() == servers
 
 
 def test_dashboard_and_webapp_builds_share_the_workspace_lock(tmp_path: Path, monkeypatch):
