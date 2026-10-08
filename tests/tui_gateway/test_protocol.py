@@ -910,7 +910,8 @@ def test_deferred_hydration_falls_back_to_tip_when_lineage_exceeds_limit(server,
     monkeypatch.setattr(server, "_maybe_schedule_auto_continue", lambda *_a, **_k: None)
 
     session = server._deferred_session_record(
-        "deep-lineage", cols=80, cwd="/tmp", history=[], lease=None
+        "deep-lineage", cols=80, cwd="/tmp", history=[], lease=None,
+        profile_incarnation=server._capture_profile_incarnation(None),
     )
     session["resume_history_ready"] = threading.Event()
     session["resume_hydrating"] = True
@@ -1996,7 +1997,7 @@ def _stub_session_create_dependencies(server, monkeypatch):
     monkeypatch.setattr(server, "_enable_gateway_prompts", lambda: None)
     monkeypatch.setattr(server, "_load_show_reasoning", lambda: False)
     monkeypatch.setattr(server, "_load_tool_progress_mode", lambda: None)
-    monkeypatch.setattr(server, "_profile_home", lambda p: None)
+    monkeypatch.setattr(server, "_resolve_profile_home", lambda p: (None, None))
     monkeypatch.setattr(server, "_profile_build_scope", _null_scope)
     monkeypatch.setattr(server, "_seed_row", lambda *a, **kw: None)
     monkeypatch.setattr(server, "_seed_branch_row", lambda *a, **kw: None)
@@ -2105,7 +2106,7 @@ def test_session_branch_stored_accepts_idempotency_key(server, monkeypatch):
                 {"role": "assistant", "content": "first answer", "timestamp": 2},
             ]
 
-    monkeypatch.setattr(server, "_profile_db", lambda _params: _Scope(_FakeDB()))
+    monkeypatch.setattr(server, "_profile_db", lambda _params, **_kw: _Scope(_FakeDB()))
 
     params = {
         "cols": 96,

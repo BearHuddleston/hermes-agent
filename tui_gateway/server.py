@@ -499,9 +499,10 @@ def _open_profile_session_db(profile_home, expected_profile_incarnation=None):
 
 
 @contextlib.contextmanager
-def _profile_db(params: dict | None = None, *, writer: bool = False):
+def _profile_db(params: dict | None = None, *, writer: bool = False, resolved: tuple | None = None):
     """Yield the SessionDB for ``params['profile']`` (None when unavailable); closes dedicated
-    profile handles, leaves the launch-profile shared handle open.
+    profile handles, leaves the launch-profile shared handle open. ``resolved``: the ``(home,
+    incarnation)`` the RPC already resolved that profile to, so the handle binds that generation.
 
     Foreign-profile handles are read-only unless ``writer=True``: that store belongs to ITS
     gateway/dashboard, and a writer here would take its write lock per RPC. Mirrors
@@ -509,11 +510,11 @@ def _profile_db(params: dict | None = None, *, writer: bool = False):
     profile = (params.get("profile") or "").strip() or None if isinstance(params, dict) else None
     # Launch/own profile → the shared _get_db() handle (left open); another profile → a dedicated
     # handle closed below (app-global remote mode). db is None when unavailable.
-    if (profile_home := _profile_home(profile)) is None:
+    profile_home, profile_incarnation = resolved or _resolve_profile_home(profile)
+    if profile_home is None:
         db, owns = _get_db(), False
     else:
         try:
-            profile_incarnation = _capture_profile_incarnation(profile_home)
             if writer:
                 from hermes_state_registry import acquire
                 db = acquire(Path(profile_home) / "state.db",
@@ -555,19 +556,23 @@ def _canonical_profile_request(name: str) -> str:
 
 
 def _response_profile_name(profile: str | None = None) -> str:
-    """Profile name to report on session.* payloads.
+    """:func:`_resolved_profile_name` for a ``profile`` this call resolves itself."""
+    name = _canonical_profile_request((profile or "").strip())
+    try:
+        return _resolved_profile_name(name, _profile_home(name) if name else None)
+    except ProfileUnavailableError:
+        # A retired profile must not turn response decoration into a second failure.
+        return _current_profile_name()
+
+
+def _resolved_profile_name(profile: str | None, home: Path | None) -> str:
+    """Profile name to report on session.* payloads, for a ``profile`` the RPC resolved to ``home``.
 
     Prefer the RPC's requested profile when it is a real non-launch profile;
     otherwise the process launch profile.
     """
     name = _canonical_profile_request((profile or "").strip())
-    if not name:
-        return _current_profile_name()
-    try:
-        return name if _profile_home(name) is not None else _current_profile_name()
-    except ProfileUnavailableError:
-        # A retired profile must not turn response decoration into a second failure.
-        return _current_profile_name()
+    return name if name and home is not None else _current_profile_name()
 
 
 def _db_unavailable_error(rid, *, code: int):
@@ -590,9 +595,16 @@ class ProfileUnavailableError(FileNotFoundError):
 
 def _profile_home(profile: str | None) -> Path | None:
     """Resolve a named profile's home on THIS host, or None for the launch profile."""
+    return _resolve_profile_home(profile)[0]
+
+
+def _resolve_profile_home(profile: str | None) -> tuple[Path | None, str | None]:
+    """``(home, incarnation)``: :func:`_profile_home` plus the generation it captured and validated, ``(None,
+    None)`` for the launch profile. A caller binding state to the home reuses this token: a capture takes the
+    profile's cross-process lease, and a second one could bind a successor generation mid-RPC."""
     name = _canonical_profile_request((profile or "").strip())
     if not name:
-        return None
+        return None, None
     try:
         from hermes_cli import profiles as profiles_mod
 
@@ -608,7 +620,7 @@ def _profile_home(profile: str | None) -> Path | None:
     if home.resolve() == Path(_hermes_home).resolve():
         if _profile_home_rejected(home):
             raise ProfileUnavailableError(missing)
-        return None
+        return None, None
     if named_profile_is_deleted(home) or not profiles_mod.profile_exists(canon):
         raise ProfileUnavailableError(missing)
     try:
@@ -625,7 +637,7 @@ def _profile_home(profile: str | None) -> Path | None:
         from tui_gateway.launch_profile_policy import activate_multi_profile_hosting
         activate_multi_profile_hosting()
     _served_profile_homes.add(home)  # the change watcher must stat every served sibling store too
-    return home
+    return home, profile_incarnation
 
 
 # Profile homes served besides the launch home — the only extra stores the sessions watcher
@@ -2891,47 +2903,6 @@ def _with_checkpoints(session, fn):
 
 
 # ── Methods: session ─────────────────────────────────────────────────
-
-
-def _lazy_resume_info(cwd: str, *, model: str = "", provider: str = "", profile: str | None = None) -> dict:
-    """session.info for a not-yet-built session (session.create's shape); tools/skills land with the deferred build."""
-    if not model:
-        model, default_provider = _session_default_route({"profile_home": _profile_home(profile)})
-        provider = provider or default_provider
-    return {
-        "cwd": cwd, "branch": git_probe.branch(cwd), "project": _project_info_for_cwd(cwd),
-        **_lazy_info_route({"profile_home": _profile_home(profile)}, {"model": model, "provider": provider} if model else {}),
-        "tools": {}, "skills": {}, "lazy": True,
-        "desktop_contract": DESKTOP_BACKEND_CONTRACT, "profile_name": _response_profile_name(profile),
-    }
-
-
-def _deferred_session_record(
-    session_key: str, *, cols: int, cwd: str, history: list, lease, source: str = "tui",
-    close_on_disconnect: bool = False, display_history_prefix: list | None = None,
-    profile_home: Path | None = None, lazy: bool = False, model_override=None,
-    resume_runtime_overrides: dict | None = None, todo_state: dict | None = None,
-    explicit_cwd: bool = False) -> dict:
-    """A live-session record whose AIAgent is built later (lazy watch / cold resume) — _init_session's shape minus the agent."""
-    now = time.time()
-    profile_incarnation = _capture_profile_incarnation(profile_home)
-    return {
-        "agent": None, "agent_error": None, "agent_ready": threading.Event(), "attached_images": [],
-        "close_on_disconnect": close_on_disconnect, "active_session_lease": lease, "cols": cols,
-        "created_at": now, "cwd": cwd, "display_history_prefix": display_history_prefix or [],
-        "edit_snapshots": {}, "explicit_cwd": bool(explicit_cwd), "history": history,
-        "history_lock": threading.Lock(), "history_version": 0, "image_counter": 0,
-        "inflight_turn": None, "last_active": now, "lazy": lazy, "model_override": model_override,
-        "pending_title": None,
-        "profile_home": str(profile_home) if profile_home is not None else None,
-        "profile_incarnation": profile_incarnation,
-        "resume_runtime_overrides": resume_runtime_overrides, "resume_session_id": session_key,
-        "running": False, "session_key": session_key, "show_reasoning": _load_show_reasoning(),
-        "slash_worker": None, "source": source, "tool_progress_mode": _load_tool_progress_mode(),
-        "tool_started_at": {}, "todo_state": todo_state,
-        "transport": current_transport() or _stdio_transport,
-        "auth_user_id": _transport_auth_user_id(current_transport()),
-    }
 
 
 _ANY_PROFILE = object()  # default: match a live session regardless of profile

@@ -556,15 +556,19 @@ def test_named_launch_home_sessions_capture_the_launch_incarnation(
         encoding="utf-8"
     ).strip()
     monkeypatch.setattr(srv, "_hermes_home", profile_dir)
-
-    record = srv._deferred_session_record(
-        "named-launch",
-        cols=80,
-        cwd=str(home),
-        history=[],
-        lease=None,
-        profile_home=None,
-    )
+    monkeypatch.setattr(srv, "_sessions", {})
+    for name in ("_schedule_session_cap_enforcement", "_enable_gateway_prompts"):
+        monkeypatch.setattr(srv, name, lambda *a, **k: None)
+    db = SessionDB(db_path=profile_dir / "state.db", expected_profile_incarnation=incarnation)
+    monkeypatch.setattr(srv, "_get_db", lambda: db)
+    try:
+        db.create_session("named-launch", "desktop")
+        resumed = srv._methods["session.resume"](
+            "rid", {"session_id": "named-launch", "lazy": True, "omit_messages": True})
+        assert "error" not in resumed, resumed
+        record = srv._sessions[resumed["result"]["session_id"]]
+    finally:
+        db.close()
 
     assert record["profile_home"] is None
     assert record["profile_incarnation"] == incarnation

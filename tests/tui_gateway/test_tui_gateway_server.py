@@ -3987,7 +3987,7 @@ def test_session_resume_passes_stored_runtime_to_agent(monkeypatch):
     assert server._sessions[runtime_sid]["model_override"] == captured["model_override"]
 
 
-def test_session_resume_profile_uses_profile_db_cwd(monkeypatch, tmp_path):
+def test_session_resume_profile_uses_profile_db_cwd(monkeypatch, tmp_path, route_profiles):
     target = "stored-profile-session"
     launch_cwd = tmp_path / "launch"
     profile_cwd = tmp_path / "worker"
@@ -4045,7 +4045,7 @@ def test_session_resume_profile_uses_profile_db_cwd(monkeypatch, tmp_path):
         return types.SimpleNamespace(model="test/model")
 
     monkeypatch.setenv("TERMINAL_CWD", str(launch_cwd))
-    monkeypatch.setattr(server, "_profile_home", lambda _profile: profile_home)
+    route_profiles(server, lambda _profile: profile_home)
     monkeypatch.setattr("hermes_state_registry.acquire", lambda db_path=None, **_kwargs: profile_db)
     monkeypatch.setattr(server, "_get_db", lambda: launch_db)
     monkeypatch.setattr(server, "_enable_gateway_prompts", lambda: None)
@@ -4776,7 +4776,7 @@ def test_deferred_session_record_stamps_the_creating_login():
     token = bind_transport(_LoginSocket("carol", "oidc"))
     try:
         record = server._deferred_session_record(
-            "deferred-key", cols=80, cwd="/tmp", history=[], lease=None)
+            "deferred-key", cols=80, cwd="/tmp", history=[], lease=None, profile_incarnation=None)
     finally:
         reset_transport(token)
 
@@ -16108,7 +16108,7 @@ def test_session_delete_success_returns_deleted_id(monkeypatch):
 # --------------------------------------------------------------------------
 
 
-def test_session_list_honors_params_profile_opens_profile_db(monkeypatch, tmp_path):
+def test_session_list_honors_params_profile_opens_profile_db(monkeypatch, tmp_path, route_profiles):
     """Issue #62503: session.list must read the profile's state.db, not launch."""
     profile_home = tmp_path / "profiles" / "mlperf"
     profile_home.mkdir(parents=True)
@@ -16140,7 +16140,7 @@ def test_session_list_honors_params_profile_opens_profile_db(monkeypatch, tmp_pa
         def close(self):
             seen["closed"] = True
 
-    monkeypatch.setattr(server, "_profile_home", lambda p: profile_home if p == "mlperf" else None)
+    route_profiles(server, lambda p: profile_home if p == "mlperf" else None)
     monkeypatch.setattr(server, "_get_db", lambda: LaunchDB())
     monkeypatch.setattr(
         "hermes_cli.web_server_sessions._open_session_db_at_path",
@@ -16162,7 +16162,7 @@ def test_session_list_honors_params_profile_opens_profile_db(monkeypatch, tmp_pa
     assert seen.get("closed") is True
 
 
-def test_session_most_recent_honors_params_profile(monkeypatch, tmp_path):
+def test_session_most_recent_honors_params_profile(monkeypatch, tmp_path, route_profiles):
     """Issue #62503: session.most_recent must not return the launch profile tip."""
     profile_home = tmp_path / "profiles" / "mlperf"
     profile_home.mkdir(parents=True)
@@ -16184,7 +16184,7 @@ def test_session_most_recent_honors_params_profile(monkeypatch, tmp_path):
         def close(self):
             pass
 
-    monkeypatch.setattr(server, "_profile_home", lambda p: profile_home if p == "mlperf" else None)
+    route_profiles(server, lambda p: profile_home if p == "mlperf" else None)
     monkeypatch.setattr(server, "_get_db", lambda: LaunchDB())
     monkeypatch.setattr(
         "hermes_cli.web_server_sessions._open_session_db_at_path",
@@ -16268,7 +16268,7 @@ def test_handoff_request_uses_session_profile_home(monkeypatch, tmp_path):
     assert get_hermes_home() != profile_home
 
 
-def test_session_create_reports_requested_profile_name(monkeypatch, tmp_path):
+def test_session_create_reports_requested_profile_name(monkeypatch, tmp_path, route_profiles):
     """Issue #62503: session.create info.profile_name must not always be launch."""
     profile_home = tmp_path / "profiles" / "mlperf"
     profile_home.mkdir(parents=True)
@@ -16282,7 +16282,7 @@ def test_session_create_reports_requested_profile_name(monkeypatch, tmp_path):
     monkeypatch.setattr(server, "_schedule_agent_build", lambda *a, **k: None)
     monkeypatch.setattr(server, "_schedule_session_cap_enforcement", lambda *a, **k: None)
     monkeypatch.setattr(server, "_completion_cwd", lambda params=None: str(tmp_path))
-    monkeypatch.setattr(server, "_profile_home", lambda p: profile_home if p == "mlperf" else None)
+    route_profiles(server, lambda p: profile_home if p == "mlperf" else None)
     monkeypatch.setattr(server, "_current_profile_name", lambda: "default")
     monkeypatch.setattr(server, "_claim_active_session_slot", lambda *a, **k: (None, None))
     _clear()
@@ -16296,7 +16296,7 @@ def test_session_create_reports_requested_profile_name(monkeypatch, tmp_path):
         _clear()
 
 
-def test_session_delete_honors_params_profile_sessions_dir(monkeypatch, tmp_path):
+def test_session_delete_honors_params_profile_sessions_dir(monkeypatch, tmp_path, route_profiles):
     """Issue #62503: delete must target the profile state.db + sessions dir."""
     profile_home = tmp_path / "profiles" / "mlperf"
     (profile_home / "sessions").mkdir(parents=True)
@@ -16314,7 +16314,7 @@ def test_session_delete_honors_params_profile_sessions_dir(monkeypatch, tmp_path
         def close(self):
             captured["closed"] = True
 
-    monkeypatch.setattr(server, "_profile_home", lambda p: profile_home if p == "mlperf" else None)
+    route_profiles(server, lambda p: profile_home if p == "mlperf" else None)
     monkeypatch.setattr(server, "_get_db", lambda: None)
     monkeypatch.setattr("hermes_state_registry.acquire", ProfileDB)
 
@@ -16615,7 +16615,7 @@ def test_session_branch_stored_copies_parent_history_without_returning_transcrip
     seen: dict = {}
     db = _FakeDB()
 
-    monkeypatch.setattr(server, "_profile_db", lambda _params: _Scope(db))
+    monkeypatch.setattr(server, "_profile_db", lambda _params, **_kw: _Scope(db))
     monkeypatch.setattr(
         server,
         "_seed_branch_row",
@@ -23075,7 +23075,7 @@ def test_workspace_move_rehomes_running_session(monkeypatch, tmp_path):
     import contextlib
 
     @contextlib.contextmanager
-    def _fake_db(_params, *, writer=False):
+    def _fake_db(_params, *, writer=False, resolved=None):
         yield FakeDB()
 
     monkeypatch.setattr(server, "_profile_db", _fake_db)
@@ -23129,7 +23129,7 @@ def test_load_cfg_raw_sees_replacement_with_pinned_mtime_and_size(monkeypatch, t
     assert server._load_cfg_raw()["model"]["default"] == "aaaa-route"
 
 
-def test_session_create_uses_bound_profile_backend_not_launch(monkeypatch, tmp_path):
+def test_session_create_uses_bound_profile_backend_not_launch(monkeypatch, tmp_path, route_profiles):
     """The regression: launch profile is LOCAL, the session is bound to an SSH profile.
     session.create must read the BOUND profile's backend, keep the remote cwd, and mark it
     explicit — not drop it to the launch dir."""
@@ -23139,7 +23139,7 @@ def test_session_create_uses_bound_profile_backend_not_launch(monkeypatch, tmp_p
     monkeypatch.setenv("TERMINAL_ENV", "local")
     monkeypatch.delenv("TERMINAL_CWD", raising=False)
     (tmp_path / "config.yaml").write_text("terminal:\n  backend: ssh\n", encoding="utf-8")
-    monkeypatch.setattr(server, "_profile_home", lambda name: tmp_path if name == "felix" else None)
+    route_profiles(server, lambda name: tmp_path if name == "felix" else None)
     monkeypatch.setattr(server, "_schedule_agent_build", lambda sid: None)
     monkeypatch.setattr(server, "_schedule_session_cap_enforcement", lambda: None)
 
@@ -23153,7 +23153,7 @@ def test_session_create_uses_bound_profile_backend_not_launch(monkeypatch, tmp_p
         server._sessions.pop(sid, None)
 
 
-def test_workspace_move_accepts_remote_dir_for_bound_ssh_profile(monkeypatch, tmp_path):
+def test_workspace_move_accepts_remote_dir_for_bound_ssh_profile(monkeypatch, tmp_path, route_profiles):
     """session.workspace.move must not reject a remote project dir that does not
     exist on the host when the bound profile is ssh (the 'working directory does
     not exist' error the user hit). Local profiles keep the isdir guard."""
@@ -23161,7 +23161,7 @@ def test_workspace_move_accepts_remote_dir_for_bound_ssh_profile(monkeypatch, tm
     assert not os.path.isdir(remote)
     monkeypatch.setenv("TERMINAL_ENV", "local")  # launch looks local
     (tmp_path / "config.yaml").write_text("terminal:\n  backend: ssh\n", encoding="utf-8")
-    monkeypatch.setattr(server, "_profile_home", lambda name: tmp_path if name == "felix" else None)
+    route_profiles(server, lambda name: tmp_path if name == "felix" else None)
 
     class _DB:
         def get_session(self, key):
