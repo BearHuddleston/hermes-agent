@@ -351,7 +351,7 @@ class PtySessionRegistry:
         self._buffer_cap = buffer_cap
         self._read_timeout = read_timeout
         self._drain_executor = drain_executor
-        self._sessions: Dict[str, PtySession] = {}
+        self._sessions: dict[str, PtySession] = {}
         # One registry-wide reservation spans lookup, spawn, and registration:
         # racing connections with one attach token must share one tracked PTY.
         self._spawn_lock = asyncio.Lock()
@@ -362,7 +362,7 @@ class PtySessionRegistry:
 
     async def attach_or_spawn(
         self, key: str, *, spawn: Callable[[], object], active_session_file: Optional[Path] = None,
-    ) -> Tuple[PtySession, bool]:
+    ) -> tuple[PtySession, bool]:
         # Reserve capacity and the key across blocking fork/exec. On cancellation
         # the registry, not the request's cancellation scope, owns that reservation
         # until the admission finishes and any unclaimed child has been closed.
@@ -404,7 +404,7 @@ class PtySessionRegistry:
 
     async def _attach_or_spawn(
         self, key: str, *, spawn: Callable[[], object], active_session_file: Optional[Path] = None,
-    ) -> Tuple[PtySession, bool]:
+    ) -> tuple[PtySession, bool]:
         if self._closed:
             raise RegistryFull("Terminal service is shutting down.")
         await self.reap_idle()

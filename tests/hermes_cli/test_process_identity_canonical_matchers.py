@@ -135,8 +135,8 @@ BACKENDS = [
 
 
 def test_dashboard_scan_selects_entrypoint_plus_subcommand_tokens_never_substrings(monkeypatch):
-    import hermes_cli.dashboard_procs as dashboard_procs
-    import hermes_cli.process_identity as process_identity
+    from hermes_cli import dashboard_procs
+    from hermes_cli import process_identity
 
     monkeypatch.setattr(dashboard_procs, "_iter_process_table",
                         lambda: [(4242, DECOY), *((5000 + i, cmd) for i, cmd in enumerate(BACKENDS))])

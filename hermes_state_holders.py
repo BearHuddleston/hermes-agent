@@ -42,7 +42,7 @@ _PYTHON_LONG_OPTIONS_WITH_OPERANDS = frozenset(
 )
 
 
-def _read_proc_argv(pid: int) -> Optional[List[str]]:
+def _read_proc_argv(pid: int) -> Optional[list[str]]:
     """Read /proc/<pid>/cmdline without losing argv boundaries."""
     try:
         with open(f"/proc/{pid}/cmdline", "rb") as handle:
@@ -83,7 +83,7 @@ def _looks_like_python_executable(program: str) -> bool:
     )
 
 
-def _python_execution_target(argv: Sequence[str]) -> Optional[Tuple[str, str, int]]:
+def _python_execution_target(argv: Sequence[str]) -> Optional[tuple[str, str, int]]:
     """``(kind, target, index)`` of the module or script interpreter options select, else ``None``.
 
     ``kind`` is ``"module"`` or ``"script"``. ``index`` is the argv slot holding the target (the
@@ -192,7 +192,7 @@ def _argv_env_home(argv: Sequence[str]) -> Optional[str]:
     return None
 
 
-def _store_install_layout(this_home: str) -> Tuple[Optional[str], Optional[str]]:
+def _store_install_layout(this_home: str) -> tuple[Optional[str], Optional[str]]:
     """``(<install root>, <our profile name>)`` for the home holding the store, else ``(None, None)``.
 
     Derived with the canonical ``named_profile_home`` predicate, never a ``basename == "profiles"``
@@ -246,9 +246,9 @@ def _argv_home_selection(
     return None
 
 
-def _argv_path_tokens(argv: Sequence[str]) -> List[Tuple[int, str]]:
+def _argv_path_tokens(argv: Sequence[str]) -> list[tuple[int, str]]:
     """``(argv index, normalized absolute path)`` for every path-bearing token."""
-    tokens: List[Tuple[int, str]] = []
+    tokens: list[tuple[int, str]] = []
     for index, token in enumerate(argv):
         if not isinstance(token, str):
             continue
@@ -322,9 +322,7 @@ def _argv_scoped_to_other_home(argv: Sequence[str], db_path: Path) -> bool:
             continue  # shared install root: neutral, every served profile lives under it
         if index == 0 and not argv0_locates_home:
             continue
-        if "/.hermes" in normalized or normalized.endswith("/.hermes"):
-            other_home_seen = True
-        elif os.path.basename(normalized) in _STATE_DB_NAMES:
+        if "/.hermes" in normalized or normalized.endswith("/.hermes") or os.path.basename(normalized) in _STATE_DB_NAMES:
             other_home_seen = True
     return other_home_seen
 
@@ -373,7 +371,7 @@ def _rm_ctypes():
     return _RmProcessInfo, argtypes
 
 
-def _sqlite_family(base: str) -> Tuple[str, str, str]:
+def _sqlite_family(base: str) -> tuple[str, str, str]:
     """The main database file plus the ``-wal``/``-shm`` sidecars SQLite may hold alongside it."""
     return (base, base + "-wal", base + "-shm")
 
@@ -382,7 +380,7 @@ def _sqlite_family(base: str) -> Tuple[str, str, str]:
 _RM_REGISTER_CHUNK = 1000
 
 
-def windows_restart_manager_pids(paths: Sequence[str]) -> List[int]:
+def windows_restart_manager_pids(paths: Sequence[str]) -> list[int]:
     """PIDs Windows Restart Manager reports holding any of *paths* open; raises OSError on API failure.
 
     One ``RmGetList`` answers for every registered file at once, so the cost follows the file
@@ -434,7 +432,7 @@ def windows_restart_manager_pids(paths: Sequence[str]) -> List[int]:
         end(session)
 
 
-def _windows_restart_manager_holders(db_path: Path) -> List[Tuple[int, str]]:
+def _windows_restart_manager_holders(db_path: Path) -> list[tuple[int, str]]:
     """Return foreign processes using state.db or a WAL sidecar via Windows Restart Manager."""
     db_abspath = os.path.abspath(os.fspath(db_path))
     resources = [path for path in _sqlite_family(db_abspath) if os.path.exists(path)]
@@ -444,7 +442,7 @@ def _windows_restart_manager_holders(db_path: Path) -> List[Tuple[int, str]]:
     return [(pid, db_abspath) for pid in windows_restart_manager_pids(resources) if pid != own_pid]
 
 
-def foreign_state_db_holders(db_path: Path) -> List[Tuple[int, str]]:
+def foreign_state_db_holders(db_path: Path) -> list[tuple[int, str]]:
     """Return foreign holders of the DB or one of its WAL sidecars.
 
     A scan failure is represented as an unknown holder. Structural maintenance
@@ -465,8 +463,8 @@ def foreign_state_db_holders(db_path: Path) -> List[Tuple[int, str]]:
     # HERMES_HOME would otherwise make every holder invisible and let maintenance proceed.
     db_path_str = os.path.realpath(os.fspath(db_path))
     watched = {canonical_sqlite_path(candidate) for candidate in _sqlite_family(db_path_str)}
-    holders: List[Tuple[int, str]] = []
-    watched_ids: Set[Tuple[int, int]] = set()
+    holders: list[tuple[int, str]] = []
+    watched_ids: set[tuple[int, int]] = set()
     db_dev: Optional[int] = None
     for candidate in _sqlite_family(db_path_str):
         try:
@@ -588,7 +586,7 @@ def foreign_state_db_holders(db_path: Path) -> List[Tuple[int, str]]:
 
 def in_process_state_db_holders(
     db_path: Path, *, exclude=None
-) -> List[Tuple[int, str]]:
+) -> list[tuple[int, str]]:
     """Return holders of ``db_path`` inside THIS process, other than *exclude*.
 
     :func:`foreign_state_db_holders` skips ``os.getpid()`` by design, so it answers a
@@ -618,8 +616,8 @@ def held_store_refusal(db_path: Path, *, command: str, force_hint: Optional[str]
     from hermes_constants import profile_cli_selector
     from hermes_state_errors import STORAGE_RECOVERY_DOCS_URL
 
-    by_pid: dict[int, Set[str]] = {}
-    unknown: List[str] = []
+    by_pid: dict[int, set[str]] = {}
+    unknown: list[str] = []
     for pid, target in holders:
         if pid <= 0 or target.startswith("uninspectable"):
             unknown.append(target)

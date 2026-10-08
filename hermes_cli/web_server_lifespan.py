@@ -162,7 +162,7 @@ async def _lifespan(app: "FastAPI"):
     # contended state.db migration, so keep it off the pre-yield path: Group
     # Chat must degrade on its own rather than block every Desktop feature.
     from tui_gateway import methods_groups as _hosted_groups
-    import tui_gateway.server  # noqa: F401
+    import tui_gateway.server
 
     try:
         tui_gateway.server.install_tui_message_injector()
@@ -241,7 +241,7 @@ async def _lifespan(app: "FastAPI"):
             from hermes_cli.local_runtime.bootstrap import ensure_local_runtime
 
             ensure_local_runtime(load_config())
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             _log.warning("local runtime boot failed: %s", exc)
 
     threading.Thread(target=_boot_local_runtime, daemon=True, name="local-runtime-boot").start()
@@ -286,7 +286,7 @@ async def _lifespan(app: "FastAPI"):
             from hermes_cli.local_runtime.bootstrap import shutdown_local_runtime
 
             shutdown_local_runtime()
-        except Exception:  # noqa: BLE001
+        except Exception:
             pass
         if desktop_owned:
             web_server._terminate_desktop_managed_gateway()

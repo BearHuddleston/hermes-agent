@@ -15,8 +15,8 @@ from unittest.mock import patch
 
 import pytest
 
-import hermes_cli.update_inventory as update_inventory
-import hermes_cli.main_dashboard as main_dashboard
+from hermes_cli import update_inventory
+from hermes_cli import main_dashboard
 
 def _ledger_entry(**over):
     entry = {
