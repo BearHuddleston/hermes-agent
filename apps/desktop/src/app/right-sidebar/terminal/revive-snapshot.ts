@@ -204,12 +204,7 @@ export function cleanReviveSnapshot(serialized: string, shell = '', startsAtLive
 // Keep restored history byte-for-byte and append only the cleaned output emitted
 // by the new PTY. This provenance boundary is what makes greeting/prompt cleanup
 // safe: legacy scrollback is never reclassified by its visible text.
-export function mergeReviveSnapshot(
-  restored: string,
-  live: string,
-  shell = '',
-  startsAtLiveBoundary = true
-): string {
+export function mergeReviveSnapshot(restored: string, live: string, shell = '', startsAtLiveBoundary = true): string {
   const cleanedLive = cleanReviveSnapshot(live, shell, startsAtLiveBoundary)
 
   if (!restored) {
@@ -223,21 +218,21 @@ export function mergeReviveSnapshot(
   return `${restored}\r\n${cleanedLive}`
 }
 
+/** The live rows to serialize, ending at the cursor (the live end). */
 export function resolveLiveSnapshotWindow(
   markerLine: number,
-  end: number,
   cursorLine: number,
-  maxRows = PERSISTENT_SESSION_SCROLLBACK,
-  markerRegistered = true
+  markerRegistered = true,
+  maxRows = PERSISTENT_SESSION_SCROLLBACK
 ): { keepRestored: boolean; start: number } | null {
   // xterm reset paths can leave the marker object numerically valid after it was
   // removed from `term.markers`, or restart the cursor above it. Only a currently
   // registered marker at/before the cursor can still delimit live output.
-  if (!markerRegistered || markerLine < 0 || markerLine > end || markerLine > cursorLine) {
+  if (!markerRegistered || markerLine < 0 || markerLine > cursorLine) {
     return null
   }
 
-  const start = Math.max(markerLine, end - maxRows + 1)
+  const start = Math.max(markerLine, cursorLine - maxRows + 1)
 
   return { keepRestored: start === markerLine, start }
 }

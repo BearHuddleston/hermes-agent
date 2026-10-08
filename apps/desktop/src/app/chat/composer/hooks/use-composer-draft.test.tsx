@@ -1,6 +1,6 @@
 import { act, cleanup, render, waitFor } from '@testing-library/react'
 import { useLayoutEffect } from 'react'
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { PaneVisibleContext } from '@/components/pane-shell/pane-visibility'
 import {
@@ -810,53 +810,48 @@ describe('useComposerDraft — a hidden keep-alive tab never auto-focuses its co
   })
 })
 
-it('keeps touch mount and turn completion from focusing the editor while accepting deliberate focus', () => {
-  vi.stubGlobal('matchMedia', vi.fn().mockReturnValue({ matches: true }))
+describe('useComposerDraft — touch never re-enters the editor on its own', () => {
   let draft!: ReturnType<typeof useComposerDraft>
 
-  function TouchDraft({ disabled }: { disabled: boolean }) {
+  function TouchDraft({ disabled = false, sessionId }: { disabled?: boolean; sessionId: string }) {
     draft = useComposerDraft({
-      activeQueueSessionKey: 'touch-focus', focusKey: null, inputDisabled: disabled,
-      queueEditRef: { current: null }, sessionId: 'touch-focus'
+      activeQueueSessionKey: sessionId,
+      focusKey: null,
+      inputDisabled: disabled,
+      queueEditRef: { current: null },
+      sessionId
     })
 
     return <div contentEditable data-slot="composer-rich-input" ref={draft.editorRef} tabIndex={0} />
   }
 
-  try {
-    const { rerender } = render(<TouchDraft disabled={false} />)
-    expect(globalThis.document.activeElement).not.toBe(draft.editorRef.current)
-    rerender(<TouchDraft disabled={true} />)
-    rerender(<TouchDraft disabled={false} />)
-    expect(globalThis.document.activeElement).not.toBe(draft.editorRef.current)
-    act(() => draft.focusInput())
-    expect(globalThis.document.activeElement).toBe(draft.editorRef.current)
-  } finally {
+  beforeEach(() => {
+    vi.stubGlobal('matchMedia', vi.fn().mockReturnValue({ matches: true }))
+  })
+
+  afterEach(() => {
     cleanup()
     clearSessionDraft('touch-focus')
+    clearSessionDraft('touch-clear')
     mainComposerScope.clear()
     markActiveComposer('main')
     vi.unstubAllGlobals()
-  }
-})
+  })
 
-// iOS treats a selection placed in a contenteditable during a tap as focus,
-// so clearing after Send must not put the caret back into a blurred editor.
-it('on touch, clears a sent draft without re-entering an editor whose keyboard was put away', () => {
-  vi.stubGlobal('matchMedia', vi.fn().mockReturnValue({ matches: true }))
-  let draft!: ReturnType<typeof useComposerDraft>
+  it('keeps touch mount and turn completion from focusing the editor while accepting deliberate focus', () => {
+    const { rerender } = render(<TouchDraft sessionId="touch-focus" />)
+    expect(globalThis.document.activeElement).not.toBe(draft.editorRef.current)
+    rerender(<TouchDraft disabled={true} sessionId="touch-focus" />)
+    rerender(<TouchDraft sessionId="touch-focus" />)
+    expect(globalThis.document.activeElement).not.toBe(draft.editorRef.current)
+    act(() => draft.focusInput())
+    expect(globalThis.document.activeElement).toBe(draft.editorRef.current)
+  })
 
-  function TouchDraft() {
-    draft = useComposerDraft({
-      activeQueueSessionKey: 'touch-clear', focusKey: null, inputDisabled: false,
-      queueEditRef: { current: null }, sessionId: 'touch-clear'
-    })
-
-    return <div contentEditable data-slot="composer-rich-input" ref={draft.editorRef} tabIndex={0} />
-  }
-
-  try {
-    render(<TouchDraft />)
+  // iOS treats a selection placed in a contenteditable during a tap as focus,
+  // so clearing after Send must not put the caret back into a blurred editor.
+  it('on touch, clears a sent draft without re-entering an editor whose keyboard was put away', () => {
+    render(<TouchDraft sessionId="touch-clear" />)
     expect(getActiveComposer()).toBe('main')
     window.getSelection()?.removeAllRanges()
 
@@ -866,11 +861,5 @@ it('on touch, clears a sent draft without re-entering an editor whose keyboard w
     act(() => draft.focusInput())
     act(() => draft.clearDraft())
     expect(draft.editorRef.current?.contains(window.getSelection()?.anchorNode ?? null)).toBe(true)
-  } finally {
-    cleanup()
-    clearSessionDraft('touch-clear')
-    mainComposerScope.clear()
-    markActiveComposer('main')
-    vi.unstubAllGlobals()
-  }
+  })
 })

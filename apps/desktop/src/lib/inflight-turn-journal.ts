@@ -189,10 +189,14 @@ export function persistInFlightTurnState(state: JournalableSessionState): void {
   }
 
   if (!state.busy && !state.awaitingResponse && !state.streamId) {
+    // `some(recovered)` is a cheap pre-check: this runs on every idle commit of
+    // every cached session, and recovered rows are rare.
+    const hasRecovered = state.messages.some(message => message.recovered)
+
     // Recovery can leave only human rows uncommitted after the assistant/tool
     // prefix persisted. Keep the original journal (and its durable anchor),
     // rather than rewriting it from that smaller display tail on idle commits.
-    if (state.messages.some(message => message.recovered)) {
+    if (hasRecovered) {
       const snapshot = readInFlightTurnJournal(storedSessionId)
 
       const runtimeStartedAt = journaledRuntimeStartedAt(snapshot?.messages ?? [])
@@ -213,10 +217,7 @@ export function persistInFlightTurnState(state: JournalableSessionState): void {
       }
     }
 
-    if (!(
-      state.messages.some(message => message.recovered) &&
-      recoverableTail(state.messages, null).some(message => message.recovered)
-    )) {
+    if (!(hasRecovered && recoverableTail(state.messages, null).some(message => message.recovered))) {
       clearInFlightTurnJournal(storedSessionId)
 
       return

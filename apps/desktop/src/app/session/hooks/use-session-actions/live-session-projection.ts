@@ -45,21 +45,6 @@ export function finiteTurnStartedAt(projection: Pick<SessionResumeResult, 'turn_
 }
 
 /**
- * Hydrated rows do not retain the renderer's `pending` bit, so an assistant
- * already flushed by the CURRENT turn looks settled. The gateway and agent
- * stamp these values from the same wall clock: `turn_started_at` is recorded
- * before run_conversation stamps its user row. Use that boundary only for
- * turn membership, never transcript ordering (SQLite row ids own ordering).
- */
-function currentTurnMembership(turnStartedAt: number | null): (message: ChatMessage) => boolean {
-  return message =>
-    turnStartedAt !== null &&
-    typeof message.timestamp === 'number' &&
-    Number.isFinite(message.timestamp) &&
-    message.timestamp >= turnStartedAt
-}
-
-/**
  * The authoritative user rows of the running turn, ending at
  * `latestUserIndex`; empty when that row belongs to an earlier turn.
  *
@@ -165,11 +150,11 @@ function inflightPromptRows(projection: LiveSessionProjection, inflightUser: str
  */
 function currentRuntimeNoticeIndex(
   messages: ChatMessage[],
-  projection: LiveSessionProjection,
+  runtimeInflight: boolean,
   notice: ChatMessage | undefined,
   belongsToCurrentTurn: (message: ChatMessage) => boolean
 ): number {
-  if (projection.inflight?.user_originated !== false || !notice) {
+  if (!runtimeInflight || !notice) {
     return -1
   }
 
@@ -245,7 +230,12 @@ export function appendLiveSessionProjection(messages: ChatMessage[], projection:
   // same turn — older identical prompts must not hide a newly accepted repeat.
   const latestUserIndex = messages.findLastIndex(isPrompt)
   const turnStartedAt = finiteTurnStartedAt(projection)
-  const belongsToCurrentTurn = currentTurnMembership(turnStartedAt)
+  // Hydrated rows do not retain the renderer's `pending` bit, so an assistant
+  // already flushed by the CURRENT turn looks settled. The gateway and agent
+  // stamp these values from the same wall clock: `turn_started_at` is recorded
+  // before run_conversation stamps its user row. Use that boundary only for
+  // turn membership, never transcript ordering (SQLite row ids own ordering).
+  const belongsToCurrentTurn = (message: ChatMessage) => committedDuringTurn(turnStartedAt, message.timestamp)
   const latestUserRun = currentTurnUserRun(messages, latestUserIndex, projection, belongsToCurrentTurn)
 
   const persistedInLatestRun = (text: string): boolean =>
@@ -261,7 +251,7 @@ export function appendLiveSessionProjection(messages: ChatMessage[], projection:
   const runtimeBoundary = runtimeInflight && turnStartedAt !== null ? { runtimeTurnStartedAt: turnStartedAt } : {}
 
   const promptRows = inflightPromptRows(projection, inflightUser)
-  const runtimeNoticeIndex = currentRuntimeNoticeIndex(messages, projection, promptRows[0], belongsToCurrentTurn)
+  const runtimeNoticeIndex = currentRuntimeNoticeIndex(messages, runtimeInflight, promptRows[0], belongsToCurrentTurn)
 
   const inflightUserAlreadyPersisted = runtimeInflight
     ? runtimeNoticeIndex >= 0

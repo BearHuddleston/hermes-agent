@@ -929,15 +929,10 @@ export function preserveLocalPendingTurnMessages(
   // against a committed row it provably is not, so a genuinely
   // unacknowledged repeat whose committed twin predates the acknowledged
   // boundary (and never enters this window) still survives.
-  const newestAuthoritativeUser = [...remainingNext]
-    .reverse()
-    .find(message => message.role === 'user' && !isSyntheticUserMarker(message))
+  const newestAuthoritativeUser = remainingNext.findLast(isPrompt)
 
   const acknowledgedUserCandidates = remainingNext.filter(
-    message =>
-      message.role === 'user' &&
-      !isSyntheticUserMarker(message) &&
-      (message.rowId !== undefined || message === newestAuthoritativeUser)
+    message => isPrompt(message) && (message.rowId !== undefined || message === newestAuthoritativeUser)
   )
 
   const preserved: ChatMessage[] = []
