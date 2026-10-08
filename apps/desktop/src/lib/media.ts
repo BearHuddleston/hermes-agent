@@ -1,4 +1,4 @@
-import { LOCAL_CONNECTION_ID } from '@hermes/shared'
+import { fileUrlToNativePath, LOCAL_CONNECTION_ID } from '@hermes/shared'
 
 import { capabilityScoped, hermesApi, type OwnerScope } from '@/api/client'
 import type { HermesConnection } from '@/global'
@@ -318,16 +318,16 @@ export function mediaPathFromMarkdownHref(href?: string): string | null {
   }
 }
 
+// A drive or UNC URL becomes its Windows path (`C:\…`, `\\host\share\…`): the
+// desktop fs bridge and the gateway's fs routes open those on Windows, while
+// the URL's own `/C:/…` pathname opens nothing there. A URL that does not
+// decode, or encodes a separator, keeps its text undecoded.
 export function filePathFromMediaPath(path: string): string {
-  if (!path.startsWith('file:')) {
+  if (!/^file:/i.test(path)) {
     return path
   }
 
-  try {
-    return decodeURIComponent(new URL(path).pathname)
-  } catch {
-    return path.replace(/^file:\/\//, '')
-  }
+  return fileUrlToNativePath(path) ?? path.replace(/^file:\/\//i, '')
 }
 
 // True when this desktop shell is wired to a remote gateway. Local media paths

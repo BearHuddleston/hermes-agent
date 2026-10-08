@@ -1,3 +1,5 @@
+import { fileUrlToNativePath } from '@hermes/shared'
+
 import { isWindowsAbsolutePath } from '@/lib/path-compare'
 
 const PREVIEW_MARKDOWN_RE = /\[Preview:[^\]]+\]\((?<href>#preview[:/][^)]+)\)/gi
@@ -48,7 +50,8 @@ export function previewName(target: string): string {
     const url = new URL(target)
 
     if (url.protocol === 'file:') {
-      return decodeURIComponent(url.pathname).split(/[\\/]/).filter(Boolean).pop() || target
+      // A URL that does not decode, or encodes a separator, is labelled by its raw path.
+      return (fileUrlToNativePath(target) ?? url.pathname).split(/[\\/]/).filter(Boolean).pop() || target
     }
 
     const file = url.pathname.split('/').filter(Boolean).pop()
@@ -56,32 +59,6 @@ export function previewName(target: string): string {
     return file || url.host
   } catch {
     return target.split(/[\\/]/).filter(Boolean).pop() || target
-  }
-}
-
-/** The path a `file:` URL names: a UNC host becomes `//host/...` and a drive
- *  path drops the URL's leading slash. Null when the URL does not parse or
- *  decode, or encodes a separator (`%2f`; `%5c` in a drive or UNC path, while
- *  a POSIX name may hold a literal backslash). */
-export function fileUrlToPath(value: string): string | null {
-  try {
-    const url = new URL(value)
-    const windows = Boolean(url.hostname) || /^\/[a-z]:/i.test(url.pathname)
-
-    // Encoded separators are not legal file-URL path segments.
-    if (/%2f/i.test(url.pathname) || (windows && /%5c/i.test(url.pathname))) {
-      return null
-    }
-
-    const path = decodeURIComponent(url.pathname)
-
-    if (url.hostname) {
-      return `//${url.hostname}${path}`
-    }
-
-    return /^\/[a-z]:\//i.test(path) ? path.slice(1) : path
-  } catch {
-    return null
   }
 }
 
@@ -94,7 +71,7 @@ export function previewArtifactKey(target: string, cwd: string): string {
   }
 
   if (/^file:\/\//i.test(path)) {
-    const filePath = fileUrlToPath(path)
+    const filePath = fileUrlToNativePath(path)
 
     if (filePath === null) {
       return path

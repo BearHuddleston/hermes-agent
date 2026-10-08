@@ -1,3 +1,5 @@
+import { fileUrlToNativePath } from '../../shared/src/file-url'
+
 import { httpStatusError, readStatusCode } from './api-transport'
 import { requestWithOauthFallback } from './oauth-rest-request'
 
@@ -74,14 +76,10 @@ function parseMediaProtocolTarget(rawUrl: string): MediaProtocolTarget {
 }
 
 export function isStreamableMediaPath(filePath: string): boolean {
-  let mediaPath = filePath
+  const mediaPath = /^file:/i.test(filePath) ? fileUrlToNativePath(filePath) : filePath
 
-  if (/^file:/i.test(filePath)) {
-    try {
-      mediaPath = decodeURIComponent(new URL(filePath).pathname)
-    } catch {
-      return false
-    }
+  if (mediaPath === null) {
+    return false
   }
 
   const lower = mediaPath.toLowerCase()
@@ -112,13 +110,17 @@ export function remoteMediaEndpoint(baseUrl: string, filePath: string, profile?:
   }
 
   if (/^file:/i.test(filePath)) {
-    const fileUrl = new URL(filePath)
-    const pathname = decodeURIComponent(fileUrl.pathname)
+    const nativePath = fileUrlToNativePath(filePath)
+
+    if (nativePath === null) {
+      throw new Error('Invalid media file URL')
+    }
 
     // Older gateways accept native POSIX paths, not file URIs. Keep that
-    // lossless contract, but leave drive letters and UNC hosts to the gateway.
-    if (!fileUrl.hostname && !/^\/[a-z]:/i.test(pathname)) {
-      filePath = pathname
+    // lossless contract, but leave drive letters and UNC hosts (a native path
+    // not starting with `/`) to the gateway.
+    if (nativePath.startsWith('/')) {
+      filePath = nativePath
     }
   }
 

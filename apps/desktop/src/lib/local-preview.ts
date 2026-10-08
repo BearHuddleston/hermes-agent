@@ -1,8 +1,8 @@
+import { fileUrlToNativePath } from '@hermes/shared'
 import DOMPurify from 'dompurify'
 
 import { isDesktopFsRemoteMode, readDesktopFileDataUrl, readDesktopFileText } from '@/lib/desktop-fs'
 import { isWindowsAbsolutePath } from '@/lib/path-compare'
-import { fileUrlToPath } from '@/lib/preview-targets'
 import type { PreviewTarget } from '@/store/preview'
 
 const HTML_EXTENSIONS = new Set(['.htm', '.html'])
@@ -243,7 +243,7 @@ export function localPreviewTarget(rawTarget: string, cwd?: string | null): Prev
 
   if (/^file:\/\//i.test(raw)) {
     // A URL that does not parse, or encodes a separator, keeps its text undecoded.
-    path = fileUrlToPath(raw) ?? raw.replace(/^file:\/\//i, '')
+    path = fileUrlToNativePath(raw) ?? raw.replace(/^file:\/\//i, '')
   } else if (!raw.startsWith('/') && !isWindowsAbsolutePath(raw) && cwd) {
     path = joinPath(cwd, raw)
   }
