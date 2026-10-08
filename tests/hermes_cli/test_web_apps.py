@@ -130,6 +130,14 @@ def test_the_text_an_app_starts_with_is_seeded_once(app_file):
     assert [f["version"] for f in inbox["bob"] if f["type"] == "text.updates"] == [0]
 
 
+def test_a_state_file_saved_with_a_byte_order_mark_still_loads(app_file):
+    """Windows tooling the agent may use (PowerShell Set-Content, some editors) prefixes a BOM."""
+    path = web_apps.state_path(app_file)
+    path.write_bytes(b"\xef\xbb\xbf" + json.dumps({"values": {"votes": 3}, "texts": {"notes": "hi"}}).encode())
+    values, texts, _ = web_apps.read_state(path)
+    assert (values, texts) == ({"votes": 3}, {"notes": "hi"})
+
+
 def test_an_edit_the_agent_writes_to_the_state_file_reaches_open_windows(app_file):
     async def scenario():
         hub = web_apps.AppsHub()
