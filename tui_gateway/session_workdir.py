@@ -740,7 +740,7 @@ def _workdir_owner_db(session: dict, fail_log: str):
     if profile_home := session.get("profile_home"):
         try:
             from hermes_state_registry import acquire
-            if _profile_home_rejected(profile_home, session.get("profile_incarnation"), require_incarnation=True):
+            if _session_profile_rejected(session):
                 raise FileNotFoundError(f"Profile incarnation is stale or home is unavailable: {profile_home}")
             db, close_db = acquire(
                 Path(profile_home) / "state.db",

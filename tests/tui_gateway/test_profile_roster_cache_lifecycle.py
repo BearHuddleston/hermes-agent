@@ -1,5 +1,4 @@
 """Roster memos must not turn transient admission failures into durable state."""
-import threading
 
 import pytest
 
@@ -25,27 +24,14 @@ def profile(tmp_path, monkeypatch):
     cache.invalidate()
 
 
-def test_readonly_roster_remains_available_during_mutation_lease(profile):
-    acquired, release = threading.Event(), threading.Event()
-
-    def hold():
-        with profile_lifecycle.profile_lifecycle_lease(profile):
-            acquired.set()
-            assert release.wait(10)
-
-    thread = threading.Thread(target=hold)
-    thread.start()
-    try:
-        assert acquired.wait(5)
-        during = {}
-        srv._profile_session_fields(during, profile)
-        # Read-only admission uses an incarnation/directory snapshot, so a
-        # writer's lease alone must not hide an otherwise live profile.
-        assert during["last_session"]["title"] == "steady chat"
-    finally:
-        release.set()
-        thread.join(5)
-    assert not thread.is_alive()
+def test_readonly_roster_remains_available_during_mutation_lease(profile, busy_profile_lease):
+    end_hold = busy_profile_lease(profile)
+    during = {}
+    srv._profile_session_fields(during, profile)
+    # Read-only admission uses an incarnation/directory snapshot, so a
+    # writer's lease alone must not hide an otherwise live profile.
+    assert during["last_session"]["title"] == "steady chat"
+    assert end_hold()
     after = {}
     srv._profile_session_fields(after, profile)
     assert after["last_session"]["title"] == "steady chat"

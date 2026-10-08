@@ -361,9 +361,7 @@ def _create_session(rid, params: dict, *, copy_parent_history: bool = False) -> 
             if existing is not None:
                 existing_sid, _ = existing
                 session = _sessions.get(existing_sid)
-                if session is not None and not _profile_home_rejected(
-                    session.get("profile_home"), session.get("profile_incarnation"), require_incarnation=True,
-                ):
+                if session is not None and not _session_profile_rejected(session):
                     # Refresh the TTL so back-to-back retries don't age out mid-flight.
                     _idempotency_keys[idem_key] = (existing_sid, now_for_gc)
                     history = session["history"]

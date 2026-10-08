@@ -835,14 +835,9 @@ def _(rid, params: dict) -> dict:
 
 @method("clipboard.paste")
 def _(rid, params: dict) -> dict:
-    sid = params.get("session_id") or ""
-    session, err = _sess_building(params, rid)
+    session, owner, err = _attachment_session(params, rid)
     if err:
         return err
-    try:
-        owner = _attachment_owner(session, sid)
-    except LookupError:
-        return _err(rid, 4001, "session not found")
     try:
         from hermes_cli.clipboard import has_clipboard_image, save_clipboard_image
     except Exception as e:
@@ -894,13 +889,9 @@ def _(rid, params: dict) -> dict:
 
 @method("image.attach")
 def _(rid, params: dict) -> dict:
-    session, err = _sess_building(params, rid)
+    session, owner, err = _attachment_session(params, rid)
     if err:
         return err
-    try:
-        owner = _attachment_owner(session, params.get("session_id") or "")
-    except LookupError:
-        return _err(rid, 4001, "session not found")
     raw = str(params.get("path", "") or "").strip()
     if not raw:
         return _err(rid, 4015, "path required")
@@ -930,13 +921,9 @@ def _(rid, params: dict) -> dict:
 def _(rid, params: dict) -> dict:
     """Attach an image from base64 bytes (remote client); reply mirrors ``image.attach``.
     ``filename``/``ext`` hint the extension, else magic bytes decide (fallback ``.png``)."""
-    session, err = _sess_building(params, rid)
+    session, owner, err = _attachment_session(params, rid)
     if err:
         return err
-    try:
-        owner = _attachment_owner(session, params.get("session_id") or "")
-    except LookupError:
-        return _err(rid, 4001, "session not found")
     raw_b64 = str(params.get("content_base64") or params.get("data") or "").strip()
     if not raw_b64:
         return _err(rid, 4015, "content_base64 required")
@@ -968,13 +955,9 @@ def _(rid, params: dict) -> dict:
     import shutil
     import subprocess
     import tempfile
-    session, err = _sess_building(params, rid)
+    session, owner, err = _attachment_session(params, rid)
     if err:
         return err
-    try:
-        owner = _attachment_owner(session, params.get("session_id") or "")
-    except LookupError:
-        return _err(rid, 4001, "session not found")
     if shutil.which("pdftoppm") is None:
         return _err(rid, 5028, "pdftoppm not installed (poppler-utils package required)")
     raw_path = str(params.get("path", "") or "").strip()
@@ -1035,13 +1018,9 @@ def _(rid, params: dict) -> dict:
 def _(rid, params: dict) -> dict:
     """Stage a non-image file into the session workspace; returns a workspace-relative
     ``@file:`` ref.  ``data_url`` carries the bytes when ``path`` isn't gateway-visible."""
-    session, err = _sess_building(params, rid)
+    session, owner, err = _attachment_session(params, rid)
     if err:
         return err
-    try:
-        owner = _attachment_owner(session, params.get("session_id") or "")
-    except LookupError:
-        return _err(rid, 4001, "session not found")
     raw, data_url, name = (
         str(params.get(k, "") or "").strip() for k in ("path", "data_url", "name"))
     staged_upload = params.get("staged_upload")

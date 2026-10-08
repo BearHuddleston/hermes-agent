@@ -224,7 +224,7 @@ def test_close_holds_lease_until_isolated_turn_settles(monkeypatch):
         assert parent.lease_id in server._own_live_lease_ids()
         lease, refusal = _foreign_acquire("A")
         assert lease is None and getattr(refusal, "reason", "") == "SESSION_NOT_OWNED"
-        # Child settlement (turn.end, or turn.error from _fail_pending_turns on child death) releases it.
+        # Child settlement (turn.end, or turn.error from _wait_for_exit on child death) releases it.
         settlement.completed.set()
         server._on_compute_host_turn_done("rid", "sid", session, {"type": "turn.end", "sid": "sid", "session_key": "A"})
         assert _registry() == [] and parent.lease_id not in server._own_live_lease_ids()

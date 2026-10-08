@@ -579,7 +579,7 @@ def _rebuild_session_agent(sid: str, session: dict, **kwargs):
         with _profile_home_lease(profile_home, profile_incarnation), _sessions_lock:
             if session.get("_closing"):
                 raise RuntimeError("session was closed while its agent was being rebuilt")
-            if (_sessions.get(sid) is not session or session.get("_closing")
+            if (not _session_slot_current(sid, session)
                     or session.get("agent") is not old_agent
                     or not _session_profile_identity_matches(session, profile_home, profile_incarnation)):
                 raise RuntimeError("session changed during agent rebuild")

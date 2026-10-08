@@ -574,33 +574,26 @@ def _teardown_popped_session(
     if session is None:
         return False
     settled = True
-    seen_threads: set[int] = set()
-    for label, thread in (
-        ("turn", session.get("_run_thread")),
-        ("agent build", session.get("_agent_build_thread")),
-    ):
-        if (
-            end_reason == "tui_shutdown"
-            or thread is None
-            or thread is threading.current_thread()
-            or id(thread) in seen_threads
-        ):
-            continue
-        seen_threads.add(id(thread))
-        try:
-            if thread.is_alive():
-                thread.join(timeout=_TURN_SETTLE_BEFORE_CLOSE_SECONDS)
-            if thread.is_alive():
-                logger.warning(
-                    "session %s thread still alive after %.1fs teardown grace",
-                    label,
-                    _TURN_SETTLE_BEFORE_CLOSE_SECONDS,
-                )
-                settled = False
-        except Exception:
-            logger.debug("failed waiting for session %s thread", label, exc_info=True)
-            settled = False
     if end_reason != "tui_shutdown":
+        for label, thread in (
+            ("turn", session.get("_run_thread")),
+            ("agent build", session.get("_agent_build_thread")),
+        ):
+            if thread is None or thread is threading.current_thread():
+                continue
+            try:
+                if thread.is_alive():
+                    thread.join(timeout=_TURN_SETTLE_BEFORE_CLOSE_SECONDS)
+                if thread.is_alive():
+                    logger.warning(
+                        "session %s thread still alive after %.1fs teardown grace",
+                        label,
+                        _TURN_SETTLE_BEFORE_CLOSE_SECONDS,
+                    )
+                    settled = False
+            except Exception:
+                logger.debug("failed waiting for session %s thread", label, exc_info=True)
+                settled = False
         _settle_isolated_turn_before_close(session)
     _teardown_session(session, end_reason=end_reason)
     return settled
@@ -624,6 +617,12 @@ def _profile_home_rejected(
         profile_incarnation,
         require_incarnation=require_incarnation,
     )
+
+
+def _session_profile_rejected(record: dict) -> bool:
+    """Whether a session record's captured profile generation is stale, deleting, or missing."""
+    return _profile_home_rejected(
+        record.get("profile_home"), record.get("profile_incarnation"), require_incarnation=True)
 
 
 def allow_profile_home(
@@ -675,6 +674,11 @@ def retire_profile_home(
 
 def _capture_profile_incarnation(profile_home: Path | str | None) -> str | None:
     return _profile_lifecycle.capture(profile_home or _hermes_home)
+
+
+def _session_slot_current(sid: str, session: dict) -> bool:
+    """Caller holds ``_sessions_lock``: ``sid`` still maps to this record and no teardown has claimed it."""
+    return _sessions.get(sid) is session and not session.get("_closing")
 
 
 def _session_profile_identity_matches(

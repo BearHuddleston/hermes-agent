@@ -86,10 +86,7 @@ def _branch_live(rid, params: dict, session: dict, *, omit_messages: bool = Fals
             existing_sid, ts = _idempotency_keys.get(idem_key, (None, 0.0))
             existing_session = _sessions.get(existing_sid)
             if existing_session is not None:
-                if now_gc - ts <= _IDEMPOTENCY_KEY_TTL and not _profile_home_rejected(
-                    existing_session.get("profile_home"), existing_session.get("profile_incarnation"),
-                    require_incarnation=True,
-                ):
+                if now_gc - ts <= _IDEMPOTENCY_KEY_TTL and not _session_profile_rejected(existing_session):
                     # Refresh the TTL so back-to-back retries don't age out mid-flight.
                     _idempotency_keys[idem_key] = (existing_sid, now_gc)
                     return _ok(rid, _branch_idempotent_hit(existing_sid, existing_session, omit_messages))

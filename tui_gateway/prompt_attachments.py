@@ -153,10 +153,21 @@ def _attachment_owner(session: dict, sid: str) -> tuple:
         return owner
 
 
+def _attachment_session(params: dict, rid) -> tuple:
+    """``(session, owner, None)`` or ``(None, None, error)`` for the attach RPCs."""
+    session, err = _sess_building(params, rid)
+    if err:
+        return None, None, err
+    try:
+        return session, _attachment_owner(session, params.get("session_id") or ""), None
+    except LookupError:
+        return None, None, _err(rid, 4001, "session not found")
+
+
 def _check_attachment_owner(session: dict, owner: tuple) -> None:
     """Called under the sessions lock; a detached/rebound record cannot publish."""
     sid, home, incarnation = owner
-    if _sessions.get(sid) is not session or session.get("_closing") or session.get("_finalized"):
+    if not _session_slot_current(sid, session) or session.get("_finalized"):
         raise LookupError("session not found")
     if not _session_profile_identity_matches(session, home, incarnation):
         raise FileNotFoundError("profile incarnation changed during attachment")

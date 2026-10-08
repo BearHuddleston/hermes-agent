@@ -472,10 +472,7 @@ def _(rid, params: dict) -> dict:
     ext = next((e for e, magic in _ASSET_MAGIC.items() if all(blob[a:b] == m for a, b, m in magic)), None)
     if ext is None:
         return _err(rid, 4070, "unsupported image format (PNG/JPEG/WebP only)")
-    from hermes_cli.profiles import profile_home_is_tombstoned
     from hermes_constants import mkdir_under_hermes_home
-    if profile_home_is_tombstoned(profile_dir):
-        return _err(rid, 4064, f"profile '{_name}' not found")
     mkdir_under_hermes_home(assets_dir)
     _unlink_asset_files(assets_dir, asset)  # one canonical file per asset
     tmp = assets_dir / f"{asset}.{ext}.tmp"

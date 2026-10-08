@@ -249,14 +249,13 @@ class HostSupervisor:
         return outcome
 
     def submit_turn(
-        self, frame: dict[str, Any], *, on_complete: Callable[[dict], None] | None = None,
-        settlement: TurnSettlement | None = None,
+        self, frame: dict[str, Any], *, settlement: TurnSettlement,
+        on_complete: Callable[[dict], None] | None = None,
     ) -> str:
         self.start()
         request_id = str(frame.get("request_id") or uuid.uuid4().hex)
         sid = str(frame.get("sid") or "")
         payload = {**frame, "type": "turn.start", "request_id": request_id}
-        settlement = settlement if settlement is not None else TurnSettlement()
         try:
             with self._lock:
                 # Bind to the same child that receives the frame, before a fast completion.
@@ -463,12 +462,6 @@ class HostSupervisor:
         self._remove_registry()
         self._notify_failed_turns(pending, late, reason="crash", message=f"compute host exited with code {code}")
         self._maybe_respawn_after_crash()
-
-    def _fail_pending_turns(self, *, reason: str, message: str) -> None:
-        with self._lock:
-            pending, late = self._pending_turns, self._late_control_handlers
-            self._pending_turns, self._late_control_handlers = {}, {}
-        self._notify_failed_turns(pending, late, reason=reason, message=message)
 
     def _notify_failed_turns(self, pending: dict, late: dict, *, reason: str, message: str) -> None:
         # Receipt polling also recovers a dead child when shutdown bypasses these callbacks.

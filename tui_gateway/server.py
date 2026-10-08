@@ -1122,11 +1122,7 @@ def _attach_built_agent(sid: str, current: dict, agent) -> bool:
     if _title_hint := str(current.get("pending_title") or "").strip():
         agent._session_title_hint = _title_hint
     with _sessions_lock:
-        publish = (
-            _sessions.get(sid) is current
-            and not current.get("_closing")
-            and not _profile_home_rejected(
-                current.get("profile_home"), current.get("profile_incarnation"), require_incarnation=True))
+        publish = _session_slot_current(sid, current) and not _session_profile_rejected(current)
         if publish:
             current["agent"] = agent
     if not publish:
@@ -1265,11 +1261,7 @@ def _sess_nowait(params, rid):
     sid = params.get("session_id") or ""
     s = _sessions.get(sid)
     if s:
-        if _profile_home_rejected(
-            s.get("profile_home"),
-            s.get("profile_incarnation"),
-            require_incarnation=True,
-        ):
+        if _session_profile_rejected(s):
             return (
                 None,
                 _err(rid, 4041, "profile incarnation is stale or home is unavailable"),
@@ -2972,11 +2964,7 @@ def _claim_or_reuse_live(sid: str, session_key: str, record: dict, lease) -> tup
             # reattach must leave an in-flight orphan interrupt polling.
             return live
         with _sessions_lock:
-            if _profile_home_rejected(
-                record.get("profile_home"),
-                record.get("profile_incarnation"),
-                require_incarnation=True,
-            ):
+            if _session_profile_rejected(record):
                 if lease is not None:
                     lease.release()
                 raise FileNotFoundError(

@@ -19,7 +19,7 @@ def _configure_session_tools(rid, params: dict, sid: str, session, home, incarna
     with _profile_home_lease(home, incarnation) if session is not None else contextlib.nullcontext():
         with _sessions_lock:
             if session is not None and (
-                    _sessions.get(sid) is not session or session.get("_closing")
+                    not _session_slot_current(sid, session)
                     or not _session_profile_identity_matches(session, home, incarnation)):
                 return _err(rid, 4001, "session changed during tools.configure")
         hc, tc = _tools_mod("hermes_cli.config"), _tools_mod("hermes_cli.tools_config")
