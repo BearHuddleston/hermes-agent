@@ -5,6 +5,7 @@ import type { HermesConnection } from '@/global'
 import { translateNow } from '@/i18n'
 import { desktopFsCacheKey, isReadFileErrorResult, readDesktopFileDataUrl } from '@/lib/desktop-fs'
 import { LruCache } from '@/lib/lru-cache'
+import { isBrowserHostedDesktop } from '@/lib/platform'
 import { capitalize } from '@/lib/text'
 import { notify, notifyError } from '@/store/notifications'
 import { $connection } from '@/store/session'
@@ -116,8 +117,14 @@ export async function resolveMediaDisplaySrc(path: string, owner?: OwnerScope): 
 
   // An explicit local owner is this device, even with a remote foreground.
   // Keep the native reader and its configured size cap; the backend preview
-  // endpoint has a separate fixed limit.
-  if (owner?.connectionId === LOCAL_CONNECTION_ID && window.hermesDesktop?.readFileDataUrl) {
+  // endpoint has a separate fixed limit. A browser page's local connection is
+  // the serving backend instead, whose bridge reads follow the foreground
+  // profile; it takes the owner-pinned read below.
+  if (
+    owner?.connectionId === LOCAL_CONNECTION_ID &&
+    !isBrowserHostedDesktop() &&
+    window.hermesDesktop?.readFileDataUrl
+  ) {
     const dataUrl = await window.hermesDesktop.readFileDataUrl(filePathFromMediaPath(path))
 
     if (isReadFileErrorResult(dataUrl)) {

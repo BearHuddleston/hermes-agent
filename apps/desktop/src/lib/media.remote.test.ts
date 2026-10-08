@@ -1,3 +1,4 @@
+import { LOCAL_CONNECTION_ID } from '@hermes/shared'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { $connection } from '@/store/session'
@@ -210,6 +211,19 @@ describe('resolveMediaDisplaySrc', () => {
     await resolveMediaDisplaySrc('file:///C:/Users/me/a%20b.png')
     await resolveMediaDisplaySrc('file://nas/share/a.png')
     expect(readFileDataUrl.mock.calls).toEqual([['C:\\Users\\me\\a b.png'], ['\\\\nas\\share\\a.png']])
+  })
+
+  it('keeps a local-owned tile on the native reader while a remote gateway is in the foreground', async () => {
+    const readFileDataUrl = vi.fn(async () => 'data:image/png;base64,bG9jYWw=')
+
+    vi.stubGlobal('window', { hermesDesktop: { api, readFileDataUrl } })
+    $connection.set({ connectionId: 'remote-gw', mode: 'remote', profile: 'work' } as never)
+
+    await expect(
+      resolveMediaDisplaySrc('/Users/me/a.png', { connectionId: LOCAL_CONNECTION_ID, profile: 'default' })
+    ).resolves.toBe('data:image/png;base64,bG9jYWw=')
+    expect(readFileDataUrl).toHaveBeenCalledWith('/Users/me/a.png')
+    expect(api).not.toHaveBeenCalled()
   })
 
   it('reads an owner-pinned Windows file URL through the gateway by its native path', async () => {
