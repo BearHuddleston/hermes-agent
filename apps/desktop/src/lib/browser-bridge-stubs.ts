@@ -69,11 +69,6 @@ export const BROWSER_BRIDGE_STUBS = {
   // Venv/plugin receipts live on the server host; a browser tab has none of its own.
   getSyncStatus: async () => null,
   getRemoteDisplayReason: async () => 'Browser-hosted Desktop uses this server as its backend',
-  // Browser pages have no native window compositor. Keep these explicit so
-  // capability consumers do not fall back to the host OS (for example,
-  // Windows) before the browser-host marker is available.
-  glassSupported: false,
-  translucencySupported: false,
   windowControls: {
     custom: false,
     minimize: () => { throw browserUnsupported('Native window controls') },
@@ -114,12 +109,6 @@ export const BROWSER_BRIDGE_STUBS = {
   },
   sshConfigHosts: async () => ({ hosts: [] }),
   sshResolveHost: async () => ({ hostname: null, identityFile: null, port: null, user: null }),
-  setActiveWork: () => undefined,
-  setKeepAwake: () => undefined,
-  setNativeTheme: () => undefined,
-  setPreviewShortcutActive: () => undefined,
-  setTitleBarTheme: () => undefined,
-  setTranslucency: () => undefined,
   stopFindInPage: async () => undefined,
   stopPreviewFileWatch: async () => true,
   themes: {

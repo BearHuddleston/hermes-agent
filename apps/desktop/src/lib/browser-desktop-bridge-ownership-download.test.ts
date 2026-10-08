@@ -179,6 +179,25 @@ it.each(['headers', 'body'])('times out stalled image %s within one whole-downlo
   expect(create).not.toHaveBeenCalled()
 })
 
+it('names a fetched cross-origin image after its URL, not the blob URL that carries it', async () => {
+  win.__HERMES_SESSION_TOKEN__ = 'served-token'
+  const response = new Response(new Uint8Array([7]), { headers: { 'content-type': 'image/webp' } })
+  vi.stubGlobal('fetch', vi.fn().mockResolvedValue(response))
+  vi.spyOn(URL, 'createObjectURL').mockReturnValue(`blob:${window.location.origin}/7f3e9c1a`)
+  vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => undefined)
+  const names: string[] = []
+  vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(function (this: HTMLAnchorElement) {
+    names.push(this.download)
+  })
+  expect(installBrowserDesktopBridge()).toBe(true)
+
+  await expect(win.hermesDesktop.saveImageFromUrl('https://v3.fal.media/files/x/MKZV6h-RrKLV')).resolves.toBe(true)
+  await expect(win.hermesDesktop.saveImageFromUrl(`${window.location.origin}/api/media/a.png`)).resolves.toBe(true)
+
+  // The same-origin route stays unnamed so the server's Content-Disposition wins.
+  expect(names).toEqual(['MKZV6h-RrKLV.webp', ''])
+})
+
 it('surfaces CORS and HTTP download failures without clicking a navigation link', async () => {
   win.__HERMES_SESSION_TOKEN__ = 'served-token'
 

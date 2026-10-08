@@ -1,7 +1,9 @@
 import type { HermesApiRequest } from '@/global'
 import { translateNow } from '@/i18n'
+import { requireBrowserConnection } from '@/lib/browser-connection'
 import { fetchBrowserImage } from '@/lib/browser-image-download'
 import { type BrowserBootstrap, fileEndpointUrl } from '@/lib/browser-transport'
+import { clickDownloadLink, downloadBlob, downloadFilename } from '@/lib/download'
 import { notifyError } from '@/store/notifications'
 
 function queryPath(route: string, values: Record<string, boolean | null | string | undefined>) {
@@ -18,18 +20,13 @@ interface BrowserFilesOptions {
   api: <T>(request: HermesApiRequest) => Promise<T>
   bootstrap: BrowserBootstrap
   currentProfile: () => string | null
-  /** Blob URLs handed to the page; the installer revokes them on unload. */
-  objectUrls: Set<string>
-  requireConnection: (connectionId?: string | null) => void
 }
 
 /** Server files reach the page through /api/fs reads and ticketed download/stream URLs. */
 export function createBrowserFilesBridge({
   api,
   bootstrap,
-  currentProfile,
-  objectUrls,
-  requireConnection
+  currentProfile
 }: BrowserFilesOptions): Pick<
   Window['hermesDesktop'],
   | 'getGatewayFileStreamUrl'
@@ -47,34 +44,25 @@ export function createBrowserFilesBridge({
 
   const downloadUrl = async (url: string, filename = '') => {
     const target = new URL(url, window.location.href)
-    let downloadHref = target.href
 
     // Cross-origin anchors ignore download and navigate the current tab.
     // Fetch without Hermes credentials; CORS denial must not fall back to navigation.
     if (target.origin !== window.location.origin && !['blob:', 'data:'].includes(target.protocol)) {
-      downloadHref = URL.createObjectURL(await fetchBrowserImage(target))
-      objectUrls.add(downloadHref)
-      window.setTimeout(() => {
-        URL.revokeObjectURL(downloadHref)
-        objectUrls.delete(downloadHref)
-      }, 60_000)
-    }
+      const image = await fetchBrowserImage(target)
 
-    const anchor = document.createElement('a')
-    anchor.href = downloadHref
-    anchor.download = filename
-    anchor.rel = 'noopener'
-    anchor.style.display = 'none'
-    document.body.append(anchor)
-    anchor.click()
-    anchor.remove()
+      // A blob URL carries no name of its own; unnamed, the file saves as its UUID.
+      downloadBlob(image, filename || downloadFilename(target.href, image.type))
+    } else {
+      // An empty name lets the server's Content-Disposition name gateway files.
+      clickDownloadLink(target.href, filename)
+    }
 
     return true
   }
 
   return {
     getGatewayFileStreamUrl: async payload => {
-      requireConnection(payload.connectionId)
+      requireBrowserConnection(payload.connectionId)
 
       return (await fileEndpointUrl(bootstrap, 'stream', {
         path: payload.path,
@@ -88,7 +76,7 @@ export function createBrowserFilesBridge({
     readFileText: (path: string) =>
       fsGet<Awaited<ReturnType<Window['hermesDesktop']['readFileText']>>>('read-text', path),
     saveGatewayFile: async payload => {
-      requireConnection(payload.connectionId)
+      requireBrowserConnection(payload.connectionId)
       const query = { path: payload.path, profile: payload.profile ?? currentProfile(), session_id: payload.sessionId }
 
       // Validate before handing the transfer to the browser so missing or

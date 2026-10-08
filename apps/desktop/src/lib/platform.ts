@@ -21,8 +21,10 @@ export const isWindowsPlatform = (): boolean =>
 export const isLinuxPlatform = (): boolean =>
   typeof navigator !== 'undefined' && /linux/i.test(navigator.platform || navigator.userAgent || '')
 
-interface BrowserHostGlobals {
+/** Globals the Hermes web server injects into the page it serves. */
+export interface BrowserHostGlobals {
   __HERMES_AUTH_REQUIRED__?: boolean
+  __HERMES_BASE_PATH__?: string
   __HERMES_SESSION_TOKEN__?: string
   __HERMES_UI_SURFACE__?: string
 }

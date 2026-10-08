@@ -1,16 +1,8 @@
 import { buildHermesWebSocketUrl, normalizeBasePath } from '@hermes/shared'
 
-import type { HermesApiRequest, HermesStagedUpload } from '@/global'
+import type { HermesApiRequest } from '@/global'
 import { consumeWebappSession, WEBAPP_LAUNCH_REQUIRED } from '@/lib/browser-launch-session'
-import { hasBrowserHostBootstrap } from '@/lib/platform'
-
-export interface BrowserBootstrapWindow {
-  __HERMES_AUTH_REQUIRED__?: boolean
-  __HERMES_BASE_PATH__?: string
-  __HERMES_SESSION_TOKEN__?: string
-  __HERMES_UI_SURFACE__?: string
-  hermesDesktop?: Window['hermesDesktop']
-}
+import { type BrowserHostGlobals, hasBrowserHostBootstrap } from '@/lib/platform'
 
 export interface BrowserBootstrap {
   authRequired: boolean
@@ -18,7 +10,6 @@ export interface BrowserBootstrap {
   /** Webapp on an unauthenticated bind: the operator's launch link is the only credential source. */
   privateSession: boolean
   token: string
-  stagedUploads: Map<string, HermesStagedUpload>
 }
 
 const SESSION_HEADER = 'X-Hermes-Session-Token'
@@ -39,7 +30,7 @@ export class BrowserReauthRequiredError extends Error {
 export function browserBootstrap(): BrowserBootstrap | null {
   if (!hasBrowserHostBootstrap()) {return null}
 
-  const win = window as unknown as BrowserBootstrapWindow
+  const win = window as Window & BrowserHostGlobals
   const authRequired = win.__HERMES_AUTH_REQUIRED__ === true
   const basePath = normalizeBasePath(win.__HERMES_BASE_PATH__)
   const privateSession = !authRequired && win.__HERMES_UI_SURFACE__ === 'webapp'
@@ -49,8 +40,7 @@ export function browserBootstrap(): BrowserBootstrap | null {
     authRequired,
     basePath,
     privateSession,
-    token,
-    stagedUploads: new Map()
+    token
   }
 }
 
