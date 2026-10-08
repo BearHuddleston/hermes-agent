@@ -165,7 +165,8 @@ def read_state(path: Path) -> tuple[dict, dict, Optional[tuple]]:
     if path.stat().st_size > MAX_STATE_BYTES:
         raise ValueError(f"{path} is larger than {MAX_STATE_BYTES} bytes")
     try:
-        data = json.loads(path.read_text(encoding="utf-8"))
+        # utf-8-sig: the agent may rewrite this file with Windows tooling that adds a BOM.
+        data = json.loads(path.read_text(encoding="utf-8-sig"))
     except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise ValueError(f"{path} is not valid JSON: {exc}") from exc
     if not isinstance(data, dict):
