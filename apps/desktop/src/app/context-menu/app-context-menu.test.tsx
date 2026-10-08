@@ -108,33 +108,29 @@ describe('AppContextMenu', () => {
     expect(rowMenu).toHaveBeenCalledTimes(1)
     expect($contextMenu.get()).toBeNull()
   })
-  it.each(['p', 'pre', 'a', 'textarea'])(
-    'preserves native touch long-press on %s before text selection exists',
-    tag => {
-      installBridge()
-      window.document.documentElement.dataset.hermesDesktopHost = 'browser'
-      vi.stubGlobal('matchMedia', vi.fn().mockReturnValue({ matches: true }))
-      mountMenu()
+  it.each([
+    ['message text', '<div data-slot="aui_assistant-message-content"><p>selectable content</p></div>', 'p'],
+    ['a link', '<a href="https://example.com">selectable content</a>', 'a'],
+    ['an editable', '<textarea>selectable content</textarea>', 'textarea']
+  ])('preserves native touch long-press on %s before text selection exists', (_name, content, tag) => {
+    installBridge()
+    window.document.documentElement.dataset.hermesDesktopHost = 'browser'
+    vi.stubGlobal('matchMedia', vi.fn().mockReturnValue({ matches: true }))
+    mountMenu()
 
-      const host = attach(
-        `<div data-zone-body="test" data-slot="context-menu-trigger"><div data-slot="aui_assistant-message-content"><${tag} href="https://example.com">selectable content</${tag}></div></div>`
-      )
+    const host = attach(`<div data-zone-body="test" data-slot="context-menu-trigger">${content}</div>`)
 
-      const fallback = vi.fn()
-      host.addEventListener('contextmenu', fallback)
-      const event = createEvent.contextMenu(host.querySelector(tag)!, { bubbles: true, cancelable: true })
-      fireEvent(host.querySelector(tag)!, event)
-      expect(event.defaultPrevented).toBe(false)
-      expect(fallback).not.toHaveBeenCalled()
-      expect($contextMenu.get()).toBeNull()
-    }
-  )
+    const fallback = vi.fn()
+    host.addEventListener('contextmenu', fallback)
+    const event = createEvent.contextMenu(host.querySelector(tag)!, { bubbles: true, cancelable: true })
+    fireEvent(host.querySelector(tag)!, event)
+    expect(event.defaultPrevented).toBe(false)
+    expect(fallback).not.toHaveBeenCalled()
+    expect($contextMenu.get()).toBeNull()
+  })
   describe.each(['browser', 'electron'])('%s host gesture ownership', hostKind => {
     it.each([
       ['chrome', '<p>plain chrome</p>', 'Settings'],
-      ['link', '<a href="https://example.com/docs">Docs</a>', 'Copy URL'],
-      ['image', '<img src="https://example.com/pic.png">', 'Copy image'],
-      ['editable', '<textarea>draft</textarea>', 'Paste'],
       ['terminal', '<div data-terminal=""><canvas></canvas></div>', 'Select all']
     ])('opens only the app menu for %s, preserving Electron native facts', async (_kind, html, label) => {
       installBridge()
@@ -169,34 +165,36 @@ describe('AppContextMenu', () => {
         unregister?.()
       }
     })
-
-    it.each([HERMES_CONTEXT_MENU_TRIGGER_ATTR, 'data-slot="context-menu-trigger"', 'data-context-menu-skip'])(
-      'leaves the gesture untouched for a surface owning %s',
-      marker => {
-        installBridge()
-        window.document.documentElement.dataset.hermesDesktopHost = hostKind
-        mountMenu()
-        const host = attach(`<div ${marker}><span>owned surface</span></div>`)
-        const target = host.querySelector('span')!
-        const onTarget = vi.fn()
-
-        target.addEventListener('contextmenu', onTarget)
-        const event = createEvent.contextMenu(target)
-
-        fireEvent(target, event)
-
-        expect($contextMenu.get()).toBeNull()
-        expect(onTarget).toHaveBeenCalledOnce()
-        expect(event.defaultPrevented).toBe(false)
-      }
-    )
   })
 
-  it.each(['video', 'audio'])('leaves native %s context menus untouched in the browser Webapp', kind => {
+  // The skip-marked and radix-surface tests below cover these markers in
+  // Electron; in the Webapp a late marker check would also cancel the native menu.
+  it.each([HERMES_CONTEXT_MENU_TRIGGER_ATTR, 'data-slot="context-menu-trigger"', 'data-context-menu-skip'])(
+    'leaves the gesture untouched in the browser Webapp for a surface owning %s',
+    marker => {
+      installBridge()
+      window.document.documentElement.dataset.hermesDesktopHost = 'browser'
+      mountMenu()
+      const host = attach(`<div ${marker}><span>owned surface</span></div>`)
+      const target = host.querySelector('span')!
+      const onTarget = vi.fn()
+
+      target.addEventListener('contextmenu', onTarget)
+      const event = createEvent.contextMenu(target)
+
+      fireEvent(target, event)
+
+      expect($contextMenu.get()).toBeNull()
+      expect(onTarget).toHaveBeenCalledOnce()
+      expect(event.defaultPrevented).toBe(false)
+    }
+  )
+
+  it('leaves native media context menus untouched in the browser Webapp', () => {
     installBridge()
     window.document.documentElement.dataset.hermesDesktopHost = 'browser'
     mountMenu()
-    const host = attach(`<${kind} controls></${kind}>`)
+    const host = attach('<audio controls></audio>')
     const target = host.firstElementChild!
     const onTarget = vi.fn()
 

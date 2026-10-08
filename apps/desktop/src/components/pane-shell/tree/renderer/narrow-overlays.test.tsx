@@ -118,13 +118,22 @@ describe('narrow overlay of a stacked zone', () => {
 
   it('reserves the browser touch titlebar above overlay tabs', () => {
     window.document.documentElement.dataset.hermesDesktopHost = 'browser'
-    vi.stubGlobal(
-      'matchMedia',
-      vi.fn().mockReturnValue({ matches: true, addEventListener: vi.fn(), removeEventListener: vi.fn() })
-    )
-    const { container } = render(<NarrowOverlays />)
-    revealPane('sessions')
-    expect(container.querySelector<HTMLElement>('[data-narrow-overlay]')?.style.paddingTop).toBe('44px')
+
+    const overlayInset = (touch: boolean) => {
+      vi.stubGlobal(
+        'matchMedia',
+        vi.fn().mockReturnValue({ matches: touch, addEventListener: vi.fn(), removeEventListener: vi.fn() })
+      )
+      const { container, unmount } = render(<NarrowOverlays />)
+      revealPane('sessions')
+      const inset = parseFloat(container.querySelector<HTMLElement>('[data-narrow-overlay]')!.style.paddingTop)
+      unmount()
+
+      return inset
+    }
+
+    // The touch titlebar is taller than the pointer one; the tabs clear it.
+    expect(overlayInset(true)).toBeGreaterThan(overlayInset(false))
   })
   it('mirrors the zone tab strip so every stacked collapsible stays reachable', () => {
     const { getByTestId, queryByTestId } = render(<NarrowOverlays />)

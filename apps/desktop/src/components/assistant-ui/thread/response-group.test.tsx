@@ -58,16 +58,11 @@ it('keeps background continuations in one response with one action bar and the o
       [...container.querySelectorAll('[data-role="assistant"]')].map(e => e.getAttribute('data-message-id'))
     ).toEqual([messages[1]!.id, messages[3]!.id])
     const actions = container.querySelector('[data-slot="aui_msg-actions"]') as HTMLElement
-
-    // Default Copy reads only the tail reply from every lane of the one bar
-    // (desktop and touch rows; CSS shows one per input mode); the full-response
-    // scope is a separate explicit action (#118864).
-    for (const copyButton of within(actions).getAllByRole('button', { name: /^copy$/i })) {
-      clipboard.writeText.mockClear()
-      fireEvent.click(copyButton)
-      await waitFor(() => expect(clipboard.writeText).toHaveBeenLastCalledWith('The deployment is verified.'))
-    }
-
+    // Default Copy reads only the tail reply; the full-response scope is a
+    // separate explicit action (#118864). Each input-mode lane is covered in
+    // response-copy-scope.test.tsx.
+    fireEvent.click(within(actions).getAllByRole('button', { name: /^copy$/i })[0]!)
+    await waitFor(() => expect(clipboard.writeText).toHaveBeenLastCalledWith('The deployment is verified.'))
     fireEvent.click(within(actions).getByRole('button', { name: /copy full response/i }))
     await waitFor(() =>
       expect(clipboard.writeText).toHaveBeenLastCalledWith('Checking the deployment.\n\nThe deployment is verified.')

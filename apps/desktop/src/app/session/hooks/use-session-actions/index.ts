@@ -38,7 +38,6 @@ import { clearQueuedPrompts, migrateQueuedPrompts } from '@/store/composer-queue
 import { resetSessionBackground } from '@/store/composer-status'
 import { $connectionRequests } from '@/store/connection-request'
 import {
-  $gateway,
   isActivePrimary,
   openGatewayForAgent,
   openGatewayForProfile,
@@ -67,7 +66,7 @@ import {
 } from '@/store/profile'
 import { $projectScope } from '@/store/project-scope'
 import { projectProfile, resolveNewSessionCwd } from '@/store/projects'
-import { clearAllPrompts, receiveApprovalRequest, replayPendingApproval } from '@/store/prompts'
+import { clearAllPrompts } from '@/store/prompts'
 import { clearStoredTranscriptReadOnly, markStoredTranscriptReadOnly } from '@/store/read-only-transcript'
 import {
   $activeSessionStoredIdRotation,
@@ -84,7 +83,6 @@ import {
   $sessions,
   $yoloActive,
   getCurrentModelSource,
-  getSessionOwnerHint,
   idsShareLineage,
   type NewChatWorkspaceTarget,
   resolveComposerSessionKey,
@@ -160,14 +158,21 @@ import type {
 
 import { navigateToWorkspacePage, NEW_CHAT_ROUTE, sessionRoute, SETTINGS_ROUTE } from '../../../routes'
 import type { ClientSessionState, SidebarNavItem } from '../../../types'
-import { pinStoredSessionForOwner, releaseStoredSessionPins, sessionContextDrift } from '../session-context-drift'
+import {
+  pinStoredSessionForOwner,
+  releaseStoredSessionPins,
+  resumeRouteStillCurrent,
+  sessionContextDrift
+} from '../session-context-drift'
 import { singleFlightSessionResume } from '../use-prompt-actions/single-flight-resume'
 
 import { sessionCreateOverrideParams, type SessionCreateOverrides, type SessionSeedMessage } from './create-overrides'
 import { markSessionCreatedThisRun, sessionCreatedThisRun } from './created-this-run'
 import { captureDisplayHydration } from './display-hydration'
-import { reconcilePersistedLiveTurn } from './persisted-live-turn'
+import { reconcilePersistedSessionTurn } from './persisted-session-turn'
 import { provisionalTranscriptPaint, transcriptRestScope } from './provisional-transcript'
+import { rememberedOwnerForResume } from './remembered-owner'
+import { restorePendingApproval } from './restore-pending-approval'
 import { pendingClarifyToolPayload, restorePendingClarifyFromSnapshot } from './restore-pending-clarify'
 import { projectPendingConnection, restorePendingConnectionFromSnapshot } from './restore-pending-connection'
 import { createGatewaySession } from './session-create-request'
@@ -186,7 +191,6 @@ import {
   dedupeInflightUserAgainstTranscript,
   dropListedSession,
   findListedSession,
-  finiteTurnStartedAt,
   goneSessionVerdict,
   isSessionGoneError,
   overlayConcurrentMessageChanges,
@@ -293,62 +297,6 @@ function applyStoredUsage(stored: { input_tokens?: number | null; output_tokens?
   const output = stored.output_tokens || 0
 
   setCurrentUsage(current => ({ ...current, input, output, total: input + output }))
-}
-
-function reconcilePersistedSessionTurn(
-  messages: ChatMessage[],
-  previous: ChatMessage[],
-  rows: SessionMessage[],
-  projection: Pick<SessionResumeResult, 'inflight' | 'queued' | 'session_id' | 'turn_started_at'>
-): ChatMessage[] | null {
-  const startedAt = finiteTurnStartedAt(projection)
-  const hasBoundary = startedAt !== null
-
-  const currentStart = hasBoundary
-    ? rows.findIndex(row => row.timestamp !== undefined && row.timestamp >= startedAt)
-    : 0
-
-  if (currentStart < 0) {
-    return null
-  }
-
-  const currentRows = rows.slice(currentStart)
-
-  // The occurrence resolver predates canonical user provenance. Do not let a
-  // runtime notice occupy a human prompt slot, even when its prose is equal.
-  if (
-    projection.inflight?.user_originated !== false &&
-    currentRows.some(row => row.role === 'user' && row.user_originated === false)
-  ) {
-    return null
-  }
-
-  const reconciled = reconcilePersistedLiveTurn(messages, previous, currentRows, projection)
-
-  if (!reconciled || projection.inflight?.user_originated !== false || !hasBoundary) {
-    return reconciled
-  }
-
-  // A visible runtime wake can use source-row occurrence reconciliation too,
-  // but its projected reply must retain the journal's backend-owned boundary.
-  // Hidden/system wakes have no user anchor and use the legacy projection path.
-  const boundary = reconciled.findIndex(
-    message =>
-      message.role === 'user' &&
-      message.userOriginated === false &&
-      message.timestamp !== undefined &&
-      message.timestamp >= startedAt
-  )
-
-  if (boundary < 0) {
-    return null
-  }
-
-  return reconciled.map((message, index) =>
-    index >= boundary && message.id !== `user-queued-${projection.session_id}`
-      ? { ...message, runtimeTurnStartedAt: startedAt }
-      : message
-  )
 }
 
 function reconcileAuthoritativeChatMessages(
@@ -505,30 +453,6 @@ function livePromptStreamId(
   const live = projections.find(Boolean)
 
   return live ? { awaitingResponse: false, sawAssistantPayload: true, streamId: live.streamId } : {}
-}
-
-function restorePendingApproval(response: SessionResumeResult, sessionId: string): boolean {
-  const pending = response.pending_approval
-
-  if (!pending) {
-    return false
-  }
-
-  // The live `approval` server request (re-delivered from `open_requests`
-  // before this ran) already parked itself with the same queue id; don't
-  // clobber it with a copy that can only answer through the RPC fallback.
-  void receiveApprovalRequest(null, {
-    allowPermanent: pending.allow_permanent !== false,
-    choices: pending.choices,
-    command: pending.command ?? '',
-    description: pending.description ?? 'dangerous command',
-    requestId: typeof pending.request_id === 'string' ? pending.request_id : undefined,
-    sessionId,
-    smartDenied: pending.smart_denied === true
-  })
-  void replayPendingApproval($gateway.get(), sessionId).catch(() => undefined)
-
-  return true
 }
 
 function normalizeNewChatWorkspaceTarget(target: NewChatWorkspaceTarget): NewChatWorkspaceTarget {
@@ -1377,7 +1301,7 @@ export function useSessionActions({
       const isCurrentResume = () =>
         resumeRequestRef.current === requestId &&
         selectedStoredSessionIdRef.current === storedSessionId &&
-        getRouteToken() === routeToken
+        resumeRouteStillCurrent(routeToken, getRouteToken(), storedSessionId)
 
       // A reconnect re-resumes the runtime this view is streaming. Let its
       // replay land while that runtime still owns the view. Otherwise the REST
@@ -1488,7 +1412,15 @@ export function useSessionActions({
       // gateway call (no-op when it's already on that profile / single-profile).
       // resolveStoredSession finds the row by id (cheap), so an uncached pasted
       // id loads as fast as a sidebar click instead of hanging on a list scan.
-      const ownerRoute = capturedOwner || getSessionOwnerHint(storedSessionId)
+      //
+      // Only the REMEMBERED hint is validated (remembered-owner.ts); an explicitly captured owner
+      // (requestSessionResume with a row route, a plugin open) is authoritative as given.
+      const rememberedOwner = capturedOwner ? undefined : rememberedOwnerForResume(storedSessionId)
+
+      // An explicit capture outranks the remembered hint; the hint only
+      // fills in when the caller had no route to give.
+      const ownerRoute = capturedOwner || rememberedOwner
+
       // A connection switch clears/reloads the session rows before this path
       // runs, so an untagged row belongs to the connection that supplied the
       // current list. Capture that source before the async metadata lookup. If

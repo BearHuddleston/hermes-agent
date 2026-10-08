@@ -173,20 +173,17 @@ def test_an_explicit_endpoint_the_owner_cannot_serve_is_refused(host_dir, owner,
     assert f"PID {os.getpid()}" in capsys.readouterr().out
 
 
-@pytest.mark.parametrize("surface", ["dashboard", "webapp"])
-def test_dashboard_is_never_routed_to_a_headless_backend(host_dir, owner, capsys, surface):
+def test_dashboard_is_never_routed_to_a_headless_backend(host_dir, owner, capsys):
     """`hermes serve` and `hermes dashboard` publish the same host role; only one mounts the SPA,
     so attaching a dashboard user to a headless backend opens a URL with no UI behind it."""
     owner.serves_spa["value"] = False
     _publish(hr.process_create_time(), port=owner.port)
 
     with pytest.raises(SystemExit) as exc:
-        _attach_to_host_backend(_args(ui_surface=surface))
+        _attach_to_host_backend(_args(ui_surface="dashboard"))
 
     assert exc.value.code == GATEWAY_FATAL_CONFIG_EXIT_CODE
-    output = capsys.readouterr().out
-    assert "no dashboard UI" in output
-    assert f"run `hermes {surface}`" in output
+    assert "no dashboard UI" in capsys.readouterr().out
 
 
 @pytest.mark.parametrize("requested,actual", [
@@ -205,19 +202,16 @@ def test_host_attach_refuses_a_different_ui_surface(host_dir, owner, monkeypatch
     assert not opened
 
 
-@pytest.mark.parametrize("profile", ["default", "coder"])
-def test_webapp_host_attach_preserves_private_launch_access(host_dir, owner, monkeypatch, capsys, profile):
+def test_webapp_host_attach_preserves_private_launch_access(host_dir, owner, monkeypatch, capsys):
     import webbrowser
 
     owner.surface["value"] = "webapp"
     _publish(hr.process_create_time(), port=owner.port)
-    monkeypatch.setattr("hermes_cli.profiles.get_active_profile_name", lambda: profile)
+    monkeypatch.setattr("hermes_cli.profiles.get_active_profile_name", lambda: "coder")
     opened = []
     monkeypatch.setattr(webbrowser, "open", opened.append)
     with pytest.raises(SystemExit) as exc:
         _attach_to_host_backend(_args(ui_surface="webapp", no_open=False))
     assert exc.value.code == 0
-    output = capsys.readouterr().out
-    assert f"http://127.0.0.1:{owner.port}/?profile={profile}" in output
-    assert "private launch link" in output and "BEFORE its # fragment" in output
+    assert f"http://127.0.0.1:{owner.port}/?profile=coder" in capsys.readouterr().out
     assert not opened

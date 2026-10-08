@@ -7,8 +7,6 @@ import pytest
 
 from hermes_cli import profile_lifecycle, profiles, setup_profile
 from hermes_cli.profile_incarnation import read_profile_incarnation
-from hermes_constants import reset_hermes_home_override, set_hermes_home_override
-from toolsets import profile_role_toolsets
 
 
 @pytest.fixture
@@ -41,14 +39,7 @@ def test_setup_role_metadata_is_scoped_and_refuses_retirement(profile_root):
     assert meta["previous_names"] == ["earlier-guide"]
     assert read_profile_incarnation(guide) == incarnation
 
-    for home, has_setup in ((guide, True), (ordinary, False), (guide, True)):
-        token = set_hermes_home_override(str(home))
-        try:
-            granted, denied = profile_role_toolsets()
-            assert ("setup" in granted) is has_setup
-            assert ("setup" in denied) is not has_setup
-        finally:
-            reset_hermes_home_override(token)
+    assert profiles.read_profile_meta(ordinary).get("role") is None
 
     with pytest.raises(ValueError, match="unknown profile role"):
         profiles.write_profile_meta(guide, role="not-a-role")

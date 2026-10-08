@@ -46,8 +46,7 @@ def _health(port):
 
 
 @pytest.mark.platforms("posix")
-@pytest.mark.parametrize("registered", [True, False], ids=["ledger", "argv-only"])
-def test_webapp_stop_spares_argument_tail_and_stale_identity_but_stops_real_server(tmp_path, monkeypatch, registered):
+def test_webapp_stop_spares_argument_tail_and_stale_identity_but_stops_real_server(tmp_path, monkeypatch):
     from hermes_cli import dashboard_procs, main_dashboard, process_identity
     from hermes_cli.update_cmd_windows import _hermes_holder_subcommand, _live_argv
     from hermes_constants import get_hermes_home
@@ -129,8 +128,17 @@ def test_webapp_stop_spares_argument_tail_and_stale_identity_but_stops_real_serv
             ledger_path.write_text(json.dumps(records), encoding="utf-8")
             assert unrelated.pid not in {e["pid"] for e in process_identity.ledger_entries()}
 
-            if not registered:
-                ledger_path.write_text("[]", encoding="utf-8")
+            # A live ledger still provides purpose if the process table is unavailable.
+            with monkeypatch.context() as patch:
+                patch.setattr(dashboard_procs, "_iter_process_table", lambda: [])
+                ledger_scan = dict(dashboard_procs._scan_dashboard_processes())
+            for surface in ("webapp", "serve"):
+                runtime = main_dashboard._parse_dashboard_runtime(ledger_scan[children[surface].pid])
+                assert runtime is not None and runtime[0] == surface
+            assert unrelated.pid not in ledger_scan
+
+            # Without the ledger, argv identity alone must still find the servers.
+            ledger_path.write_text("[]", encoding="utf-8")
             # Keep the real OS argv census and all three test processes, but
             # never inspect another developer server's HOME/active_profile.
             # The home-I/O and signal guards stay enabled.
@@ -144,14 +152,6 @@ def test_webapp_stop_spares_argument_tail_and_stale_identity_but_stops_real_serv
             for surface in ("webapp", "serve"):
                 runtime = main_dashboard._parse_dashboard_runtime(scanned[children[surface].pid])
                 assert runtime is not None and runtime[0] == surface
-            if registered:
-                # A live ledger still provides purpose if the process table is unavailable.
-                with monkeypatch.context() as patch:
-                    patch.setattr(dashboard_procs, "_iter_process_table", lambda: [])
-                    ledger_scan = dict(dashboard_procs._scan_dashboard_processes())
-                for surface in ("webapp", "serve"):
-                    runtime = main_dashboard._parse_dashboard_runtime(ledger_scan[children[surface].pid])
-                    assert runtime is not None and runtime[0] == surface
 
             with pytest.raises(SystemExit) as exc:
                 main_dashboard.cmd_webapp(argparse.Namespace(status=False, stop=True))

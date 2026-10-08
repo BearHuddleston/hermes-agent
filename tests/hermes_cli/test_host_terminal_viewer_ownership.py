@@ -14,7 +14,7 @@ class Socket:
     def __init__(self):
         self.closed = []
 
-    async def close(self, code):
+    async def close(self, code, reason=None):
         self.closed.append(code)
 
 

@@ -66,7 +66,7 @@ def read_incarnation_marker(path: Path | str) -> str | None:
     """Read and validate one incarnation marker file."""
     marker = Path(path)
     try:
-        value = marker.read_text(encoding="utf-8")
+        value = marker.read_text(encoding="utf-8-sig")
     except FileNotFoundError:
         return None
     return _validate_incarnation(value, marker)
@@ -81,7 +81,7 @@ def read_profile_deletion_incarnation(profile_home: Path | str) -> str | None:
     marker = profile_deletion_marker_path(Path(profile_home))
     if marker is None:
         raise ValueError(f"Not a named profile home: {profile_home}")
-    value = marker.read_text(encoding="utf-8")
+    value = marker.read_text(encoding="utf-8-sig")
     if value in ("", "deleted\n"):
         return None
     return _validate_incarnation(value, marker)

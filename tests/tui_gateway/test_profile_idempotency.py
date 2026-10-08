@@ -30,7 +30,7 @@ def test_idempotency_reuses_only_a_live_profile_generation(tmp_path, monkeypatch
     for name in ("_schedule_agent_build", "_schedule_session_cap_enforcement", "_register_session_cwd",
                  "_enable_gateway_prompts"):
         monkeypatch.setattr(server, name, lambda *args: None)
-    monkeypatch.setattr(server, "_session_default_model", lambda _session: "test-model")
+    monkeypatch.setattr(server, "_session_default_route", lambda _session: ("test-model", ""))
     monkeypatch.setattr(server, "_session_info", lambda *_args: {})
     monkeypatch.setattr(server, "_fallback_session_info", lambda *_args: {})
     monkeypatch.setattr(server, "_project_info_for_cwd", lambda *_args: None)

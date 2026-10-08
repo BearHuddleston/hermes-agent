@@ -63,6 +63,7 @@ def test_local_zip_grafts_both_renderers_and_preswap_guard_keeps_dirty_source(cl
     archive = tmp_path / "source.zip"
     with zipfile.ZipFile(archive, "w") as handle:
         handle.write(new_source, "hermes-agent-main/apps/desktop/package.json")
+        handle.comment = b"8192da90e0afb20010a1c2f5da83db305d05ac5a"  # git archive's commit identity
 
     # A failed pre-swap check leaves the live source and both outputs untouched.
     source.write_bytes(original + b"\n")

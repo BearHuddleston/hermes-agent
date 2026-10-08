@@ -105,5 +105,5 @@ export function TranscriptVideo(props: ComponentProps<'video'>) {
   }, [])
 
   // iPhone otherwise takes a transcript clip fullscreen when playback starts.
-  return <video onRateChange={onRateChange} playsInline ref={videoRef} {...props} />
+  return <video onRateChange={onRateChange} playsInline ref={videoRef} {...props} preload={props.preload ?? 'none'} />
 }

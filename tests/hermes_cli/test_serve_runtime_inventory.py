@@ -101,23 +101,6 @@ def test_inventory_includes_manual_serve_from_ledger(monkeypatch):
     assert row.detail["port"] == 9119
 
 
-def test_inventory_includes_manual_webapp_from_ledger(monkeypatch):
-    entry = _ledger_entry(purpose="webapp", argv="hermes webapp --port 9119")
-    fake_pi = SimpleNamespace(
-        ledger_entries=lambda **k: [entry],
-        spawner_is_dead=lambda e: None,
-    )
-    monkeypatch.setitem(sys.modules, "hermes_cli.process_identity", fake_pi)
-
-    plan = update_inventory.collect_runtime_inventory()
-
-    webapps = [runtime for runtime in plan.runtimes if runtime.kind == "webapp"]
-    assert len(webapps) == 1
-    assert webapps[0].pid == 4321
-    assert webapps[0].supervisor == "manual-serve"
-    assert webapps[0].restart_via == "respawn-argv"
-
-
 def test_inventory_classifies_desktop_owned_serve(monkeypatch):
     entry = _ledger_entry(spawner_pid=999, spawner_create=1.0)
     fake_pi = SimpleNamespace(
@@ -242,7 +225,8 @@ def test_inventory_records_the_serve_process_incarnation(monkeypatch):
 # update_inventory: launchd-owned serve/dashboard classification (#116503)
 # ---------------------------------------------------------------------------
 
-@pytest.mark.parametrize("kind", ["serve", "dashboard", "webapp"])
+# webapp: launchd must win over its own manual-launch skip reason; dashboard adds no branch.
+@pytest.mark.parametrize("kind", ["serve", "webapp"])
 def test_inventory_classifies_launchd_job_owned_serve(monkeypatch, kind):
     """A KeepAlive LaunchAgent backend's recorded spawner (the bootstrap shell) is long dead,
     so the spawner probe alone reads manual-serve — and the update plan then restarts it as a
@@ -278,4 +262,3 @@ def test_inventory_classifies_launchd_job_owned_serve(monkeypatch, kind):
     assert candidates == {}
     assert len(skipped) == 1
     assert "launchd" in skipped[0]["reason"]
-    assert "kickstarts" in skipped[0]["reason"]

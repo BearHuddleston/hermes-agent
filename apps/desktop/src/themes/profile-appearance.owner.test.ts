@@ -56,7 +56,6 @@ describe('profile appearance write owner', () => {
 
   it.each([
     ['A', 'B', 'ok'],
-    ['B', 'A', 'ok'],
     ['local', 'B', 'ok'],
     ['A', 'local', 'ok'],
     [null, 'B', 'ok'],

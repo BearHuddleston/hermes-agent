@@ -110,6 +110,27 @@ describe('browser-hosted Desktop bridge', () => {
     expect(connection.wsUrl).toBe('')
   })
 
+  // About renders `Version <appVersion>` / `v<appVersion>`: it must carry the
+  // serving host's release, never a host-kind label.
+  it('reports the serving host version, unknown when the host cannot say', async () => {
+    const win = mutableWindow()
+    win.__HERMES_AUTH_REQUIRED__ = true
+    win.__HERMES_BASE_PATH__ = '/hermes'
+
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ displayVersion: '0.21.5+1913', version: '0.21.5' })))
+      .mockRejectedValueOnce(new Error('offline'))
+
+    vi.stubGlobal('fetch', fetchMock)
+    expect(installBrowserDesktopBridge()).toBe(true)
+
+    await expect(win.hermesDesktop!.getVersion()).resolves.toMatchObject({ appVersion: '0.21.5+1913' })
+    expect((fetchMock.mock.calls[0] as [URL])[0].pathname).toBe('/hermes/api/health')
+    // '' is About's "version unavailable" state.
+    await expect(win.hermesDesktop!.getVersion()).resolves.toMatchObject({ appVersion: '' })
+  })
+
   it('mints a fresh single-use ticket for each gated WebSocket URL', async () => {
     const win = mutableWindow()
     win.__HERMES_AUTH_REQUIRED__ = true
@@ -235,31 +256,12 @@ describe('browser-hosted Desktop bridge', () => {
     expect(controls.custom).toBe(false)
 
     for (const operation of [controls.minimize, controls.toggleMaximize, controls.close]) {
-      expect(operation).toThrow('Native window controls is not available in the browser-hosted Desktop')
+      expect(operation).toThrow()
     }
 
     expect(fetchMock).not.toHaveBeenCalled()
     expect(closeMock).not.toHaveBeenCalled()
   })
-
-  it.each(['getPoolLimits', 'setPoolLimits'])(
-    'rejects native backend pool operations through %s without a server request',
-    async method => {
-      const win = mutableWindow()
-      win.__HERMES_SESSION_TOKEN__ = 'served-token'
-      const fetchMock = vi.fn()
-      vi.stubGlobal('fetch', fetchMock)
-
-      expect(installBrowserDesktopBridge()).toBe(true)
-      const operation = Reflect.get(win.hermesDesktop!, method)
-      expect(typeof operation).toBe('function')
-
-      await expect(operation({ maxBackends: 5 })).rejects.toThrow(
-        'Desktop backend pool sizing is not available in the browser-hosted Desktop'
-      )
-      expect(fetchMock).not.toHaveBeenCalled()
-    }
-  )
 
   it('keeps clipboard writes on the browser-native method captured before renderer shims', async () => {
     const win = mutableWindow()

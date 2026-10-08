@@ -31,6 +31,7 @@ from hermes_cli.profile_lifecycle import (
     profile_lifecycle_lease,
     profile_selection_lease,
     profile_shared_file_lease,
+    rollback_profile_retirement,
     serialized_profile_mutation,
     verify_profile_resources_released,
 )
@@ -109,7 +110,7 @@ _CLONE_ALL_HISTORY_EXCLUDE_ROOT: frozenset[str] = frozenset({
 # dashboard) skip bundled-skill seeding. Delete the file to opt back in.
 NO_BUNDLED_SKILLS_MARKER = ".no-bundled-skills"
 
-# ``profile.yaml`` ``role`` values. A role grants backend capabilities (the setup toolset), so
+# ``profile.yaml`` ``role`` values. A role marks a backend-created profile (setup) and grants no toolset;
 # only the backend writes one, and a copy of a profile (clone-all, import) never inherits it.
 SETUP_ROLE = "setup"
 PROFILE_ROLES = frozenset({SETUP_ROLE})
@@ -246,7 +247,7 @@ _DEFAULT_EXPORT_EXCLUDE_ROOT = DEFAULT_EXPORT_EXCLUDE_ROOT = frozenset({
     "hermes-agent",         # repo checkout (multi-GB)
     ".worktrees",           # git worktrees
     "profiles",             # other profiles — never recursive-export
-    "bin",                  # installed binaries (tirith, etc.)
+    "bin",                  # installed binaries
     "node_modules",         # npm packages
     ".hermes-runtime",      # managed runtime tree (install artifact)
     "node",                 # legacy pre-split managed Node tree
@@ -1993,11 +1994,7 @@ def _delete_profile_confirmed(
     # Publish the tombstone BEFORE closing in-process sessions: finalization
     # may attempt one last DB write, and stale workers in this or another
     # process must fail closed rather than recreate the profile during rmtree.
-    retired = begin_profile_retirement(
-        profile_dir,
-        profile_incarnation,
-        rollback_on_failure=False,
-    )
+    retired = begin_profile_retirement(profile_dir, profile_incarnation)
     if retired:
         print(f"✓ Retired {retired} in-process profile resource(s)")
 
@@ -2623,21 +2620,6 @@ def _finish_profile_rename(old_canon: str, new_canon: str, old_dir: Path, new_di
         print(f"⚠ Cannot create alias '{new_canon}' — {collision}")
 
 
-def _record_profile_rename(new_dir: Path, old_canon: str) -> None:
-    """Append ``old_canon`` to the renamed profile's ``previous_names`` history.
-    Best-effort: never raises, so a metadata write failure cannot fail the rename.
-
-    Only reached for a real slug change — ``rename_profile`` returns early for the
-    default profile (display-name only) and refuses ``old == new`` (target exists)."""
-    try:
-        history = read_profile_meta(new_dir).get("previous_names") or []
-        if old_canon not in history:
-            history = [*history, old_canon]
-        write_profile_meta(new_dir, previous_names=history)
-    except Exception as exc:  # unwritable / corrupt profile.yaml — history is advisory
-        logger.debug("profile rename: could not record previous name %r in %s: %s", old_canon, new_dir, exc)
-
-
 def rename_profile(old_name: str, new_name: str) -> Path:
     """Rename a profile: directory, wrapper script, service, active_profile. The default
     profile's home IS the installation root, so "renaming" it sets a presentation-only
@@ -2675,25 +2657,25 @@ def rename_profile(old_name: str, new_name: str) -> Path:
         _stop_profile_backends(old_canon, old_dir)
         _stop_bot_desktop(old_dir)
 
-        # Unroute the old name after retirement has fenced stale writers, before moving its home.
         live_mux = _live_default_multiplexer()
-        retired = begin_profile_retirement(old_dir, profile_incarnation)
-        if retired:
-            print(f"✓ Retired {retired} in-process profile resource(s)")
-        if live_mux:
-            _notify_multiplexer(old_canon)
-
-        # Cached MCP stderr handles otherwise keep the old home open on Windows.
-        from hermes_constants import hermes_home_key
-        from tools.mcp_tool_lifecycle import shutdown_mcp_servers
-        shutdown_mcp_servers(scope=hermes_home_key(old_dir))
-
         try:
+            # Unroute the old name after retirement has fenced stale writers, before moving its home.
+            retired = begin_profile_retirement(old_dir, profile_incarnation)
+            if retired:
+                print(f"✓ Retired {retired} in-process profile resource(s)")
+            if live_mux:
+                _notify_multiplexer(old_canon)
+
+            # Cached MCP stderr handles otherwise keep the old home open on Windows.
+            from hermes_constants import hermes_home_key
+            from tools.mcp_tool_lifecycle import shutdown_mcp_servers
+            shutdown_mcp_servers(scope=hermes_home_key(old_dir))
             verify_profile_resources_released(
                 old_dir,
                 profile_incarnation,
                 subject=f"Profile '{old_canon}'",
                 retry_action="rename",
+                rollback_on_failure=False,
             )
             move_profile_generation(
                 old_dir,
@@ -2701,16 +2683,23 @@ def rename_profile(old_name: str, new_name: str) -> Path:
                 profile_incarnation,
                 lambda: _finish_profile_rename(old_canon, new_canon, old_dir, new_dir),
             )
+        except BaseException:
+            # The one rollback owner for this attempt: anything ending it before the home moved (a
+            # refusal, a failed step, a Ctrl-C in the holder census waits) lifts its tombstone, which
+            # left behind hides the intact profile from list/show/-p and refuses every retry but delete.
+            if old_dir.is_dir():
+                rollback_profile_retirement(old_dir, profile_incarnation)
+            raise
         finally:
             # Publication happens inside move_profile_generation before this sticky
             # selection update, so set_active_profile can resolve the new name.
             if new_dir.is_dir() and not profile_home_is_tombstoned(new_dir):
+                from hermes_cli.profile_identity import _migrate_profile_identity, _record_profile_rename
                 # Metadata writes reject tombstoned homes. Record the rename only
                 # after publication, including when post-move alias updates failed.
                 _record_profile_rename(new_dir, old_canon)
                 _retarget_active_profile(old_canon, new_canon, f"✓ Active profile updated: {new_canon}")
                 # Migrate identity after the new generation admits DB access, before hot-serving it.
-                from hermes_cli.profile_identity import _migrate_profile_identity
                 _migrate_profile_identity(old_canon, new_canon, live_mux)
                 if live_mux:
                     _notify_multiplexer(new_canon)

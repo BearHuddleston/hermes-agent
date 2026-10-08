@@ -91,6 +91,17 @@ def _process_group_exists(pgid: int) -> bool:
     return True
 
 
+def _psutil_alive(proc) -> bool:
+    """Best-effort 'is this psutil Process still alive' for the shutdown cadence;
+    zombies count as dead and it never raises."""
+    try:
+        import psutil  # type: ignore
+
+        return proc.is_running() and proc.status() != psutil.STATUS_ZOMBIE
+    except Exception:
+        return False
+
+
 class PtyBridge:
     """Thin wrapper around ``ptyprocess.PtyProcess`` for byte streaming. Not thread-safe: owned by
     the WebSocket handler that spawned it; reads run in an executor thread, writes are awaited on
@@ -180,9 +191,9 @@ class PtyBridge:
             raise
         return data or None
 
-    async def _wait_writable(self, timeout: float) -> bool:
-        """Wait without blocking the event loop until the master accepts input."""
-        if self._closed or timeout <= 0:
+    async def _wait_writable(self, timeout: Optional[float]) -> bool:
+        """Wait without blocking the event loop until the master accepts input (``None``: no limit)."""
+        if self._closed or (timeout is not None and timeout <= 0):
             return False
         loop = asyncio.get_running_loop()
         ready = loop.create_future()
@@ -222,7 +233,7 @@ class PtyBridge:
                 raise
 
     async def write(
-        self, data: bytes, *, timeout: float = 10.0,
+        self, data: bytes, *, timeout: Optional[float] = 10.0,
         fence: Optional[Callable[[Callable[[], Optional[int]]], Optional[int]]] = None,
     ) -> bool:
         """Write all raw bytes without ever blocking the dashboard event loop.
@@ -230,6 +241,8 @@ class PtyBridge:
         Returns ``False`` when the bridge closes or the child leaves its input
         buffer full for ``timeout`` seconds. Callers can then recycle only the
         affected terminal session while the rest of the dashboard stays live.
+        ``timeout=None`` waits for as long as the child leaves its input unread
+        (cancel the call to stop waiting), so ``False`` then means the bridge closed.
 
         ``fence`` wraps every non-blocking write attempt in a worker thread, so a
         caller can hold a lock around exactly the bytes that reach the child;
@@ -241,7 +254,7 @@ class PtyBridge:
             return True
 
         loop = asyncio.get_running_loop()
-        deadline = loop.time() + max(0.0, timeout)
+        deadline = None if timeout is None else loop.time() + max(0.0, timeout)
         view = memoryview(data)
         while view:
             if fence is None:
@@ -258,7 +271,7 @@ class PtyBridge:
                     await asyncio.sleep(0)
                 continue
 
-            remaining = deadline - loop.time()
+            remaining = None if deadline is None else deadline - loop.time()
             if not await self._wait_writable(remaining):
                 return False
         return True
@@ -309,6 +322,23 @@ class PtyBridge:
 
         pgid = self._pgid
         leader_was_alive = self._proc.isalive()
+        # No group signal is safe for a shared-group child, so its descendants must be
+        # snapshotted BEFORE the parent is signalled: once the parent exits they reparent
+        # and psutil can no longer find them (browser_tool_lifecycle._legacy_kill_process_tree,
+        # process_registry._terminate_host_pid). The sweep below then kills them individually
+        # so a SIGHUP-ignoring helper cannot keep the PTY slave open (#76759).
+        non_leader_descendants: list = []
+        if pgid is not None and pgid != self._proc.pid:
+            # Not a group leader: the child shares OUR process group, so killpg would
+            # take the TUI down with it. Signal the child directly instead.
+            if leader_was_alive:
+                try:
+                    import psutil  # type: ignore
+
+                    non_leader_descendants = psutil.Process(self._proc.pid).children(recursive=True)
+                except Exception:
+                    non_leader_descendants = []
+            pgid = None
 
         # Signal the whole process group, not just the PTY leader: the dashboard TUI starts helper
         # children (e.g. the Python slash worker) and killing only the leader strands them.
@@ -344,6 +374,27 @@ class PtyBridge:
                 except OSError:
                     break  # ESRCH: the group is empty
                 self._wait_for_group_exit(pgid, grace if sig == signal.SIGHUP else 0.5)  # windows-footgun: ok — POSIX-only module (imports fcntl/termios/ptyprocess at top)
+        elif non_leader_descendants:
+            # The shared-group branch: the helpers-outlive-leader sweep above cannot run
+            # (no killpg is safe), so end the snapshotted descendants individually. The main
+            # loop above signalled only the child PID, so the descendants got no SIGHUP —
+            # send it now and allow the helper grace, then SIGKILL survivors: a helper
+            # saving state on SIGHUP still finishes, and one that ignores SIGHUP cannot
+            # outlive the close (mirrors the group sweep's leader-dead cadence, #76759).
+            grace = _helper_shutdown_grace()
+            for sig in (signal.SIGHUP, signal.SIGKILL):  # windows-footgun: ok — POSIX-only module (imports fcntl/termios/ptyprocess at top)
+                for child in non_leader_descendants:
+                    try:
+                        if sig == signal.SIGHUP:  # windows-footgun: ok — POSIX-only module (imports fcntl/termios/ptyprocess at top)
+                            child.send_signal(sig)
+                        else:
+                            child.kill()
+                    except Exception:
+                        pass  # already gone; psutil raises NoSuchProcess/Zombie
+                if sig == signal.SIGHUP:  # windows-footgun: ok — POSIX-only module (imports fcntl/termios/ptyprocess at top)
+                    deadline = time.monotonic() + grace
+                    while any(_psutil_alive(c) for c in non_leader_descendants) and time.monotonic() < deadline:
+                        self._discard_output(0.02)
 
         try:
             self._proc.close(force=True)
