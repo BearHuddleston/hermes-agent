@@ -318,25 +318,30 @@ def external_profile_file_holders(
 ) -> list[int]:
     """External PIDs with an open file under ``profile_dir``; ``candidates`` narrows the answer.
 
-    Windows asks Restart Manager. Elsewhere (and if that fails) every same-user process's open
-    files are read, ownership settled first: fetching another user's (system) process handles
-    can fault inside psutil on Windows and kill the interpreter. A process whose owner cannot be
-    read is skipped for the same reason, and an unreadable current user leaves nothing provably
-    same-user to scan.
+    POSIX runs the descriptor census state.db maintenance runs
+    (``hermes_state_holders.foreign_tree_holders`` says what counts) and raises when it cannot
+    finish, so an incomplete scan never reads as released. Windows asks Restart Manager; if that
+    fails, every same-user process's open files are read, ownership settled first: fetching
+    another user's (system) process handles can fault inside psutil on Windows and kill the
+    interpreter. A process whose owner cannot be read is skipped for the same reason, and an
+    unreadable current user leaves nothing provably same-user to scan.
     """
     profile_dir = Path(profile_dir)
+    wanted = None if candidates is None else set(candidates)
+    if sys.platform != "win32":
+        from hermes_state_holders import foreign_tree_holders
+
+        return list(dict.fromkeys(pid for pid, _held in foreign_tree_holders(profile_dir, wanted)))
     try:
         root = profile_dir.resolve()
     except OSError:
         root = profile_dir
-    wanted = None if candidates is None else set(candidates)
-    if sys.platform == "win32":
-        try:
-            holders = _windows_profile_holders(root)
-        except Exception:
-            logger.debug("Restart Manager census failed; reading open files per process", exc_info=True)
-        else:
-            return [pid for pid in holders if wanted is None or pid in wanted]
+    try:
+        holders = _windows_profile_holders(root)
+    except Exception:
+        logger.debug("Restart Manager census failed; reading open files per process", exc_info=True)
+    else:
+        return [pid for pid in holders if wanted is None or pid in wanted]
     try:
         import psutil  # type: ignore
     except ImportError:
