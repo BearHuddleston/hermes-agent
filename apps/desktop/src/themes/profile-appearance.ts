@@ -4,200 +4,199 @@
  *
  * localStorage is per origin, so a pick that lived only there never reached the
  * Webapp (another origin) or another Desktop on the same profile. The backend
- * is now the authority and localStorage the cache the boot paint reads: the
- * config load publishes here, ThemeProvider adopts it for the profile it
- * paints, and a pick writes back through `saveProfileAppearance`.
+ * is the authority and localStorage the cache the boot paint reads: a config
+ * load adopts here, ThemeProvider paints what was adopted for the profile it
+ * shows, and a pick writes back through `saveProfileAppearance`.
  *
- * A profile name belongs to ONE gateway, so every read, write and piece of
- * bookkeeping here is keyed by its owner: (connection, profile), captured
- * synchronously when the read or pick happens. A queued write therefore still
- * lands on the gateway it was picked on after the window switches to another.
+ * A profile name belongs to ONE gateway, so everything here is keyed by its
+ * owner, (connection, profile), captured synchronously when the read or pick
+ * happens: a queued write still lands on the gateway it was picked on after the
+ * window switches to another.
  *
- * Reads race writes, so every read is stamped on one clock with every local
- * change: a published value speaks for the backend only when its GET began
- * after the owner's last local change and no write for it is in flight. A
- * slower, older GET can never snap a fresh pick back. Writes race each other,
- * so an owner's writes go out one at a time in pick order: the newest pick is
- * always the last PUT to land. Nothing orders another window's writes against
- * them (`{ ok }` carries no revision), so a settlement that raced one re-reads
- * the config in every window still on the owner, once that window's writes for
- * it drain, and again when a later change keeps that read out.
+ * Order: GET and PUT /api/config carry the config.yaml revision (its mtime,
+ * so any writer moves it: another window, process or editor; every PUT
+ * advances it). Each field keeps the answer with the highest revision, so a
+ * slower, older read or save never replaces a newer one. A backend that predates revisions sends none; there the
+ * last answer wins, except a read begun before this window's latest write on
+ * that owner, which may have been served before the write landed. This window's
+ * own writes for an owner go out one at a time, in pick order, so its newest
+ * pick is the last to land.
  */
 
 import { atom } from 'nanostores'
 
 import { ambientOwnerConnectionId, connectionScoped, getApiRequestProfile } from '@/api/client'
-import { getHermesConfig, saveHermesConfig } from '@/api/config'
-import { translateNow } from '@/i18n'
+import { getHermesConfig, peekConfigRevision, saveHermesConfig } from '@/api/config'
+import { translateNow } from '@/i18n/runtime'
 
-import { appearanceOwnerKey } from './appearance-picks'
 import type { ThemeMode } from './context'
 
-export interface ProfileAppearance {
-  profile: string
-  /** `(connection, profile)` key of the gateway the GET was routed to. */
-  owner: string
-  /** Desktop theme name as written; `''` = never picked. */
-  theme: string
-  /** `''` = never picked. */
-  mode: '' | ThemeMode
-  /** Clock reading when the GET that produced this began. */
-  readAt: number
-}
+export type AppearanceField = 'theme' | 'theme_mode'
 
 export interface ProfileAppearancePatch {
   theme?: string
   theme_mode?: ThemeMode
 }
 
-/** The last config load's appearance (for the profile that load served). */
+/** The foreground owner's adopted appearance; `''` = config.yaml leaves it unset. */
+export interface ProfileAppearance {
+  profile: string
+  owner: string
+  theme: string
+  mode: '' | ThemeMode
+}
+
+interface Answer {
+  value: string
+  revision?: number
+}
+
+interface OwnerAppearance {
+  /** Bumped when each write starts and settles: without revisions, a read begun before it may predate it. */
+  generation: number
+  /** This window's writes for the owner, chained in pick order. */
+  writes: Promise<unknown>
+  answers: Partial<Record<AppearanceField, Answer>>
+}
+
+/** The foreground owner's appearance, republished when a config load changes it. */
 export const $profileAppearance = atom<null | ProfileAppearance>(null)
 
-let clock = 0
-const localChangeAt = new Map<string, number>()
-const writesInFlight = new Map<string, number>()
-// Per owner: the settlement of its latest queued write.
-const writeQueues = new Map<string, Promise<unknown>>()
-// Owners to re-read once their writes drain, and when each re-read began.
-const unreconciled = new Set<string>()
-const reconciledAt = new Map<string, number>()
+const owners = new Map<string, OwnerAppearance>()
 
 export const isThemeMode = (value: unknown): value is ThemeMode =>
   value === 'light' || value === 'dark' || value === 'system'
+
+/** The `(connection, profile)` key every appearance read, write and pick is owned by. */
+export const appearanceOwnerKey = (connectionId: string, profile: string): string => `${connectionId}::${profile}`
 
 // The connection an untagged request is served by right now ('local' for the
 // local pool). Identity for keys only; never sent as a request pin.
 export const profileAppearanceOwner = (profile: string): string =>
   appearanceOwnerKey(ambientOwnerConnectionId() ?? '', profile)
 
-/** Record a local appearance change for `profile` on its captured or current connection (a
- *  pick, a settled write, a peer window's pick), so any value read before it
- *  no longer counts. */
-export function markLocalAppearanceChange(profile: string, owner = profileAppearanceOwner(profile)): void {
-  localChangeAt.set(owner, ++clock)
+/** What `owner`'s config.yaml last answered for `field`; `''` while unset or unread. */
+export const adoptedAppearance = (owner: string, field: AppearanceField): string =>
+  owners.get(owner)?.answers[field]?.value ?? ''
+
+// The profile the ambient request scope reads, exactly what a config GET is routed by.
+const requestProfile = (): string => (getApiRequestProfile() ?? '').trim() || 'default'
+
+function ownerAppearance(owner: string): OwnerAppearance {
+  let state = owners.get(owner)
+
+  if (!state) {
+    state = { answers: {}, generation: 0, writes: Promise.resolve() }
+    owners.set(owner, state)
+  }
+
+  return state
 }
 
-/** Call before the config GET: the owner it reads (the ambient request scope,
- *  exactly what the GET is routed by) and when it began. */
-export function beginProfileAppearanceRead(): { owner: string; profile: string; readAt: number } {
-  const profile = (getApiRequestProfile() ?? '').trim() || 'default'
+function adopt(state: OwnerAppearance, field: AppearanceField, value: string, revision?: number): void {
+  const current = state.answers[field]?.revision
 
-  return { owner: profileAppearanceOwner(profile), profile, readAt: ++clock }
+  if (revision === undefined || current === undefined || revision >= current) {
+    state.answers[field] = { value, revision }
+  }
 }
 
-export function publishProfileAppearance(
-  read: { owner: string; profile: string; readAt: number },
-  desktop: unknown
-): void {
-  // This atom is the foreground publication, not a cache of every gateway.
-  // A late read must not evict the current owner's value, even if both
+export interface ProfileAppearanceRead {
+  owner: string
+  profile: string
+  generation: number
+}
+
+/** Call before the config GET: the owner it reads and the writes it began after. */
+export function beginProfileAppearanceRead(): ProfileAppearanceRead {
+  const profile = requestProfile()
+  const owner = profileAppearanceOwner(profile)
+
+  return { generation: ownerAppearance(owner).generation, owner, profile }
+}
+
+/** Adopt a config load's appearance (a `getHermesConfig` answer). */
+export function publishProfileAppearance(read: ProfileAppearanceRead, config: { desktop?: unknown }): void {
+  const { owner, profile } = read
+  const state = ownerAppearance(owner)
+  const revision = peekConfigRevision(config)
+
+  if (revision === undefined && state.generation !== read.generation) {
+    return
+  }
+
+  const desktop = (config.desktop && typeof config.desktop === 'object' ? config.desktop : {}) as Record<
+    string,
+    unknown
+  >
+
+  adopt(state, 'theme', typeof desktop.theme === 'string' ? desktop.theme.trim() : '', revision)
+  adopt(state, 'theme_mode', isThemeMode(desktop.theme_mode) ? desktop.theme_mode : '', revision)
+
+  // This atom is the foreground publication, not a cache of every gateway: a
+  // late answer must not evict the current owner's value, even if both
   // gateways call their profile "default".
-  const liveProfile = (getApiRequestProfile() ?? '').trim() || 'default'
-
-  if (read.owner !== profileAppearanceOwner(liveProfile)) {
+  if (owner !== profileAppearanceOwner(requestProfile())) {
     return
   }
 
-  const record = desktop && typeof desktop === 'object' ? (desktop as Record<string, unknown>) : {}
-  const theme = typeof record.theme === 'string' ? record.theme.trim() : ''
+  const theme = adoptedAppearance(owner, 'theme')
+  const mode = adoptedAppearance(owner, 'theme_mode') as ProfileAppearance['mode']
+  const current = $profileAppearance.get()
 
-  $profileAppearance.set({ ...read, mode: isThemeMode(record.theme_mode) ? record.theme_mode : '', theme })
-}
-
-/** Whether a published appearance still speaks for the backend. */
-export function appearanceIsCurrent(appearance: ProfileAppearance): boolean {
-  return !writesInFlight.get(appearance.owner) && appearance.readAt > (localChangeAt.get(appearance.owner) ?? 0)
-}
-
-/** Re-read `owner`'s config once this window's writes for it drain: a GET begun
- *  after they all landed carries the backend's own order. */
-export function reconcileProfileAppearance(owner: string): void {
-  // One that began after this window's last change already answers. Every
-  // request follows such a change (a drained write, or one that kept the last
-  // re-read out), so a failed one never blocks the next.
-  if ((reconciledAt.get(owner) ?? 0) > (localChangeAt.get(owner) ?? 0)) {
-    return
-  }
-
-  if (writesInFlight.get(owner)) {
-    unreconciled.add(owner)
-  } else {
-    void reconcile(owner)
+  // An unchanged answer publishes nothing, so a re-read writes no cache and
+  // wakes no peer window.
+  if (current?.owner !== owner || current.theme !== theme || current.mode !== mode) {
+    $profileAppearance.set({ mode, owner, profile, theme })
   }
 }
 
-async function reconcile(owner: string): Promise<void> {
-  unreconciled.delete(owner)
+/** Re-read the foreground owner's appearance: a peer window saved or adopted one. */
+export async function refreshProfileAppearance(): Promise<void> {
   const read = beginProfileAppearanceRead()
 
-  // The window moved to another owner; its own loads decide there, and the
-  // peers still on this one re-read for it.
-  if (read.owner !== owner) {
-    return
-  }
-
-  reconciledAt.set(owner, read.readAt)
-
   try {
-    // Published like any load, under the same admission: an unset field
-    // leaves the cached pick painted.
-    publishProfileAppearance(read, (await getHermesConfig())?.desktop)
+    publishProfileAppearance(read, await getHermesConfig())
   } catch {
-    // Like any failed config load: the next one reconciles.
-  }
-
-  // A change since this read began (a pick here or in a peer, a peer's read)
-  // keeps it out, and the order it was asked for is still unknown: ask again.
-  if ((localChangeAt.get(owner) ?? 0) > read.readAt) {
-    reconcileProfileAppearance(owner)
+    // Like any failed config load: the next one reads again.
   }
 }
 
-/** Write a pick to the profile's config.yaml on the gateway it was picked on,
- *  after that owner's earlier writes settle. Sparse: PUT /api/config
- *  deep-merges, so echoing more would overwrite keys other surfaces changed. */
+/** Write to the profile's config.yaml on the gateway it was picked on, after
+ *  that owner's earlier writes settle, and adopt what it saved (the caller
+ *  repaints; only a config load publishes, so an unread field is never taken
+ *  for an unset one). Sparse: PUT /api/config deep-merges, so echoing more
+ *  would overwrite keys other surfaces changed. Rejects when the save fails. */
 export async function saveProfileAppearance(profile: string, patch: ProfileAppearancePatch): Promise<void> {
-  // A bare renderer (tests, the design preview) has no backend to write to.
-  if (!window.hermesDesktop) {
-    return
-  }
-
   // Capture the owner now, not when the queue reaches this write: by then the
   // window may be routed to another gateway that also has this profile name.
   // An untagged pick stays untagged (the pin carries exactly the tag the
   // immediate write would have had), so it keeps Electron's untagged routing.
-  const key = profileAppearanceOwner(profile)
+  const owner = profileAppearanceOwner(profile)
   const pin = { connectionId: connectionScoped().connectionId, profile }
+  const state = ownerAppearance(owner)
+  const write = state.writes.catch(() => undefined).then(() => saveHermesConfig({ desktop: patch }, pin))
 
-  localChangeAt.set(key, ++clock)
-  writesInFlight.set(key, (writesInFlight.get(key) ?? 0) + 1)
-
-  const write = (writeQueues.get(key) ?? Promise.resolve())
-    .catch(() => undefined)
-    .then(async () => {
-      const result = await saveHermesConfig({ desktop: patch }, pin)
-
-      if (!result?.ok) {
-        throw new Error(translateNow('settings.config.autosaveFailed'))
-      }
-    })
-
-  writeQueues.set(key, write)
+  state.writes = write
+  state.generation += 1
 
   try {
-    await write
+    const result = await write
+
+    if (!result?.ok) {
+      throw new Error(translateNow('settings.config.autosaveFailed'))
+    }
+
+    for (const [field, value] of Object.entries(patch) as [AppearanceField, string][]) {
+      adopt(state, field, value, result.revision)
+    }
   } finally {
-    if (writeQueues.get(key) === write) {
-      writeQueues.delete(key)
-    }
-
-    writesInFlight.set(key, (writesInFlight.get(key) ?? 1) - 1)
-    // A GET that began while this write was in flight may have been served
-    // before it landed.
-    localChangeAt.set(key, ++clock)
-
-    if (!writesInFlight.get(key) && unreconciled.has(key)) {
-      void reconcile(key)
-    }
+    state.generation += 1
   }
+}
+
+/** A deleted or renamed profile's answers are not its successor's, whose
+ *  config.yaml may carry an older revision. Writes in flight settle unseen. */
+export function forgetProfileAppearance(owner: string): void {
+  owners.delete(owner)
 }

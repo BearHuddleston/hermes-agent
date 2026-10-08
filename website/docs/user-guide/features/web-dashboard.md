@@ -496,7 +496,7 @@ Returns the 20 most recent sessions with metadata (model, token counts, timestam
 
 ### GET /api/config
 
-Returns the current `config.yaml` contents as JSON.
+Returns the current `config.yaml` contents as JSON. With `?with_revision=true` the body is `{"config": {...}, "revision": N}` instead, where `revision` orders saves of that profile's config (it only grows, including across processes and restarts); clients use it to tell which of two racing answers is newer.
 
 ### GET /api/config/defaults
 
@@ -508,7 +508,7 @@ Returns a schema describing every config field — type, description, category, 
 
 ### PUT /api/config
 
-Saves a new configuration. Body: `{"config": {...}}`.
+Saves a new configuration. Body: `{"config": {...}}`. Returns `{"ok": true, "revision": N}`, the revision a following `GET /api/config?with_revision=true` reports for this save.
 
 ### GET /api/env
 

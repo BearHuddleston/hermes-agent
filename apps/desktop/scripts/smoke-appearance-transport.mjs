@@ -1,11 +1,12 @@
 // Regression based on andrexibiza’s PR #93508 review 5408957939 fixture: racing appearance saves across windows.
 // Two real Chromium pages per case run ThemeProvider, useHermesConfig and native storage events against a
-// stateful config stub that orders commits, responses and config reads independently. Schedules: commit x
-// response order (F7); a peer read before a save lands (F8); stale peer reads answered after that save settles
-// or during the re-read it starts; a later pick that keeps both windows' re-reads out; a picker that leaves the
-// profile before its save lands. For theme and mode on the default and a named profile, both pages, the cache
-// and the config must agree, every save is one the schedule picked, and only a failed save's own window may
-// say it failed. Every step waits on transport, storage or page state (5 s bounds), never on elapsed time.
+// stateful config stub that numbers its revisions like hermes serve (GET ?with_revision, PUT { ok, revision })
+// and orders commits, responses and config reads independently. Schedules: commit x response order (F7); a peer
+// read before a save lands (F8); stale peer reads answered after that save settles or around the re-read its
+// cache write starts; a later pick while that re-read is held; a picker that leaves the profile before its save
+// lands. For theme and mode on the default and a named profile, both pages, the cache and the config must agree,
+// every save is one the schedule picked, and only a failed save's own window may say it failed. Every step waits
+// on transport, storage or page state (5 s bounds), never on elapsed time.
 // Run from the repository root: CHROMIUM_PATH=/path/to/chrome node apps/desktop/scripts/smoke-appearance-transport.mjs
 import {EventEmitter} from 'node:events'
 import fs from 'node:fs/promises'
@@ -85,16 +86,18 @@ const transport = (req, res) => {
     const {client, request} = JSON.parse(body)
     const reply = value => { res.setHeader('content-type', 'application/json'); res.end(JSON.stringify(value)) }
     const hold = () => { holding[client]++; return value => { holding[client]--; reply(value) } }
-    const config = configOf(request), served = structuredClone(config)
+    const config = configOf(request), desktop = {...config.desktop}
+    // A read answers with the config, and the revision, as they were when it was served.
+    const served = request.path.includes('with_revision=true') ? {config: {desktop}, revision: config.revision} : {desktop}
     // The owner's saves wait for the schedule to commit and answer them; its reads are answered unless held.
     if (request.method === 'PUT' && config === durable) {
       const item = {answer: hold(), commit() {
-        if (!item.committed) Object.assign(durable.desktop, request.body.config.desktop)
+        if (!item.committed) { Object.assign(durable.desktop, request.body.config.desktop); item.revision = ++durable.revision }
         item.committed = true
       }}
       saves[client].push(item)
-    } else if (request.method === 'PUT') { Object.assign(config.desktop, request.body.config.desktop); reply({ok: true}) }
-    else if (request.path !== '/api/config') reply({})
+    } else if (request.method === 'PUT') { Object.assign(config.desktop, request.body.config.desktop); reply({ok: true, revision: ++config.revision}) }
+    else if (request.path.split('?')[0] !== '/api/config') reply({})
     else if (config === durable && heldReads[client]) { const answer = hold(); heldReads[client].push(() => answer(served)) }
     else reply(served)
     changed.emit('change')
@@ -127,7 +130,7 @@ const respond = async (client, ok) => {
   const item = await heldSave(client)
   item.answered = true
   if (ok) item.commit()
-  item.answer(ok ? {ok: true} : {failed: true})
+  item.answer(ok ? {ok: true, revision: item.revision} : {failed: true})
 }
 // Holds the client's next read of the owner's config; the result answers it with the config as it was when asked.
 const holdRead = client => {
@@ -181,12 +184,13 @@ const agrees = config => ['theme', 'theme_mode'].every(field => {
   return s.view === config[field] && s.cache === config[field] && (field !== 'theme' || s.painted === config.theme)
 })
 
-// Each schedule starts with A's pick shown in both pages and its save held at the transport.
+// Each schedule starts with A's pick painted in A and its save held at the transport. A peer shows a pick once
+// its save lands: the picker caches it then, and the peer re-reads.
 const scenarios = {
   // F7: the transport commits both saves in one order and answers them in either.
   ...Object.fromEntries(['AB', 'BA'].flatMap(commits => ['BA', 'AB'].map(answers => [`commit${commits}-resp${answers}`,
-    async ({a, b, pages, field, second}) => {
-      await pick(b, field, second); await shows(a, field, second)
+    async ({b, pages, field, second}) => {
+      await pick(b, field, second); await shows(b, field, second); await heldSave('B')
       for (const client of commits) await commit(client)
       for (const client of answers) await settle(pages, client, true)
     }]))),
@@ -199,51 +203,50 @@ const scenarios = {
     await settle(pages, 'A', true)
     deliver(); await load
   },
-  // B adopts one stale read (F8); a second answers while A's re-read after its unordered save is held.
-  'second-stale-peer-read-during-reconcile': async ({b, pages}) => {
+  // B adopts one stale read (F8); a second, served before A's save landed, answers before or after the re-read
+  // A's cache write starts in B.
+  ...Object.fromEntries(['before', 'after'].map(order => [`second-stale-peer-read-${order}-reread`, async ({b, pages}) => {
     await refresh(b)
-    const read = holdRead('B'), load = refresh(b), deliverB = await read
-    const reread = holdRead('A')
+    const read = holdRead('B'), load = refresh(b), deliverStale = await read
+    const reread = holdRead('B')
     await settle(pages, 'A', true)
-    const deliverA = await reread
-    await quiet(pages)
-    deliverB(); await load
-    deliverA()
-  },
-  // B adopts a stale read (F8) and A's save lands unordered. Both windows' re-reads are held until a later pick
-  // keeps them out, so each must ask again; that pick's save settles last.
+    const deliverReread = await reread
+    if (order === 'before') { deliverStale(); await load; deliverReread() } else { deliverReread(); deliverStale(); await load }
+  }])),
+  // B adopts a stale read (F8) and A's save lands. B's re-read is held while a later pick (either window, either
+  // field) goes out; that pick's save settles last.
   ...Object.fromEntries([['own', 'other'], ['peer', 'other'], ['own', 'same'], ['peer', 'same']].map(([who, what]) =>
-    [`reconcile-then-${who}-${what}-pick${what === 'same' ? '-fails' : ''}`, async ({b, pages, field, other, otherValue, second}) => {
+    [`reread-then-${who}-${what}-pick${what === 'same' ? '-fails' : ''}`, async ({b, pages, field, other, otherValue, second}) => {
       await refresh(b)
-      const rereads = [holdRead('A'), holdRead('B')]
+      const reread = holdRead('B')
       await settle(pages, 'A', true)
-      const delivers = await Promise.all(rereads), client = who === 'own' ? 'A' : 'B'
+      const deliver = await reread, client = who === 'own' ? 'A' : 'B'
       await quiet(pages)
       await (what === 'other' ? pick(pages[client], other, otherValue) : pick(pages[client], field, second))
       await heldSave(client); await quiet(pages)
-      for (const deliver of delivers) deliver()
+      deliver()
       await quiet(pages)
       await settle(pages, client, what === 'other')
     }])),
-  // B adopts a stale read; A leaves for another profile and loads it before its save lands, unordered.
+  // B adopts a stale read; A leaves for another profile and loads it before its save lands.
   'picker-leaves-owner': async t => {
     const {a, b, pages, profile, field, base, first} = t
     await refresh(b); await shows(b, field, base)
     await a.evaluate(() => window.route('beta')); await refresh(a)
     await settle(pages, 'A', true)
-    await named('B re-reads for the window that left', b.waitForFunction(({field, first}) => {
+    await named('B re-reads when the window that left caches its save', b.waitForFunction(({field, first}) => {
       const s = window.state(field)
       return s.view === first && s.cache === first
     }, {field, first}))
-    // Returning, A paints the shared cache before its own config load.
+    // Returning, A paints what it last knew of the owner's config, which the shared cache now holds too.
     await a.evaluate(profile => window.route(profile), profile)
-    await named('A paints the cache on return', a.waitForFunction(field => window.state(field).view === window.state(field).cache, field))
+    await named('A paints the owner on return', a.waitForFunction(field => window.state(field).view === window.state(field).cache, field))
     t.returned = (await state(a, field)).view
     await refresh(a)
   }
 }
 // Only a failed save's own window says so; a peer's read must not swallow it.
-const failedSaves = {'peer-read-then-failure': '1/0', 'reconcile-then-own-same-pick-fails': '1/0', 'reconcile-then-peer-same-pick-fails': '0/1'}
+const failedSaves = {'peer-read-then-failure': '1/0', 'reread-then-own-same-pick-fails': '1/0', 'reread-then-peer-same-pick-fails': '0/1'}
 
 let browser
 const results = [], errors = []
@@ -257,7 +260,8 @@ try {
     const [other, otherValue] = field === 'theme' ? ['theme_mode', 'dark'] : ['theme', 'mono']
     for (const [scenario, run] of Object.entries(scenarios)) {
       owner = profile; saves = {A: [], B: []}; heldReads = {A: null, B: null}; holding = {A: 0, B: 0}; changed.removeAllListeners()
-      durable = {desktop: {theme: 'ember', theme_mode: 'light'}}; elsewhere = {desktop: {theme: 'everforest', theme_mode: 'system'}}
+      durable = {desktop: {theme: 'ember', theme_mode: 'light'}, revision: 1}
+      elsewhere = {desktop: {theme: 'everforest', theme_mode: 'system'}, revision: 1}
       const context = await browser.newContext()
       context.setDefaultTimeout(5000)
       const a = await context.newPage(), b = await context.newPage(), pages = {A: a, B: b}
@@ -270,7 +274,7 @@ try {
           await page.waitForFunction(() => typeof window.pick === 'function', null, {timeout: 60000})
           await refresh(page)
         }
-        await pick(a, field, first); await shows(b, field, first); await heldSave('A')
+        await pick(a, field, first); await shows(a, field, first); await heldSave('A')
         await run(t)
         await named('pages go quiet', quiet(pages))
         await named('pages agree with the config', Promise.all([a, b].map(page => page.waitForFunction(agrees, durable.desktop))))

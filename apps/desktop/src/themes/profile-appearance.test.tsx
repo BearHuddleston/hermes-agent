@@ -60,7 +60,8 @@ function onProfile(profile: string, connection: HermesConnection = CONNECTION) {
 const appearance = (theme: string, theme_mode: string) => ({ desktop: { theme, theme_mode } })
 
 describe('profile appearance ↔ config.yaml', () => {
-  // Each profile's config.yaml as the backend serves it (PUTs are recorded, not applied).
+  // Each profile's config.yaml as a backend that predates config revisions serves
+  // it (bare GET, `{ ok }` PUT): the fallback ordering. PUTs are recorded, not applied.
   let configs: Record<string, unknown> = {}
   let heldRead: null | ReturnType<typeof deferred<unknown>> = null
   // When set, every PUT stays in flight until the test settles it.
@@ -78,7 +79,7 @@ describe('profile appearance ↔ config.yaml', () => {
       return settle.promise
     }
 
-    if (request.path !== '/api/config') {
+    if (request.path.split('?')[0] !== '/api/config') {
       return {}
     }
 

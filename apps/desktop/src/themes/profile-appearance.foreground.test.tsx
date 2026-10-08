@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { setApiRequestConnection, setApiRequestLocalMode, setApiRequestProfile } from '@/api/client'
 import { useHermesConfig } from '@/app/session/hooks/use-hermes-config'
 import type { HermesApiRequest } from '@/global'
-import { $notifications, clearNotifications } from '@/store/notifications'
+import { clearNotifications } from '@/store/notifications'
 import { $activeGatewayProfile } from '@/store/profile'
 import { $connection } from '@/store/session'
 
@@ -108,7 +108,8 @@ const appearanceCase = (field: 'theme' | 'theme_mode') => ({
 })
 
 // Transport has no real network and deliberately holds only requests the test chooses.
-// All routing, clock/queue bookkeeping, config publication, React adoption and CSS paint are real.
+// The backend predates config revisions (bare GET, `{ ok }` PUT): the fallback ordering. All routing, write
+// queueing, config publication, React adoption and CSS paint are real.
 describe('foreground profile appearance ownership', () => {
   let configs: Record<string, unknown>
   let held: Held[]
@@ -128,7 +129,7 @@ describe('foreground profile appearance ownership', () => {
       return settle.promise
     }
 
-    if (request.path !== '/api/config') {
+    if (request.path.split('?')[0] !== '/api/config') {
       return {}
     }
 
@@ -137,6 +138,8 @@ describe('foreground profile appearance ownership', () => {
 
     return read ? read.promise : configs[request.connectionId ?? 'untagged']
   })
+
+  const writes = () => api.mock.calls.filter(([request]) => request.method === 'PUT')
 
   beforeEach(() => {
     cleanup()
@@ -184,63 +187,89 @@ describe('foreground profile appearance ownership', () => {
     await act(() => load())
     holdWrites = true
     await act(async () => {
-      if (field === 'theme') { ctx.setTheme('mono') } else { ctx.setMode('dark') }
+      if (field === 'theme') {
+        ctx.setTheme('mono')
+      } else {
+        ctx.setMode('dark')
+      }
     })
     expect(held).toHaveLength(1)
     const key = field === 'theme' ? 'hermes-desktop-profile-themes-v1' : 'hermes-desktop-profile-modes-v1'
     const oldValue = window.localStorage.getItem(key)
     act(() => {
-      if (field === 'theme') { skinPref.put('other-profile', 'everforest') } else { modePref.put('other-profile', 'system') }
+      if (field === 'theme') {
+        skinPref.put('other-profile', 'everforest')
+      } else {
+        modePref.put('other-profile', 'system')
+      }
+
       window.dispatchEvent(new StorageEvent('storage', { key, oldValue, newValue: window.localStorage.getItem(key) }))
     })
-    await act(async () => { held[0].settle.resolve({ ok: false }) })
+    await act(async () => {
+      held[0].settle.resolve({ ok: false })
+    })
     expect(state(profile)).toMatchObject({ theme: 'ember', cachedTheme: 'ember', mode: 'light', cachedMode: 'light' })
   })
 
-  it.each(['theme', 'theme_mode'] as const)('keeps an inactive profile peer %s pick after an older failure', async field => {
-    const profile = `inactive-peer-${++serial}`
-    configs.A = appearance('ember', 'light')
-    on('A', profile)
-    const load = mountApp()
-    await act(() => load())
-    holdWrites = true
-    await act(async () => {
-      if (field === 'theme') { ctx.setTheme('mono') } else { ctx.setMode('dark') }
-    })
-    expect(held).toHaveLength(1)
-    on('B', 'other-profile')
-    const key = field === 'theme' ? 'hermes-desktop-profile-themes-v1' : 'hermes-desktop-profile-modes-v1'
-    const oldValue = window.localStorage.getItem(key)
-    act(() => {
-      if (field === 'theme') { skinPref.put(profile, 'everforest') } else { modePref.put(profile, 'system') }
-      window.dispatchEvent(new StorageEvent('storage', { key, oldValue, newValue: window.localStorage.getItem(key) }))
-    })
-    const foreground = state('other-profile')
-    await act(async () => { held[0].settle.resolve({ ok: false }) })
-    expect(field === 'theme' ? skinPref.own(profile) : modePref.own(profile)).toBe(field === 'theme' ? 'everforest' : 'system')
-    expect(state('other-profile')).toEqual(foreground)
-  })
+  it.each(['theme', 'theme_mode'] as const)(
+    'keeps an inactive profile peer %s pick after an older failure',
+    async field => {
+      const profile = `inactive-peer-${++serial}`
+      configs.A = appearance('ember', 'light')
+      on('A', profile)
+      const load = mountApp()
+      await act(() => load())
+      holdWrites = true
+      await act(async () => {
+        if (field === 'theme') {
+          ctx.setTheme('mono')
+        } else {
+          ctx.setMode('dark')
+        }
+      })
+      expect(held).toHaveLength(1)
+      on('B', 'other-profile')
+      const key = field === 'theme' ? 'hermes-desktop-profile-themes-v1' : 'hermes-desktop-profile-modes-v1'
+      const oldValue = window.localStorage.getItem(key)
+      act(() => {
+        if (field === 'theme') {
+          skinPref.put(profile, 'everforest')
+        } else {
+          modePref.put(profile, 'system')
+        }
 
-  it.each(['theme', 'theme_mode'] as const)('keeps a peer %s pick when an older local write fails', async field => {
+        window.dispatchEvent(new StorageEvent('storage', { key, oldValue, newValue: window.localStorage.getItem(key) }))
+      })
+      const foreground = state('other-profile')
+      await act(async () => {
+        held[0].settle.resolve({ ok: false })
+      })
+      expect(field === 'theme' ? skinPref.own(profile) : modePref.own(profile)).toBe(
+        field === 'theme' ? 'everforest' : 'system'
+      )
+      expect(state('other-profile')).toEqual(foreground)
+    }
+  )
+
+  it.each(['theme', 'theme_mode'] as const)('ends on a peer %s pick when an older local write fails', async field => {
     const profile = `peer-${++serial}`
-    configs.A = appearance('ember', 'light')
+    const { config, pick, pref, shows } = appearanceCase(field)
+    configs.A = config('ember')
     on('A', profile)
     const load = mountApp()
     await act(() => load())
     holdWrites = true
-    await act(async () => {
-      if (field === 'theme') { ctx.setTheme('mono') } else { ctx.setMode('dark') }
-    })
+    await act(async () => pick(field === 'theme' ? 'mono' : 'dark'))
     expect(held).toHaveLength(1)
-    const key = field === 'theme' ? 'hermes-desktop-profile-themes-v1' : 'hermes-desktop-profile-modes-v1'
-    const oldValue = window.localStorage.getItem(key)
-    act(() => {
-      if (field === 'theme') { skinPref.put(profile, 'everforest') } else { modePref.put(profile, 'system') }
-      window.dispatchEvent(new StorageEvent('storage', { key, oldValue, newValue: window.localStorage.getItem(key) }))
+    // A peer caches its pick only once its save landed; this window re-reads.
+    const theirs = field === 'theme' ? 'everforest' : 'system'
+    configs.A = config(theirs)
+    fromPeer(() => pref.pick(profile, theirs))
+    await act(() => new Promise(resolve => setTimeout(resolve, 0)))
+    await act(async () => {
+      held[0].settle.resolve({ ok: false })
     })
-    const peer = state(profile)
-    await act(async () => { held[0].settle.resolve({ ok: false }) })
-    expect(state(profile)).toEqual(peer)
+    expect(state(profile)).toMatchObject(shows(theirs))
   })
 
   it.each([false, true])('restores the last durable pick after queued failures (first succeeds=%s)', async firstOk => {
@@ -255,9 +284,13 @@ describe('foreground profile appearance ownership', () => {
       ctx.setTheme('everforest')
     })
     expect(held).toHaveLength(1)
-    await act(async () => { held[0].settle.resolve({ ok: firstOk }) })
+    await act(async () => {
+      held[0].settle.resolve({ ok: firstOk })
+    })
     expect(held).toHaveLength(2)
-    await act(async () => { held[1].settle.resolve({ ok: false }) })
+    await act(async () => {
+      held[1].settle.resolve({ ok: false })
+    })
     const expected = firstOk ? 'mono' : 'ember'
     expect(state(profile)).toMatchObject({ theme: expected, cachedTheme: expected, painted: expected })
   })
@@ -306,7 +339,13 @@ describe('foreground profile appearance ownership', () => {
       }
 
       await act(async () => held.shift()!.settle.resolve({ ok: false }))
-      expect(state(profile)).toEqual(adopted)
+      // Back on its owner, the window paints that owner's config, and the
+      // cache (one per profile name) follows the owner it shows.
+      expect(state(profile)).toEqual(
+        returnToOwner
+          ? { theme: 'ember', mode: 'light', painted: 'ember', cachedTheme: 'ember', cachedMode: 'light' }
+          : adopted
+      )
 
       // A later authoritative refresh on the original owner still works.
       on(from, profile)
@@ -337,7 +376,8 @@ describe('foreground profile appearance ownership', () => {
       await act(async () => ctx.setTheme('mono'))
       expect(held).toHaveLength(2)
       const picked = state(profile)
-      expect(picked).toMatchObject({ theme: 'mono', mode: 'dark', cachedTheme: 'mono' })
+      // Painted at once; the cache follows only once the save lands.
+      expect(picked).toMatchObject({ theme: 'mono', mode: 'dark', cachedTheme: 'everforest' })
       await act(async () => held.shift()!.settle.resolve({ ok: false }))
       expect(state(profile)).toEqual(picked)
       await act(async () => held.shift()!.settle.resolve({ ok: false }))
@@ -388,154 +428,6 @@ describe('foreground profile appearance ownership', () => {
     }
   )
 
-  /** This window on `A::profile` after its first config load, beside a peer window's own settlement. */
-  async function besidePeer(kind: 'default' | 'named', field: 'theme' | 'theme_mode') {
-    const profile = kind === 'named' ? `peer-${++serial}` : 'default'
-    const owner = `A::${profile}`
-    const { config, pref, values, ...rest } = appearanceCase(field)
-    configs.A = config(values[0])
-    on('A', profile)
-    const load = mountApp()
-    await act(() => load())
-    vi.resetModules()
-    const peer = await import('./appearance-picks')
-
-    const peerPick = (value: string) =>
-      fromPeer(() => {
-        const begun = peer.beginAppearancePick(profile, field, owner, pref.own(profile), value)
-        pref.put(profile, value)
-
-        return begun
-      })
-
-    // Answered before this window's save, the peer's settlement is ordered: it
-    // repaints nothing the cache does not already show, and re-reads nothing.
-    const peerSaved = (pick: ReturnType<typeof peerPick>) =>
-      fromPeer(() => peer.settleAppearancePick(pick, true, pref.own(profile)))
-
-    return { ...rest, config, load, owner, peer, peerPick, peerSaved, pref, profile, values }
-  }
-
-  /** Answer a held request, then let everything it starts settle. */
-  const answer = (respond: () => void) =>
-    act(async () => {
-      respond()
-      await new Promise(resolve => setTimeout(resolve, 0))
-    })
-
-  const slots = (['default', 'named'] as const).flatMap(profile =>
-    (['theme', 'theme_mode'] as const).map(field => ({ profile, field }))
-  )
-
-  // A picks, then B; this window is whichever is answered last. Nothing orders
-  // two windows' writes, and `{ ok }` says neither which one the backend applied last.
-  const saves = slots.flatMap(slot =>
-    (['AB', 'BA'] as const).flatMap(commits => (['AB', 'BA'] as const).map(answers => ({ ...slot, commits, answers })))
-  )
-
-  it.each(saves)(
-    'ends on the saved $field when picks commit $commits and answer $answers ($profile)',
-    async ({ profile: kind, field, commits, answers }) => {
-      const { config, peerPick, peerSaved, pick, profile, shows, values } = await besidePeer(kind, field)
-      const value = { A: values[1], B: values[2] }
-      const saved = value[commits[1] as 'A' | 'B']
-      let peerPicked!: ReturnType<typeof peerPick>
-      holdWrites = true
-
-      for (const picker of ['A', 'B'] as const) {
-        if (picker === answers[1]) {
-          await act(async () => pick(value[picker]))
-        } else {
-          peerPicked = peerPick(value[picker])
-        }
-      }
-
-      expect(held).toHaveLength(1)
-      configs.A = config(saved)
-      peerSaved(peerPicked)
-      await answer(() => held.shift()!.settle.resolve({ ok: true }))
-      expect(state(profile)).toMatchObject(shows(saved))
-    }
-  )
-
-  // otherPick: this window picks the other field while the landed save's re-read is in flight.
-  const reads = slots.flatMap(slot => [
-    { ...slot, save: 'landed' as const, otherPick: false },
-    { ...slot, save: 'failed' as const, otherPick: false },
-    { ...slot, save: 'landed' as const, otherPick: true }
-  ])
-
-  it.each(reads)(
-    'ends on the saved $field when a peer adopts a read served before this save $save (otherPick=$otherPick, $profile)',
-    async ({ profile: kind, field, save, otherPick }) => {
-      const { config, owner, peer, pick, pref, profile, shows, values } = await besidePeer(kind, field)
-      const other = appearanceCase(field === 'theme' ? 'theme_mode' : 'theme')
-      const [base, mine] = values
-      const saved = save === 'landed' ? mine : base
-      const reread = deferred<unknown>()
-      holdWrites = true
-      await act(async () => pick(mine))
-      fromPeer(() => {
-        peer.confirmAppearance(profile, field, owner, base)
-        pref.put(profile, base)
-      })
-      configs.A = config(saved)
-      nextRead = otherPick ? reread : null
-      await answer(() => held.shift()!.settle.resolve({ ok: save === 'landed' }))
-
-      if (otherPick) {
-        // Its write keeps out the re-read served before it landed; once it drains, this window asks again.
-        await act(async () => other.pick(other.values[1]))
-        await answer(() => reread.resolve(config(saved)))
-        configs.A = config(saved, other.values[1])
-        await answer(() => held.shift()!.settle.resolve({ ok: true }))
-      }
-
-      expect(state(profile)).toMatchObject({ ...shows(saved), ...(otherPick ? other.shows(other.values[1]) : {}) })
-      // The peer's read repainted this pick without superseding it, so its failure still says so.
-      expect($notifications.get().filter(notice => notice.kind === 'error')).toHaveLength(save === 'failed' ? 1 : 0)
-    }
-  )
-
-  it.each(slots)(
-    'ends on the $field a peer saved after this window adopted an older read, though the peer left ($profile)',
-    async ({ profile: kind, field }) => {
-      const { config, load, peer, peerPick, pref, profile, shows, values } = await besidePeer(kind, field)
-      const [base, , theirs] = values
-      const peerPicked = peerPick(theirs)
-      // This window adopts a read served before the peer's save commits.
-      await act(() => load())
-      expect(state(profile)).toMatchObject(shows(base))
-      // The save lands unordered after the peer left for another profile, so the peer re-reads nothing here.
-      configs.A = config(theirs)
-      await answer(() => fromPeer(() => peer.settleAppearancePick(peerPicked, true, pref.own(profile))))
-      expect(state(profile)).toMatchObject(shows(theirs))
-    }
-  )
-
-  it.each(slots)(
-    'never adopts a $field read served before a peer save landed ($profile)',
-    async ({ profile: kind, field }) => {
-      const { config, load, peerPick, peerSaved, profile, shows, values } = await besidePeer(kind, field)
-      const [base, , theirs] = values
-      const peerPicked = peerPick(theirs)
-      // This window's GET is served before the peer's save lands, and answers after the peer settled it.
-      const stale = deferred<unknown>()
-      nextRead = stale
-      let staleLoad!: Promise<void>
-      act(() => {
-        staleLoad = load()
-      })
-      configs.A = config(theirs)
-      peerSaved(peerPicked)
-      await act(async () => {
-        stale.resolve(config(base))
-        await staleLoad
-      })
-      expect(state(profile)).toMatchObject(shows(theirs))
-    }
-  )
-
   /** Start a config load whose answer the test gives; it began before whatever happens next. */
   function staleRead(load: () => Promise<void>) {
     const answered = deferred<unknown>()
@@ -552,67 +444,29 @@ describe('foreground profile appearance ownership', () => {
       })
   }
 
-  it.each(slots)(
-    'never adopts a $field read served before a peer adopted a newer one ($profile)',
-    async ({ profile: kind, field }) => {
-      const { config, load, owner, peer, pref, profile, shows, values } = await besidePeer(kind, field)
-      const [base, , theirs] = values
-      const settleStale = staleRead(load)
-      // A peer's confirmed read reaches this window only through the cache.
-      fromPeer(() => {
-        peer.confirmAppearance(profile, field, owner, theirs)
-        pref.put(profile, theirs)
-      })
-      await settleStale(config(base))
-      expect(state(profile)).toMatchObject(shows(theirs))
-    }
-  )
-
-  // An unassigned profile paints the inherited look (a pick on any profile) or
-  // the default profile's own pick, neither of which is a pick of its own.
+  // A profile whose config.yaml and cache have no pick of their own paints
+  // the inherited look (a pick on any profile) or the default profile's own
+  // pick (#101216); neither is uploaded, and a read that leaves it unset keeps it.
   const inherits = (['theme', 'theme_mode'] as const).flatMap(field =>
     (['inherited', 'default'] as const).map(source => ({ field, source }))
   )
 
   it.each(inherits)(
-    'keeps the $source $field a peer changed over an unassigned profile read begun before it',
+    'paints the $source $field a peer changed over an unassigned profile',
     async ({ field, source }) => {
-      const { config, pref, shows, values } = appearanceCase(field)
-      const [base, , theirs] = values
+      const { pref, values } = appearanceCase(field)
+      const [, , theirs] = values
       const profile = `unassigned-${++serial}`
-      configs.A = config(base)
+      configs.A = appearance('', '')
       on('A', profile)
       const load = mountApp()
       const settleStale = staleRead(load)
       fromPeer(() => (source === 'inherited' ? pref.pick('other-profile', theirs) : pref.put('default', theirs)))
-      await settleStale(config(base))
+      await settleStale(appearance('', ''))
+      await act(() => load())
       expect(pref.own(profile)).toBeNull()
       expect(field === 'theme' ? ctx.themeName : ctx.mode).toBe(theirs)
-      // A read begun after it speaks for the backend again.
-      await act(() => load())
-      expect(state(profile)).toMatchObject(shows(base))
-    }
-  )
-
-  it.each(['theme', 'theme_mode'] as const)(
-    'never refills a %s cache a peer cleared from a read begun before',
-    async field => {
-      const { config, pref, values } = appearanceCase(field)
-      const [base] = values
-      const profile = `cleared-${++serial}`
-      configs.A = config(base)
-      on('A', profile)
-      const load = mountApp()
-      await act(() => load())
-      const settleStale = staleRead(load)
-      act(() => {
-        window.localStorage.clear()
-        window.dispatchEvent(new StorageEvent('storage', { key: null }))
-      })
-      await settleStale(config(base))
-      expect(pref.own(profile)).toBeNull()
-      await act(() => load())
-      expect(pref.own(profile)).toBe(base)
+      expect(writes()).toEqual([])
     }
   )
 })

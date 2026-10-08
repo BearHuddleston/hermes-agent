@@ -150,7 +150,7 @@ export function useHermesConfig({ activeSessionIdRef }: HermesConfigOptions) {
         setShowToolActivityFromConfig(config.display?.tool_progress)
         setTerminalFontFamilyFromConfig(config.terminal?.font_family)
         setChatFontFamilyFromConfig(config.desktop?.font_family)
-        publishProfileAppearance(appearanceRead, config.desktop)
+        publishProfileAppearance(appearanceRead, config)
 
         if (!canPublish()) {
           return
