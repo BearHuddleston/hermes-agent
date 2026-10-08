@@ -120,7 +120,7 @@ def test_session_slot_is_claimed_on_first_turn_not_on_create(monkeypatch, tmp_pa
         server._cfg_path = None
         _clear_server_sessions()
         monkeypatch.setattr(server, "_start_agent_build", lambda *args, **kwargs: None)
-        monkeypatch.setattr(server, "_completion_cwd", lambda params=None: str(tmp_path))
+        monkeypatch.setattr(server, "_completion_cwd", lambda params=None, **_kw: str(tmp_path))
 
         # Opening a chat must NOT take a slot. Every tile paint and every
         # background reconnect-resume calls session.create, and an unprompted
@@ -16281,7 +16281,7 @@ def test_session_create_reports_requested_profile_name(monkeypatch, tmp_path, ro
     monkeypatch.setattr(server, "_start_agent_build", lambda *a, **k: None)
     monkeypatch.setattr(server, "_schedule_agent_build", lambda *a, **k: None)
     monkeypatch.setattr(server, "_schedule_session_cap_enforcement", lambda *a, **k: None)
-    monkeypatch.setattr(server, "_completion_cwd", lambda params=None: str(tmp_path))
+    monkeypatch.setattr(server, "_completion_cwd", lambda params=None, **_kw: str(tmp_path))
     route_profiles(server, lambda p: profile_home if p == "mlperf" else None)
     monkeypatch.setattr(server, "_current_profile_name", lambda: "default")
     monkeypatch.setattr(server, "_claim_active_session_slot", lambda *a, **k: (None, None))

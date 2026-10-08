@@ -350,7 +350,8 @@ def _create_session(rid, params: dict, *, copy_parent_history: bool = False) -> 
     transcript server-side and omits it from the reply."""
     # ``profile`` (app-global remote mode): stored so the build and every turn re-bind HERMES_HOME.
     profile = (params.get("profile") or "").strip() or None
-    profile_home, profile_incarnation = _resolve_session_profile(profile)
+    resolved = _resolve_session_profile(profile)
+    profile_home, profile_incarnation = resolved
     # Reject an incoherent model×provider pair BEFORE any state exists: minting it only defers the
     # failure to the first turn's provider 404 (#96817). Custom/unknown providers stay permissive.
     from .methods_session_model_guard import model_override_conflict
@@ -403,7 +404,7 @@ def _create_session(rid, params: dict, *, copy_parent_history: bool = False) -> 
         # Whole-session desktop branches must not serialize the parent's transcript
         # through the renderer. Read the durable display projection here, where the
         # owning state.db already lives, and keep the full copy server-side.
-        with _profile_db(params, resolved=(profile_home, profile_incarnation)) as db:
+        with _profile_db(params, resolved=resolved) as db:
             if db is None:
                 return _db_unavailable_error(rid, code=5008)
             try:
@@ -415,7 +416,7 @@ def _create_session(rid, params: dict, *, copy_parent_history: bool = False) -> 
             return _err(rid, 4008, "send a message first")
     # Only a chosen workspace persists as cwd; the launch-dir fallback is "No workspace"
     # (#108205: the desktop arm lets the client vouch for a host-invisible path, #52589 provenance).
-    explicit_cwd, session_cwd, remote_cwd = _resolve_create_cwd(params, source, profile_home)
+    explicit_cwd, session_cwd, remote_cwd = _resolve_create_cwd(params, source, resolved)
     _enable_gateway_prompts()
     from .methods_session_model_guard import create_overrides
     try:

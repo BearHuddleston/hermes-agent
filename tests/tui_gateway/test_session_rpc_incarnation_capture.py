@@ -68,24 +68,26 @@ def _rpc(method: str, params: dict) -> dict:
 _RESUME_LAZY = {"session_id": _STORED, "profile": "ops", "lazy": True, "omit_messages": True}
 
 
-@pytest.mark.parametrize(("method", "params"), [
-    ("session.resume", _RESUME_LAZY),
-    ("session.create", {"profile": "ops"}),
-    ("session.branch_stored", {"profile": "ops", "parent_session_id": _STORED}),
-    ("session.list", {"profile": "ops"}),
-    ("session.delete", {"profile": "ops", "session_id": _STORED}),
-    ("session.workspace.move", {"profile": "ops", "session_key": _STORED, "cwd": "."}),
-], ids=["lazy-resume", "create", "branch-stored", "list", "delete", "workspace-move"])
-def test_one_profile_rpc_captures_the_incarnation_once(ops, monkeypatch, tmp_path, method, params):
-    # The new-session workspace resolver resolves the profile for itself (tui_gateway/session_workdir.py); this
-    # pins the handlers' own resolution, live record, db handle and response.
-    monkeypatch.setattr(server, "_completion_cwd", lambda *a, **k: str(tmp_path))
+@pytest.mark.parametrize(("method", "params", "captures"), [
+    ("session.resume", _RESUME_LAZY, 1),
+    ("session.create", {"profile": "ops"}, 1),
+    ("session.branch_stored", {"profile": "ops", "parent_session_id": _STORED}, 1),
+    ("session.list", {"profile": "ops"}, 1),
+    ("session.delete", {"profile": "ops", "session_id": _STORED}, 1),
+    ("session.workspace.move", {"profile": "ops", "session_key": _STORED, "cwd": "."}, 1),
+    # ``@_profile_scoped`` resolves once to bind the runtime scope, the handler once for its db and stamped name.
+    ("projects.tree", {"profile": "ops"}, 2),
+    ("projects.project_sessions", {"profile": "ops", "project_id": "none"}, 2),
+], ids=["lazy-resume", "create", "branch-stored", "list", "delete", "workspace-move", "projects-tree",
+        "project-sessions"])
+def test_profile_rpcs_capture_the_incarnation_once_per_resolution(ops, monkeypatch, tmp_path, method, params,
+                                                                   captures):
     monkeypatch.chdir(tmp_path)  # workspace.move's "." target
 
     out = _rpc(method, params)
 
     assert "error" not in out, out
-    assert server._profile_lifecycle.captures == 1
+    assert server._profile_lifecycle.captures == captures
 
 
 @pytest.mark.parametrize(("method", "params"), [("session.resume", _RESUME_LAZY), ("session.create", {"profile": "ops"})],
