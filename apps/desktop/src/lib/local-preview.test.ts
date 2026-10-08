@@ -17,6 +17,7 @@ import {
   remoteHtmlPreviewDocument,
   validatedRemoteHtmlDataUrl
 } from './local-preview'
+import { previewArtifactKey } from './preview-targets'
 
 describe('isLoopbackPreviewUrl', () => {
   it.each(['http://localhost:5173', 'https://127.0.0.2:8443/app', 'http://0.0.0.0:3000', 'http://[::1]:4173'])(
@@ -229,6 +230,17 @@ describe('preview path resolution', () => {
 
     expect(localPreviewTarget('file:///C:/work%20tree/source.py')?.path).toBe('C:/work tree/source.py')
   })
+
+  // Decoding `..%2f` would add a segment the URL parser never normalized. Such
+  // a URL keeps its text undecoded, as an unparseable one does, and the preview
+  // artifact key leaves it raw too.
+  it.each(['file:///srv/project/..%2f..%2fetc/passwd', 'file:///C:/work/..%5c..%5cWindows/win.ini'])(
+    'does not decode the encoded separators in %s into path segments',
+    url => {
+      expect(localPreviewTarget(url, '/unrelated/cwd')?.path).toBe(url.slice('file://'.length))
+      expect(previewArtifactKey(url, '/unrelated/cwd')).toBe(url)
+    }
+  )
 
   it('keeps absolute filesystem targets independent of the working directory', async () => {
     window.hermesDesktop = { normalizePreviewTarget: vi.fn(async () => null) } as never

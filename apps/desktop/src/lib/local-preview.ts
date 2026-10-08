@@ -2,6 +2,7 @@ import DOMPurify from 'dompurify'
 
 import { isDesktopFsRemoteMode, readDesktopFileDataUrl, readDesktopFileText } from '@/lib/desktop-fs'
 import { isWindowsAbsolutePath } from '@/lib/path-compare'
+import { fileUrlToPath } from '@/lib/preview-targets'
 import type { PreviewTarget } from '@/store/preview'
 
 const HTML_EXTENSIONS = new Set(['.htm', '.html'])
@@ -241,14 +242,8 @@ export function localPreviewTarget(rawTarget: string, cwd?: string | null): Prev
   let path = raw
 
   if (/^file:\/\//i.test(raw)) {
-    try {
-      const url = new URL(raw)
-      const pathname = decodeURIComponent(url.pathname)
-
-      path = url.hostname ? `//${url.hostname}${pathname}` : pathname.replace(/^\/([a-z]:\/)/i, '$1')
-    } catch {
-      path = raw.replace(/^file:\/\//i, '')
-    }
+    // A URL that does not parse, or encodes a separator, keeps its text undecoded.
+    path = fileUrlToPath(raw) ?? raw.replace(/^file:\/\//i, '')
   } else if (!raw.startsWith('/') && !isWindowsAbsolutePath(raw) && cwd) {
     path = joinPath(cwd, raw)
   }

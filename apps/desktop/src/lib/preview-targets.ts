@@ -59,6 +59,32 @@ export function previewName(target: string): string {
   }
 }
 
+/** The path a `file:` URL names: a UNC host becomes `//host/...` and a drive
+ *  path drops the URL's leading slash. Null when the URL does not parse or
+ *  decode, or encodes a separator (`%2f`; `%5c` in a drive or UNC path, while
+ *  a POSIX name may hold a literal backslash). */
+export function fileUrlToPath(value: string): string | null {
+  try {
+    const url = new URL(value)
+    const windows = Boolean(url.hostname) || /^\/[a-z]:/i.test(url.pathname)
+
+    // Encoded separators are not legal file-URL path segments.
+    if (/%2f/i.test(url.pathname) || (windows && /%5c/i.test(url.pathname))) {
+      return null
+    }
+
+    const path = decodeURIComponent(url.pathname)
+
+    if (url.hostname) {
+      return `//${url.hostname}${path}`
+    }
+
+    return /^\/[a-z]:\//i.test(path) ? path.slice(1) : path
+  } catch {
+    return null
+  }
+}
+
 /** File identity only: do not resolve symlinks, guess home, or fold path case. */
 export function previewArtifactKey(target: string, cwd: string): string {
   let path = target.trim()
@@ -68,24 +94,13 @@ export function previewArtifactKey(target: string, cwd: string): string {
   }
 
   if (/^file:\/\//i.test(path)) {
-    try {
-      const url = new URL(path)
+    const filePath = fileUrlToPath(path)
 
-      // Encoded separators are not legal file-URL path segments.
-      if (/%2f|%5c/i.test(url.pathname)) {
-        return path
-      }
-
-      path = decodeURIComponent(url.pathname)
-
-      if (url.hostname) {
-        path = `//${url.hostname}${path}`
-      } else if (/^\/[a-z]:\//i.test(path)) {
-        path = path.slice(1)
-      }
-    } catch {
+    if (filePath === null) {
       return path
     }
+
+    path = filePath
   }
 
   const windows = /^[a-z]:[\\/]/i.test(path) || path.startsWith('\\\\')
