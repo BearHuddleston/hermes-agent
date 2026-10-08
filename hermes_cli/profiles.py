@@ -1773,6 +1773,34 @@ def delete_profile(name: str, yes: bool = False) -> Path:
     return _delete_profile_confirmed(canon, profile_dir, confirmed_identity)
 
 
+def _release_process_profile_handles(profile_dir: Path) -> None:
+    """Release what this surviving process still holds open under a retired home.
+
+    Delete and rename both call this right before ``verify_profile_resources_released``: its
+    wait fails while this process holds ``state.db``, and Windows refuses to remove or move a
+    directory holding any open file.
+    """
+    # The main serve process survives; release this profile's transports and probe logs.
+    from hermes_constants import hermes_home_key
+    from tools.mcp_tool_lifecycle import shutdown_mcp_servers
+    shutdown_mcp_servers(scope=hermes_home_key(profile_dir))
+
+    with contextlib.suppress(Exception):
+        from hermes_state_registry import close_all_under as _close_session_dbs_under
+        _closed = _close_session_dbs_under(profile_dir)
+        if _closed:
+            print(f"✓ Released {_closed} session database connection(s) held by this process")
+
+    # The Desktop serve process routes its agent/errors logs for every profile through one
+    # QueueListener. On Windows those ConcurrentRotatingFileHandler instances retain their
+    # ``.__*.lock`` files until explicitly closed, so rmtree or the move fails with WinError 32.
+    with contextlib.suppress(Exception):
+        from hermes_logging import release_profile_log_handlers
+        _released_logs = release_profile_log_handlers(profile_dir)
+        if _released_logs:
+            print(f"✓ Released {_released_logs} profile log handler(s) held by this process")
+
+
 @serialized_profile_mutation("profile_dir")
 def _delete_profile_confirmed(
     canon: str,
@@ -1833,26 +1861,7 @@ def _delete_profile_confirmed(
     # release its handles before we remove the directory.
     _notify_multiplexer(canon)
 
-    # The main serve process survives; release this profile's transports and probe logs.
-    from hermes_constants import hermes_home_key
-    from tools.mcp_tool_lifecycle import shutdown_mcp_servers
-    shutdown_mcp_servers(scope=hermes_home_key(profile_dir))
-
-    with contextlib.suppress(Exception):
-        from hermes_state_registry import close_all_under as _close_session_dbs_under
-        _closed = _close_session_dbs_under(profile_dir)
-        if _closed:
-            print(f"✓ Released {_closed} session database connection(s) held by this process")
-
-    # The Desktop serve process routes its agent/errors logs for every profile through one
-    # QueueListener. On Windows those ConcurrentRotatingFileHandler instances retain their
-    # ``.__*.lock`` files until explicitly closed, so rmtree otherwise fails with WinError 32.
-    with contextlib.suppress(Exception):
-        from hermes_logging import release_profile_log_handlers
-        _released_logs = release_profile_log_handlers(profile_dir)
-        if _released_logs:
-            print(f"✓ Released {_released_logs} profile log handler(s) held by this process")
-
+    _release_process_profile_handles(profile_dir)
     verify_profile_resources_released(
         profile_dir,
         profile_incarnation,
@@ -2427,10 +2436,7 @@ def rename_profile(old_name: str, new_name: str) -> Path:
             if live_mux:
                 _notify_multiplexer(old_canon)
 
-            # Cached MCP stderr handles otherwise keep the old home open on Windows.
-            from hermes_constants import hermes_home_key
-            from tools.mcp_tool_lifecycle import shutdown_mcp_servers
-            shutdown_mcp_servers(scope=hermes_home_key(old_dir))
+            _release_process_profile_handles(old_dir)
             verify_profile_resources_released(
                 old_dir,
                 profile_incarnation,
