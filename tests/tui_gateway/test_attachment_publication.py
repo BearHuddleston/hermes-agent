@@ -122,16 +122,18 @@ def test_disk_write_leaves_sessions_available_and_rechecks_owner(
                 )
                 assert "error" not in response, response
                 assert response["result"]["attached"] is True
+                retire = {
+                    "live": lambda: None,
+                    "close": lambda: server._pop_session_by_id("first"),
+                    "replace": lambda: server._sessions.update(first={**session, "attached_images": []}),
+                    "rebind": lambda: session.update(
+                        profile_home=other["profile_home"],
+                        profile_incarnation=other["profile_incarnation"],
+                    ),
+                    "finalize": lambda: session.update(_finalized=True),
+                }[retirement]
                 with server._sessions_lock:
-                    if retirement == "close":
-                        server._pop_session_by_id("first")
-                    elif retirement == "replace":
-                        server._sessions["first"] = {**session, "attached_images": []}
-                    elif retirement == "rebind":
-                        session["profile_home"] = other["profile_home"]
-                        session["profile_incarnation"] = other["profile_incarnation"]
-                    elif retirement == "finalize":
-                        session["_finalized"] = True
+                    retire()
 
             pool.submit(lookup_and_retire).result(timeout=3)
             assert not pending.done()

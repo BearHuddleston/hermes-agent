@@ -79,29 +79,37 @@ def _ticket(client, route, query):
     return {**query, "ticket": minted.json()["ticket"]}
 
 
-@pytest.mark.parametrize("scope", ["profile", "implicit", "managed-relative", "file-uri", "session"])
+def _session_owned_file(home, profile, content):
+    """Write the file outside the session owner's home: path-only generation
+    binding would miss the owner's retirement."""
+    from hermes_state import SessionDB
+
+    (home / "clip.mp4").write_bytes(content)
+    db = SessionDB(db_path=profile / "state.db")
+    db.create_session("synthetic-session", "desktop", cwd=str(home), profile_name="worker")
+    db.close()
+
+
+def _session_scope(home, profile):
+    _session_owned_file(home, profile, b"old-generation")
+    return "download", {"path": "clip.mp4", "profile": "worker", "session_id": "synthetic-session"}
+
+
+# How the ticket names the file: (home, profile) -> (route, query).
+_TICKET_SCOPES = {
+    "profile": lambda home, profile: ("stream", {"path": str(profile / "clip.mp4"), "profile": "worker"}),
+    "implicit": lambda home, profile: ("stream", {"path": str(profile / "clip.mp4")}),
+    "managed-relative": lambda home, profile: ("stream", {"path": "profiles/worker/clip.mp4"}),
+    "file-uri": lambda home, profile: ("stream", {"path": (profile / "clip.mp4").as_uri()}),
+    "session": _session_scope,
+}
+
+
+@pytest.mark.parametrize("scope", list(_TICKET_SCOPES))
 def test_http_tickets_bind_profile_and_session_owner_generations(file_server, scope):
     client, home = file_server
     profile = _generation(home, b"old-generation")
-    query = {"path": str(profile / "clip.mp4")}
-    route = "stream"
-    if scope == "profile":
-        query["profile"] = "worker"
-    elif scope == "managed-relative":
-        query["path"] = "profiles/worker/clip.mp4"
-    elif scope == "file-uri":
-        query["path"] = (profile / "clip.mp4").as_uri()
-    elif scope == "session":
-        from hermes_state import SessionDB
-
-        # The file is outside the session owner's home: path-only generation
-        # binding would miss the owner's retirement.
-        (home / "clip.mp4").write_bytes(b"old-generation")
-        db = SessionDB(db_path=profile / "state.db")
-        db.create_session("synthetic-session", "desktop", cwd=str(home), profile_name="worker")
-        db.close()
-        query = {"path": "clip.mp4", "profile": "worker", "session_id": "synthetic-session"}
-        route = "download"
+    route, query = _TICKET_SCOPES[scope](home, profile)
 
     params = _ticket(client, route, query)
     unused_download = _ticket(client, "download", query)
@@ -121,10 +129,7 @@ def test_http_tickets_bind_profile_and_session_owner_generations(file_server, sc
 
     _generation(home, b"new-generation", replace=True)
     if scope == "session":
-        (home / "clip.mp4").write_bytes(b"new-generation")
-        db = SessionDB(db_path=profile / "state.db")
-        db.create_session("synthetic-session", "desktop", cwd=str(home), profile_name="worker")
-        db.close()
+        _session_owned_file(home, profile, b"new-generation")
     stale = client.get(endpoint, params=params, headers={"Range": "bytes=0-2"})
     assert stale.status_code in (401, 403, 404), stale.content
     assert client.get("/api/files/download", params=unused_download).status_code in (401, 403, 404)

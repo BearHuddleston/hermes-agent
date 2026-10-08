@@ -526,14 +526,14 @@ def _bootstrap_session_db(home: str, done: threading.Event) -> None:
         logger.debug("GoalManager: background SessionDB() raised (%s)", exc)
         db = None
     if db is not None:
-        try:
-            from hermes_constants import named_profile_home_is_unavailable
+        from hermes_constants import named_profile_home_is_unavailable
 
+        try:
             if named_profile_home_is_unavailable(home):
-                db.close()
+                _release_session_db(db)
                 db = None
-        except Exception:
-            pass
+        except OSError:
+            logger.debug("GoalManager: could not check whether %s is deleted", home, exc_info=True)
     with _DB_BOOTSTRAP_LOCK:
         if db is not None and home not in _DB_CACHE:
             _DB_CACHE[home] = db
@@ -621,10 +621,7 @@ def release_session_db_for_home(home: Path | str) -> bool:
         if db is None:
             db = late_db
         elif late_db is not None:
-            try:
-                late_db.close()
-            except Exception:
-                pass
+            _release_session_db(late_db)
     if db is None:
         return False
     try:

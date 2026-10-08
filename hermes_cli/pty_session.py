@@ -7,10 +7,15 @@ opaque token replays the buffer and resumes live.
 from __future__ import annotations
 
 import asyncio
+import logging
 import threading
 import time
 from pathlib import Path
 from typing import Callable, Dict, Optional, Tuple
+
+from fastapi import WebSocketDisconnect
+
+logger = logging.getLogger(__name__)
 
 WS_CLOSE_PROCESS_EXITED = 4410
 WS_CLOSE_SUPERSEDED = 4409
@@ -21,6 +26,10 @@ WS_CLOSE_VIEWER_STALLED = 1001
 WS_CLOSE_VIEWER_STALLED_REASON = "Terminal viewer stopped reading; reconnect"
 # How long one frame (live output or replay) may wait on the viewer before it counts as stalled.
 _VIEWER_SEND_TIMEOUT_SECONDS = 5.0
+# A viewer send that fails because the browser is gone: Starlette raises WebSocketDisconnect for a
+# dead transport and RuntimeError for a socket already closed; OSError covers the TimeoutError of
+# a viewer that stopped reading.
+_VIEWER_SEND_ERRORS = (WebSocketDisconnect, RuntimeError, OSError)
 TUI_FORCE_REDRAW = b"\x0c"
 
 
@@ -223,12 +232,12 @@ class PtySession:
                 # frame never loses terminal-query replies on an empty history.
                 if snap or initial_text is not None:
                     await asyncio.wait_for(ws.send_bytes(snap), timeout=_VIEWER_SEND_TIMEOUT_SECONDS)
-        except asyncio.CancelledError:
-            self.detach(ws)
-            raise
-        except Exception:
+        except _VIEWER_SEND_ERRORS:
             self.detach(ws)
             return False
+        except BaseException:  # cancellation or a bug: never leave this socket attached
+            self.detach(ws)
+            raise
         if self._ws is not ws:
             return False
         if not self.alive:
@@ -284,8 +293,12 @@ class PtySession:
             self._drain_task.cancel()
             try:
                 await self._drain_task
-            except (asyncio.CancelledError, Exception):
+            except asyncio.CancelledError:
                 pass
+            except Exception:
+                # The drain handles its own read and viewer errors, so this is a bug; the
+                # child below must still be closed.
+                logger.warning("PTY output drain failed", exc_info=True)
         try:
             # bridge.close() joins the child — blocking; keep it off the event loop.
             # See #53227.
@@ -369,7 +382,8 @@ class PtySessionRegistry:
                 session, created = await admission
             except Exception:
                 # The disconnected caller cannot observe a late fork/exec
-                # failure, but its task exception must still be retrieved.
+                # failure: retrieve it here and keep the traceback.
+                logger.debug("PTY spawn failed after its caller disconnected", exc_info=True)
                 return
             if created:
                 if self._sessions.get(session.key) is session:

@@ -284,6 +284,7 @@ async def _read_frames(ws: WebSocket, inbox: asyncio.Queue) -> None:
             await inbox.put(msg)
     except RuntimeError:  # a superseding/drain task already closed us
         pass
+    # health: allow BLE001 -- forwarded, not swallowed: _pump_input re-raises it, and a reader that died unqueued would hang the pump
     except Exception as exc:
         end = exc
     await inbox.put(end)

@@ -232,28 +232,33 @@ def _assert_concurrent_opener_keeps_locks(path, monkeypatch, opener):
         except BaseException as exc:
             errors.append(exc)
 
+    def hold_recovery_lock():
+        # A same-thread connection: hold the write lock, then close it here.
+        with close_connection(session_recovery._connect(path)) as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            locked.set()
+            attempting.set()
+            assert finish_reader.wait(15)
+            conn.execute("ROLLBACK")
+
+    def hold_writer_lock():
+        conn = connect_tracked(path, check_same_thread=False, isolation_level=None)
+        new_connections.append(conn)
+        conn.execute("BEGIN IMMEDIATE")
+        locked.set()
+        attempting.set()
+
+    successors = {
+        "readiness": lambda: results.append(_probe_state_db(path.parent)),
+        "doctor": lambda: results.append(_session_count(path)),
+        "metrics": lambda: results.append(_first_session_started_at(path.parent)),
+        "recovery": hold_recovery_lock,
+        "writer": hold_writer_lock,
+    }
+
     def open_successor():
         try:
-            if opener == "readiness":
-                results.append(_probe_state_db(path.parent))
-            elif opener == "doctor":
-                results.append(_session_count(path))
-            elif opener == "metrics":
-                results.append(_first_session_started_at(path.parent))
-            elif opener == "recovery":
-                # A same-thread connection: hold the write lock, then close it here.
-                with close_connection(session_recovery._connect(path)) as conn:
-                    conn.execute("BEGIN IMMEDIATE")
-                    locked.set()
-                    attempting.set()
-                    assert finish_reader.wait(15)
-                    conn.execute("ROLLBACK")
-            else:
-                conn = connect_tracked(path, check_same_thread=False, isolation_level=None)
-                new_connections.append(conn)
-                conn.execute("BEGIN IMMEDIATE")
-                locked.set()
-                attempting.set()
+            successors[opener]()
         except BaseException as exc:
             errors.append(exc)
 

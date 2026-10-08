@@ -498,15 +498,13 @@ def _live_argv(psutil, pid, cmdline: str) -> str | None:
 
     Preserve case: Python's -X/-W and -x/-w do not have interchangeable meanings.
     """
-    argv = cmdline
     try:
         proc = psutil.Process(int(pid))
-        argv = subprocess.list2cmdline(proc.cmdline()) or cmdline
+        return subprocess.list2cmdline(proc.cmdline()) or cmdline
     except psutil.NoSuchProcess:
         return None
-    except Exception:
-        pass
-    return argv
+    except (psutil.Error, OSError):  # access denied: keep the scanned argv
+        return cmdline
 
 
 def _orphaned_desktop_backend_pids(matches: list[tuple[int, str, str]]) -> list[tuple[int, int]] | None:
