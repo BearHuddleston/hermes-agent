@@ -843,25 +843,23 @@ def cmd_webapp(args):
     if getattr(args, "stop", False):
         from hermes_constants import get_hermes_home
 
-        own_home = str(get_hermes_home())
-
-        def _webapp_pids() -> list[int]:
-            return _pids_owned_by_hermes_home([
-                pid
-                for pid, command in _scan_dashboard_processes()
-                if (_parse_dashboard_runtime(command) or (None, "", 0))[0] == "webapp"
-            ], own_home)
-
-        webapp_pids = set(_webapp_pids())
+        webapp_pids = set(_pids_owned_by_hermes_home([
+            pid
+            for pid, command in _scan_dashboard_processes()
+            if (_parse_dashboard_runtime(command) or (None, "", 0))[0] == "webapp"
+        ], str(get_hermes_home())))
         if not webapp_pids:
             print("No Hermes Webapp processes running for this profile.")
             raise SystemExit(0)
         # include_pids is already scoped to this home (unreadable ownership excluded).
-        _kill_stale_dashboard_processes(
+        # Exit 1 only if a pid was unkillable — judged from the kill result, not a
+        # re-scan: a launchd KeepAlive job respawns its backend on a fresh PID,
+        # which is not a failed stop (same contract as `dashboard --stop`).
+        result = _kill_stale_dashboard_processes(
             reason="requested via webapp --stop",
             include_pids=webapp_pids,
         )
-        raise SystemExit(1 if _webapp_pids() else 0)
+        raise SystemExit(1 if result["failed"] else 0)
 
     from hermes_cli.webapp import WebappBuildError, prepare_webapp_renderer
 

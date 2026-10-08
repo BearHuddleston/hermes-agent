@@ -267,36 +267,44 @@ def test_webapp_status_is_scoped_and_does_not_build(monkeypatch):
     assert reported == [{"modes": {"webapp"}}]
 
 
+_OWN_WEBAPP = (111, "hermes webapp --port 9119")
+
+
 @pytest.mark.parametrize(
-    ("own_running", "own_survives", "expected_exit"),
-    [(True, False, 0), (True, True, 1), (False, False, 0)],
+    ("own_running", "failed", "after_kill", "expected_exit"),
+    [
+        pytest.param(True, [], [], 0, id="stopped"),
+        # A supervised (launchd KeepAlive) Webapp comes back on a fresh PID: the stop worked.
+        pytest.param(True, [], [(555, "hermes webapp --port 9119")], 0, id="respawned"),
+        pytest.param(True, [(111, "Permission denied")], [_OWN_WEBAPP], 1, id="unkillable"),
+        pytest.param(False, [], [], 0, id="none-running"),
+    ],
 )
 def test_webapp_stop_only_targets_the_invoking_home(
-    tmp_path, monkeypatch, own_running, own_survives, expected_exit,
+    tmp_path, monkeypatch, own_running, failed, after_kill, expected_exit,
 ):
     own_home = str(tmp_path / "own")
     foreign_home = str(tmp_path / "foreign")
     monkeypatch.setenv("HERMES_HOME", own_home)
-    own_webapp = (111, "hermes webapp --port 9119")
     spared = [
         (222, "hermes serve --port 0"),
         (333, "hermes webapp --port 9120"),
         (444, "hermes webapp --port 9121"),
     ]
-    scans = iter([
-        ([own_webapp] if own_running else []) + spared,
-        ([own_webapp] if own_survives else []) + spared,
-    ])
+    scans = iter([([_OWN_WEBAPP] if own_running else []) + spared, after_kill + spared])
     monkeypatch.setattr(dashboard_procs, "_scan_dashboard_processes", lambda: next(scans))
     monkeypatch.setattr(
         dashboard_procs, "_hermes_home_for_pid",
-        lambda pid: {111: own_home, 222: own_home, 333: foreign_home, 444: None}[pid],
+        lambda pid: {111: own_home, 222: own_home, 333: foreign_home, 444: None, 555: own_home}[pid],
     )
     killed = []
-    monkeypatch.setattr(
-        dashboard_procs, "_kill_stale_dashboard_processes",
-        lambda **kwargs: killed.append(kwargs),
-    )
+
+    def kill(**kwargs):
+        killed.append(kwargs)
+        return {"matched": [111], "killed": [] if failed else [111], "failed": failed,
+                "unrecovered": [] if failed else [111]}
+
+    monkeypatch.setattr(dashboard_procs, "_kill_stale_dashboard_processes", kill)
 
     with pytest.raises(SystemExit) as exc:
         cli_main.cmd_webapp(_args(stop=True))
