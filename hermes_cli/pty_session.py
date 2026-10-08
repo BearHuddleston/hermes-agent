@@ -7,10 +7,16 @@ opaque token replays the buffer and resumes live.
 from __future__ import annotations
 
 import asyncio
+import logging
 import threading
 import time
+from concurrent.futures import Executor
 from pathlib import Path
 from typing import Callable, Dict, Optional, Tuple
+
+from fastapi import WebSocketDisconnect
+
+logger = logging.getLogger(__name__)
 
 WS_CLOSE_PROCESS_EXITED = 4410
 WS_CLOSE_SUPERSEDED = 4409
@@ -21,6 +27,10 @@ WS_CLOSE_VIEWER_STALLED = 1001
 WS_CLOSE_VIEWER_STALLED_REASON = "Terminal viewer stopped reading; reconnect"
 # How long one frame (live output or replay) may wait on the viewer before it counts as stalled.
 _VIEWER_SEND_TIMEOUT_SECONDS = 5.0
+# A viewer send that fails because the browser is gone: Starlette raises WebSocketDisconnect for a
+# dead transport and RuntimeError for a socket already closed; OSError covers the TimeoutError of
+# a viewer that stopped reading.
+_VIEWER_SEND_ERRORS = (WebSocketDisconnect, RuntimeError, OSError)
 TUI_FORCE_REDRAW = b"\x0c"
 
 
@@ -74,7 +84,10 @@ def _key_segments(key: str) -> tuple[str, str]:
 
 
 class PtySession:
-    def __init__(self, key: str, bridge, *, buffer_cap: int, read_timeout: float, active_session_file: Optional[Path] = None) -> None:
+    def __init__(
+        self, key: str, bridge, *, buffer_cap: int, read_timeout: float,
+        active_session_file: Optional[Path] = None, drain_executor: Optional[Executor] = None,
+    ) -> None:
         self.key = key
         self.bridge = bridge
         self.active_session_file = active_session_file
@@ -85,6 +98,8 @@ class PtySession:
         # Admission can fail before the first attach (e.g. lost metadata).
         self.last_detached_at: Optional[float] = time.monotonic()
         self._read_timeout = read_timeout
+        # Runs the blocking reads; None is the loop's default executor.
+        self._drain_executor = drain_executor
         self._ws = None
         self._attach_generation = 0
         # Only final sink writes and viewer claims hold this lock. Profile
@@ -103,7 +118,7 @@ class PtySession:
         loop = asyncio.get_running_loop()
         while self.alive:
             try:
-                chunk = await loop.run_in_executor(None, self.bridge.read, self._read_timeout)
+                chunk = await loop.run_in_executor(self._drain_executor, self.bridge.read, self._read_timeout)
             except OSError:
                 chunk = None
             if chunk is None:                       # EOF — the agent process exited
@@ -223,12 +238,12 @@ class PtySession:
                 # frame never loses terminal-query replies on an empty history.
                 if snap or initial_text is not None:
                     await asyncio.wait_for(ws.send_bytes(snap), timeout=_VIEWER_SEND_TIMEOUT_SECONDS)
-        except asyncio.CancelledError:
-            self.detach(ws)
-            raise
-        except Exception:
+        except _VIEWER_SEND_ERRORS:
             self.detach(ws)
             return False
+        except BaseException:  # cancellation or a bug: never leave this socket attached
+            self.detach(ws)
+            raise
         if self._ws is not ws:
             return False
         if not self.alive:
@@ -284,8 +299,12 @@ class PtySession:
             self._drain_task.cancel()
             try:
                 await self._drain_task
-            except (asyncio.CancelledError, Exception):
+            except asyncio.CancelledError:
                 pass
+            except Exception:
+                # The drain handles its own read and viewer errors, so this is a bug; the
+                # child below must still be closed.
+                logger.warning("PTY output drain failed", exc_info=True)
         try:
             # bridge.close() joins the child — blocking; keep it off the event loop.
             # See #53227.
@@ -323,12 +342,16 @@ async def run_reaper(registry: "PtySessionRegistry", *, interval: float = 60.0) 
 
 
 class PtySessionRegistry:
-    def __init__(self, *, ttl: float, max_sessions: int, buffer_cap: int, read_timeout: float) -> None:
+    def __init__(
+        self, *, ttl: float, max_sessions: int, buffer_cap: int, read_timeout: float,
+        drain_executor: Optional[Executor] = None,
+    ) -> None:
         self._ttl = ttl
         self._max = max_sessions
         self._buffer_cap = buffer_cap
         self._read_timeout = read_timeout
-        self._sessions: Dict[str, PtySession] = {}
+        self._drain_executor = drain_executor
+        self._sessions: dict[str, PtySession] = {}
         # One registry-wide reservation spans lookup, spawn, and registration:
         # racing connections with one attach token must share one tracked PTY.
         self._spawn_lock = asyncio.Lock()
@@ -339,7 +362,7 @@ class PtySessionRegistry:
 
     async def attach_or_spawn(
         self, key: str, *, spawn: Callable[[], object], active_session_file: Optional[Path] = None,
-    ) -> Tuple[PtySession, bool]:
+    ) -> tuple[PtySession, bool]:
         # Reserve capacity and the key across blocking fork/exec. On cancellation
         # the registry, not the request's cancellation scope, owns that reservation
         # until the admission finishes and any unclaimed child has been closed.
@@ -369,7 +392,8 @@ class PtySessionRegistry:
                 session, created = await admission
             except Exception:
                 # The disconnected caller cannot observe a late fork/exec
-                # failure, but its task exception must still be retrieved.
+                # failure: retrieve it here and keep the traceback.
+                logger.debug("PTY spawn failed after its caller disconnected", exc_info=True)
                 return
             if created:
                 if self._sessions.get(session.key) is session:
@@ -380,7 +404,7 @@ class PtySessionRegistry:
 
     async def _attach_or_spawn(
         self, key: str, *, spawn: Callable[[], object], active_session_file: Optional[Path] = None,
-    ) -> Tuple[PtySession, bool]:
+    ) -> tuple[PtySession, bool]:
         if self._closed:
             raise RegistryFull("Terminal service is shutting down.")
         await self.reap_idle()
@@ -403,6 +427,7 @@ class PtySessionRegistry:
             buffer_cap=self._buffer_cap,
             read_timeout=self._read_timeout,
             active_session_file=active_session_file,
+            drain_executor=self._drain_executor,
         )
         await session.start()
         self._sessions[key] = session
@@ -471,21 +496,25 @@ class PtySessionRegistry:
         if s is not None:
             s.detach(ws)
 
+    def expired(self, s: PtySession, now: Optional[float] = None) -> bool:
+        """Whether ``s`` has had no viewer for longer than the retention TTL."""
+        return (not s.attached and s.last_detached_at is not None
+                and (time.monotonic() if now is None else now) - s.last_detached_at > self._ttl)
+
+    def _reapable(self, s: PtySession, now: Optional[float] = None) -> bool:
+        # EOF never arrives if a helper still holds the PTY slave after the child died (#76759);
+        # ask the process itself (a WNOHANG waitpid).
+        return not s.alive or not s.bridge.is_alive() or self.expired(s, now)
+
     async def reap_idle(self, now: Optional[float] = None) -> None:
         now = time.monotonic() if now is None else now
-        doomed = [
-            (key, s) for key, s in self._sessions.items()
-            if not s.alive or not s.bridge.is_alive()
-            or (not s.attached and s.last_detached_at is not None and (now - s.last_detached_at) > self._ttl)
-        ]
+        doomed = [(key, s) for key, s in self._sessions.items() if self._reapable(s, now)]
         for key, expected in doomed:
             # Reaps overlap (attach_or_spawn and the background reaper) and close()
             # awaits, so a concurrent reap can have popped this key already — skip
-            # it instead of raising KeyError into the websocket handler.
-            if self._sessions.get(key) is not expected:
-                continue
-            if expected.alive and expected.bridge.is_alive() and (expected.attached or expected.last_detached_at is None
-                                   or now - expected.last_detached_at <= self._ttl):
+            # it instead of raising KeyError into the websocket handler. A viewer can
+            # also re-attach during an earlier close, so re-check before closing.
+            if self._sessions.get(key) is not expected or not self._reapable(expected, now):
                 continue
             session = self._sessions.pop(key, None)
             if session is not None:
@@ -499,10 +528,11 @@ class PtySessionRegistry:
         self._sessions.pop(oldest.key, None)
         self._close_in_background(oldest)
 
-    def _close_in_background(self, session: "PtySession") -> None:
+    def _close_in_background(self, session: "PtySession") -> asyncio.Task:
         task = asyncio.create_task(session.close())
         self._background_closes.add(task)
         task.add_done_callback(self._background_closes.discard)
+        return task
 
     async def close_all(self) -> None:
         self._closed = True

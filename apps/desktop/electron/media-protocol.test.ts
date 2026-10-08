@@ -45,6 +45,21 @@ describe('media protocol helpers', () => {
     expect(isStreamableMediaPath('file://%invalid/clip.mp4')).toBe(false)
   })
 
+  // Decoding an encoded separator would add a path segment the URL never had.
+  it.each(['file:///tmp/..%2f..%2fetc/clip.mp4', 'file:///C:/media/..%5cclip.mp4', 'file://nas/share/..%5Cclip.mp4'])(
+    'refuses the encoded separator in %s',
+    async url => {
+      const deps = dependencies()
+
+      expect(isStreamableMediaPath(url)).toBe(false)
+      expect(() => remoteMediaEndpoint('https://gateway.test', url)).toThrow('Invalid media file URL')
+      expect(
+        (await createMediaProtocolHandler(deps)(request(`hermes-media://remote/${encodeURIComponent(url)}`))).status
+      ).toBe(415)
+      expect(deps.fetchRemote).not.toHaveBeenCalled()
+    }
+  )
+
   it('forwards range/cache negotiation headers but strips renderer credentials', () => {
     const headers = mediaRequestHeaders(
       new Headers({

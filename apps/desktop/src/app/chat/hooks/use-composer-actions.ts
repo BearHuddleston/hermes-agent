@@ -20,7 +20,7 @@ import {
   setComposerTerminalSelection,
   updateComposerAttachment
 } from '@/store/composer'
-import { notify, notifyError } from '@/store/notifications'
+import { notify, notifyError, readableError } from '@/store/notifications'
 
 import type { ImageDetachResponse } from '../../types'
 
@@ -111,7 +111,9 @@ export interface DroppedFile {
 
 /** Resolve a native drop to a host-visible path, staging browser File bytes
  * when the shell cannot expose a native filesystem path. Shared by both the
- * main composer and message-edit composer so neither silently drops files. */
+ * main composer and message-edit composer so neither silently drops files.
+ * Empty when there is nothing to stage; a rejected stage keeps the server's
+ * or a proxy's reason (an nginx 413) for the caller to report. */
 export async function stageDroppedFilePath(candidate: DroppedFile): Promise<string> {
   if (candidate.path) {
     return candidate.path
@@ -121,10 +123,20 @@ export async function stageDroppedFilePath(candidate: DroppedFile): Promise<stri
     return ''
   }
 
+  return window.hermesDesktop.stageFileForAttach(candidate.file)
+}
+
+/** Stage a drop for the main composer's chips. A rejected stage keeps its
+ * reason in the failure the drop warning shows, not a bare "Could not attach". */
+async function stageDropForChip(candidate: DroppedFile, label: string): Promise<{ failure: string; path: string }> {
+  const failure = `Could not attach ${label}`
+
   try {
-    return await window.hermesDesktop.stageFileForAttach(candidate.file)
-  } catch {
-    return ''
+    return { failure, path: await stageDroppedFilePath(candidate) }
+  } catch (error) {
+    const reason = readableError(error, '').message
+
+    return { failure: reason ? `${failure}: ${reason}` : failure, path: '' }
   }
 }
 
@@ -433,16 +445,21 @@ export function useComposerActions({
    *  attach paths funnel through here. */
   const attachToMain = useCallback(
     (attachment: ComposerAttachment) => {
-      const stagedUpload = attachment.kind === 'file' && attachment.path
-        ? window.hermesDesktop?.getStagedFileForAttach?.(attachment.path)
-        : undefined
+      const stagedUpload =
+        attachment.kind === 'file' && attachment.path
+          ? window.hermesDesktop?.getStagedFileForAttach?.(attachment.path)
+          : undefined
 
-      const displayName = attachment.kind === 'file' && attachment.path
-        && attachment.label === pathLabel(attachment.path)
-        ? window.hermesDesktop?.getStagedFileDisplayName?.(attachment.path)
-        : undefined
+      const displayName =
+        attachment.kind === 'file' && attachment.path && attachment.label === pathLabel(attachment.path)
+          ? window.hermesDesktop?.getStagedFileDisplayName?.(attachment.path)
+          : undefined
 
-      scope.add({ ...attachment, ...(stagedUpload ? { stagedUpload } : {}), ...(displayName ? { label: displayName } : {}) })
+      scope.add({
+        ...attachment,
+        ...(stagedUpload ? { stagedUpload } : {}),
+        ...(displayName ? { label: displayName } : {})
+      })
       requestComposerFocus(scope.target)
     },
     [scope]
@@ -816,7 +833,7 @@ export function useComposerActions({
         const fallbackPath =
           !knownPath && window.hermesDesktop?.getPathForFile ? window.hermesDesktop.getPathForFile(file) : ''
 
-        let filePath = knownPath || fallbackPath || ''
+        const filePath = knownPath || fallbackPath || ''
         const isImage = file.type.startsWith('image/') || isImagePath(file.name) || (filePath && isImagePath(filePath))
 
         if (isImage) {
@@ -839,17 +856,16 @@ export function useComposerActions({
           continue
         }
 
-        if (!filePath) {
-          filePath = await stageDroppedFilePath(candidate)
-        }
+        // The resolved native path wins; with none, the File bytes are staged.
+        const staged = await stageDropForChip({ ...candidate, path: filePath }, file.name || 'file')
 
-        if (filePath && attachContextFilePath(filePath)) {
+        if (staged.path && attachContextFilePath(staged.path)) {
           attached = true
 
           continue
         }
 
-        lastFailure = `Could not attach ${file.name || 'file'}`
+        lastFailure = staged.failure
       }
 
       if (!attached && lastFailure) {

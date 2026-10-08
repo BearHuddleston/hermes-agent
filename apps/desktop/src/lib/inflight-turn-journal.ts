@@ -44,6 +44,60 @@ export interface JournalableSessionState {
   turnStartedAt: null | number
 }
 
+/** Runtime-turn identity of the tail ending at `assistantIndex`, when the
+ *  backend marked it as a runtime projection. */
+function tailRuntimeStartedAt(visible: ChatMessage[], assistantIndex: number): number | undefined {
+  // Only explicitly marked runtime projections use this boundary. Human and
+  // legacy turns keep recoverableTail's user-run scan. A later stream row
+  // may follow a still-pending hydrated runtime reply without carrying its
+  // metadata yet; walk over that open assistant tail, never a completed reply.
+  let runtimeStartedAt = visible[assistantIndex].runtimeTurnStartedAt
+
+  for (let index = assistantIndex - 1; runtimeStartedAt === undefined && index >= 0; index -= 1) {
+    const row = visible[index]
+
+    if (row.role === 'assistant' && row.pending !== true && row.interim !== true) {
+      break
+    }
+
+    runtimeStartedAt = row.runtimeTurnStartedAt
+
+    if (row.role === 'user') {
+      break
+    }
+  }
+
+  return runtimeStartedAt
+}
+
+/** The marked runtime turn, stamping its unmarked assistant rows, behind an
+ *  optional durable anchor row. */
+function runtimeTurnTail(visible: ChatMessage[], runtimeStartedAt: number): ChatMessage[] {
+  const start = visible.findIndex(message => message.runtimeTurnStartedAt === runtimeStartedAt)
+
+  const tail = visible
+    .slice(start)
+    .map(message =>
+      message.role === 'assistant' && message.runtimeTurnStartedAt === undefined
+        ? { ...message, runtimeTurnStartedAt: runtimeStartedAt }
+        : message
+    )
+
+  // One preceding durable row is an optional catch-up anchor. It stays
+  // unmarked, is never recovered as runtime content, and lets an idle REST
+  // transcript prove the suffix without comparing clocks or all-history text.
+  const anchor = visible[start - 1]
+
+  if (anchor && (anchor.rowId !== undefined || anchor.timestamp !== undefined)) {
+    const durableAnchor = { ...anchor }
+    delete durableAnchor.runtimeTurnStartedAt
+
+    return [durableAnchor, ...tail]
+  }
+
+  return tail
+}
+
 /** Visible tail of the running turn: the streaming assistant row (plus any
  *  interim rows sealed after it) back to the user prompt that started it. */
 function recoverableTail(messages: ChatMessage[], streamId: null | string): ChatMessage[] {
@@ -74,46 +128,10 @@ function recoverableTail(messages: ChatMessage[], streamId: null | string): Chat
     return []
   }
 
-  // Only explicitly marked runtime projections use this boundary. Human and
-  // legacy turns keep their existing user-run scan below. A later stream row
-  // may follow a still-pending hydrated runtime reply without carrying its
-  // metadata yet; walk over that open assistant tail, never a completed reply.
-  let runtimeStartedAt = visible[assistantIndex].runtimeTurnStartedAt
-
-  for (let index = assistantIndex - 1; runtimeStartedAt === undefined && index >= 0; index -= 1) {
-    const row = visible[index]
-
-    if (row.role === 'assistant' && row.pending !== true && row.interim !== true) {
-      break
-    }
-
-    runtimeStartedAt = row.runtimeTurnStartedAt
-
-    if (row.role === 'user') {
-      break
-    }
-  }
+  const runtimeStartedAt = tailRuntimeStartedAt(visible, assistantIndex)
 
   if (runtimeStartedAt !== undefined) {
-    const start = visible.findIndex(message => message.runtimeTurnStartedAt === runtimeStartedAt)
-
-    const tail = visible.slice(start).map(message => message.role === 'assistant' && message.runtimeTurnStartedAt === undefined
-      ? { ...message, runtimeTurnStartedAt: runtimeStartedAt }
-      : message)
-
-    // One preceding durable row is an optional catch-up anchor. It stays
-    // unmarked, is never recovered as runtime content, and lets an idle REST
-    // transcript prove the suffix without comparing clocks or all-history text.
-    const anchor = visible[start - 1]
-
-    if (anchor && (anchor.rowId !== undefined || anchor.timestamp !== undefined)) {
-      const durableAnchor = { ...anchor }
-      delete durableAnchor.runtimeTurnStartedAt
-
-      return [durableAnchor, ...tail]
-    }
-
-    return tail
+    return runtimeTurnTail(visible, runtimeStartedAt)
   }
 
   let start = assistantIndex
@@ -171,17 +189,26 @@ export function persistInFlightTurnState(state: JournalableSessionState): void {
   }
 
   if (!state.busy && !state.awaitingResponse && !state.streamId) {
+    // `some(recovered)` is a cheap pre-check: this runs on every idle commit of
+    // every cached session, and recovered rows are rare.
+    const hasRecovered = state.messages.some(message => message.recovered)
+
     // Recovery can leave only human rows uncommitted after the assistant/tool
     // prefix persisted. Keep the original journal (and its durable anchor),
     // rather than rewriting it from that smaller display tail on idle commits.
-    if (state.messages.some(message => message.recovered)) {
+    if (hasRecovered) {
       const snapshot = readInFlightTurnJournal(storedSessionId)
 
       const runtimeStartedAt = journaledRuntimeStartedAt(snapshot?.messages ?? [])
 
-      const recoveredRuntime = runtimeStartedAt !== undefined && state.messages.some(message =>
-        message.recovered && (message.runtimeTurnStartedAt === runtimeStartedAt ||
-          snapshot?.messages.some(journaled => journaled.id === message.id)))
+      const recoveredRuntime =
+        runtimeStartedAt !== undefined &&
+        state.messages.some(
+          message =>
+            message.recovered &&
+            (message.runtimeTurnStartedAt === runtimeStartedAt ||
+              snapshot?.messages.some(journaled => journaled.id === message.id))
+        )
 
       if (recoveredRuntime) {
         cancelPendingPersist(storedSessionId)
@@ -190,8 +217,7 @@ export function persistInFlightTurnState(state: JournalableSessionState): void {
       }
     }
 
-    if (!(state.messages.some(message => message.recovered) &&
-      recoverableTail(state.messages, null).some(message => message.recovered))) {
+    if (!(hasRecovered && recoverableTail(state.messages, null).some(message => message.recovered))) {
       clearInFlightTurnJournal(storedSessionId)
 
       return
@@ -249,9 +275,11 @@ export function recoverInFlightTurnJournal(
   const recovered = mergeInFlightMessages(baseMessages, snapshot.messages, options)
   const runtimeStartedAt = journaledRuntimeStartedAt(snapshot.messages)
 
-  const recoveredRuntimeIsActive = runtimeStartedAt !== undefined && recovered.messages.some(message =>
-    message.id === recovered.streamId && message.runtimeTurnStartedAt === runtimeStartedAt
-  )
+  const recoveredRuntimeIsActive =
+    runtimeStartedAt !== undefined &&
+    recovered.messages.some(
+      message => message.id === recovered.streamId && message.runtimeTurnStartedAt === runtimeStartedAt
+    )
 
   if (recovered.caughtUp) {
     clearInFlightTurnJournal(storedSessionId)
@@ -263,11 +291,12 @@ export function recoverInFlightTurnJournal(
     // keepPending=false the session is not running. The recovered marker
     // retains uncommitted progress independently until durable catch-up.
     streamId: recovered.applied
-      ? (runtimeStartedAt !== undefined ? recovered.streamId : recovered.streamId ?? (options.keepPending ? snapshot.streamId : null))
+      ? runtimeStartedAt !== undefined
+        ? recovered.streamId
+        : (recovered.streamId ?? (options.keepPending ? snapshot.streamId : null))
       : null,
-    turnStartedAt: recovered.applied && (runtimeStartedAt === undefined || recoveredRuntimeIsActive)
-      ? snapshot.turnStartedAt
-      : null
+    turnStartedAt:
+      recovered.applied && (runtimeStartedAt === undefined || recoveredRuntimeIsActive) ? snapshot.turnStartedAt : null
   }
 }
 

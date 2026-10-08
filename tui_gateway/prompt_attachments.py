@@ -153,10 +153,21 @@ def _attachment_owner(session: dict, sid: str) -> tuple:
         return owner
 
 
+def _attachment_session(params: dict, rid) -> tuple:
+    """``(session, owner, None)`` or ``(None, None, error)`` for the attach RPCs."""
+    session, err = _sess_building(params, rid)
+    if err:
+        return None, None, err
+    try:
+        return session, _attachment_owner(session, params.get("session_id") or ""), None
+    except LookupError:
+        return None, None, _err(rid, 4001, "session not found")
+
+
 def _check_attachment_owner(session: dict, owner: tuple) -> None:
     """Called under the sessions lock; a detached/rebound record cannot publish."""
     sid, home, incarnation = owner
-    if _sessions.get(sid) is not session or session.get("_closing") or session.get("_finalized"):
+    if not _session_slot_current(sid, session) or session.get("_finalized"):
         raise LookupError("session not found")
     if not _session_profile_identity_matches(session, home, incarnation):
         raise FileNotFoundError("profile incarnation changed during attachment")
@@ -275,39 +286,14 @@ def _stage_browser_file_attachment(
     generations; do not infer either identity from the ambient profile.
     """
     from hermes_constants import WEBAPP_ATTACHMENT_MAX_BYTES
-    from hermes_cli.install_identity import get_install_id
     from hermes_cli.profile_lifecycle import profile_lifecycle_lease
+    from hermes_cli.staged_uploads import parse_staged_upload, resolve_staged_upload
 
-    if not isinstance(staged_upload, dict):
-        raise ValueError("invalid staged upload")
-    install_id = get_install_id()
-    if not install_id or staged_upload.get("install_id") != install_id:
-        raise ValueError("Staged attachment belongs to another Hermes backend; select the file again")
-    raw_home = staged_upload.get("profile_home")
-    raw_path = staged_upload.get("path")
-    incarnation = staged_upload.get("profile_incarnation")
-    if (
-        not isinstance(raw_home, str) or not raw_home
-        or not isinstance(raw_path, str) or not raw_path
-        or (incarnation is not None and not isinstance(incarnation, str))
-    ):
-        raise ValueError("invalid staged upload source")
-
+    raw_home, raw_path, incarnation = parse_staged_upload(staged_upload)
     # Acquire both pathname locks in sorted order before checking generations.
     with profile_lifecycle_lease(raw_home, owner[1] or _hermes_home):
         with _profile_home_lease(raw_home, incarnation) as home, _profile_home_lease(owner[1], owner[2]):
-            source = Path(raw_path)
-            if source.is_symlink():
-                raise ValueError("staged upload is no longer a regular file")
-            source = source.resolve(strict=True)
-            if (
-                source.parent != (home / "uploads").resolve(strict=True)
-                or not source.name.startswith("web-")
-                or not source.is_file()
-            ):
-                raise ValueError("staged upload is outside its source profile")
-            if source.stat().st_size > WEBAPP_ATTACHMENT_MAX_BYTES:
-                raise ValueError("staged upload exceeds the browser attachment size limit")
+            source = resolve_staged_upload(home, raw_path)
             # Keep the existing out-of-workspace copy into attachments/, which
             # is visible to container/SSH terminal backends through cache mounts.
             return _stage_session_file_attachment(
@@ -357,7 +343,7 @@ def _stage_session_file_attachment(
         import re as _re
         try:
             payload = _b64_payload(
-                data_url, r"^data:[^;,]*(?:;[^;,=]+=[^;,]+)*;base64,(.*)$", _re.DOTALL | _re.I,
+                data_url, r"^data:[^;,]*(?:;[^;,=]+=[^;,]+)*;base64,(.*)$", _re.DOTALL | _re.IGNORECASE,
                 max_bytes=max_bytes)
         except (ValueError, _binascii.Error) as exc:
             raise ValueError("invalid data_url payload") from exc

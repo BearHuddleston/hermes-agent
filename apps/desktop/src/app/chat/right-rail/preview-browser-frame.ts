@@ -10,8 +10,6 @@ import type { RefObject } from 'react'
 /** The navigation calls the pane makes on its live preview surface — an
  *  Electron webview or the browser-hosted iframe. */
 export interface PreviewNavigationSurface {
-  getTitle?: () => string
-  getURL?: () => string
   loadURL?: (url: string) => Promise<void>
   reload?: () => void
 }
@@ -46,8 +44,6 @@ export function mountBrowserPreviewFrame({
   frame.src = url
 
   const navigation: PreviewNavigationSurface = {
-    getTitle: () => frame.title,
-    getURL: () => frame.src,
     loadURL: async next => {
       frame.src = next
       setCurrentUrl(next)

@@ -6,13 +6,13 @@ The existing PTY registry owns processes/drains; this module owns host admission
 from __future__ import annotations
 
 import asyncio
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager, suppress
 from dataclasses import dataclass
 import json
 from pathlib import Path
 import re
 import secrets
-import time
 
 from fastapi import HTTPException, WebSocket, WebSocketDisconnect
 
@@ -28,6 +28,7 @@ from hermes_constants import get_hermes_home, named_profile_home_is_unavailable
 
 # No survival across backend restart. Disconnects retain a bounded ANSI tail.
 RETENTION_SECONDS = 15 * 60
+_MAX_SHELLS = 16
 # Inbound frames buffered while one batch is written (backpressure bound).
 _INPUT_BATCH_FRAMES = 64
 TOKEN_RE = re.compile(r"^[A-Za-z0-9_-]{43}$")
@@ -63,8 +64,10 @@ class HostOwner:
         Retirement publishes its tombstone under the same lease, so input reaches the
         shell before retirement commits or not at all. Blocking: bridges call it off-loop.
         """
+        # A named home's lease already refused a missing, tombstoned or replaced
+        # generation (FileNotFoundError); a default/custom home has none to check.
         with profile_incarnation_lease(self.home, self.incarnation):
-            if not self.current():
+            if self.incarnation is None and not self.home.is_dir():
                 raise TerminalExpired()
             return write()
 
@@ -93,11 +96,14 @@ def _request_home(profile: str | None) -> Path:
 
 
 class HostTerminalRegistry(PtySessionRegistry):
-    def __init__(self, *, ttl: float = RETENTION_SECONDS, max_sessions: int = 16,
-                 buffer_cap: int = 1024 * 1024, read_timeout: float = 0.2):
-        super().__init__(ttl=ttl, max_sessions=max_sessions, buffer_cap=buffer_cap, read_timeout=read_timeout)
+    def __init__(self):
+        # Every live shell keeps a read in flight. On the loop's default executor, retained
+        # shells would queue the keystroke fences, ownership checks, uploads and SessionDB
+        # hops that share it; a pool sized to capacity gives each shell its own reader.
+        super().__init__(
+            ttl=RETENTION_SECONDS, max_sessions=_MAX_SHELLS, buffer_cap=1024 * 1024, read_timeout=0.2,
+            drain_executor=ThreadPoolExecutor(_MAX_SHELLS, thread_name_prefix="host-pty-drain"))
         self.owners: dict[str, HostOwner] = {}
-        self._closing: set[asyncio.Task] = set()
 
     def _reap_one_idle_or_raise(self) -> None:
         # Retention is a promise, not an LRU hint; never evict a live shell to
@@ -144,12 +150,9 @@ class HostTerminalRegistry(PtySessionRegistry):
             raise TerminalDenied()
 
         def validate():
-            home = _request_home(ws.query_params.get("profile"))
-            if home != owner.home:
+            if _request_home(ws.query_params.get("profile")) != owner.home:
                 raise TerminalDenied()
-            with profile_incarnation_lease(home, owner.incarnation):
-                if not owner.current():
-                    raise TerminalExpired()
+            owner.admit(lambda: None)
 
         await asyncio.to_thread(validate)
         # No await between the final check and the caller's attach claim. The
@@ -159,21 +162,11 @@ class HostTerminalRegistry(PtySessionRegistry):
             raise TerminalExpired()
         return session, owner
 
-    def expired(self, session, now=None):
-        return (not session.attached and session.last_detached_at is not None
-                and (time.monotonic() if now is None else now) - session.last_detached_at > self._ttl)
-
     async def remove(self, token: str):
         session = self._sessions.pop(token, None)
         self.owners.pop(token, None)
         if session is not None:
-            await self._close_session(session)
-
-    async def _close_session(self, session: PtySession):
-        task = asyncio.create_task(session.close())
-        self._closing.add(task)
-        task.add_done_callback(self._closing.discard)
-        await asyncio.shield(task)
+            await asyncio.shield(self._close_in_background(session))
 
     async def reap_idle(self, now=None):
         # Durable tombstones/incarnations also detect retirement by a different
@@ -183,9 +176,7 @@ class HostTerminalRegistry(PtySessionRegistry):
         retired = await asyncio.to_thread(lambda: {token for token, owner in owners if not owner.current()})
         for token, owner in owners:
             session = self._sessions.get(token)
-            if session is not None and (
-                token in retired or not session.alive or not session.bridge.is_alive() or self.expired(session, now)
-            ):
+            if session is not None and (token in retired or self._reapable(session, now)):
                 await self.remove(token)
         for token in list(self.owners):
             if token not in self._sessions:
@@ -193,9 +184,10 @@ class HostTerminalRegistry(PtySessionRegistry):
 
     async def close_all(self):
         await super().close_all()
-        if self._closing:
-            await asyncio.gather(*self._closing)
         self.owners.clear()
+        # Every drain is cancelled by now; a read still in flight returns within its
+        # timeout, so let it finish behind us. A closed registry never spawns again.
+        self._drain_executor.shutdown(wait=False)
 
 
 def get_host_terminals(app) -> HostTerminalRegistry:
@@ -248,7 +240,7 @@ async def _send_closed(ws: WebSocket, token: str) -> None:
 
 
 async def _admit(ws: WebSocket, registry: HostTerminalRegistry):
-    """Authorize the request and return ``(token, session, owner)`` to attach.
+    """Authorize the request and return ``(session, owner)`` to attach.
 
     Returns None once a ``close`` request has been served. Raises the ``Terminal*``
     errors ``host_terminal`` maps to close codes.
@@ -265,14 +257,13 @@ async def _admit(ws: WebSocket, registry: HostTerminalRegistry):
         await _send_closed(ws, token)
         return None
     if token is None:
-        session, owner = await registry.create(ws, identity)
-        return session.key, session, owner
+        return await registry.create(ws, identity)
     session, owner = await registry.resolve(token, ws, identity, closing=action == "close")
     if action == "close":
         await registry.remove(token)
         await _send_closed(ws, token)
         return None
-    return token, session, owner
+    return session, owner
 
 
 async def _read_frames(ws: WebSocket, inbox: asyncio.Queue) -> None:
@@ -284,6 +275,7 @@ async def _read_frames(ws: WebSocket, inbox: asyncio.Queue) -> None:
             await inbox.put(msg)
     except RuntimeError:  # a superseding/drain task already closed us
         pass
+    # health: allow BLE001 -- forwarded, not swallowed: _pump_input re-raises it, and a reader that died unqueued would hang the pump
     except Exception as exc:
         end = exc
     await inbox.put(end)
@@ -367,7 +359,8 @@ async def host_terminal(ws: WebSocket) -> None:
         admitted = await _admit(ws, registry)
         if admitted is None:
             return
-        token, session, owner = admitted
+        session, owner = admitted
+        token = session.key
         initial_text = _metadata(
             token, owner, session, registry, reconnected=ws.query_params.get("attach") is not None)
         if not await session.attach(ws, initial_text=initial_text):

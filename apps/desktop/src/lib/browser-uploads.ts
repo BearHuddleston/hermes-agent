@@ -1,5 +1,5 @@
 import type { HermesApiRequest, HermesSelectPathsOptions, HermesStagedUpload } from '@/global'
-import { bytesToBase64 } from '@/lib/base64'
+import { blobToDataUrl, bytesToBase64 } from '@/lib/base64'
 import { type BrowserBootstrap, browserFetch } from '@/lib/browser-transport'
 
 const STAGED_UPLOAD_CACHE_LIMIT = 256
@@ -27,12 +27,22 @@ function normalizedExtension(value: string): string {
   return clean.startsWith('.') ? clean : `.${clean}`
 }
 
-function bytesToDataUrl(bytes: Uint8Array, mimeType: string): string {
-  return `data:${mimeType};base64,${bytesToBase64(bytes)}`
+// Chips retain their own descriptors. Bound the string-path compatibility
+// caches without consuming lookups shared by multiple attachment occurrences.
+function rememberBounded<K, V>(cache: Map<K, V>, key: K, value: V): void {
+  cache.set(key, value)
+
+  if (cache.size > STAGED_UPLOAD_CACHE_LIMIT) {
+    const oldest = cache.keys().next().value
+
+    if (oldest !== undefined) {
+      cache.delete(oldest)
+    }
+  }
 }
 
 function sandboxedHtmlBlob(bytes: Uint8Array): Blob {
-  const source = bytesToDataUrl(bytes, 'text/html;charset=utf-8')
+  const source = `data:text/html;charset=utf-8;base64,${bytesToBase64(bytes)}`
 
   const wrapper = [
     '<!doctype html>',
@@ -71,11 +81,13 @@ function uploadFailure(status: number, detail: unknown): string {
     : `File upload failed (${status})`
 }
 
+type OnStaged = (path: string, name: string, staged?: HermesStagedUpload) => void
+
 async function stageBrowserFile(
   bootstrap: BrowserBootstrap,
   file: File,
-  profile?: null | string,
-  onStaged?: (path: string, name: string) => void
+  profile: null | string,
+  onStaged: OnStaged
 ): Promise<string> {
   const form = new FormData()
   form.append('file', file, file.name || 'attachment')
@@ -93,30 +105,16 @@ async function stageBrowserFile(
     throw new Error(uploadFailure(response.status, payload.detail))
   }
 
-  // Keep the existing string-path bridge for pickers and drops. Composer chips
-  // carry this small source descriptor so draft cloning and retries retain it.
-  if (payload.staged_upload?.path === payload.path) {
-    bootstrap.stagedUploads.set(payload.path, payload.staged_upload)
-
-    // Chips retain their own descriptors. Bound the string-path compatibility
-    // cache without consuming lookups shared by multiple attachment occurrences.
-    if (bootstrap.stagedUploads.size > STAGED_UPLOAD_CACHE_LIMIT) {
-      const oldest = bootstrap.stagedUploads.keys().next().value
-
-      if (oldest !== undefined) { bootstrap.stagedUploads.delete(oldest) }
-    }
-  }
-
-  onStaged?.(payload.path, file.name)
+  onStaged(payload.path, file.name, payload.staged_upload)
 
   return payload.path
 }
 
 function selectBrowserFiles(
   bootstrap: BrowserBootstrap,
-  options?: HermesSelectPathsOptions,
-  fallbackProfile?: null | string,
-  onStaged?: (path: string, name: string) => void
+  options: HermesSelectPathsOptions | undefined,
+  fallbackProfile: null | string,
+  onStaged: OnStaged
 ): Promise<string[]> {
   if (options?.directories) {return Promise.resolve([])}
 
@@ -180,15 +178,16 @@ export function createBrowserUploadsBridge({
   'getStagedFileDisplayName' | 'getStagedFileForAttach' | 'saveImageBuffer' | 'savePastedText' | 'selectPaths' | 'stageFileForAttach'
 > {
   const displayNames = new Map<string, string>()
+  const stagedUploads = new Map<string, HermesStagedUpload>()
 
-  const rememberName = (path: string, name: string) => {
-    displayNames.set(path, name)
-
-    if (displayNames.size > STAGED_UPLOAD_CACHE_LIMIT) {
-      const oldest = displayNames.keys().next().value
-
-      if (oldest !== undefined) { displayNames.delete(oldest) }
+  const rememberStaged: OnStaged = (path, name, staged) => {
+    // Keep the existing string-path bridge for pickers and drops. Composer chips
+    // carry this small source descriptor so draft cloning and retries retain it.
+    if (staged?.path === path) {
+      rememberBounded(stagedUploads, path, staged)
     }
+
+    rememberBounded(displayNames, path, name)
   }
 
   const saveBuffer = async (data: ArrayBuffer | Uint8Array, ext: string) => {
@@ -200,14 +199,18 @@ export function createBrowserUploadsBridge({
     const imageMime = IMAGE_MIME_BY_EXTENSION[extension]
 
     if (imageMime) {
+      // Route by the profile active at the paste, not after the encode.
+      const profile = currentProfile()
+      const dataUrl = await blobToDataUrl(new Blob([bytes], { type: imageMime }))
+
       const uploaded = await api<{ path?: string }>({
         body: {
-          data_url: bytesToDataUrl(bytes, imageMime),
+          data_url: dataUrl,
           filename: `desktop-upload${extension}`
         },
         method: 'POST',
         path: '/api/chat/image-upload',
-        profile: currentProfile()
+        profile
       })
 
       return uploaded.path || ''
@@ -229,12 +232,12 @@ export function createBrowserUploadsBridge({
 
   return {
     getStagedFileDisplayName: (path: string) => displayNames.get(path),
-    getStagedFileForAttach: (path: string) => bootstrap.stagedUploads.get(path),
+    getStagedFileForAttach: (path: string) => stagedUploads.get(path),
     saveImageBuffer: saveBuffer,
     savePastedText: (text: string) => stageBrowserFile(
-      bootstrap, new File([text], 'pasted.txt', { type: 'text/plain' }), currentProfile(), rememberName
+      bootstrap, new File([text], 'pasted.txt', { type: 'text/plain' }), currentProfile(), rememberStaged
     ),
-    selectPaths: options => selectBrowserFiles(bootstrap, options, currentProfile(), rememberName),
-    stageFileForAttach: (file: File) => stageBrowserFile(bootstrap, file, currentProfile(), rememberName)
+    selectPaths: options => selectBrowserFiles(bootstrap, options, currentProfile(), rememberStaged),
+    stageFileForAttach: (file: File) => stageBrowserFile(bootstrap, file, currentProfile(), rememberStaged)
   }
 }

@@ -3,21 +3,17 @@ import { externalUrlTarget } from '@hermes/shared'
 import type { HermesApiRequest } from '@/global'
 import { BROWSER_BRIDGE_STUBS } from '@/lib/browser-bridge-stubs'
 import { createBrowserClipboardBridge } from '@/lib/browser-clipboard'
-import { createBrowserConnectionBridge, requireBrowserConnection } from '@/lib/browser-connection'
+import { createBrowserConnectionBridge } from '@/lib/browser-connection'
 import { createBrowserFilesBridge } from '@/lib/browser-files'
 import { watchWebappLaunchLink } from '@/lib/browser-launch-session'
 import { createBrowserProfileBridge } from '@/lib/browser-profile'
 import { createBrowserTerminal } from '@/lib/browser-terminal'
-import {
-  authenticatedWebsocketUrl,
-  browserApi,
-  browserBootstrap,
-  type BrowserBootstrapWindow
-} from '@/lib/browser-transport'
+import { authenticatedWebsocketUrl, browserApi, browserBootstrap } from '@/lib/browser-transport'
 import { createBrowserUploadsBridge } from '@/lib/browser-uploads'
 import { createBrowserWindowOpener, sessionWindowTarget } from '@/lib/browser-window'
 import { createBrowserZoom } from '@/lib/browser-zoom'
 import { $connection } from '@/store/session'
+import { windowProfileOverride } from '@/store/windows'
 
 import { resolveGatewayVersion } from '../../electron/gateway-version'
 
@@ -32,9 +28,7 @@ import { resolveGatewayVersion } from '../../electron/gateway-version'
  * only safe browser equivalents for machine-level capabilities.
  */
 export function installBrowserDesktopBridge(): boolean {
-  const win = window as unknown as BrowserBootstrapWindow
-
-  if (win.hermesDesktop) {return false}
+  if (window.hermesDesktop) {return false}
 
   const bootstrap = browserBootstrap()
 
@@ -46,8 +40,7 @@ export function installBrowserDesktopBridge(): boolean {
 
   const api = <T>(request: HermesApiRequest) => browserApi<T>(bootstrap, request)
 
-  const currentProfile = () =>
-    $connection.get()?.profile?.trim() || new URLSearchParams(window.location.search).get('profile')
+  const currentProfile = () => $connection.get()?.profile?.trim() || windowProfileOverride()
 
   const objectUrls = new Set<string>()
   const previewUrls = new Set<string>()
@@ -83,13 +76,7 @@ export function installBrowserDesktopBridge(): boolean {
     ...BROWSER_BRIDGE_STUBS,
     ...createBrowserClipboardBridge({ saveBuffer: uploads.saveImageBuffer }),
     ...createBrowserConnectionBridge({ api, bootstrap }),
-    ...createBrowserFilesBridge({
-      api,
-      bootstrap,
-      currentProfile,
-      objectUrls,
-      requireConnection: requireBrowserConnection
-    }),
+    ...createBrowserFilesBridge({ api, bootstrap, currentProfile }),
     ...uploads,
     api,
     // This renderer is built from the serving checkout, so its version is the
@@ -143,16 +130,11 @@ export function installBrowserDesktopBridge(): boolean {
       websocketUrl: profile => authenticatedWebsocketUrl(bootstrap, '/api/host-terminal', profile),
       defaultCwd: async profile => (await api<{ cwd?: string }>({ path: '/api/fs/default-cwd', profile })).cwd || ''
     }),
-    ...createBrowserProfileBridge({
-      basePath: bootstrap.basePath,
-      currentProfile,
-      openWindow,
-      requireConnection: requireBrowserConnection
-    }),
+    ...createBrowserProfileBridge({ basePath: bootstrap.basePath, currentProfile, openWindow }),
     zoom: createBrowserZoom(bootstrap.basePath)
   }
 
-  win.hermesDesktop = bridge
+  window.hermesDesktop = bridge
   document.documentElement.dataset.hermesDesktopHost = 'browser'
 
   return true

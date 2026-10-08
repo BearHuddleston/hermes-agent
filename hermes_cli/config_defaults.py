@@ -117,9 +117,8 @@ DEFAULT_CONFIG = {
         "cron_drain_timeout": 30,
         # In-band restart (/restart, SIGUSR1): refuse new work, then wait up to this many seconds
         # for in-flight agents/cron/api runs to finish before stop(). 0 = enter stop() at once. 30
-        # min is a safety valve for wedged agents, not a target; raise for long unattended turns.
-        # Default 30 min is a safety valve for wedged agents, not a target latency — an interactive `hermes
-        # gateway restart` must never block for hours on a turn that wedged (#79133).
+        # min is a safety valve for wedged agents, not a target; raise for long unattended turns. An
+        # interactive `hermes gateway restart` must never block for hours on a wedged turn (#79133).
         "restart_after_turn_timeout": 1800,
         # Max seconds a submitted prompt waits for the deferred agent build (MCP discovery, model
         # metadata, skills scan) before failing visibly. The prompt is delivered as soon as the
@@ -318,10 +317,8 @@ DEFAULT_CONFIG = {
         # Max seconds a one-shot CLI run (-q/-Q/-z) lingers for tracked notify_on_complete
         # background processes to finish. The dying parent owns their stdout pipes, so exiting
         # immediately kills the delivery (e.g. Bot Mode handoff replies via message_agent /
-        # bot_relay). Plain background processes without notify_on_complete are never waited on. 0
-        # disables.
-        # Bounded linger (seconds) for one-shot CLI runs (-q/-Q/-z) that exit while background processes
-        # spawned with notify_on_complete=true are still running. See #90879.
+        # bot_relay). Plain background processes without notify_on_complete are never waited on.
+        # 0 disables. See #90879.
         "oneshot_completion_wait_seconds": 600.0,
         # Env vars passed into sandboxed terminal/execute_code (skill-declared
         # required_environment_variables pass through automatically).
@@ -2332,8 +2329,7 @@ DEFAULT_CONFIG = {
     # `seen`; wipe the section to re-see all hints.
     "onboarding": {
         "seen": {},
-        # First-ever gateway message: ask = offer to build a user profile (consent- gated; never
-        # reads connected accounts silently); off = plain intro only.
+        # First-ever message: ask = offer; off = plain intro only.
         "profile_build": "ask",
     },
     # Privacy-safe aggregate metrics in this profile's local telemetry dir. Collection (`enabled`)
@@ -2631,11 +2627,9 @@ DEFAULT_CONFIG = {
         # theme's face. The terminal pane is terminal.font_family.
         "font_family": "",
         # The profile's Desktop/Webapp appearance, so a pick follows the profile to every client.
-        # theme: a Desktop theme name (not a CLI skin — that is display.skin); theme_mode:
-        # light | dark | system (system follows each device's OS setting). Empty = never picked:
-        # each client keeps its own local choice.
-        "theme": "",
-        "theme_mode": "",
+        # Empty = never picked: each client keeps its own local choice.
+        "theme": "",  # a Desktop theme name (not a CLI skin — that is display.skin)
+        "theme_mode": "",  # light | dark | system (system follows each device's OS setting)
         # Git repo discovery for the Projects sidebar. Empty roots are a safe
         # no-op; users must explicitly configure roots for filesystem scanning.
         # Session-derived projects remain available.
@@ -2689,7 +2683,6 @@ DEFAULT_CONFIG = {
             "max_attempts": 2,  # Crash-loop breaker: max automatic re-runs of one interrupted turn.
         },
     },
-
     "nous": {
         # Upper bound (seconds) on the Nous auth keepalive tick, which derives from the
         # server-issued credential lifetime (raising above it has no effect). 0 disables the

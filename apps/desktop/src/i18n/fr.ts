@@ -7,6 +7,9 @@ import { frGatewayHost } from './fr_gateway_host'
 import { frLocalModels } from './fr_local_models'
 import { frModelMenu } from './fr_model_menu'
 import { frNotices } from './fr_notices'
+import { frOnboarding } from './fr_onboarding'
+import { frPreviewWeb } from './fr_preview_web'
+import { frProjects } from './fr_projects'
 import { frSharedMetrics } from './fr_shared_metrics'
 import { introFr } from './intro-fr'
 
@@ -1604,7 +1607,13 @@ export const frOverrides = {
         "Taille maximale d'un fichier local que Desktop chargera pour les aperçus et les pièces jointes image, en Mo. La valeur par défaut est 16. Les pièces jointes distantes non-image utilisent une limite distincte de 256 Mo. Une valeur très élevée charge le fichier entier en mémoire et peut figer ou planter l'application.",
       attachmentSizeUnit: 'Mo',
       attachmentSizeLabel: 'Taille maximale de chargement des aperçus / images en mégaoctets',
-      showOptions: 'Afficher les options'
+      showOptions: 'Afficher les options',
+      developerTitle: 'Développeur',
+      resetOnboardingTitle: 'Réinitialiser la configuration initiale',
+      resetOnboardingDesc:
+        'Supprimer les chats de configuration, recréer le profil de configuration et relancer la configuration initiale. Vos propres profils, chats et plugins sont conservés.',
+      resetOnboardingAction: 'Réinitialiser',
+      resetOnboardingFailed: 'Impossible de réinitialiser la configuration initiale'
     },
     hudModifier: {
       title: 'Toucher pour afficher le HUD',
@@ -3553,6 +3562,7 @@ export const frOverrides = {
     next: 'Prochaine :',
     overdueSince: 'En retard depuis :',
     noRuns: 'Aucune exécution',
+    queuedRun: 'Exécution en file d’attente',
     manage: 'Gérer',
     showRuns: 'Afficher les exécutions',
     hideRuns: 'Masquer les exécutions',
@@ -3765,87 +3775,7 @@ export const frOverrides = {
       guide: 'Guide de récupération'
     },
     noFilterMatches: 'Aucune session ne correspond à ces filtres',
-    projects: {
-      showAllSessions: 'Afficher toutes les sessions',
-      sectionLabel: 'Projets',
-      home: 'Accueil',
-      autoDiscovered: 'Détecté automatiquement',
-      newButton: 'Nouveau projet',
-      createTitle: 'Nouveau projet',
-      createDesc: 'Nommez un espace de travail et ajoutez un ou plusieurs dossiers.',
-      renameTitle: 'Renommer le projet',
-      addFolderTitle: 'Ajouter un dossier',
-      namePlaceholder: 'ex. Projet secret',
-      foldersLabel: 'Dossiers',
-      ideaLabel: 'Idée',
-      ideaPlaceholder: "De quoi s'agit-il ? (enregistré dans IDEA.md)",
-      ideaGenerate: 'Générer une idée',
-      ideaGenerating: 'Génération…',
-      ideaShuffle: 'Mélanger les modèles',
-      noFolders: 'Aucun dossier ajouté pour le moment.',
-      addFolder: 'Ajouter un dossier',
-      primaryBadge: 'principal',
-      removeFolder: 'Supprimer',
-      create: 'Créer',
-      menu: 'Actions',
-      menuRename: 'Renommer',
-      menuAppearance: 'Apparence',
-      noColor: 'Aucune couleur',
-      menuAddFolder: 'Ajouter un dossier',
-      menuSetActive: 'Définir comme actif',
-      menuDelete: 'Supprimer',
-      moveToProject: 'Déplacer vers un projet',
-      movedTo: name => `Déplacée vers ${name}`,
-      moveFailed: 'Impossible de déplacer la session',
-      moveNoFolder: "Ce projet n'a aucun dossier vers lequel effectuer le déplacement",
-      moveNoProjects: 'Aucun autre projet',
-      reveal: 'Afficher dans le dossier',
-      copyPath: 'Copier le chemin',
-      removeFromSidebar: 'Masquer de la barre latérale',
-      createdInPreviousContext:
-        "Le projet a été créé sur la connexion ou le profil précédent. Revenez-y ; IDEA.md n'a pas été écrit.",
-      createFailed: 'Impossible de créer le projet',
-      staleBackend:
-        'Mettez à jour le backend Hermes pour créer des projets — votre backend est plus ancien que cette application de bureau (Paramètres → Mises à jour → Backend).',
-      deleteConfirm:
-        'Cela supprime le projet enregistré de Hermes. Les fichiers, dépôts git et worktrees restent inchangés.',
-      startWork: 'Nouveau worktree',
-      newWorktreeTitle: 'Nouveau worktree',
-      newWorktreeDesc: 'Nommez la branche pour ce worktree.',
-      branchPlaceholder: 'ex. ma-fonctionnalité',
-      branchOff: () => ({ after: '', before: 'à partir de ' }),
-      baseBranchPlaceholder: 'Rechercher des branches…',
-      baseBranchNone: 'Aucune branche trouvée',
-      startWorkFailed: 'Impossible de créer le worktree',
-      worktreeStaleBackend:
-        'Mettez à jour le backend Hermes pour créer des worktrees depuis Desktop — votre backend est plus ancien que cette application (Paramètres → Mises à jour → Backend).',
-      worktreeProjectLabel: 'Projet',
-      worktreeProjectPlaceholder: 'Rechercher des projets…',
-      worktreeProjectNone: 'Aucun projet avec un dossier',
-      convertBranch: 'Convertir une branche…',
-      convertBranchTitle: 'Convertir une branche',
-      convertBranchDesc: 'Ouvrez des branches vérifiées ou créez un worktree pour une branche libre.',
-      convertBranchPlaceholder: 'Rechercher des branches…',
-      convertBranchInstead: 'Convertir une branche existante',
-      branchOpenExisting: 'ouverte',
-      branchSwitchHome: "basculer l'accueil",
-      branchCreateWorktree: 'nouveau worktree',
-      branchTrackRemote: 'suivre la branche distante',
-      branchesLoading: 'Chargement des branches…',
-      noBranches: 'Aucune branche trouvée',
-      removeWorktree: 'Supprimer le worktree',
-      removeWorktreeFailed: 'Impossible de supprimer le worktree (modifications non validées ?)',
-      removeWorktreeConfirm:
-        'Supprimez-le de git (supprime le répertoire du worktree ; la branche reste), ou masquez simplement la voie de la barre latérale et laissez le worktree sur le disque.',
-      removeWorktreeDirty:
-        'Ce worktree a des modifications non validées. Forcez sa suppression (ces modifications seront perdues), ou masquez simplement la voie et conservez-le sur le disque.',
-      forceRemove: 'Supprimer par force',
-      enter: label => `Ouvrir ${label}`,
-      reorder: label => `Réorganiser ${label}`,
-      toggle: (label, open) => `${open ? 'Afficher' : 'Masquer'} les sessions de ${label}`,
-      showAllCount: count => `Afficher les ${count} sessions`,
-      back: 'Tous les projets'
-    },
+    projects: frProjects,
     newSessionIn: label => `Nouvelle session dans ${label}`,
     showMoreIn: (count, label) => `Afficher ${count} de plus dans ${label}`,
     loading: 'Chargement…',
@@ -4080,6 +4010,12 @@ export const frOverrides = {
     editingQueuedInComposer: "Modification du tour en file d'attente dans le compositeur",
     restoredDraftNotice: 'Votre message non envoyé a été restauré',
     restoredDraftUndo: 'Annuler',
+    localSetup: {
+      title: 'Ceci pourrait tourner sur votre ordinateur',
+      text: (model: string) =>
+        `${model} tient sur cette machine. Gratuit, et les conversations restent sur votre ordinateur.`,
+      action: 'Montrez-moi'
+    },
     queueEdit: 'Modifier',
     queueExpand: 'Déplier',
     queueCollapse: 'Replier',
@@ -4495,6 +4431,9 @@ export const frOverrides = {
     }
   },
   handoffTour: {
+    localTitle: 'Cette machine peut exécuter des modèles en local',
+    localText: (model: string) =>
+      `${model} convient à votre matériel. Il tourne gratuitement et les conversations ne quittent jamais votre ordinateur. Choisissez-le ici, dans le menu des modèles, quand vous voulez.`,
     profileTitle: 'Votre première tâche utilise le profil par défaut',
     profileText:
       "Cette barre change de profil. Celui qui est éclairé est le profil par défaut, où se trouve la session de la tâche. L'autre est le profil de configuration, où se trouve la conversation de bienvenue.",
@@ -4504,10 +4443,6 @@ export const frOverrides = {
     stayTitle: "Hermes reste à portée d'un clic",
     stayText:
       'Passez au profil de configuration et ouvrez Bienvenue dans Hermes lorsque vous avez besoin d’aide. La conversation y reste disponible.'
-  },
-  guidedGreeting: {
-    line: "Salut, entrez ! Je suis Hermes. Donnez-moi deux minutes pour préparer les lieux à votre façon, puis nous nous attaquerons à quelque chose que vous voulez vraiment accomplir.\n\nMais d'abord, comment dois-je vous appeler ?",
-    nameSuggestion: name => `(Je peux aussi simplement vous appeler ${name}, si vous préférez.)`
   },
   install: {
     stageStates: {
@@ -4585,105 +4520,7 @@ export const frOverrides = {
     reloadRetry: 'Recharger et réessayer',
     openLogs: 'Ouvrir les journaux'
   },
-  onboarding: {
-    headerTitle: 'Configurons Hermes Agent pour vous',
-    headerDesc:
-      'Connectez un fournisseur de modèles pour commencer à discuter. La plupart des options nécessitent un clic.',
-    preparingInstall:
-      "Hermes finalise l'installation. Cela prend généralement moins d'une minute au premier lancement.",
-    starting: 'Démarrage de Hermes…',
-    lookingUpProviders: 'Recherche des fournisseurs...',
-    collapse: 'Réduire',
-    otherProviders: 'Autres fournisseurs',
-    haveApiKey: 'Vous avez une clé API ?',
-    chooseLater: 'Je choisirai un fournisseur plus tard',
-    recommended: 'Recommandé',
-    connected: 'Connecté',
-    featuredPitch: 'Un abonnement, 300+ modèles de pointe — la méthode recommandée pour exécuter Hermes',
-    fireworksPitch: 'API de modèles directe — modèles de pointe hébergés par Fireworks',
-    localModelsTitle: 'Exécuter des modèles en local',
-    localModelsPitch: 'Aucun compte requis — téléchargez un modèle et exécutez-le sur cette machine',
-    openRouterPitch: 'Une clé, des centaines de modèles — une valeur par défaut solide',
-    apiKeyOptions: {
-      fireworks: {
-        short: 'API de modèles directe',
-        description: 'Accès direct aux modèles hébergés par Fireworks AI.'
-      },
-      openrouter: {
-        short: 'une clé, de nombreux modèles',
-        description:
-          'Héberge des centaines de modèles derrière une seule clé. Bonne valeur par défaut pour les nouvelles installations.'
-      },
-      openai: {
-        short: 'Modèles de classe GPT',
-        description: 'Accès direct aux modèles OpenAI.'
-      },
-      gemini: {
-        short: 'Modèles Gemini',
-        description: 'Accès direct aux modèles Google Gemini.'
-      },
-      xai: {
-        short: 'Modèles Grok',
-        description: 'Accès direct aux modèles xAI Grok.'
-      },
-      local: {
-        short: 'auto-hébergé',
-        description:
-          'Pointez Hermes vers un point de terminaison local ou auto-hébergé compatible OpenAI (vLLM, llama.cpp, Ollama, etc).'
-      }
-    },
-    backToSignIn: 'Retour à la connexion',
-    getKey: 'Obtenir une clé',
-    replaceCurrent: 'Remplacer la valeur actuelle',
-    pasteApiKey: 'Collez votre clé API',
-    localApiKeyPlaceholder: 'Clé API (facultatif — uniquement si votre point de terminaison en requiert une)',
-    localModelNamePlaceholder: 'Nom du modèle (ex. command-a-plus-05-2026)',
-    couldNotSave: "Impossible d'enregistrer l'identifiant.",
-    connecting: 'Connexion',
-    update: 'Mettre à jour',
-    flowSubtitles: {
-      pkce: 'Ouvre votre navigateur pour vous connecter, puis continue ici',
-      device_code: 'Ouvre une page de vérification dans votre navigateur — Hermes se connecte automatiquement',
-      external: 'Connectez-vous une fois dans votre terminal, puis revenez discuter'
-    },
-    startingSignIn: provider => `Démarrage de la connexion pour ${provider}...`,
-    verifyingCode: provider => `Vérification de votre code avec ${provider}...`,
-    connectedProvider: provider => `${provider} connecté`,
-    connectedPicking: provider => `${provider} connecté. Choix d'un modèle par défaut...`,
-    signInFailed: 'Échec de la connexion. Réessayez.',
-    signInExpired:
-      "La connexion a expiré dans l'attente de l'autorisation. Cela signifie généralement que la page de connexion s'est figée dans l'onglet ouvert (problème côté serveur) — terminez la connexion dans cet onglet, puis réessayez. Si le problème persiste, utilisez plutôt une clé API ou la solution de secours en ligne de commande.",
-    signInDidNotFinish: provider =>
-      `La connexion avec ${provider} ne s'est pas terminée. Vérifiez votre connexion Internet et réessayez, ou choisissez un autre fournisseur.`,
-    tryAgain: 'Réessayer',
-    useApiKeyInstead: 'Utiliser une clé API',
-    errorDetails: 'Détails',
-    pickDifferentProvider: 'Choisissez un autre fournisseur',
-    signInWith: provider => `Se connecter avec ${provider}`,
-    openedBrowser: provider => `Nous avons ouvert ${provider} dans votre navigateur.`,
-    authorizeThere: 'Autorisez Hermes là-bas.',
-    copyAuthCode: "Copiez le code d'autorisation et collez-le ci-dessous.",
-    pasteAuthCode: "Coller le code d'autorisation",
-    reopenAuthPage: "Rouvrir la page d'autorisation",
-    autoBrowser: provider =>
-      `Nous avons ouvert ${provider} dans votre navigateur. Autorisez Hermes là-bas et vous serez connecté automatiquement — rien à copier ou coller.`,
-    reopenSignInPage: 'Rouvrir la page de connexion',
-    waitingAuthorize: 'En attente de votre autorisation...',
-    externalPending: provider =>
-      `${provider} se connecte via sa propre CLI. Exécutez cette commande dans un terminal, puis revenez et choisissez « Je me suis connecté » :`,
-    signedIn: 'Je me suis connecté',
-    deviceCodeOpened: provider => `Nous avons ouvert ${provider} dans votre navigateur. Entrez ce code là-bas :`,
-    reopenVerification: 'Rouvrir la page de vérification',
-    copy: 'Copier',
-    defaultModel: 'Modèle par défaut',
-    freeTier: 'Gratuit',
-    pro: 'Pro',
-    free: 'Gratuit',
-    price: (input, output) => `${input} entrant / ${output} sortant par Mtok`,
-    change: 'Modifier',
-    startChatting: 'Commencer',
-    docs: provider => `Documentation ${provider}`
-  },
+  onboarding: frOnboarding,
   freeTier: {
     providerRowTitle: 'Nous · offre gratuite',
     providerRowPitch: 'Connectez-vous avec un compte Nous pour débloquer davantage de modèles et outils.',
@@ -4731,6 +4568,12 @@ export const frOverrides = {
       "Hermes n'a pas pu joindre le service Nous pour terminer votre connexion. Vérifiez votre connexion Internet et réessayez. Votre session reste disponible.",
     alreadySignedInHeading: 'Déjà connecté.',
     alreadySignedInBody: 'Cette installation Hermes est déjà connectée à un compte Nous.',
+    offer: {
+      heading: 'Continuez avec Hermes',
+      body: 'Vous utilisez le quota gratuit. Si vous continuez à utiliser Hermes, vous allez commencer à atteindre des limites. Connectez-vous avec un compte Nous gratuit pour obtenir un quota plus important.',
+      signIn: 'Se connecter',
+      notNow: 'Pas maintenant'
+    },
     setupFailed: {
       gateClosed:
         'Cette version de Hermes ne peut pas démarrer sans compte Nous. Connectez-vous ou créez-en un gratuitement en une minute.',
@@ -5042,61 +4885,7 @@ export const frOverrides = {
       sentTitle: 'Envoyé à la conversation',
       sentMessage: count => `Ajout au compositeur : ${count} message${count === 1 ? '' : 's'} de console`
     },
-    web: {
-      appFailedToBoot: "Échec du démarrage de l'application d'aperçu",
-      serverNotFound: 'Serveur non trouvé',
-      remoteLoopback:
-        "Cette adresse pointe vers la machine qui exécute votre agent, pas vers celle-ci. Le panneau du navigateur charge les pages localement ; un serveur de développement distant nécessite donc une redirection de port ou un nom d'hôte accessible.",
-      failedToLoad: "Échec du chargement de l'aperçu",
-      tryAgain: 'Réessayer',
-      restarting: 'Hermes redémarre...',
-      askRestart: 'Demander à Hermes de redémarrer le serveur',
-      lookingRestart: taskId => `Hermes recherche un serveur d'aperçu à redémarrer (${taskId})`,
-      restartingTitle: "Redémarrage du serveur d'aperçu",
-      restartingMessage: "Hermes travaille en arrière-plan. Surveillez la console d'aperçu pour suivre la progression.",
-      startRestartFailed: message => `Impossible de démarrer le redémarrage du serveur : ${message}`,
-      restartFailed: 'Échec du redémarrage du serveur',
-      hideConsole: "Masquer la console d'aperçu",
-      showConsole: "Afficher la console d'aperçu",
-      hideDevTools: "Masquer les outils de développement d'aperçu",
-      openDevTools: "Ouvrir les outils de développement d'aperçu",
-      goBack: 'Retour',
-      goForward: 'Suivant',
-      reload: 'Recharger la page',
-      address: 'Adresse',
-      addressPlaceholder: 'Saisir une adresse',
-      blankPageBody: "Saisissez une adresse ci-dessus pour naviguer, ou demandez à Hermes d'ouvrir une page.",
-      finishedRestarting: message =>
-        `Hermes a terminé le redémarrage du serveur d'aperçu${message ? `: ${message}` : ''}`,
-      failedRestarting: message => `Échec du redémarrage du serveur : ${message}`,
-      unknownError: 'erreur inconnue',
-      restartedTitle: "Serveur d'aperçu redémarré",
-      reloadingNow: "Rechargement de l'aperçu maintenant.",
-      restartFailedTitle: "Échec du redémarrage de l'aperçu",
-      restartFailedMessage: "Hermes n'a pas pu redémarrer le serveur.",
-      stillWorking:
-        "Hermes travaille toujours, mais aucun résultat de redémarrage n'est arrivé. La commande du serveur peut être en cours d'exécution au premier plan.",
-      workspaceReloading: "Espace de travail modifié, rechargement de l'aperçu",
-      fileChanged: url => `Fichier modifié, rechargement de l'aperçu : ${url}`,
-      filesChanged: (count, url) => `${count} modifications de fichier, rechargement de l'aperçu : ${url}`,
-      watchFailed: message => `Impossible de surveiller le fichier d'aperçu : ${message}`,
-      moduleMimeDescription:
-        "Les scripts de module sont servis avec le mauvais type MIME. Cela signifie généralement qu'un serveur de fichiers statiques sert une application Vite/React au lieu du serveur de développement du projet.",
-      loadFailedConsole: (code, message) => `Échec du chargement${code ? ` (${code})` : ''} : ${message}`,
-      unreachableDescription: "La page d'aperçu n'a pas pu être atteinte.",
-      openTarget: url => `Ouvrir ${url}`,
-      fallbackTitle: 'Aperçu',
-      annotate: 'Annoter',
-      annotateOn: "Arrêter l'annotation",
-      annotateNeedPage: "Ouvrez d'abord une page dans le navigateur intégré.",
-      annotateFailed: "Impossible de démarrer le mode d'annotation",
-      commenting: 'Ajout de commentaires',
-      addComments: count => (count === 1 ? 'Ajouter 1 commentaire' : `Ajouter ${count} commentaires`),
-      commentPlaceholder: 'Ajouter un commentaire...',
-      commentTitle: n => `Commentaire ${n}`,
-      saveComment: 'Enregistrer',
-      cancelComment: 'Annuler le commentaire'
-    }
+    web: frPreviewWeb
   },
   interfaceMode: {
     title: 'Mode d’interface',
@@ -5469,9 +5258,35 @@ export const frOverrides = {
       confirmAndContinueLabel: 'Confirmer et continuer',
       singleSelectHint: 'Choisir une réponse',
       multiSelectHint: 'Choisir toutes les réponses qui s’appliquent',
+      oneQuestion: '1 question',
       questionProgress: (answered, total) => `${answered} réponse${answered === 1 ? '' : 's'} sur ${total}`,
       notDelivered:
         "Cette question n'a pas atteint l'app, elle ne peut donc pas être répondue ici. Appuyez sur Arrêter pour terminer le tour, puis répondez dans le chat."
+    },
+    setupChoose: {
+      kinds: {
+        accent: 'Couleur d’accent',
+        connectors: 'Apps',
+        layout: 'Disposition',
+        plugins: 'Plugins',
+        theme: 'Apparence'
+      },
+      loading: 'Chargement des options…',
+      unavailable: 'Cette liste n’est pas disponible pour le moment. Répondez plutôt dans le chat.',
+      findApp: 'Trouver une app',
+      customColor: 'Couleur personnalisée',
+      plugin: 'Plugin',
+      startsLater: 'Nous les configurerons quand vous commencerez.'
+    },
+    startChat: {
+      starting: title => `Démarrage de « ${title} »…`,
+      startingUntitled: 'Démarrage d’un chat…',
+      untitled: 'Nouveau chat',
+      notStarted: 'Le chat n’a pas démarré',
+      retry: 'Réessayer',
+      inProfile: profile => `Dans ${profile}`,
+      open: 'Ouvrir',
+      openFailed: 'Impossible d’ouvrir le chat'
     },
     catalogInstall: {
       preparing: 'Préparation de l’installation…',
@@ -5673,6 +5488,12 @@ export const frOverrides = {
           pending: "Recherche dans l'historique de session en cours",
           pendingAction: 'Recherche en cours'
         },
+        setup_choose: {
+          done: 'Question de configuration posée',
+          pending: 'Pose une question de configuration',
+          pendingAction: 'Question en cours'
+        },
+        start_chat: { done: 'Chat démarré', pending: 'Démarrage d’un chat', pendingAction: 'Démarrage' },
         terminal: {
           done: 'Commande exécutée',
           pending: 'Exécution de la commande en cours',
@@ -5881,11 +5702,6 @@ export const frOverrides = {
         title: 'Une mise à jour du moteur local est disponible',
         text: 'Mettez à jour le moteur qui exécute vos modèles locaux. Les requêtes locales actives peuvent être interrompues.',
         action: 'Mettre à jour maintenant'
-      },
-      'local-setup': {
-        title: 'Cette machine peut exécuter des modèles en local',
-        text: 'Votre matériel peut servir un modèle local. Les conversations restent sur votre ordinateur et ne coûtent rien.',
-        action: 'Configurer'
       },
       'right-pane': {
         title: 'Le volet de travail',

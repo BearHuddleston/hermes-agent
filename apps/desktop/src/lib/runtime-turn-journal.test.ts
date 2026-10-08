@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 
-import { appendLiveSessionProjection, chatMessagesEquivalent, overlayConcurrentMessageChanges } from '@/app/session/hooks/use-session-actions/utils'
+import { appendLiveSessionProjection } from '@/app/session/hooks/use-session-actions/live-session-projection'
+import { chatMessagesEquivalent, overlayConcurrentMessageChanges } from '@/app/session/hooks/use-session-actions/utils'
 import { type ChatMessage, chatMessageText, toChatMessages } from '@/lib/chat-messages'
 import { persistInFlightTurnState, readInFlightTurnJournal, recoverInFlightTurnJournal, resetInFlightTurnJournalStateForTests } from '@/lib/inflight-turn-journal'
 import type { SessionMessage } from '@/types/hermes'

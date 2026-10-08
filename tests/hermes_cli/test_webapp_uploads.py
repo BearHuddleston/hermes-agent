@@ -17,12 +17,11 @@ from zipfile import ZIP_DEFLATED, ZipFile
 import pytest
 
 from hermes_cli import profile_lifecycle
-from hermes_cli.web_routers import files as image_routes
 from hermes_cli import web_server_profiles
 from fastapi import HTTPException, UploadFile
 from fastapi.testclient import TestClient
 
-from hermes_cli import profile_incarnation, profiles, web_server
+from hermes_cli import profile_incarnation, profiles, staged_uploads, web_server
 from hermes_cli.web_routers import uploads
 from hermes_constants import WEBAPP_ATTACHMENT_MAX_BYTES
 
@@ -147,7 +146,7 @@ def test_browser_document_upload_remains_extractable_after_file_attach(
          "compound", "long-suffix", "dots", "missing"],
 )
 def test_safe_upload_filename_is_bounded_basename_with_document_suffix(filename, suffix):
-    cleaned = uploads._safe_filename(filename)
+    cleaned = staged_uploads._safe_filename(filename)
     assert 1 <= len(cleaned) <= 120
     assert re.fullmatch(r"[A-Za-z0-9_-][A-Za-z0-9._-]*", cleaned)
     assert Path(cleaned).name == cleaned
@@ -246,7 +245,7 @@ def test_browser_file_cleanup_failure_preserves_primary_staging_error(
 ):
     home = tmp_path / "hermes-home"
     home.mkdir()
-    real_open = uploads.os.open
+    real_open = staged_uploads.os.open
     real_unlink = Path.unlink
 
     def fail_target_open(path, *args, **kwargs):
@@ -259,11 +258,11 @@ def test_browser_file_cleanup_failure_preserves_primary_staging_error(
             raise OSError("target cleanup denied")
         return real_unlink(path, *args, **kwargs)
 
-    monkeypatch.setattr(uploads.os, "open", fail_target_open)
+    monkeypatch.setattr(staged_uploads.os, "open", fail_target_open)
     monkeypatch.setattr(Path, "unlink", fail_target_cleanup)
 
     with pytest.raises(HTTPException) as exc_info:
-        uploads._publish_staged_upload(BytesIO(b"bytes"), home, None, "notes.txt")
+        staged_uploads.publish_staged_upload(BytesIO(b"bytes"), home, None, "notes.txt")
 
     assert exc_info.value.status_code == 500
     assert "target open denied" in exc_info.value.detail
@@ -308,12 +307,15 @@ def test_browser_file_upload_never_recreates_profile_deleted_after_resolution(
     profile_home = tmp_path / "hermes-home" / "profiles" / "worker"
     profile_home.mkdir(parents=True)
 
-    @contextmanager
-    def deleting_scope(_profile):
-        yield profile_home
-        shutil.rmtree(profile_home)
+    real_resolve = staged_uploads.resolve_upload_generation
 
-    monkeypatch.setattr(uploads, "_profile_scope", deleting_scope)
+    def resolve_then_delete(profile):
+        resolved = real_resolve(profile)
+        shutil.rmtree(profile_home)
+        return resolved
+
+    monkeypatch.setattr(staged_uploads, "_resolve_profile_dir", lambda _name: profile_home)
+    monkeypatch.setattr(uploads, "resolve_upload_generation", resolve_then_delete)
     with _client(tmp_path, monkeypatch) as client:
         response = client.post(
             "/api/chat/file-upload?profile=worker",
@@ -349,12 +351,7 @@ def test_browser_file_upload_cannot_publish_into_recreated_profile(
         with real_lease(home, expected_incarnation, **kwargs) as leased_home:
             yield leased_home
 
-    monkeypatch.setattr(
-        uploads,
-        "profile_incarnation_lease",
-        pause_before_publish,
-        raising=False,
-    )
+    monkeypatch.setattr(staged_uploads, "profile_incarnation_lease", pause_before_publish)
 
     with _client(tmp_path, monkeypatch) as client, ThreadPoolExecutor(max_workers=1) as pool:
         stale_request = pool.submit(
@@ -458,12 +455,7 @@ def test_browser_image_upload_cannot_publish_into_recreated_profile(
         with real_lease(home, expected_incarnation, **kwargs) as leased_home:
             yield leased_home
 
-    monkeypatch.setattr(
-        image_routes,
-        "profile_incarnation_lease",
-        pause_before_publish,
-        raising=False,
-    )
+    monkeypatch.setattr(staged_uploads, "profile_incarnation_lease", pause_before_publish)
 
     payload = {
         "data_url": "data:image/png;base64,iVBORw0KGgo=",
@@ -509,16 +501,56 @@ def test_browser_image_upload_cannot_publish_into_recreated_profile(
 
 
 
+def test_browser_uploads_to_a_profile_do_not_queue_behind_the_skills_lock(
+    tmp_path: Path, monkeypatch
+):
+    """Resolving an upload's profile home is a path lookup. A skills request holding the
+    process-wide skills lock (and the skills-module globals it retargets) must not stall it."""
+    hermes_home = tmp_path / "hermes-home"
+    hermes_home.mkdir(parents=True)
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    profile_home = profiles.create_profile("worker", no_alias=True, no_skills=True)
+    holding, release = threading.Event(), threading.Event()
+
+    def hold_skills_lock():
+        with web_server_profiles._SKILLS_PROFILE_LOCK:
+            holding.set()
+            release.wait()
+
+    headers = {_SESSION_HEADER: "webapp-test-token"}
+    with _client(tmp_path, monkeypatch) as client, ThreadPoolExecutor(max_workers=3) as pool:
+        try:
+            pool.submit(hold_skills_lock)
+            assert holding.wait(timeout=_BARRIER_TIMEOUT_SECONDS)
+            file_upload = pool.submit(
+                client.post,
+                "/api/chat/file-upload?profile=worker",
+                files={"file": ("notes.txt", b"bytes", "text/plain")},
+                headers=headers,
+            )
+            image_upload = pool.submit(
+                client.post,
+                "/api/chat/image-upload?profile=worker",
+                json={"data_url": "data:image/png;base64,iVBORw0KGgo=", "filename": "image.png"},
+                headers=headers,
+            )
+            file_response = file_upload.result(timeout=_BARRIER_TIMEOUT_SECONDS)
+            image_response = image_upload.result(timeout=_BARRIER_TIMEOUT_SECONDS)
+        finally:
+            release.set()
+
+    assert file_response.status_code == 200, file_response.text
+    assert Path(file_response.json()["path"]).parent == profile_home / "uploads"
+    assert image_response.status_code == 200, image_response.text
+    assert Path(image_response.json()["path"]).parent == profile_home / "images"
+
+
 def test_browser_image_upload_never_creates_a_missing_profile_home(
     tmp_path: Path, monkeypatch
 ):
     profile_home = tmp_path / "hermes-home" / "profiles" / "worker"
 
-    @contextmanager
-    def missing_scope(_profile):
-        yield profile_home
-
-    monkeypatch.setattr(web_server_profiles, "_profile_scope", missing_scope)
+    monkeypatch.setattr(staged_uploads, "_resolve_profile_dir", lambda _name: profile_home)
     with _client(tmp_path, monkeypatch) as client:
         response = client.post(
             "/api/chat/image-upload?profile=worker",
@@ -541,12 +573,7 @@ def test_browser_uploads_reject_tombstone_before_profile_directory_removal(
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes-home"))
     profile_lifecycle.mark_profile_deleting(profile_home)
 
-    @contextmanager
-    def deleting_scope(_profile):
-        yield profile_home
-
-    monkeypatch.setattr(uploads, "_profile_scope", deleting_scope)
-    monkeypatch.setattr(web_server_profiles, "_profile_scope", deleting_scope)
+    monkeypatch.setattr(staged_uploads, "_resolve_profile_dir", lambda _name: profile_home)
     with _client(tmp_path, monkeypatch) as client:
         file_response = client.post(
             "/api/chat/file-upload?profile=worker",
@@ -575,18 +602,14 @@ def test_browser_file_upload_does_not_report_a_path_after_tombstone_wins(
     profile_home = tmp_path / "hermes-home" / "profiles" / "worker"
     profile_home.mkdir(parents=True)
 
-    @contextmanager
-    def profile_scope(_profile):
-        yield profile_home
-
-    real_fsync = uploads.os.fsync
+    real_fsync = staged_uploads.os.fsync
 
     def tombstone_after_flush(fd):
         real_fsync(fd)
         profile_lifecycle.mark_profile_deleting(profile_home)
 
-    monkeypatch.setattr(uploads, "_profile_scope", profile_scope)
-    monkeypatch.setattr(uploads.os, "fsync", tombstone_after_flush)
+    monkeypatch.setattr(staged_uploads, "_resolve_profile_dir", lambda _name: profile_home)
+    monkeypatch.setattr(staged_uploads.os, "fsync", tombstone_after_flush)
     with _client(tmp_path, monkeypatch) as client:
         response = client.post(
             "/api/chat/file-upload?profile=worker",
@@ -599,27 +622,36 @@ def test_browser_file_upload_does_not_report_a_path_after_tombstone_wins(
     assert not upload_root.exists() or list(upload_root.iterdir()) == []
 
 
-def test_browser_image_upload_does_not_report_a_path_after_tombstone_wins(
+def test_browser_image_upload_holds_the_retirement_lease_through_its_write(
     tmp_path: Path, monkeypatch
 ):
+    """Deletion tombstones a profile under its lifecycle lease. The image upload holds
+    that lease from its generation check through the write, so a retirement cannot
+    land between the bytes and the path the response reports."""
     profile_home = tmp_path / "hermes-home" / "profiles" / "worker"
     profile_home.mkdir(parents=True)
     image_dir = profile_home / "images"
+    attempts: list[str] = []
 
-    @contextmanager
-    def profile_scope(_profile):
-        yield profile_home
+    def try_retire() -> str:
+        try:
+            with profile_lifecycle.profile_lifecycle_lease(profile_home, timeout=0):
+                profile_lifecycle.mark_profile_deleting(profile_home)
+        except TimeoutError:
+            return "refused"
+        return "tombstoned"
 
     real_write_bytes = Path.write_bytes
 
-    def tombstone_after_write(path: Path, data: bytes):
+    def retire_after_write(path: Path, data: bytes):
         written = real_write_bytes(path, data)
         if path.parent == image_dir:
-            profile_lifecycle.mark_profile_deleting(profile_home)
+            with ThreadPoolExecutor(max_workers=1) as pool:
+                attempts.append(pool.submit(try_retire).result(timeout=_BARRIER_TIMEOUT_SECONDS))
         return written
 
-    monkeypatch.setattr(web_server_profiles, "_profile_scope", profile_scope)
-    monkeypatch.setattr(Path, "write_bytes", tombstone_after_write)
+    monkeypatch.setattr(staged_uploads, "_resolve_profile_dir", lambda _name: profile_home)
+    monkeypatch.setattr(Path, "write_bytes", retire_after_write)
     with _client(tmp_path, monkeypatch) as client:
         response = client.post(
             "/api/chat/image-upload?profile=worker",
@@ -630,5 +662,7 @@ def test_browser_image_upload_does_not_report_a_path_after_tombstone_wins(
             headers={_SESSION_HEADER: "webapp-test-token"},
         )
 
-    assert response.status_code == 404
-    assert not image_dir.exists() or list(image_dir.iterdir()) == []
+    assert attempts == ["refused"]
+    assert response.status_code == 200
+    assert Path(response.json()["path"]).parent == image_dir
+    assert try_retire() == "tombstoned"  # released once the image was published

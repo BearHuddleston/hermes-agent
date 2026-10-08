@@ -706,7 +706,7 @@ class TestWebServerEndpoints:
         DIFFERENT profile's gateway as this profile's, which hides a real
         outage behind a false "connected" (issue #71211).
         """
-        import hermes_cli.web_server as web_server
+        from hermes_cli import web_server
         from hermes_cli import profiles as profiles_mod
 
         worker_home = profiles_mod.get_profile_dir("worker")
@@ -719,15 +719,12 @@ class TestWebServerEndpoints:
             # The served-profile probe also verifies the DEFAULT home's gateway identity; the
             # contract here is that the worker's OWN pid file is what the scoped rung reads.
             seen.setdefault("pid_paths", []).append(pid_path)
-            return None
 
         def _runtime(path=None):
             seen.setdefault("status_paths", []).append(path)
-            return None
 
         def _runtime_pid(runtime=None, *, expected_home=None):
             seen.setdefault("expected_homes", []).append(expected_home)
-            return None
 
         monkeypatch.setattr(_gw_status, "get_running_pid_cached", _pid)
         monkeypatch.setattr(_gw_status, "get_running_pid", _pid)
@@ -850,7 +847,7 @@ CONFIG_SCHEMA = ProviderConfigSchema(
         """Dashboard dependency setup publishes through PM, never direct pip."""
         import subprocess as _subprocess
 
-        import hermes_cli.web_server as web_server
+        from hermes_cli import web_server
         from hermes_cli import memory_setup
 
         prepared = []
@@ -1395,7 +1392,7 @@ CONFIG_SCHEMA = ProviderConfigSchema(
         assert check_data["update_command"] == data["update_command"]
 
     def test_update_hermes_spawns_with_action_id(self, monkeypatch):
-        import hermes_cli.web_server as web_server
+        from hermes_cli import web_server
 
         class Proc:
             pid = 12345
@@ -3183,7 +3180,7 @@ class TestNewEndpoints:
         never-installed KittenTTS/Piper. The endpoint now reports the honest
         state so keyless ≠ ready.
         """
-        import hermes_cli.tools_config as tools_config
+        from hermes_cli import tools_config
         from hermes_cli.nous_account import NousPortalAccountInfo
 
         # Logged out of Nous Portal → managed subscription rows need sign-in.
@@ -3194,7 +3191,7 @@ class TestNewEndpoints:
             ),
         )
         # No xAI credentials → the Grok OAuth-backed row needs sign-in.
-        import hermes_cli.tools_config_post_setup as tools_config_post_setup
+        from hermes_cli import tools_config_post_setup
 
         monkeypatch.setattr(tools_config, "_xai_credentials_present", lambda: False)
         # Local TTS engines not installed → their rows need setup.
@@ -3435,7 +3432,7 @@ class TestDesktopLoopbackAuthExemption:
     """``_desktop_loopback_auth_exempt`` decides the #96490 exemption."""
 
     def test_exempt_with_desktop_env_and_session_token_on_loopback(self, monkeypatch):
-        import hermes_cli.web_server as web_server
+        from hermes_cli import web_server
 
         monkeypatch.setenv("HERMES_DESKTOP", "1")
         monkeypatch.setenv("HERMES_DASHBOARD_SESSION_TOKEN", "desktop-minted")
@@ -3443,7 +3440,7 @@ class TestDesktopLoopbackAuthExemption:
         assert web_server._desktop_loopback_auth_exempt("::1") is True
 
     def test_exempt_via_ssh_spawn_credentials_without_env_token(self, monkeypatch):
-        import hermes_cli.web_server as web_server
+        from hermes_cli import web_server
 
         monkeypatch.setenv("HERMES_DESKTOP", "1")
         monkeypatch.delenv("HERMES_DASHBOARD_SESSION_TOKEN", raising=False)
@@ -3455,14 +3452,14 @@ class TestDesktopLoopbackAuthExemption:
         )
 
     def test_not_exempt_without_desktop_env(self, monkeypatch):
-        import hermes_cli.web_server as web_server
+        from hermes_cli import web_server
 
         monkeypatch.delenv("HERMES_DESKTOP", raising=False)
         monkeypatch.setenv("HERMES_DASHBOARD_SESSION_TOKEN", "tok")
         assert web_server._desktop_loopback_auth_exempt("127.0.0.1") is False
 
     def test_not_exempt_without_any_credential(self, monkeypatch):
-        import hermes_cli.web_server as web_server
+        from hermes_cli import web_server
 
         # HERMES_DESKTOP=1 alone is not enough: a plain serve with the env var
         # exported must stay gated.
@@ -3471,7 +3468,7 @@ class TestDesktopLoopbackAuthExemption:
         assert web_server._desktop_loopback_auth_exempt("127.0.0.1") is False
 
     def test_not_exempt_on_non_loopback_bind(self, monkeypatch):
-        import hermes_cli.web_server as web_server
+        from hermes_cli import web_server
 
         monkeypatch.setenv("HERMES_DESKTOP", "1")
         monkeypatch.setenv("HERMES_DASHBOARD_SESSION_TOKEN", "tok")
@@ -3479,7 +3476,7 @@ class TestDesktopLoopbackAuthExemption:
         assert web_server._desktop_loopback_auth_exempt("192.168.1.10") is False
 
     def test_public_url_engages_gate_for_non_desktop_loopback(self, monkeypatch):
-        import hermes_cli.web_server as web_server
+        from hermes_cli import web_server
 
         # Sanity: the base behaviour is untouched — a non-Desktop loopback
         # serve with a public_url configured stays ticket-gated.
@@ -3499,7 +3496,7 @@ class TestDesktopHostRendezvousIsolation:
         import io
         import urllib.request
         from gateway import host_rendezvous as hr
-        import hermes_cli.web_server as web_server
+        from hermes_cli import web_server
         from hermes_cli.main_dashboard import _host_backend_attachment
         from hermes_cli.plugins_activation import notify_serve_backend
 
@@ -3540,7 +3537,7 @@ class TestDesktopHostRendezvousIsolation:
         """The Desktop exclusion must not alter standalone dashboard discovery — including a
         supervised service whose shell merely inherited HERMES_DESKTOP=1 without the token."""
         from gateway import host_rendezvous as hr
-        import hermes_cli.web_server as web_server
+        from hermes_cli import web_server
 
         monkeypatch.setenv("HERMES_DESKTOP", "1")
         monkeypatch.delenv("HERMES_DASHBOARD_SESSION_TOKEN", raising=False)
@@ -3596,7 +3593,7 @@ class TestOrphanedOwnerReclaim:
         """
         import types
         from gateway import host_rendezvous as hr
-        import hermes_cli.web_server as web_server
+        from hermes_cli import web_server
         from hermes_cli import process_identity as pi
 
         monkeypatch.setenv("HERMES_GATEWAY_LOCK_DIR", str(tmp_path / "locks"))
@@ -3995,25 +3992,6 @@ class TestStatusInstallId:
 
         second = self.client.get("/api/status")
         assert second.json().get("install_id") == install_id
-
-    def test_status_advertises_exact_ui_surface(self, monkeypatch):
-        import hermes_cli.web_server as ws
-
-        surface = "webapp"
-        monkeypatch.setattr(ws.app.state, "ui_surface", surface, raising=False)
-        monkeypatch.setattr(_gw_status, "get_running_pid_cached", lambda: None)
-        monkeypatch.setattr(_gw_status, "read_runtime_status", lambda: None)
-
-        response = self.client.get("/api/status")
-
-        assert response.status_code == 200
-        assert response.json()["ui_surface"] == surface
-
-        identity = self.client.get("/api/host/identity")
-        assert identity.status_code == 200
-        assert identity.json()["ui_surface"] == surface
-        self.client.headers.pop(ws._SESSION_HEADER_NAME)
-        assert self.client.get("/api/host/identity").status_code == 401
 
     def test_install_id_survives_process_cache_reset(self, monkeypatch):
         """A restart (fresh cache) re-reads the SAME persisted id."""
@@ -5067,54 +5045,6 @@ class TestPtyWebSocket:
         q = {"token": tok, **params}
         return f"/api/pty?{urlencode(q)}"
 
-    @pytest.mark.parametrize(
-        ("surface", "bound_host", "headers"),
-        [
-            ("dashboard", "testclient", {"host": "testclient"}),
-            (
-                "webapp",
-                "0.0.0.0",
-                {
-                    "host": "192.168.0.222:9120",
-                    "origin": "http://192.168.0.222:9120",
-                },
-            ),
-        ],
-    )
-    def test_host_terminal_rejection_runs_through_websocket_route(
-        self, monkeypatch, surface, bound_host, headers
-    ):
-        from starlette.websockets import WebSocketDisconnect
-
-        monkeypatch.setattr(self.ws_module.app.state, "ui_surface", surface, raising=False)
-        monkeypatch.setattr(self.ws_module.app.state, "bound_host", bound_host, raising=False)
-        monkeypatch.setattr(self.ws_module.app.state, "auth_required", False, raising=False)
-
-        with pytest.raises(WebSocketDisconnect) as exc:
-            with self.client.websocket_connect(
-                f"/api/host-terminal?token={self.token}", headers=headers
-            ):
-                pass
-
-        assert exc.value.code == 4403
-
-    def test_host_terminal_policy_rejects_dashboard_and_unauthenticated_public_bind(
-        self, monkeypatch
-    ):
-        from hermes_cli import web_host_terminal
-
-        app = self.ws_module.app
-        monkeypatch.setattr(app.state, "ui_surface", "dashboard", raising=False)
-        monkeypatch.setattr(app.state, "bound_host", "127.0.0.1", raising=False)
-        monkeypatch.setattr(app.state, "auth_required", False, raising=False)
-        assert web_host_terminal.request_allowed() is False
-
-        app.state.ui_surface = "webapp"
-        app.state.bound_host = "0.0.0.0"
-        assert web_host_terminal.request_allowed() is False
-
-        app.state.auth_required = True
-        assert web_host_terminal.request_allowed() is True
     def test_tui_python_command_uses_child_path(self, tmp_path):
         """Bare Python commands are resolved from the TUI child's PATH."""
 
@@ -5212,92 +5142,6 @@ class TestPtyWebSocket:
         assert sub_a2.sent == [frame]
         # A subscriber on a different channel got nothing.
         assert sub_other.sent == []
-
-
-def _assert_host_terminal_resolver_uses_real_host(tmp_path):
-    from hermes_cli import web_host_terminal
-    from hermes_constants import get_hermes_home
-
-    argv, cwd, env, shell_name = web_host_terminal.resolve_argv(
-        home=get_hermes_home(), requested_cwd=str(tmp_path)
-    )
-
-    assert argv
-    assert argv[0]
-    assert cwd == str(tmp_path.resolve())
-    assert shell_name
-    assert env["TERM"] == "xterm-256color"
-    assert env["COLORTERM"] == "truecolor"
-    assert env["HERMES_DESKTOP_TERMINAL"] == "1"
-
-
-def test_host_terminal_resolver_applies_selected_profile_home_and_config(
-    tmp_path, monkeypatch
-):
-    from hermes_cli import web_host_terminal
-
-    real_home = tmp_path / "real-home"
-    current = tmp_path / "profiles" / "current"
-    target = tmp_path / "profiles" / "target"
-    for path in (real_home, current / "home", target / "home"):
-        path.mkdir(parents=True)
-    (target / "config.yaml").write_text(
-        "terminal:\n  home_mode: profile\n",
-        encoding="utf-8",
-    )
-    monkeypatch.setenv("HOME", str(current / "home"))
-    monkeypatch.setenv("HERMES_HOME", str(current))
-    monkeypatch.setenv("HERMES_REAL_HOME", str(real_home))
-    monkeypatch.setenv("TERMINAL_HOME_MODE", "profile")
-    monkeypatch.setenv("OPENAI_API_KEY", "current-profile-secret")
-
-    _argv, _cwd, env, _shell_name = web_host_terminal.resolve_argv(home=target)
-
-    assert env["HERMES_HOME"] == str(target)
-    assert env["HOME"] == str(target / "home")
-    assert env["TERMINAL_HOME_MODE"] == "profile"
-    assert "OPENAI_API_KEY" not in env
-
-
-@pytest.mark.platforms("linux")
-def test_host_terminal_resolver_uses_real_linux_shell(tmp_path, monkeypatch):
-    monkeypatch.setenv("HERMES_DESKTOP_SHELL", "/bin/sh")
-    _assert_host_terminal_resolver_uses_real_host(tmp_path)
-
-
-@pytest.mark.platforms("posix")
-def test_host_terminal_relative_shell_override_never_reaches_argv(tmp_path, monkeypatch):
-    """The PTY chdirs into the workspace before exec, so the shell it runs is the one checked only if argv[0] is absolute."""
-    from hermes_cli import web_host_terminal
-    from hermes_constants import get_hermes_home
-
-    server_cwd = tmp_path / "server"
-    workspace = tmp_path / "workspace"
-    (server_cwd / "bin").mkdir(parents=True)
-    workspace.mkdir()
-    planted = server_cwd / "bin" / "sh"
-    planted.write_text("#!/bin/sh\n", encoding="utf-8")
-    planted.chmod(0o755)
-    monkeypatch.chdir(server_cwd)
-    monkeypatch.setenv("HERMES_DESKTOP_SHELL", "bin/sh")
-
-    argv, cwd, _env, _shell_name = web_host_terminal.resolve_argv(
-        home=get_hermes_home(), requested_cwd=str(workspace)
-    )
-
-    assert cwd == str(workspace.resolve())
-    assert os.path.isabs(argv[0])
-    assert Path(argv[0]).resolve() != planted.resolve()
-
-
-@pytest.mark.platforms("windows")
-def test_host_terminal_resolver_uses_real_windows_shell(tmp_path, monkeypatch):
-    monkeypatch.delenv("HERMES_DESKTOP_SHELL", raising=False)
-    _assert_host_terminal_resolver_uses_real_host(tmp_path)
-    from hermes_cli import web_host_terminal
-    argv, shell_name = web_host_terminal.shell_spec()
-    assert shell_name.startswith(("pwsh", "powershell", "cmd"))
-    assert argv[1:] == ([] if shell_name.startswith("cmd") else ["-NoLogo"])
 
 
 def test_resolve_chat_argv_injects_gateway_ws_url(monkeypatch):

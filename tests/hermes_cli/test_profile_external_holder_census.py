@@ -1,18 +1,28 @@
 """The external-holder census behind profile delete/rename (PR #93508 review).
 
-The psutil scan reads open files of same-user processes only: fetching another user's
-(system) process handles faulted inside psutil on Windows + Python 3.14 and killed the
-operation with no Python exception. Windows instead asks Restart Manager about every file
-in the profile at once.
+POSIX shares the state.db holder scan's descriptor census (``hermes_state_holders``): a deleted
+file still open under the profile, a holder that reached it through another path, and a
+Hermes process whose descriptors cannot be read all keep the profile in place. Windows asks
+Restart Manager about every file in the profile at once; when that fails, its psutil sweep
+reads open files of same-user processes only: fetching another user's (system) process
+handles faulted inside psutil on Windows + Python 3.14 and killed the operation with no
+Python exception.
 """
 
 from __future__ import annotations
 
+from contextlib import contextmanager
+import os
+import subprocess
 import sys
 import types
 from pathlib import Path
 
-from hermes_cli import profile_lifecycle
+import pytest
+
+from hermes_cli import profile_lifecycle, profiles
+from hermes_constants import named_profile_is_deleted
+import hermes_state_holders
 
 
 class _Denied(Exception):
@@ -50,6 +60,7 @@ class _Proc:
         return [types.SimpleNamespace(path=str(path)) for path in self._paths]
 
 
+@pytest.mark.platforms("windows")
 def test_census_never_reads_handles_of_processes_it_cannot_prove_same_user(tmp_path, monkeypatch):
     profile = tmp_path / "profiles" / "alpha"
     profile.mkdir(parents=True)
@@ -95,3 +106,116 @@ def test_release_is_confirmed_by_a_fresh_census(monkeypatch):
     monkeypatch.setattr(profile_lifecycle, "_PROFILE_DB_RELEASE_TIMEOUT_SECONDS", 0.5)
 
     assert profile_lifecycle.wait_for_external_profile_file_release("profile") == [child]
+
+
+# Holds the file named on its first stdin line until stdin closes. ``undumpable`` makes
+# /proc/<pid>/fd root-owned, as for ``sshd: <user>``, ``gpg-agent`` or a Chromium sandbox.
+_HOLDER = """
+import sys
+held = open(sys.stdin.readline().strip(), "ab")
+if "undumpable" in sys.argv:
+    import ctypes
+    ctypes.CDLL(None).prctl(4, 0, 0, 0, 0)  # PR_SET_DUMPABLE
+print("ready", flush=True)
+sys.stdin.read()
+"""
+
+
+@contextmanager
+def _holding(path: Path, script: Path, *args: str):
+    script.parent.mkdir(parents=True, exist_ok=True)
+    script.write_text(_HOLDER)
+    proc = subprocess.Popen([sys.executable, str(script), *args], stdin=subprocess.PIPE,
+                            stdout=subprocess.PIPE, text=True)
+    try:
+        proc.stdin.write(f"{path}\n")
+        proc.stdin.flush()
+        assert proc.stdout.readline().strip() == "ready"
+        yield proc
+    finally:
+        proc.stdin.close()
+        proc.wait(30)
+
+
+@pytest.fixture
+def profile_home(tmp_path, monkeypatch):
+    root = tmp_path / "isolated-hermes"
+    root.mkdir()
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    monkeypatch.setenv("HERMES_HOME", str(root))
+    # No service manager, live backend or multiplexer is part of this census test.
+    for name in ("_cleanup_gateway_service", "_maybe_unregister_gateway_service",
+                 "_maybe_register_gateway_service", "_stop_bot_desktop", "_notify_multiplexer"):
+        monkeypatch.setattr(profiles, name, lambda *a, **k: None)
+    monkeypatch.setattr("hermes_cli.profiles_process_stop._profile_bound_backend_pids", lambda *a, **k: [])
+    monkeypatch.setattr(profile_lifecycle, "_PROFILE_DB_RELEASE_TIMEOUT_SECONDS", 0)
+    return profiles.create_profile("worker", no_alias=True, no_skills=True)
+
+
+@pytest.mark.platforms("linux")
+def test_holder_of_a_deleted_file_under_the_profile_blocks_deletion(profile_home, tmp_path):
+    """/proc spells it ``<path> (deleted)``: the process still writes into this generation."""
+    rotated = profile_home / "logs" / "rotated.log"
+    rotated.parent.mkdir(parents=True, exist_ok=True)
+    with _holding(rotated, tmp_path / "bin" / "holder.py") as holder:
+        rotated.unlink()
+        assert holder.pid in profile_lifecycle.external_profile_file_holders(profile_home)
+        with pytest.raises(RuntimeError, match=str(holder.pid)):
+            profiles.delete_profile("worker", yes=True)
+        assert profile_home.is_dir() and not named_profile_is_deleted(profile_home)
+
+    assert profiles.delete_profile("worker", yes=True) == profile_home
+    assert not profile_home.exists()
+
+
+@pytest.mark.platforms("posix")
+@pytest.mark.parametrize("census_through_link", [True, False], ids=["census-via-link", "holder-via-link"])
+def test_holder_through_a_symlinked_profile_path_is_found(tmp_path, census_through_link):
+    real = tmp_path / "real" / "profiles" / "alpha"
+    real.mkdir(parents=True)
+    link = tmp_path / "link"
+    link.symlink_to(tmp_path / "real", target_is_directory=True)
+    aliased = link / "profiles" / "alpha"
+    census_root, opened = (aliased, real) if census_through_link else (real, aliased)
+
+    with _holding(opened / "state.db", tmp_path / "bin" / "holder.py") as holder:
+        assert holder.pid in profile_lifecycle.external_profile_file_holders(census_root)
+    assert holder.pid not in profile_lifecycle.external_profile_file_holders(census_root)
+
+
+@pytest.mark.platforms("linux")
+@pytest.mark.parametrize("hermes", [
+    True,
+    # Every desktop or SSH login keeps such processes alive (``sshd: <user>``, ``gpg-agent``,
+    # Chromium's sandbox); counting them would make deletion impossible. Root reads them all.
+    pytest.param(False, marks=pytest.mark.skipif(os.geteuid() == 0, reason="root reads every fd table")),
+], ids=["hermes", "not-hermes"])
+def test_uninspectable_process_counts_only_when_it_is_hermes(tmp_path, hermes):
+    """A same-user process whose descriptors cannot be read may hold any file in the profile."""
+    profile = tmp_path / "profiles" / "alpha"
+    profile.mkdir(parents=True)
+    script = tmp_path / "bin" / ("hermes_cli/main.py" if hermes else "holder.py")
+
+    with _holding(profile / "state.db", script, "--hermes-home", str(profile), "undumpable") as holder:
+        assert (holder.pid in profile_lifecycle.external_profile_file_holders(profile)) is hermes
+
+
+@pytest.mark.platforms("linux")
+def test_holder_reaching_the_profile_through_a_bind_mount_is_found_by_identity(tmp_path, monkeypatch):
+    """A Docker sandbox run as the host user sees ``<home>/sandboxes/<task>`` as ``/workspace``,
+    and that is how /proc spells its descriptors; the open file's identity still names ours."""
+    profile = tmp_path / "profiles" / "alpha"
+    held = profile / "sandboxes" / "task" / "out.log"
+    held.parent.mkdir(parents=True)
+    projected_os = types.SimpleNamespace(**vars(os))
+    monkeypatch.setattr(hermes_state_holders, "os", projected_os)
+
+    def readlink(path):
+        target = os.readlink(path)
+        return "/workspace/out.log" if target == str(held) else target
+
+    projected_os.readlink = readlink
+
+    with _holding(held, tmp_path / "bin" / "holder.py") as holder:
+        assert holder.pid in profile_lifecycle.external_profile_file_holders(profile)

@@ -9,7 +9,7 @@ class TestServedProfilesStatus:
     def test_write_and_read_served_profiles(self, tmp_path, monkeypatch):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         import importlib
-        import gateway.status as status
+        from gateway import status
         importlib.reload(status)
         try:
             status.write_runtime_status(
@@ -30,8 +30,8 @@ def test_cron_profile_homes_serve_every_live_profile(tmp_path, monkeypatch):
     for name in ("worker", "guest", "gone"):
         (default_home / "profiles" / name).mkdir(parents=True)
         (default_home / "profiles" / name / "config.yaml").write_text("{}\n")  # identity marker
-    from hermes_constants import mark_named_profile_deleted
-    mark_named_profile_deleted(default_home / "profiles" / "gone")
+    from hermes_cli.profile_lifecycle import mark_profile_deleting
+    mark_profile_deleting(default_home / "profiles" / "gone")
 
     import gateway.run as gateway_run
 
@@ -80,7 +80,7 @@ class TestNamedProfileMultiplexerGuard:
     def _fake_running_default_gateway(self, monkeypatch, tmp_path):
         """Make the guard believe a live default gateway exists at tmp_path."""
         from hermes_cli import gateway as gw
-        import gateway.status as status
+        from gateway import status
 
         monkeypatch.setattr(gw, "_profile_suffix", lambda: "coder")
         monkeypatch.setattr(

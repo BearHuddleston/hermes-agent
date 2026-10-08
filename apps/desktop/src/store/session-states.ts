@@ -33,12 +33,11 @@ import {
 } from '@/components/pane-shell/tree/store'
 import { resolveRememberedActivePane, workspaceScopeKey } from '@/components/pane-shell/workspace-scope'
 import type { WorkspaceMode } from '@/contrib/types'
-import { type ChatMessage, chatMessageText, finalizeInterruptedMessages, sealOpenToolParts } from '@/lib/chat-messages'
-import type { ErrorSurface } from '@/lib/error-surface'
+import { finalizeInterruptedMessages, sealOpenToolParts } from '@/lib/chat-messages'
 import { tileFocusStampOnFocusChange } from '@/lib/session-timer-since'
 import { stableArray } from '@/lib/stable-array'
 import { readJson, writeJson } from '@/lib/storage'
-import { clearAppearancePicks } from '@/themes/appearance-picks'
+import { appearanceOwnerKey, forgetProfileAppearance } from '@/themes/profile-appearance'
 import type { SessionInfo } from '@/types/hermes'
 
 import { dropStatusDrawersForProfile, migrateStatusDrawersForProfile } from './composer-status-drawer'
@@ -86,6 +85,7 @@ import {
 } from './session'
 import { secondaryProfileOwnerForEvent } from './session-event-provenance'
 import { $focusedStoredSessionId, TILE_PANE_PREFIX } from './session-focus'
+import { turnHasReply, withNoReplyNotice } from './session-no-reply'
 import { assertSessionOwnerResolved } from './session-owner-resolution'
 import {
   isSessionOwnerRoute,
@@ -484,58 +484,6 @@ function settleEndedLiveTurn(runtimeId: string) {
       turnStartedAt: null
     }
   })
-}
-
-// Raised only after the backend confirmed the turn is over and no reply reached
-// this window, so Retry cannot run the prompt twice.
-const NO_REPLY_SURFACE: ErrorSurface = { code: 'no_reply', layer: 'runtime', retryable: true }
-const NO_REPLY_ERROR = 'Hermes ended this turn without a reply.'
-
-function turnHasReply(messages: ChatMessage[]): boolean {
-  for (let index = messages.length - 1; index >= 0; index -= 1) {
-    const message = messages[index]
-
-    if (message.hidden) {
-      continue
-    }
-
-    if (message.role === 'user') {
-      return false
-    }
-
-    if (message.role === 'assistant' && (message.error || chatMessageText(message).trim())) {
-      return true
-    }
-  }
-
-  return false
-}
-
-function withNoReplyNotice(messages: ChatMessage[]): ChatMessage[] {
-  const last = messages.findLast(message => !message.hidden)
-
-  // A turn that ran tools but never wrote text carries the notice on its own bubble.
-  if (last?.role === 'assistant') {
-    return messages.map(message =>
-      message === last ? { ...message, error: NO_REPLY_ERROR, errorSurface: NO_REPLY_SURFACE } : message
-    )
-  }
-
-  const occurredAt = Date.now() / 1000
-
-  return [
-    ...messages,
-    {
-      completedAt: occurredAt,
-      error: NO_REPLY_ERROR,
-      errorSurface: NO_REPLY_SURFACE,
-      id: `assistant-no-reply-${Date.now()}`,
-      parts: [],
-      pending: false,
-      role: 'assistant',
-      timestamp: occurredAt
-    }
-  ]
 }
 
 /** Stamp the retry card on an ended turn that has no reply, never an intentional
@@ -2800,7 +2748,7 @@ export function dropTilesForProfile(
 
   const name = normalizeProfileKey(profile)
   const appearanceConnection = route?.connectionId?.trim() || ambientOwnerConnectionId() || ''
-  clearAppearancePicks(name, `${appearanceConnection}::${name}`)
+  forgetProfileAppearance(appearanceOwnerKey(appearanceConnection, name))
   dropPreviewArtifactsForProfile(name, route)
   dropStatusDrawersForProfile(name, route)
   // Route fields go through the SAME canonicalization as `name` below — a
@@ -2904,8 +2852,8 @@ export function migrateTilesForProfile(oldProfile: string, newProfile: string): 
     return
   }
 
-  clearAppearancePicks(from, `${LOCAL_CONNECTION_ID}::${from}`)
-  clearAppearancePicks(to, `${LOCAL_CONNECTION_ID}::${to}`)
+  forgetProfileAppearance(appearanceOwnerKey(LOCAL_CONNECTION_ID, from))
+  forgetProfileAppearance(appearanceOwnerKey(LOCAL_CONNECTION_ID, to))
 
   const isLocal = (owner: SessionProfileRoute | undefined) =>
     Boolean(owner) && (String(owner?.connectionId ?? '').trim() || 'local') === 'local'

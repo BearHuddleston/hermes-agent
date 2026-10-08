@@ -726,9 +726,9 @@ class PetChangedPayload(OpenPayload):
 
     enabled: bool
     slug: str | None = None
-    displayName: str | None = None  # noqa: N815 - wire key
+    displayName: str | None = None
     scale: float | None = None
-    spritesheetRevision: str | None = None  # noqa: N815 - wire key
+    spritesheetRevision: str | None = None
 
 
 class PetGenerateProgressPayload(OpenPayload):
@@ -737,7 +737,7 @@ class PetGenerateProgressPayload(OpenPayload):
     token: str
     count: int
     index: int | None = None
-    dataUri: str | None = None  # noqa: N815 - wire key
+    dataUri: str | None = None
 
 
 class PetHatchProgressPayload(OpenPayload):

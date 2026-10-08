@@ -10,3 +10,14 @@ export function bytesToBase64(value: ArrayBuffer | Uint8Array): string {
 
   return btoa(binary)
 }
+
+/** `data:<blob.type>;base64,…`, read asynchronously and encoded natively, without
+ *  the JS binary string `bytesToBase64` builds; use it for large payloads. */
+export function blobToDataUrl(blob: Blob): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader()
+    reader.onload = () => resolve(String(reader.result))
+    reader.onerror = () => reject(reader.error)
+    reader.readAsDataURL(blob)
+  })
+}

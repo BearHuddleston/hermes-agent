@@ -1985,6 +1985,7 @@ export function isPaneVisible(paneId: string): boolean {
 }
 
 const paneVisibleCache = new Map<string, ReadableAtom<boolean>>()
+const paneVisibleStores = [$layoutTree, $dismissedPanes, $hiddenTreePanes, $collapsedTreeSides]
 
 /** Reactive `isPaneVisible` for chrome that renders an on/off affordance
  *  (the statusbar's terminal button). Memoized per pane id so `useStore`
@@ -1993,9 +1994,7 @@ export function $paneVisible(paneId: string): ReadableAtom<boolean> {
   let cached = paneVisibleCache.get(paneId)
 
   if (!cached) {
-    cached = computed([$layoutTree, $dismissedPanes, $hiddenTreePanes, $collapsedTreeSides], () =>
-      isPaneVisible(paneId)
-    )
+    cached = computed(paneVisibleStores, () => isPaneVisible(paneId))
     paneVisibleCache.set(paneId, cached)
   }
 

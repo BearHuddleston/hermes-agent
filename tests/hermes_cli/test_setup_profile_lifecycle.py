@@ -1,4 +1,4 @@
-"""Setup roles survive metadata updates, but never cross profile publication as a copy."""
+"""The setup marker survives metadata updates, but never crosses profile publication as a copy."""
 
 from pathlib import Path
 import tarfile
@@ -6,6 +6,7 @@ import tarfile
 import pytest
 
 from hermes_cli import profile_lifecycle, profiles, setup_profile
+from hermes_constants import named_profile_is_deleted
 from hermes_cli.profile_incarnation import read_profile_incarnation
 
 
@@ -20,52 +21,53 @@ def profile_root(tmp_path, monkeypatch):
     return root
 
 
-def test_setup_role_metadata_is_scoped_and_refuses_retirement(profile_root):
-    guide = profiles.create_profile("guide", no_alias=True, no_skills=True)
+def _is_setup_profile(home: Path) -> bool:
+    return (home / profiles.SETUP_PROFILE_MARKER).is_file()
+
+
+def test_setup_marker_survives_metadata_and_refuses_retirement(profile_root):
+    setup = setup_profile.ensure_setup_profile()
     ordinary = profiles.create_profile("ordinary", no_alias=True, no_skills=True)
+    guide = setup.path
     incarnation = read_profile_incarnation(guide)
-    with profile_lifecycle.profile_lifecycle_lease(guide):
-        profiles.write_profile_meta(guide, role=profiles.SETUP_ROLE, description="guide notes")
+    marker = (guide / profiles.SETUP_PROFILE_MARKER).read_bytes()
     profiles.write_profile_meta(guide, display_name="My guide", previous_names=["earlier-guide"])
 
-    # Discovery uses the role, not the old hermes-setup slug, and preserves user edits.
+    # Discovery uses the marker, not the profile name, and preserves user edits.
     before = (guide / "profile.yaml").read_bytes()
-    assert setup_profile.ensure_setup_profile() == setup_profile.SetupProfile("guide", guide, False)
+    assert setup_profile.ensure_setup_profile() == setup_profile.SetupProfile(setup.name, guide, False)
     assert (guide / "profile.yaml").read_bytes() == before
+    assert (guide / profiles.SETUP_PROFILE_MARKER).read_bytes() == marker
     meta = profiles.read_profile_meta(guide)
-    assert meta["role"] == profiles.SETUP_ROLE
-    assert meta["description"] == "guide notes"
+    assert meta["description"] == setup_profile.SETUP_PROFILE_DESCRIPTION
     assert meta["display_name"] == "My guide"
     assert meta["previous_names"] == ["earlier-guide"]
     assert read_profile_incarnation(guide) == incarnation
 
-    assert profiles.read_profile_meta(ordinary).get("role") is None
+    assert not _is_setup_profile(ordinary)
 
-    with pytest.raises(ValueError, match="unknown profile role"):
-        profiles.write_profile_meta(guide, role="not-a-role")
-    assert (guide / "profile.yaml").read_bytes() == before
     profile_lifecycle.mark_profile_deleting(guide, incarnation)
     with pytest.raises(FileNotFoundError, match="being deleted"):
-        profiles.write_profile_meta(guide, role=profiles.SETUP_ROLE, description="must not land")
+        profiles.write_profile_meta(guide, description="must not land")
     assert (guide / "profile.yaml").read_bytes() == before
-    assert profiles.profile_exists("guide") is False
+    assert profiles.profile_exists(setup.name) is False
 
 
 @pytest.mark.parametrize("copy_kind", ["clone", "import"])
-def test_setup_copies_drop_role_before_fresh_generation_publication(profile_root, monkeypatch, copy_kind):
+def test_setup_copies_drop_marker_before_fresh_generation_publication(profile_root, monkeypatch, copy_kind):
     setup = setup_profile.ensure_setup_profile()
     assert setup.created is True
     source_incarnation = read_profile_incarnation(setup.path)
     assert source_incarnation is not None
-    source_meta = (setup.path / "profile.yaml").read_bytes()
+    source_marker = (setup.path / profiles.SETUP_PROFILE_MARKER).read_bytes()
     target = profiles.get_profile_dir("copied-guide")
     published = []
     real_publish = profile_lifecycle.publish_profile_generation
 
     def publish(home, incarnation):
         assert Path(home) == target
-        assert profile_lifecycle.profile_home_is_tombstoned(home)
-        assert profiles.read_profile_meta(Path(home))["role"] is None
+        assert named_profile_is_deleted(home)
+        assert not _is_setup_profile(Path(home))
         assert incarnation is not None and incarnation != source_incarnation
         assert read_profile_incarnation(home) == incarnation
         published.append(incarnation)
@@ -84,7 +86,7 @@ def test_setup_copies_drop_role_before_fresh_generation_publication(profile_root
     assert copied == target
     assert published == [read_profile_incarnation(target)]
     assert profiles.profile_exists("copied-guide") is True
-    assert profiles.read_profile_meta(target)["role"] is None
-    assert (setup.path / "profile.yaml").read_bytes() == source_meta
+    assert not _is_setup_profile(target)
+    assert (setup.path / profiles.SETUP_PROFILE_MARKER).read_bytes() == source_marker
     assert read_profile_incarnation(setup.path) == source_incarnation
     assert setup_profile.find_setup_profile() == (setup.name, setup.path)

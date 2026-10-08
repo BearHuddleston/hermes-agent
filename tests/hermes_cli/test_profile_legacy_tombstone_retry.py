@@ -5,6 +5,7 @@ from pathlib import Path
 import pytest
 
 from hermes_cli import profile_lifecycle, profiles
+from hermes_constants import named_profile_is_deleted
 from hermes_cli.profile_incarnation import (
     PROFILE_INCARNATION_FILENAME,
     ensure_profile_incarnation,
@@ -39,7 +40,7 @@ def test_legacy_delete_retry_never_backfills_through_fence(legacy_profile, conte
     real_remove = profiles._rmtree_with_retry
 
     def remove_behind_fence(path, *args):
-        assert profile_lifecycle.profile_home_is_tombstoned(path)
+        assert named_profile_is_deleted(path)
         assert not (path / PROFILE_INCARNATION_FILENAME).exists()
         return real_remove(path, *args)
 

@@ -130,7 +130,6 @@ async def test_stalled_own_gateway_probe_never_wedges_the_loop_or_serves(tmp_pat
 
         def _stalling_probe(profile_home):
             released.wait(timeout=10)  # the control pipe that never answers
-            return None
 
         monkeypatch.setattr("gateway.status.live_gateway_pid_for_home", _stalling_probe)
         monkeypatch.setattr(reconcile_mod, "_OWN_GATEWAY_PROBE_TIMEOUT_SECS", 0.2)
@@ -292,8 +291,8 @@ async def test_deleted_profile_is_torn_down_and_unrouted_others_untouched(tmp_pa
         reconnect = asyncio.get_running_loop().create_task(asyncio.sleep(3600))
         runner._profile_failed_platforms = {"gamma": {Platform.TELEGRAM: reconnect}}
 
-        from hermes_constants import mark_named_profile_deleted
-        mark_named_profile_deleted(gamma_dir)  # what ``delete_profile`` does before rmtree
+        from hermes_cli.profile_lifecycle import mark_profile_deleting
+        mark_profile_deleting(gamma_dir)  # what ``delete_profile`` does before rmtree
         result = await runner.reconcile_served_profiles()
 
     assert result["removed"] == ["gamma"]
@@ -316,9 +315,9 @@ async def test_unserve_releases_gateway_held_log_and_mcp_handles(tmp_path, monke
     import logging as _logging
 
     import hermes_logging
+    from hermes_cli.profile_lifecycle import mark_profile_deleting
     from hermes_constants import (
         hermes_home_key,
-        mark_named_profile_deleted,
         reset_hermes_home_override,
         set_hermes_home_override,
     )
@@ -369,7 +368,7 @@ async def test_unserve_releases_gateway_held_log_and_mcp_handles(tmp_path, monke
 
         with patch("hermes_cli.profiles.get_active_profile_name", return_value="default"):
             await runner._start_secondary_profile_adapters()
-            mark_named_profile_deleted(gamma_dir)  # what ``delete_profile`` does before rmtree
+            mark_profile_deleting(gamma_dir)  # what ``delete_profile`` does before rmtree
             result = await runner.reconcile_served_profiles()
 
         assert result["removed"] == ["gamma"]
@@ -473,7 +472,7 @@ async def test_transient_secret_hydrate_failure_retries_through_real_start_path(
     runner._connect_initial_adapter_with_timeout = _connect
     runner._after_profiles_added = _noop_added
 
-    import hermes_cli.env_loader as env_loader
+    from hermes_cli import env_loader
     hydrate_calls = []
     real_hydrate = env_loader.hydrate_profile_secret_sources
 

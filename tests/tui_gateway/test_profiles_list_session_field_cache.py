@@ -82,7 +82,6 @@ def test_cached_session_fields_never_outlive_profile_retirement_or_recreation(ho
 
     from hermes_cli import profile_lifecycle
     from hermes_cli.profile_incarnation import ensure_profile_incarnation, write_fresh_profile_incarnation
-    from hermes_constants import clear_named_profile_deleted, mark_named_profile_deleted
 
     bob = home / "profiles" / "bob"
     _seed(bob, "20260920_000001_a", "old chat")
@@ -90,13 +89,13 @@ def test_cached_session_fields_never_outlive_profile_retirement_or_recreation(ho
     original = {}
     srv._profile_session_fields(original, bob)
     assert original["last_session"]["title"] == "old chat"
-    mark_named_profile_deleted(bob)
+    profile_lifecycle.mark_profile_deleting(bob)
     try:
         retired = {}
         srv._profile_session_fields(retired, bob)
         assert retired == dict(last_session=None, worker_session=None, canonical_session=None)
     finally:
-        clear_named_profile_deleted(bob)
+        profile_lifecycle.clear_profile_deletion_marker(bob)
 
     # Same pathname, size and timestamps must not preserve the old generation's
     # memo. Keep a backup alive so an allocator cannot reuse its file identities.

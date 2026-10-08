@@ -1,3 +1,4 @@
+import { fileUrlToNativePath } from '@hermes/shared'
 import DOMPurify from 'dompurify'
 
 import { isDesktopFsRemoteMode, readDesktopFileDataUrl, readDesktopFileText } from '@/lib/desktop-fs'
@@ -241,14 +242,8 @@ export function localPreviewTarget(rawTarget: string, cwd?: string | null): Prev
   let path = raw
 
   if (/^file:\/\//i.test(raw)) {
-    try {
-      const url = new URL(raw)
-      const pathname = decodeURIComponent(url.pathname)
-
-      path = url.hostname ? `//${url.hostname}${pathname}` : pathname.replace(/^\/([a-z]:\/)/i, '$1')
-    } catch {
-      path = raw.replace(/^file:\/\//i, '')
-    }
+    // A URL that does not parse, or encodes a separator, keeps its text undecoded.
+    path = fileUrlToNativePath(raw) ?? raw.replace(/^file:\/\//i, '')
   } else if (!raw.startsWith('/') && !isWindowsAbsolutePath(raw) && cwd) {
     path = joinPath(cwd, raw)
   }

@@ -47,8 +47,9 @@ import { notify, notifyError, readableError } from '@/store/notifications'
 import { cloudTeamChanged, reconnectMovedCloudAgent } from './cloud-team-change'
 import { ConnectionsRegistrySection } from './connections-registry'
 import { CONTROL_TEXT } from './constants'
+import { KeychainEncryptionSetting, useKeychainEncryption } from './keychain-encryption-setting'
 import { ManagedUpdatesSection } from './managed-updates-section'
-import { EmptyState, ListRow, Pill, SettingsContent, SettingsSkeleton, ToggleRow } from './primitives'
+import { EmptyState, ListRow, Pill, SettingsContent, SettingsSkeleton } from './primitives'
 import { SETTING_IDS, settingElementId } from './settings-manifest'
 import { enrichSelectedSshHost, selectSshHost } from './ssh-host-selection'
 import { useSettingDeepLink } from './use-setting-deep-link'
@@ -260,11 +261,6 @@ function GatewayManagedUpdates() {
 function GatewayConnectionSettings({ embedded, standalone }: { embedded: boolean; standalone: boolean }) {
   const { t } = useI18n()
   const g = t.settings.gateway
-
-  const canConfigureSecretStorageEncryption =
-    typeof window.hermesDesktop?.getSecretStorageEncryption === 'function' &&
-    typeof window.hermesDesktop?.setSecretStorageEncryption === 'function'
-
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
   const [testing, setTesting] = useState(false)
@@ -297,51 +293,9 @@ function GatewayConnectionSettings({ embedded, standalone }: { embedded: boolean
     void refreshConnectionsRegistry().catch(err => notifyError(err, g.failedLoad))
   }, [g.failedLoad])
 
-  // Opt-in OS-keychain encryption for stored gateway secrets. Read lazily via
-  // IPC (never touches the keychain); flipping it re-encodes stored secrets
-  // in the main process and can legitimately prompt for keychain access.
-  const [keychainEncryption, setKeychainEncryptionState] = useState(false)
-  const [keychainEncryptionBusy, setKeychainEncryptionBusy] = useState(false)
-
-  useEffect(() => {
-    let cancelled = false
-
-    void window.hermesDesktop
-      ?.getSecretStorageEncryption?.()
-      .then(res => {
-        if (!cancelled && res) {
-          setKeychainEncryptionState(res.on === true)
-        }
-      })
-      .catch(() => {})
-
-    return () => {
-      cancelled = true
-    }
-  }, [])
-
-  const setKeychainEncryption = async (on: boolean) => {
-    const setEncryption = window.hermesDesktop?.setSecretStorageEncryption
-
-    if (!setEncryption) {
-      return
-    }
-
-    setKeychainEncryptionBusy(true)
-    // Optimistic paint; the IPC result (or a failure rollback) gets the last word.
-    setKeychainEncryptionState(on)
-
-    try {
-      const res = await setEncryption(on)
-
-      setKeychainEncryptionState(res?.on === true)
-    } catch (err) {
-      setKeychainEncryptionState(!on)
-      notifyError(err, g.keychainEncryptionFailed)
-    } finally {
-      setKeychainEncryptionBusy(false)
-    }
-  }
+  // Read here rather than in the row, so the flag is in hand by the time the
+  // loading skeleton gives way and the toggle paints its real state.
+  const keychainEncryption = useKeychainEncryption()
 
   const acceptSavedConfig = (config: GatewaySettingsState): void => {
     const normalized = normalizeGatewaySettingsState(config)
@@ -1275,6 +1229,8 @@ function GatewayConnectionSettings({ embedded, standalone }: { embedded: boolean
                   <div className="grid gap-1">
                     {cloudAgents.map(agent => {
                       const connected = isConnectedAgent(agent)
+                      const gatewayState = (agent.dashboardGatewayState ?? '').trim()
+                      const hasKnownGatewayState = gatewayState.length > 0 && gatewayState.toLowerCase() !== 'unknown'
 
                       return (
                         <div
@@ -1305,7 +1261,7 @@ function GatewayConnectionSettings({ embedded, standalone }: { embedded: boolean
                                 </Button>
                               )
                             }
-                            description={g.cloudStatusLabel(agent.dashboardGatewayState)}
+                            description={hasKnownGatewayState ? g.cloudStatusLabel(gatewayState) : undefined}
                             title={savedAgent(agent)?.label || agent.name}
                           />
                         </div>
@@ -1497,16 +1453,7 @@ function GatewayConnectionSettings({ embedded, standalone }: { embedded: boolean
 
       {embedded ? null : (
         <div className="mt-6 grid gap-1">
-          {canConfigureSecretStorageEncryption ? (
-            <ToggleRow
-              checked={keychainEncryption}
-              description={g.keychainEncryptionDesc}
-              disabled={keychainEncryptionBusy}
-              id={settingElementId(SETTING_IDS.gateway.keychainEncryption)}
-              label={g.keychainEncryptionTitle}
-              onChange={on => void setKeychainEncryption(on)}
-            />
-          ) : null}
+          <KeychainEncryptionSetting keychain={keychainEncryption} />
           <ListRow
             action={
               <Button onClick={() => void window.hermesDesktop?.revealLogs()} size="sm" variant="textStrong">

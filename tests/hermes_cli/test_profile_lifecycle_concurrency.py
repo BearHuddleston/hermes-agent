@@ -9,6 +9,7 @@ import threading
 import pytest
 
 from hermes_cli import profile_lifecycle, profiles
+from hermes_constants import named_profile_is_deleted
 from hermes_cli.profile_incarnation import ensure_profile_incarnation, profile_incarnation_lease
 from hermes_state import SessionDB
 
@@ -141,5 +142,5 @@ def test_clone_copy_never_queues_source_readers_nor_publishes_a_replaced_source(
 
     target = home / "profiles" / "copy"
     assert not target.exists()
-    assert profile_lifecycle.profile_home_is_tombstoned(target) is False
+    assert named_profile_is_deleted(target) is False
     assert profiles.profile_exists("work")

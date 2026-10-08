@@ -83,7 +83,7 @@ def _portalocker_probe() -> bool:
 # 0660 chmod and eager file creation; CLH opens lazily and rotates differently.
 if sys.platform == "win32":
     if _portalocker_probe():
-        from concurrent_log_handler import (  # noqa: E402
+        from concurrent_log_handler import (
             ConcurrentRotatingFileHandler as RotatingFileHandler,
         )
     else:
@@ -94,11 +94,11 @@ if sys.platform == "win32":
         # below; fall back to stdlib rotation instead. Rollover is disabled in
         # the fallback: multi-process appends make Windows renames fail with
         # WinError 32, the exact #44873 trap CLH exists to avoid.
-        from logging.handlers import RotatingFileHandler  # noqa: E402
+        from logging.handlers import RotatingFileHandler
 
         _WINDOWS_CLH_FALLBACK = True
 else:
-    from logging.handlers import RotatingFileHandler  # noqa: E402
+    from logging.handlers import RotatingFileHandler
 
 # Thread-local per-conversation session context.
 _session_context = threading.local()
@@ -597,10 +597,11 @@ def _new_file_handler(
 
 
 # A routed profile home is re-checked for an out-of-band delete (missing dir or tombstone) at
-# most this often. WHY: the check is two stats per record per router on the listener thread,
-# nearly doubling the syscalls of every live-profile emit; a deleted home only needs catching
-# within a couple of seconds. Inside that window a tombstoned (not yet removed) home still gets
-# its records; an rmtree is caught at once by the write that finds the directory gone.
+# most this often. WHY: the check (a dir stat plus the alias-resolved tombstone lookup) per record
+# per router on the listener thread would multiply the syscalls of every live-profile emit; a
+# deleted home only needs catching within a couple of seconds. Inside that window a tombstoned
+# (not yet removed) home still gets its records; an rmtree is caught at once by the write that
+# finds the directory gone.
 _PROFILE_LIVENESS_RECHECK_S = 2.0
 
 
@@ -905,7 +906,7 @@ def _reset_queued_handlers() -> None:
         for h in list(root.handlers):
             if getattr(h, "_hermes_queue", False):
                 root.removeHandler(h)
-        for h in list(_queued_file_handlers):
+        for h in _queued_file_handlers:
             _quietly(h.close)
         _queued_file_handlers.clear()
         _log_queue = None

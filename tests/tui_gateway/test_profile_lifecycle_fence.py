@@ -31,7 +31,7 @@ def server(tmp_path, monkeypatch):
     for name in ("_cleanup_gateway_service", "_maybe_unregister_gateway_service",
                  "_maybe_register_gateway_service", "_stop_bot_desktop", "_notify_multiplexer"):
         monkeypatch.setattr(profiles, name, lambda *a, **k: None)
-    monkeypatch.setattr(profiles, "_profile_bound_backend_pids", lambda *a, **k: [])
+    monkeypatch.setattr("hermes_cli.profiles_process_stop._profile_bound_backend_pids", lambda *a, **k: [])
     monkeypatch.setattr(profile_lifecycle, "external_profile_file_holders", lambda *_: [])
     monkeypatch.setattr(server, "_hermes_home", root)
     monkeypatch.setattr(server, "_sessions", {})

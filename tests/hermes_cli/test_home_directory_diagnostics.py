@@ -126,8 +126,23 @@ def test_named_home_link_modes_survive_resolution_and_recreation(
         assert profile_incarnation.read_profile_incarnation(target) is None
 
 
+def _retarget_link(home, other):
+    other.mkdir(mode=0o750)
+    home.symlink_to(other, target_is_directory=True)
+
+
+# What replaces the profile's link after its target was initialized: (home, other) -> None.
+_STALE_LINK_REPLACEMENTS = {
+    "retargeted": _retarget_link,
+    "directory": lambda home, other: home.mkdir(mode=0o750),
+    "missing": lambda home, other: None,
+    "dangling": lambda home, other: home.symlink_to(other, target_is_directory=True),
+    "loop": lambda home, other: home.symlink_to(home, target_is_directory=True),
+}
+
+
 @pytest.mark.platforms("linux")
-@pytest.mark.parametrize("replacement", ("retargeted", "directory", "missing", "dangling", "loop"))
+@pytest.mark.parametrize("replacement", list(_STALE_LINK_REPLACEMENTS))
 def test_resolved_home_does_not_initialize_through_stale_link(tmp_path, monkeypatch, replacement):
     root = tmp_path / ".hermes"
     home = root / "profiles" / "worker"
@@ -142,15 +157,7 @@ def test_resolved_home_does_not_initialize_through_stale_link(tmp_path, monkeypa
     config.ensure_hermes_home()
 
     home.unlink()
-    if replacement == "retargeted":
-        other.mkdir(mode=0o750)
-        home.symlink_to(other, target_is_directory=True)
-    elif replacement == "directory":
-        home.mkdir(mode=0o750)
-    elif replacement == "dangling":
-        home.symlink_to(other, target_is_directory=True)
-    elif replacement == "loop":
-        home.symlink_to(home, target_is_directory=True)
+    _STALE_LINK_REPLACEMENTS[replacement](home, other)
     shutil.rmtree(target)
     target.mkdir(mode=0o750)
     monkeypatch.setenv("HERMES_HOME", str(target))

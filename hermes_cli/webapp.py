@@ -10,7 +10,6 @@ receipt inside ``dist-webapp`` decides freshness.
 from __future__ import annotations
 
 from contextlib import contextmanager
-import os
 from pathlib import Path
 import subprocess
 
@@ -27,27 +26,10 @@ def webapp_dist_dir(project_root: Path) -> Path:
     return project_root / "apps" / "desktop" / "dist-webapp"
 
 
-def _unlock_file(handle) -> None:
-    try:
-        handle.seek(0)
-        if os.name == "nt":
-            import msvcrt
-
-            getattr(msvcrt, "locking")(
-                handle.fileno(), getattr(msvcrt, "LK_UNLCK"), 1
-            )
-        else:
-            import fcntl
-
-            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
-    except OSError:
-        pass
-
-
 @contextmanager
 def _exclusive_build_lock(path: Path):
     """Cross-platform exclusive lock for one renderer generation."""
-    from pm.filesystem import lock_fd
+    from pm.filesystem import lock_fd, unlock_fd
 
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -65,7 +47,7 @@ def _exclusive_build_lock(path: Path):
             raise WebappBuildError(f"Could not lock Webapp build {path}: {exc}") from exc
         yield
     finally:
-        _unlock_file(handle)
+        unlock_fd(handle.fileno())
         handle.close()
 
 

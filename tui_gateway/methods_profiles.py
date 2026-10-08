@@ -87,12 +87,13 @@ def _resolve_profile(rid, params):
     name = str(params.get("name") or "").strip()
     if not name:
         return name, None, _err(rid, 4063, "name required")
-    from hermes_cli.profiles import get_profile_dir, profile_home_is_tombstoned
+    from hermes_cli.profiles import get_profile_dir
+    from hermes_constants import named_profile_is_deleted
     try:
         profile_dir = Path(get_profile_dir(name))
     except ValueError:
         return name, None, _err(rid, 4064, f"profile '{name}' not found")
-    if not profile_dir.is_dir() or profile_home_is_tombstoned(profile_dir):
+    if not profile_dir.is_dir() or named_profile_is_deleted(profile_dir):
         return name, None, _err(rid, 4064, f"profile '{name}' not found")
     return name, profile_dir, None
 
@@ -324,7 +325,7 @@ def _(rid, params: dict) -> dict:
         row = {"name": p.name, "path": str(p.path), "is_default": bool(p.is_default), "model": p.model,
                "provider": p.provider, "description": p.description or "",
                "display_name": p.display_name or "", "skill_count": p.skill_count or 0,
-               "previous_names": list(p.previous_names or []), "role": p.role}
+               "previous_names": list(p.previous_names or [])}
         if include_sessions:
             _profile_session_fields(row, p.path)
         _profile_ui_meta_fields(row, Path(str(p.path)))
@@ -472,10 +473,7 @@ def _(rid, params: dict) -> dict:
     ext = next((e for e, magic in _ASSET_MAGIC.items() if all(blob[a:b] == m for a, b, m in magic)), None)
     if ext is None:
         return _err(rid, 4070, "unsupported image format (PNG/JPEG/WebP only)")
-    from hermes_cli.profiles import profile_home_is_tombstoned
     from hermes_constants import mkdir_under_hermes_home
-    if profile_home_is_tombstoned(profile_dir):
-        return _err(rid, 4064, f"profile '{_name}' not found")
     mkdir_under_hermes_home(assets_dir)
     _unlink_asset_files(assets_dir, asset)  # one canonical file per asset
     tmp = assets_dir / f"{asset}.{ext}.tmp"
@@ -499,12 +497,6 @@ def _(rid, params: dict) -> dict:
             return _ok(rid, {"found": True, "mime": mime, "size": len(blob),
                              "data": f"data:{mime};base64,{base64.b64encode(blob).decode('ascii')}"})
     return _ok(rid, {"found": False})
-
-
-@_profile_handler("profiles.remember_onboarding", 5067)
-def _(rid, params: dict) -> dict:
-    from tui_gateway.onboarding_personalization import remember_onboarding
-    return _ok(rid, remember_onboarding(params.get("answers")))
 
 
 def _mirror_secret(path, launch_home, name: str, wanted) -> bool:

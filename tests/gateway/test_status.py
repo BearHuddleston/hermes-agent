@@ -152,7 +152,6 @@ class TestGatewayPidState:
         def fake_kill(pid, sig):
             if pid == 99999:
                 raise ProcessLookupError
-            return None
 
         monkeypatch.setattr(status.os, "kill", fake_kill)
 
@@ -247,6 +246,23 @@ class TestGatewayPidState:
         assert lock_path.exists()
 
 
+# Each case removes or contradicts one piece of the identity evidence the bare-argv fallback needs:
+# case -> (edit of the written record, drift of the live start from the recorded one, live command line).
+_IDENTITY_EVIDENCE_BREAKS = {
+    "missing_start": (lambda record, root: record.pop("start_time"), 0, "hermes gateway run"),
+    "changed_start": (None, 1, "hermes gateway run"),
+    "invalid_start": (lambda record, root: record.update(start_time=0), 0, "hermes gateway run"),
+    "wrong_home": (
+        lambda record, root: record.update(hermes_home=str(root / "profiles" / "other")), 0, "hermes gateway run",
+    ),
+    "missing_home": (lambda record, root: record.pop("hermes_home"), 0, "hermes gateway run"),
+    "explicit_other": (None, 0, "hermes --profile other gateway run"),
+    "explicit_other_equals": (None, 0, "hermes --profile=other gateway run"),
+    "explicit_home_other": (None, 0, "env HERMES_HOME=/other/home hermes gateway run"),
+    "not_gateway": (None, 0, "python unrelated.py"),
+}
+
+
 class TestScopedGatewayPidQuery:
     """get_running_pid(pid_path) is a scoped query into another home's identity files (#106406):
     records are validated against the probed home (not the serve process's) and a live record is
@@ -298,35 +314,16 @@ class TestScopedGatewayPidQuery:
         assert status.get_running_pid(pid_path) == record["pid"]
         assert status.get_runtime_status_running_pid(record, expected_home=profile_dir) == record["pid"]
 
-    @pytest.mark.parametrize("case", [
-        "missing_start", "changed_start", "invalid_start", "wrong_home", "missing_home",
-        "explicit_other", "explicit_other_equals", "explicit_home_other", "not_gateway",
-    ])
+    @pytest.mark.parametrize("case", list(_IDENTITY_EVIDENCE_BREAKS))
     def test_bare_argv_fallback_never_overrides_identity_evidence(self, tmp_path, monkeypatch, case):
+        edit_record, start_drift, command = _IDENTITY_EVIDENCE_BREAKS[case]
         profile_dir, pid_path, record = self._write_scoped_profile(tmp_path)
         record["argv"] = ["hermes", "gateway", "run"]
         record["gateway_state"] = "running"
-        current_start = record["start_time"]
-        command = "hermes gateway run"
-        if case == "missing_start":
-            record.pop("start_time")
-        elif case == "changed_start":
-            current_start += 1
-        elif case == "invalid_start":
-            record["start_time"] = 0
-            current_start = 0
-        elif case == "wrong_home":
-            record["hermes_home"] = str(tmp_path / "profiles" / "other")
-        elif case == "missing_home":
-            record.pop("hermes_home")
-        elif case == "explicit_other":
-            command = "hermes --profile other gateway run"
-        elif case == "explicit_other_equals":
-            command = "hermes --profile=other gateway run"
-        elif case == "explicit_home_other":
-            command = "env HERMES_HOME=/other/home hermes gateway run"
-        elif case == "not_gateway":
-            command = "python unrelated.py"
+        recorded_start = record["start_time"]
+        if edit_record is not None:
+            edit_record(record, tmp_path)
+        current_start = record.get("start_time", recorded_start) + start_drift
         pid_path.write_text(json.dumps(record))
         (profile_dir / "gateway.lock").write_text(json.dumps(record))
         monkeypatch.setattr(status, "is_gateway_runtime_lock_active", lambda lock: True)
@@ -1811,15 +1808,12 @@ class TestResolveGatewayLiveness:
 
         def _pid(pid_path=None, **kw):
             seen["pid_path"] = pid_path
-            return None
 
         def _reader(path=None):
             seen["status_path"] = path
-            return None
 
         def _runtime_pid(runtime, *, expected_home=None):
             seen["expected_home"] = expected_home
-            return None
 
         status.resolve_gateway_liveness(
             profile_dir=profile_dir,

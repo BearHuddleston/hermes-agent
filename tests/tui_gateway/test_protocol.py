@@ -39,8 +39,8 @@ def server(tmp_path):
     # unbound copy whose default sinks drop frames and treat every client as answerable. Likewise a test's
     # ``from tui_gateway.transport import bind_transport`` would bind a fresh module's ContextVar that the
     # server's ``current_transport()`` never reads (first-in-process test sees ``_stdio_transport`` as caller).
-    import tui_gateway.server_requests  # noqa: F401
-    import tui_gateway.transport  # noqa: F401
+    import tui_gateway.server_requests
+    import tui_gateway.transport
     with patch.dict("sys.modules", {
         "hermes_constants": MagicMock(
             get_hermes_home=MagicMock(return_value=str(launch_home)),
@@ -77,8 +77,6 @@ def server(tmp_path):
     mod._live_transports.clear()
 
 
-
-
 @pytest.fixture()
 def capture(server):
     """Redirect server's real stdout to a StringIO and return (server, buf)."""
@@ -93,10 +91,6 @@ def capture(server):
 def test_unknown_method(server):
     resp = server.handle_request({"id": "1", "method": "bogus"})
     assert resp["error"]["code"] == -32601
-
-
-
-
 
 
 @pytest.mark.parametrize("kind", ["legacy", "hard-only", "dynamic-getattr"])
@@ -146,9 +140,7 @@ def test_session_interrupt_uses_explicit_stop_compatibility(server, monkeypatch,
     assert calls == ["hard" if kind == "hard-only" else "legacy"]
 
 
-# ── write_json ────────────────────────────────────────────────
-
-
+# ── live-session payload replay ───────────────────────────────
 
 
 def test_live_session_payload_replays_pending_approval(server, monkeypatch):
@@ -213,8 +205,6 @@ def test_live_session_payload_replays_open_requests(server):
                                          "params": {"session_id": "runtime-session", "question": "Which?", "choices": ["a", "b"]}}]
     assert payload["open_requests"][0]["params"] is not req.params
     assert "open_requests" not in other
-
-
 
 
 # ── _emit ────────────────────────────────────────────────────────────
@@ -734,11 +724,6 @@ def test_approval_respond_4001_when_nothing_resolves(server, monkeypatch):
     assert response["error"]["code"] == 4001
 
 
-# ── Session lookup ───────────────────────────────────────────────────
-
-
-
-
 # ── session.resume payload ────────────────────────────────────────────
 
 
@@ -925,7 +910,8 @@ def test_deferred_hydration_falls_back_to_tip_when_lineage_exceeds_limit(server,
     monkeypatch.setattr(server, "_maybe_schedule_auto_continue", lambda *_a, **_k: None)
 
     session = server._deferred_session_record(
-        "deep-lineage", cols=80, cwd="/tmp", history=[], lease=None
+        "deep-lineage", cols=80, cwd="/tmp", history=[], lease=None,
+        profile_incarnation=server._capture_profile_incarnation(None),
     )
     session["resume_history_ready"] = threading.Event()
     session["resume_hydrating"] = True
@@ -1366,8 +1352,8 @@ def test_command_dispatch_expands_stacked_skills_from_temp_home(server, tmp_path
     '/nature-figure /academic-plotting Plot the results' loads BOTH skills
     over the remaining instruction instead of leaving the second token in
     the prompt as plain text."""
-    import agent.skill_commands as skill_commands
-    import tools.skills_tool as skills_tool
+    from agent import skill_commands
+    from tools import skills_tool
 
     home = tmp_path / ".hermes"
     skills_dir = home / "skills"
@@ -1416,8 +1402,8 @@ def test_command_dispatch_expands_stacked_skills_from_temp_home(server, tmp_path
 def test_command_dispatch_stacked_split_keeps_unknown_tokens_as_instruction(server, tmp_path, monkeypatch):
     """A non-skill or repeated token stops the stack and stays instruction text —
     the split must never eat content the user meant as the prompt."""
-    import agent.skill_commands as skill_commands
-    import tools.skills_tool as skills_tool
+    from agent import skill_commands
+    from tools import skills_tool
 
     home = tmp_path / ".hermes"
     skills_dir = home / "skills"
@@ -1776,8 +1762,6 @@ def test_command_dispatch_queue_sends_message(server):
     assert result["message"] == "tell me about quantum computing"
 
 
-
-
 # ── dispatch(): pool routing for long handlers (#12546) ──────────────
 
 
@@ -1838,7 +1822,7 @@ def test_skin_live_switch_end_to_end(server, tmp_path, monkeypatch):
     """Real config + skin files: activating a skin (as `hermes config set` does)
     makes the per-tool reconcile broadcast skin.changed with the resolved palette.
     Exercises _load_cfg → _skin_sig → resolve_skin → _emit with no mocks in between."""
-    import hermes_cli.skin_engine as skin_engine
+    from hermes_cli import skin_engine
 
     (tmp_path / "skins").mkdir()
     (tmp_path / "skins" / "midnight.yaml").write_text(
@@ -2013,7 +1997,7 @@ def _stub_session_create_dependencies(server, monkeypatch):
     monkeypatch.setattr(server, "_enable_gateway_prompts", lambda: None)
     monkeypatch.setattr(server, "_load_show_reasoning", lambda: False)
     monkeypatch.setattr(server, "_load_tool_progress_mode", lambda: None)
-    monkeypatch.setattr(server, "_profile_home", lambda p: None)
+    monkeypatch.setattr(server, "_resolve_profile_home", lambda p: (None, None))
     monkeypatch.setattr(server, "_profile_build_scope", _null_scope)
     monkeypatch.setattr(server, "_seed_row", lambda *a, **kw: None)
     monkeypatch.setattr(server, "_seed_branch_row", lambda *a, **kw: None)
@@ -2122,7 +2106,7 @@ def test_session_branch_stored_accepts_idempotency_key(server, monkeypatch):
                 {"role": "assistant", "content": "first answer", "timestamp": 2},
             ]
 
-    monkeypatch.setattr(server, "_profile_db", lambda _params: _Scope(_FakeDB()))
+    monkeypatch.setattr(server, "_profile_db", lambda _params, **_kw: _Scope(_FakeDB()))
 
     params = {
         "cols": 96,

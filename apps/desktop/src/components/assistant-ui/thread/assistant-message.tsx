@@ -68,6 +68,7 @@ import {
 } from '@/lib/icons'
 import { extractPreviewTargets } from '@/lib/preview-targets'
 import { markAssistantIdSpoken } from '@/lib/spoken-reply'
+import { $touchPointer } from '@/lib/touch-interaction'
 import { useEnterAnimation } from '@/lib/use-enter-animation'
 import { cn } from '@/lib/utils'
 import { playSpeechText, stopVoicePlayback } from '@/lib/voice-playback'
@@ -427,14 +428,26 @@ const AssistantStatusSlot: FC = () => {
       return 'none'
     }
 
-    return s.message.status?.type === 'running' && s.message.content.length === 0 ? 'placeholder' : 'activity'
+    if (s.message.status?.type !== 'running') {
+      return 'activity'
+    }
+
+    if (s.message.content.length === 0) {
+      return 'placeholder'
+    }
+
+    return s.message.content.every(part => part.type === 'reasoning') ? 'thinking' : 'activity'
   })
 
   if (slot === 'none') {
     return null
   }
 
-  return slot === 'placeholder' ? <ResponseLoadingIndicator /> : <TurnActivityIndicator />
+  return slot === 'placeholder' ? (
+    <ResponseLoadingIndicator />
+  ) : (
+    <TurnActivityIndicator thinking={slot === 'thinking'} />
+  )
 }
 
 /**
@@ -1092,6 +1105,7 @@ const AssistantActionBar: FC<MessageActionProps & { durationS?: number }> = ({
   const { t } = useI18n()
   const copy = t.assistant.thread
   const { reload: reloadMessage, disabled: reloadDisabled } = useActionBarReload()
+  const touch = useStore($touchPointer)
 
   const [pickerOpen, setPickerOpen] = useState(false)
   const { enabled: reactionsEnabled, react, reactions: shownReactions } = useMessageReactions(messageId, 'assistant')
@@ -1121,6 +1135,23 @@ const AssistantActionBar: FC<MessageActionProps & { durationS?: number }> = ({
     [react]
   )
 
+  const branchInNewChat = onBranchInNewChat
+    ? () => {
+        triggerHaptic('selection')
+        onBranchInNewChat(messageId)
+      }
+    : undefined
+
+  const copyButton = (
+    <CopyButton
+      appearance="icon"
+      buttonSize="icon"
+      label={copy.copy}
+      onCopied={() => recordAction(DESKTOP_BUTTON_ACTIONS.messageCopy, 'click')}
+      text={getMessageText}
+    />
+  )
+
   return (
     <div className="relative flex w-full shrink-0 items-center justify-end gap-1.5">
       {durationS !== undefined && (
@@ -1147,24 +1178,12 @@ const AssistantActionBar: FC<MessageActionProps & { durationS?: number }> = ({
       >
         <div className="aui-message-actions-desktop flex items-center justify-end gap-1.5">
           <MessageHoverTime className="mr-1 px-0.5" />
-          {onBranchInNewChat && (
-            <TooltipIconButton
-              onClick={() => {
-                triggerHaptic('selection')
-                onBranchInNewChat(messageId)
-              }}
-              tooltip={copy.branchNewChat}
-            >
+          {branchInNewChat && (
+            <TooltipIconButton onClick={branchInNewChat} tooltip={copy.branchNewChat}>
               <GitForkIcon className="size-3.5" />
             </TooltipIconButton>
           )}
-          <CopyButton
-            appearance="icon"
-            buttonSize="icon"
-            label={copy.copy}
-            onCopied={() => recordAction(DESKTOP_BUTTON_ACTIONS.messageCopy, 'click')}
-            text={getMessageText}
-          />
+          {copyButton}
           {fullResponseAvailable && (
             <CopyButton appearance="icon" buttonSize="icon" label={copy.copyFullResponse} text={getFullResponseText} />
           )}
@@ -1173,64 +1192,52 @@ const AssistantActionBar: FC<MessageActionProps & { durationS?: number }> = ({
             <RefreshCwIcon className="size-3.5" />
           </TooltipIconButton>
         </div>
-        <div
-          className="aui-message-actions-touch items-center justify-end gap-1"
-        >
-          <CopyButton
-            appearance="icon"
-            buttonSize="icon"
-            label={copy.copy}
-            onCopied={() => recordAction(DESKTOP_BUTTON_ACTIONS.messageCopy, 'click')}
-            text={getMessageText}
-          />
-          <ActionsMenu
-            ariaLabel={copy.moreActions}
-            items={kit => (
-              <>
-                {onBranchInNewChat &&
-                  renderActionItem(kit, {
-                    icon: 'git-branch',
-                    key: 'branch',
-                    label: copy.branchNewChat,
-                    onSelect: () => {
-                      triggerHaptic('selection')
-                      onBranchInNewChat(messageId)
-                    }
+        {/* Mounted only on touch: each Radix menu root adds a document key
+            listener, and the CSS already hides this cluster everywhere else. */}
+        {touch && (
+          <div className="aui-message-actions-touch items-center justify-end gap-1">
+            {copyButton}
+            <ActionsMenu
+              ariaLabel={copy.moreActions}
+              items={kit => (
+                <>
+                  {branchInNewChat &&
+                    renderActionItem(kit, {
+                      icon: 'git-branch',
+                      key: 'branch',
+                      label: copy.branchNewChat,
+                      onSelect: branchInNewChat
+                    })}
+                  {fullResponseAvailable && (
+                    <CopyButton
+                      appearance={kit.copyAppearance}
+                      label={copy.copyFullResponse}
+                      text={getFullResponseText}
+                    />
+                  )}
+                  {renderActionItem(kit, {
+                    iconNode: <AudioLines className="size-3.5" />,
+                    key: 'read-aloud',
+                    label: readAloud.menuLabel,
+                    onSelect: () => readAloud.onActivate(),
+                    disabled: readAloud.disabled
                   })}
-                {fullResponseAvailable && (
-                  <CopyButton
-                    appearance={kit.copyAppearance}
-                    label={copy.copyFullResponse}
-                    text={getFullResponseText}
-                  />
-                )}
-                {renderActionItem(kit, {
-                  iconNode: <AudioLines className="size-3.5" />,
-                  key: 'read-aloud',
-                  label: readAloud.menuLabel,
-                  onSelect: () => readAloud.onActivate(),
-                  disabled: readAloud.disabled
-                })}
-                {renderActionItem(kit, {
-                  iconNode: <RefreshCwIcon className="size-3.5" />,
-                  key: 'refresh',
-                  label: copy.refresh,
-                  disabled: reloadDisabled,
-                  onSelect: reload
-                })}
-              </>
-            )}
-          >
-            <Button
-              aria-label={copy.moreActions}
-              size="icon"
-              type="button"
-              variant="ghost"
+                  {renderActionItem(kit, {
+                    iconNode: <RefreshCwIcon className="size-3.5" />,
+                    key: 'refresh',
+                    label: copy.refresh,
+                    disabled: reloadDisabled,
+                    onSelect: reload
+                  })}
+                </>
+              )}
             >
-              <MoreHorizontal className="size-3.5" />
-            </Button>
-          </ActionsMenu>
-        </div>
+              <Button aria-label={copy.moreActions} size="icon" type="button" variant="ghost">
+                <MoreHorizontal className="size-3.5" />
+              </Button>
+            </ActionsMenu>
+          </div>
+        )}
       </ActionBarPrimitive.Root>
       {/* ONE slot, Slack-style: the picker trigger and the landed reaction are
           the same element, so reacting never shifts layout. Empty → ☺, hidden

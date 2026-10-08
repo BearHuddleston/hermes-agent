@@ -78,7 +78,7 @@ def test_skip_build_writes_nothing_into_the_install_tree(tmp_path: Path):
 
 
 def _assert_build_lock_excludes_second_open(tmp_path: Path):
-    from pm.filesystem import lock_fd
+    from pm.filesystem import lock_fd, unlock_fd
 
     lock_path = tmp_path / "webapp.lock"
 
@@ -88,7 +88,11 @@ def _assert_build_lock_excludes_second_open(tmp_path: Path):
 
     with lock_path.open("a+b") as contender:
         assert lock_fd(contender.fileno(), wait=False) is True
-        webapp._unlock_file(contender)
+        unlock_fd(contender.fileno())
+        # Released while its handle stays open, the lock is free for the next open.
+        with lock_path.open("a+b") as successor:
+            assert lock_fd(successor.fileno(), wait=False) is True
+            unlock_fd(successor.fileno())
 
 
 def test_webapp_build_lock_excludes_a_second_open(tmp_path: Path):
@@ -263,36 +267,44 @@ def test_webapp_status_is_scoped_and_does_not_build(monkeypatch):
     assert reported == [{"modes": {"webapp"}}]
 
 
+_OWN_WEBAPP = (111, "hermes webapp --port 9119")
+
+
 @pytest.mark.parametrize(
-    ("own_running", "own_survives", "expected_exit"),
-    [(True, False, 0), (True, True, 1), (False, False, 0)],
+    ("own_running", "failed", "after_kill", "expected_exit"),
+    [
+        pytest.param(True, [], [], 0, id="stopped"),
+        # A supervised (launchd KeepAlive) Webapp comes back on a fresh PID: the stop worked.
+        pytest.param(True, [], [(555, "hermes webapp --port 9119")], 0, id="respawned"),
+        pytest.param(True, [(111, "Permission denied")], [_OWN_WEBAPP], 1, id="unkillable"),
+        pytest.param(False, [], [], 0, id="none-running"),
+    ],
 )
 def test_webapp_stop_only_targets_the_invoking_home(
-    tmp_path, monkeypatch, own_running, own_survives, expected_exit,
+    tmp_path, monkeypatch, own_running, failed, after_kill, expected_exit,
 ):
     own_home = str(tmp_path / "own")
     foreign_home = str(tmp_path / "foreign")
     monkeypatch.setenv("HERMES_HOME", own_home)
-    own_webapp = (111, "hermes webapp --port 9119")
     spared = [
         (222, "hermes serve --port 0"),
         (333, "hermes webapp --port 9120"),
         (444, "hermes webapp --port 9121"),
     ]
-    scans = iter([
-        ([own_webapp] if own_running else []) + spared,
-        ([own_webapp] if own_survives else []) + spared,
-    ])
+    scans = iter([([_OWN_WEBAPP] if own_running else []) + spared, after_kill + spared])
     monkeypatch.setattr(dashboard_procs, "_scan_dashboard_processes", lambda: next(scans))
     monkeypatch.setattr(
         dashboard_procs, "_hermes_home_for_pid",
-        lambda pid: {111: own_home, 222: own_home, 333: foreign_home, 444: None}[pid],
+        lambda pid: {111: own_home, 222: own_home, 333: foreign_home, 444: None, 555: own_home}[pid],
     )
     killed = []
-    monkeypatch.setattr(
-        dashboard_procs, "_kill_stale_dashboard_processes",
-        lambda **kwargs: killed.append(kwargs),
-    )
+
+    def kill(**kwargs):
+        killed.append(kwargs)
+        return {"matched": [111], "killed": [] if failed else [111], "failed": failed,
+                "unrecovered": [] if failed else [111]}
+
+    monkeypatch.setattr(dashboard_procs, "_kill_stale_dashboard_processes", kill)
 
     with pytest.raises(SystemExit) as exc:
         cli_main.cmd_webapp(_args(stop=True))
@@ -300,7 +312,6 @@ def test_webapp_stop_only_targets_the_invoking_home(
     assert exc.value.code == expected_exit
     assert killed == ([{
         "include_pids": {111},
-        "scope_home": own_home,
         "reason": "requested via webapp --stop",
     }] if own_running else [])
 
@@ -335,9 +346,6 @@ def test_webapp_process_identity_uses_the_existing_web_server_lifecycle(monkeypa
     ) is True
     assert _is_dashboard_lifecycle_probe(
         "python -m hermes_cli.main dashboard --status"
-    ) is True
-    assert _is_dashboard_lifecycle_probe(
-        "/bin/sh -c '\"python -m hermes_cli.main webapp --stop\"'"
     ) is True
     assert _is_dashboard_lifecycle_probe(
         "python -m hermes_cli.main webapp --host 127.0.0.1 --port 9443"
@@ -379,6 +387,26 @@ def test_webapp_process_table_fallback_uses_structured_command_identity(monkeypa
     assert dashboard_procs._scan_dashboard_processes() == [
         (4242, "python -m hermes_cli.main webapp --host 127.0.0.1 --port 9119")
     ]
+
+
+def test_scan_spares_lifecycle_probes_from_an_apostrophe_install_path(monkeypatch):
+    """Process-table rows are ``list2cmdline``-quoted, which leaves an apostrophe in an install
+    path bare. The holder classifier still recognises those rows as Hermes web-server commands, so
+    the probe check must parse them too or a ``--stop`` / ``--status`` probe is reaped as a server."""
+    servers = [
+        (4242, "/Users/O'Brien/.venv/bin/python -m hermes_cli.main webapp --port 9119"),
+        (4243, "/Users/O'Brien/.venv/bin/hermes serve --port 0"),
+    ]
+    probes = [
+        (4244, "/Users/O'Brien/.venv/bin/python -m hermes_cli.main webapp --stop"),
+        (4245, "/Users/O'Brien/.venv/bin/hermes -p coder dashboard --status"),
+        # A shell carrying a probe as one quoted token is not a Hermes process at all.
+        (4246, "/bin/sh -c \"/Users/O'Brien/.venv/bin/hermes webapp --stop\""),
+    ]
+    monkeypatch.setattr(dashboard_procs, "_ledger_web_server_processes", lambda: {})
+    monkeypatch.setattr(dashboard_procs, "_iter_process_table", lambda: servers + probes)
+
+    assert dashboard_procs._scan_dashboard_processes() == servers
 
 
 def test_dashboard_and_webapp_builds_share_the_workspace_lock(tmp_path: Path, monkeypatch):

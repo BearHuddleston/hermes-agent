@@ -22,6 +22,7 @@ import { useI18n } from '@/i18n'
 import {
   type ChatMessage,
   preserveLocalAssistantErrors,
+  QUESTION_CARD_TOOLS,
   restorePendingClarifyToolCall,
   settlePendingClarifyToolCall,
   stripPendingClarifyProjectionForCache,
@@ -166,9 +167,11 @@ import {
 } from '../session-context-drift'
 import { singleFlightSessionResume } from '../use-prompt-actions/single-flight-resume'
 
+import { branchCreateKey } from './branch-create-key'
 import { sessionCreateOverrideParams, type SessionCreateOverrides, type SessionSeedMessage } from './create-overrides'
 import { markSessionCreatedThisRun, sessionCreatedThisRun } from './created-this-run'
 import { captureDisplayHydration } from './display-hydration'
+import { appendLiveSessionProjection, reconcileLocalLiveProjection } from './live-session-projection'
 import { reconcilePersistedSessionTurn } from './persisted-session-turn'
 import { provisionalTranscriptPaint, transcriptRestScope } from './provisional-transcript'
 import { rememberedOwnerForResume } from './remembered-owner'
@@ -182,13 +185,11 @@ import {
   withoutTranscriptProvenance
 } from './transcript-provenance'
 import {
-  appendLiveSessionProjection,
   applyRuntimeInfo,
   applyStoredSessionPreviewRuntimeInfo,
   type BranchMessage,
   cachedSessionRow,
   chatMessageArraysEquivalent,
-  dedupeInflightUserAgainstTranscript,
   dropListedSession,
   findListedSession,
   goneSessionVerdict,
@@ -198,7 +199,6 @@ import {
   preserveEquivalentTranscript,
   preserveLocalPendingTurnMessages,
   reconcileDurableHistory,
-  removeRepresentedLocalLiveProjection,
   resolveResumedBusy,
   resolveSessionProfile,
   resolveStoredSession,
@@ -250,42 +250,6 @@ export interface BranchLoadedSessionOptions {
   storedSessionId: null | string
 }
 
-const branchMessagesFingerprint = (messages: BranchMessage[]): string =>
-  JSON.stringify(messages.map(({ content, role }) => [role, content]))
-
-// Identity of one branch create, so a re-entered branch action (a retried
-// renderer transition, a double right-click) rides the create already in
-// flight instead of minting a second child. The OWNER is part of the identity:
-// the same parent id served by two connections is two different sessions.
-function branchCreateKey({
-  branchCount,
-  branchMessages,
-  cwd,
-  ownerRoute,
-  parentStoredId,
-  profile,
-  sourceSessionId
-}: {
-  branchCount?: number
-  branchMessages: BranchMessage[]
-  cwd?: string
-  ownerRoute?: SessionOwnerRoute
-  parentStoredId: null | string
-  profile?: null | string
-  sourceSessionId: null | string
-}): string {
-  return JSON.stringify({
-    branchCount: branchCount ?? null,
-    connectionId: ownerRoute?.connectionId || null,
-    cwd: cwd?.trim() || null,
-    messages: sourceSessionId ? null : branchMessagesFingerprint(branchMessages),
-    ownerProfile: ownerRoute?.profile || null,
-    parentStoredId,
-    profile: profile?.trim() || null,
-    sourceSessionId
-  })
-}
-
 // How long we keep creatingSessionRef after create/fork navigate before giving up
 // if the router never lands on the pending stored id (stuck navigate / lost race).
 const CREATE_GUARD_RELEASE_MS = 3_000
@@ -306,7 +270,12 @@ function reconcileAuthoritativeChatMessages(
   sourceRows?: SessionMessage[]
 ): ChatMessage[] {
   if (liveProjection && sourceRows) {
-    const reconciled = reconcilePersistedSessionTurn(authoritativeMessages, previousMessages, sourceRows, liveProjection)
+    const reconciled = reconcilePersistedSessionTurn(
+      authoritativeMessages,
+      previousMessages,
+      sourceRows,
+      liveProjection
+    )
 
     if (reconciled) {
       return reconciled
@@ -424,7 +393,7 @@ function withoutEarlyClarifyProjection(messages: ChatMessage[], requestId: strin
       part =>
         !(
           part.type === 'tool-call' &&
-          part.toolName === 'clarify' &&
+          QUESTION_CARD_TOOLS.has(part.toolName) &&
           part.result === undefined &&
           part.toolCallId === requestId
         )
@@ -1912,14 +1881,10 @@ export function useSessionActions({
 
                   const persistedMessages = graftRefreshedTailOntoBackfill(persistedTail, cachedViewState.messages)
 
-                  const runtimeMessages = toChatMessages(activated.messages)
-                  const previousMessages = removeRepresentedLocalLiveProjection(cachedViewState.messages, activated)
-
-                  const liveProjection = dedupeInflightUserAgainstTranscript(
+                  const { liveProjection, previousMessages } = reconcileLocalLiveProjection(
+                    cachedViewState.messages,
                     persistedMessages,
-                    runtimeMessages,
-                    activated,
-                    cachedViewState.messages
+                    activated
                   )
 
                   const latestCachedMessages = sessionStateByRuntimeIdRef.current.get(cachedRuntimeId)?.messages
@@ -2281,19 +2246,15 @@ export function useSessionActions({
         const preferredMessages = (() => {
           if (prefetchApplied && prefetchMatchesResumedSession) {
             if (hasLiveProjection && prefetchedTranscriptMessages) {
-              const runtimeMessages = toChatMessages(resumed.messages)
-              const previousMessages = removeRepresentedLocalLiveProjection(currentMessages, resumed)
-
               // Omitted-messages resumes stay safe here: when runtime history
               // is empty, the dedupe helper can prove the current turn from an
               // exact local optimistic-user + stream pair and anchor the
               // remaining committed prefix in the REST transcript. Without
               // either proof it leaves the projection unchanged.
-              const liveProjection = dedupeInflightUserAgainstTranscript(
+              const { liveProjection, previousMessages } = reconcileLocalLiveProjection(
+                currentMessages,
                 prefetchedTranscriptMessages,
-                runtimeMessages,
-                resumed,
-                currentMessages
+                resumed
               )
 
               const resumedMessages = reconcileAuthoritativeChatMessages(

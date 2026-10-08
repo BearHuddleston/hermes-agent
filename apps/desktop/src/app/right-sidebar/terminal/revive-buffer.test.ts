@@ -53,14 +53,9 @@ describe('cleanReviveSnapshot', () => {
   })
 
   it('drops only the live Fish greeting and preserves the current prompt tail', () => {
-    const snapshot = [
-      ...FISH_GREETING,
-      FISH_PROMPT,
-      `${FISH_MARKER} echo hi`,
-      'hi',
-      FISH_PROMPT,
-      FISH_MARKER
-    ].join('\r\n')
+    const snapshot = [...FISH_GREETING, FISH_PROMPT, `${FISH_MARKER} echo hi`, 'hi', FISH_PROMPT, FISH_MARKER].join(
+      '\r\n'
+    )
 
     expect(cleanReviveSnapshot(snapshot, 'fish')).toBe(
       [FISH_PROMPT, `${FISH_MARKER} echo hi`, 'hi', FISH_PROMPT, FISH_MARKER].join('\r\n')
@@ -68,9 +63,7 @@ describe('cleanReviveSnapshot', () => {
   })
 
   it('preserves incomplete Fish output instead of guessing that its tail is a prompt', () => {
-    const snapshot = [...FISH_GREETING, FISH_PROMPT, `${FISH_MARKER} printf repeated`, 'same', 'same'].join(
-      '\r\n'
-    )
+    const snapshot = [...FISH_GREETING, FISH_PROMPT, `${FISH_MARKER} printf repeated`, 'same', 'same'].join('\r\n')
 
     expect(cleanReviveSnapshot(snapshot, 'fish')).toBe(
       [FISH_PROMPT, `${FISH_MARKER} printf repeated`, 'same', 'same'].join('\r\n')
@@ -89,9 +82,7 @@ describe('cleanReviveSnapshot', () => {
     ].join('\r\n')
 
     expect(cleanReviveSnapshot(snapshot, 'fish')).toBe(
-      [FISH_PROMPT, `${FISH_MARKER} printf greeting`, ...FISH_GREETING, 'done', FISH_PROMPT, FISH_MARKER].join(
-        '\r\n'
-      )
+      [FISH_PROMPT, `${FISH_MARKER} printf greeting`, ...FISH_GREETING, 'done', FISH_PROMPT, FISH_MARKER].join('\r\n')
     )
   })
 })
@@ -105,14 +96,9 @@ describe('mergeReviveSnapshot', () => {
       ...Array.from({ length: 8 }, () => FISH_PROMPT)
     ].join('\r\n')
 
-    const live = [
-      ...FISH_GREETING,
-      FISH_PROMPT,
-      `${FISH_MARKER} echo next`,
-      'next',
-      FISH_PROMPT,
-      FISH_MARKER
-    ].join('\r\n')
+    const live = [...FISH_GREETING, FISH_PROMPT, `${FISH_MARKER} echo next`, 'next', FISH_PROMPT, FISH_MARKER].join(
+      '\r\n'
+    )
 
     expect(mergeReviveSnapshot(restored, live, 'fish')).toBe(
       [restored, FISH_PROMPT, `${FISH_MARKER} echo next`, 'next', FISH_PROMPT, FISH_MARKER].join('\r\n')
@@ -120,9 +106,12 @@ describe('mergeReviveSnapshot', () => {
   })
 
   it('preserves arbitrary and repeated restored output byte-for-byte', () => {
-    const restored = ['same', '❯ decorative output', ...FISH_GREETING, ...Array.from({ length: 240 }, () => 'same')].join(
-      '\r\n'
-    )
+    const restored = [
+      'same',
+      '❯ decorative output',
+      ...FISH_GREETING,
+      ...Array.from({ length: 240 }, () => 'same')
+    ].join('\r\n')
 
     const live = [...FISH_GREETING, FISH_PROMPT, FISH_MARKER].join('\r\n')
     const merged = mergeReviveSnapshot(restored, live, 'fish')
@@ -140,17 +129,17 @@ describe('mergeReviveSnapshot', () => {
 
 describe('resolveLiveSnapshotWindow', () => {
   it('uses a live marker at or before the current cursor', () => {
-    expect(resolveLiveSnapshotWindow(2, 3, 3, 200)).toEqual({ keepRestored: true, start: 2 })
+    expect(resolveLiveSnapshotWindow(2, 3, true, 200)).toEqual({ keepRestored: true, start: 2 })
   })
 
   it('rejects a numerically valid marker left below a reset cursor', () => {
-    expect(resolveLiveSnapshotWindow(2, 4, 0, 200)).toBeNull()
+    expect(resolveLiveSnapshotWindow(2, 0, true, 200)).toBeNull()
   })
 
   it('rejects disposed or unregistered markers and drops restored history once live output exceeds the row budget', () => {
-    expect(resolveLiveSnapshotWindow(-1, 4, 3, 200)).toBeNull()
-    expect(resolveLiveSnapshotWindow(2, 4, 3, 200, false)).toBeNull()
-    expect(resolveLiveSnapshotWindow(2, 12, 12, 5)).toEqual({ keepRestored: false, start: 8 })
+    expect(resolveLiveSnapshotWindow(-1, 3, true, 200)).toBeNull()
+    expect(resolveLiveSnapshotWindow(2, 3, false, 200)).toBeNull()
+    expect(resolveLiveSnapshotWindow(2, 12, true, 5)).toEqual({ keepRestored: false, start: 8 })
   })
 })
 

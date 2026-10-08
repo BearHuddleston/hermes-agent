@@ -496,7 +496,7 @@ Returns the 20 most recent sessions with metadata (model, token counts, timestam
 
 ### GET /api/config
 
-Returns the current `config.yaml` contents as JSON.
+Returns the current `config.yaml` contents as JSON. With `?with_revision=true` the body is `{"config": {...}, "revision": N}` instead, where `revision` orders saves of that profile's config (it only grows, including across processes and restarts); clients use it to tell which of two racing answers is newer.
 
 ### GET /api/config/defaults
 
@@ -508,7 +508,7 @@ Returns a schema describing every config field — type, description, category, 
 
 ### PUT /api/config
 
-Saves a new configuration. Body: `{"config": {...}}`.
+Saves a new configuration. Body: `{"config": {...}}`. Returns `{"ok": true, "revision": N}`, the revision a following `GET /api/config?with_revision=true` reports for this save.
 
 ### GET /api/env
 
@@ -1218,6 +1218,8 @@ npm run dev
 The Vite dev server at `http://localhost:5173` proxies `/api` requests to the FastAPI backend at `http://127.0.0.1:9119`.
 
 The frontend is built with React 19, TypeScript, Tailwind CSS v4, and shadcn/ui-style components. Production builds output to `hermes_cli/web_dist/` which the FastAPI server serves as a static SPA.
+
+The build is CPU- and memory-intensive (Vite 8's Rust-native Rolldown bundler parallelizes across cores), so it is **resource-bounded by default**: the V8 heap is capped (`--max-old-space-size`, sized from the container's memory limit) and the native bundler's thread pool is limited to half the available cores (`RAYON_NUM_THREADS`), preventing the 200%+ CPU spikes and OOMs small VPS hosts otherwise hit during a build (#63338). Override with `HERMES_WEB_BUILD_MAX_OLD_SPACE_SIZE` / `HERMES_WEB_BUILD_THREADS`; set `HERMES_WEB_BUILD_LIGHT=1` to tighten the caps (1 thread, 1 GB heap) when the host cannot spare full CPU.
 
 ## Automatic Build on Update
 

@@ -120,7 +120,7 @@ def test_session_slot_is_claimed_on_first_turn_not_on_create(monkeypatch, tmp_pa
         server._cfg_path = None
         _clear_server_sessions()
         monkeypatch.setattr(server, "_start_agent_build", lambda *args, **kwargs: None)
-        monkeypatch.setattr(server, "_completion_cwd", lambda params=None: str(tmp_path))
+        monkeypatch.setattr(server, "_completion_cwd", lambda params=None, **_kw: str(tmp_path))
 
         # Opening a chat must NOT take a slot. Every tile paint and every
         # background reconnect-resume calls session.create, and an unprompted
@@ -686,7 +686,7 @@ def test_prompt_submit_golden_transcript_matches_flag_off_and_on(monkeypatch):
     monkeypatch.setattr(server, "make_stream_renderer", lambda _cols: None)
     monkeypatch.setattr(server, "render_message", lambda _raw, _cols: None)
     fake_title = types.ModuleType("agent.title_generator")
-    setattr(fake_title, "maybe_auto_title", lambda *args, **kwargs: None)
+    fake_title.maybe_auto_title = lambda *args, **kwargs: None
     monkeypatch.setitem(sys.modules, "agent.title_generator", fake_title)
 
     def run_flag_off():
@@ -1524,7 +1524,7 @@ def test_tui_verbose_tool_details_fail_closed_when_redaction_fails(monkeypatch):
     def fail_redaction(*_args, **_kwargs):
         raise RuntimeError("redaction unavailable")
 
-    setattr(redact_module, "redact_sensitive_text", fail_redaction)
+    redact_module.redact_sensitive_text = fail_redaction
     monkeypatch.setitem(sys.modules, "agent.redact", redact_module)
 
     assert server._redact_tui_verbose_text("api_key=secret") == ""
@@ -1559,7 +1559,7 @@ def test_tui_verbose_tool_events_omit_details_when_redaction_fails(monkeypatch):
     def fail_redaction(*_args, **_kwargs):
         raise RuntimeError("redaction unavailable")
 
-    setattr(redact_module, "redact_sensitive_text", fail_redaction)
+    redact_module.redact_sensitive_text = fail_redaction
     monkeypatch.setitem(sys.modules, "agent.redact", redact_module)
 
     events: list[tuple[str, str, dict]] = []
@@ -2638,7 +2638,7 @@ def test_load_disabled_toolsets_none_when_unset_or_config_fails(monkeypatch):
     monkeypatch.setattr(config_mod, "load_config", lambda: {"agent": {"disabled_toolsets": []}})
     assert server._load_disabled_toolsets() is None
 
-    monkeypatch.setattr(config_mod, "load_config", lambda: {})
+    monkeypatch.setattr(config_mod, "load_config", dict)
     assert server._load_disabled_toolsets() is None
 
     monkeypatch.setattr(
@@ -3061,9 +3061,9 @@ def test_expand_skill_invocation_for_replay_round_trips_the_projection(
     # agent the literal "/work fix it" instead of the skill, so the server
     # re-expands it — the exact inverse of _skill_scaffold_projection, with the
     # body never leaving the server.
-    import agent.skill_commands as skill_commands
-    import agent.skill_utils as skill_utils
-    import tools.skills_tool as skills_tool
+    from agent import skill_commands
+    from agent import skill_utils
+    from tools import skills_tool
 
     skills_dir = tmp_path / "skills"
     (skills_dir / "worktree-kickoff").mkdir(parents=True)
@@ -3085,8 +3085,8 @@ def test_expand_skill_invocation_for_replay_round_trips_the_projection(
 
 
 def test_expand_skill_invocation_for_replay_leaves_ordinary_text_alone(monkeypatch):
-    import agent.skill_commands as skill_commands
-    import agent.skill_utils as skill_utils
+    from agent import skill_commands
+    from agent import skill_utils
 
     monkeypatch.setattr(skill_utils, "get_external_skills_dirs", lambda *a, **k: [])
     monkeypatch.setattr(skill_commands, "_skill_commands_by_key", {})
@@ -3099,9 +3099,9 @@ def test_expand_skill_invocation_for_replay_leaves_ordinary_text_alone(monkeypat
 def _two_repo_project_skill_sessions(tmp_path, monkeypatch) -> tuple[Path, Path]:
     """Two trusted repos (``alpha-skill`` / ``beta-skill``) bound to sessions ``sid-a`` / ``sid-b``, in a
     launch shape whose process cwd and TERMINAL_CWD both point outside either project."""
-    import agent.skill_commands as skill_commands
-    import agent.skill_utils as skill_utils
-    import tools.skills_tool as skills_tool
+    from agent import skill_commands
+    from agent import skill_utils
+    from tools import skills_tool
 
     def repo(name: str, skill: str) -> Path:
         r = tmp_path / name
@@ -3139,7 +3139,7 @@ def test_command_dispatch_and_catalog_resolve_project_skills_from_the_session_cw
     # ``/<name>`` died with "not a quick/plugin/bundle/skill command". Two sessions in two trusted repos
     # in ONE process must each catalog and dispatch their own repo's skill (the cached registry is
     # keyed by project root, not just platform + home).
-    import agent.skill_utils as skill_utils
+    from agent import skill_utils
 
     _two_repo_project_skill_sessions(tmp_path, monkeypatch)
     ambient_project_root = skill_utils.find_project_root()
@@ -3245,7 +3245,7 @@ def test_complete_slash_and_skills_reload_are_bound_to_the_session_cwd(tmp_path,
     # The '/' popup and /reload-skills ran the registry unbound: the popup never offered a project skill
     # ``command.dispatch`` accepts, and a rescan after that dispatch reported the session's project skills
     # as "Removed" and republished a registry without them.
-    import agent.skill_commands as skill_commands
+    from agent import skill_commands
 
     _two_repo_project_skill_sessions(tmp_path, monkeypatch)
     items = server._methods["complete.slash"]("s", {"text": "/alph", "session_id": "sid-a"})["result"]["items"]
@@ -3987,7 +3987,7 @@ def test_session_resume_passes_stored_runtime_to_agent(monkeypatch):
     assert server._sessions[runtime_sid]["model_override"] == captured["model_override"]
 
 
-def test_session_resume_profile_uses_profile_db_cwd(monkeypatch, tmp_path):
+def test_session_resume_profile_uses_profile_db_cwd(monkeypatch, tmp_path, route_profiles):
     target = "stored-profile-session"
     launch_cwd = tmp_path / "launch"
     profile_cwd = tmp_path / "worker"
@@ -4045,7 +4045,7 @@ def test_session_resume_profile_uses_profile_db_cwd(monkeypatch, tmp_path):
         return types.SimpleNamespace(model="test/model")
 
     monkeypatch.setenv("TERMINAL_CWD", str(launch_cwd))
-    monkeypatch.setattr(server, "_profile_home", lambda _profile: profile_home)
+    route_profiles(server, lambda _profile: profile_home)
     monkeypatch.setattr("hermes_state_registry.acquire", lambda db_path=None, **_kwargs: profile_db)
     monkeypatch.setattr(server, "_get_db", lambda: launch_db)
     monkeypatch.setattr(server, "_enable_gateway_prompts", lambda: None)
@@ -4065,7 +4065,7 @@ def test_session_resume_profile_uses_profile_db_cwd(monkeypatch, tmp_path):
         lambda _agent, session=None: {"cwd": session.get("cwd") if session else ""},
     )
 
-    import tools.approval as approval
+    from tools import approval
 
     monkeypatch.setattr(approval, "register_gateway_notify", lambda key, cb: None)
     monkeypatch.setattr(approval, "load_permanent_allowlist", lambda: None)
@@ -4115,7 +4115,7 @@ def test_session_cwd_set_profile_session_updates_profile_db(monkeypatch, tmp_pat
 
     profile_db = ProfileDB()
 
-    import tools.terminal_tool_lifecycle as terminal_tool_lifecycle
+    from tools import terminal_tool_lifecycle
 
     monkeypatch.setattr("hermes_state_registry.acquire", lambda db_path=None, **_kwargs: profile_db)
     monkeypatch.setattr(server, "_get_db", lambda: LaunchDB())
@@ -4776,7 +4776,7 @@ def test_deferred_session_record_stamps_the_creating_login():
     token = bind_transport(_LoginSocket("carol", "oidc"))
     try:
         record = server._deferred_session_record(
-            "deferred-key", cols=80, cwd="/tmp", history=[], lease=None)
+            "deferred-key", cols=80, cwd="/tmp", history=[], lease=None, profile_incarnation=None)
     finally:
         reset_transport(token)
 
@@ -5003,7 +5003,7 @@ def test_session_close_releases_resume_lock_before_slow_teardown(monkeypatch):
         server._sessions.pop("slow-close", None)
 
     assert not thread.is_alive()
-    assert response["result"] == {"closed": True}
+    assert response["result"] == {"closed": True, "messages": []}
 
 
 def test_session_close_settles_active_turn_before_teardown(monkeypatch):
@@ -5056,7 +5056,7 @@ def test_session_close_settles_active_turn_before_teardown(monkeypatch):
 
     assert not close_thread.is_alive()
     assert teardown_started.is_set()
-    assert response["result"] == {"closed": True}
+    assert response["result"] == {"closed": True, "messages": []}
 
 
 def test_ws_orphan_reap_interrupts_isolated_turn_then_reaps(monkeypatch):
@@ -5155,7 +5155,7 @@ def test_ws_orphan_reap_spares_turn_reattached_within_grace(monkeypatch):
     server._sessions["reattached-sid"] = session
     monkeypatch.setattr(server, "_WS_ORPHAN_REAP_GRACE_S", 0.01)
     monkeypatch.setattr(server.threading, "Timer", _Timer)
-    monkeypatch.setattr(server, "_load_cfg", lambda: {})
+    monkeypatch.setattr(server, "_load_cfg", dict)
 
     try:
         server._close_sessions_for_transport(disconnecting_transport)
@@ -5236,7 +5236,7 @@ def test_ws_orphan_reap_defers_running_turn_for_active_delegation(monkeypatch):
     server._sessions["delegating-turn"] = session
     monkeypatch.setattr(server, "_WS_ORPHAN_REAP_GRACE_S", 0.01)
     monkeypatch.setattr(server.threading, "Timer", _Timer)
-    monkeypatch.setattr(server, "_load_cfg", lambda: {})
+    monkeypatch.setattr(server, "_load_cfg", dict)
     monkeypatch.setattr(
         server,
         "_session_has_active_delegations",
@@ -5290,7 +5290,7 @@ def test_ws_orphan_reap_interrupts_in_process_turn(monkeypatch):
     server._sessions["inline-sid"] = session
     monkeypatch.setattr(server, "_WS_ORPHAN_REAP_GRACE_S", 0.01)
     monkeypatch.setattr(server.threading, "Timer", _Timer)
-    monkeypatch.setattr(server, "_load_cfg", lambda: {})
+    monkeypatch.setattr(server, "_load_cfg", dict)
 
     try:
         server._schedule_ws_orphan_reap("inline-sid")
@@ -6121,7 +6121,7 @@ def test_ws_orphan_reap_defers_running_turn_with_fresh_activity(monkeypatch):
     monkeypatch.setattr(server, "_WS_ORPHAN_REAP_GRACE_S", 0.01)
     monkeypatch.setattr(server, "_WS_ORPHAN_ACTIVITY_STALE_S", 300.0)
     monkeypatch.setattr(server.threading, "Timer", _Timer)
-    monkeypatch.setattr(server, "_load_cfg", lambda: {})
+    monkeypatch.setattr(server, "_load_cfg", dict)
     monkeypatch.setattr(
         server,
         "_teardown_popped_session",
@@ -6187,7 +6187,7 @@ def test_ws_orphan_activity_gate_zero_restores_interrupt_at_grace(monkeypatch):
     monkeypatch.setattr(server, "_WS_ORPHAN_REAP_GRACE_S", 0.01)
     monkeypatch.setattr(server, "_WS_ORPHAN_ACTIVITY_STALE_S", 0.0)
     monkeypatch.setattr(server.threading, "Timer", _Timer)
-    monkeypatch.setattr(server, "_load_cfg", lambda: {})
+    monkeypatch.setattr(server, "_load_cfg", dict)
 
     try:
         server._schedule_ws_orphan_reap("optout-sid")
@@ -9664,7 +9664,7 @@ def test_setup_runtime_check_allows_no_key_custom_runtime(monkeypatch):
 
 def test_setup_runtime_check_rejects_implicit_bedrock_when_unconfigured(monkeypatch):
     monkeypatch.setattr("hermes_cli.main._has_any_provider_configured", lambda **_kw: False)
-    monkeypatch.setattr(server, "_load_cfg", lambda: {})
+    monkeypatch.setattr(server, "_load_cfg", dict)
     monkeypatch.setattr(
         "hermes_cli.runtime_provider.resolve_runtime_provider",
         lambda requested=None, **_kw: {
@@ -9683,7 +9683,7 @@ def test_setup_runtime_check_rejects_implicit_bedrock_when_unconfigured(monkeypa
 def test_setup_runtime_check_honors_requested_provider(monkeypatch):
     """Onboarding must be able to validate the provider the user just connected."""
     monkeypatch.setattr("hermes_cli.main._has_any_provider_configured", lambda **_kw: True)
-    monkeypatch.setattr(server, "_load_cfg", lambda: {})
+    monkeypatch.setattr(server, "_load_cfg", dict)
 
     def fake_resolve(requested=None, **kwargs):
         if requested == "nous":
@@ -9932,7 +9932,7 @@ def _slash_skill_fixtures(monkeypatch):
             **{cmd: {"description": "Filler"} for cmd in filler},
         },
     )
-    monkeypatch.setattr("agent.skill_bundles.get_skill_bundles", lambda: {})
+    monkeypatch.setattr("agent.skill_bundles.get_skill_bundles", dict)
 
 
 def _slash_completions(text: str) -> list[dict]:
@@ -12401,7 +12401,7 @@ def test_session_status_falls_back_to_agent_before_first_host_frame(monkeypatch)
 
 
 def test_skills_reload_runs_in_gateway_process(monkeypatch):
-    import agent.skill_commands as skill_commands
+    from agent import skill_commands
 
     called = {}
     monkeypatch.setattr(
@@ -16108,7 +16108,7 @@ def test_session_delete_success_returns_deleted_id(monkeypatch):
 # --------------------------------------------------------------------------
 
 
-def test_session_list_honors_params_profile_opens_profile_db(monkeypatch, tmp_path):
+def test_session_list_honors_params_profile_opens_profile_db(monkeypatch, tmp_path, route_profiles):
     """Issue #62503: session.list must read the profile's state.db, not launch."""
     profile_home = tmp_path / "profiles" / "mlperf"
     profile_home.mkdir(parents=True)
@@ -16140,7 +16140,7 @@ def test_session_list_honors_params_profile_opens_profile_db(monkeypatch, tmp_pa
         def close(self):
             seen["closed"] = True
 
-    monkeypatch.setattr(server, "_profile_home", lambda p: profile_home if p == "mlperf" else None)
+    route_profiles(server, lambda p: profile_home if p == "mlperf" else None)
     monkeypatch.setattr(server, "_get_db", lambda: LaunchDB())
     monkeypatch.setattr(
         "hermes_cli.web_server_sessions._open_session_db_at_path",
@@ -16162,7 +16162,7 @@ def test_session_list_honors_params_profile_opens_profile_db(monkeypatch, tmp_pa
     assert seen.get("closed") is True
 
 
-def test_session_most_recent_honors_params_profile(monkeypatch, tmp_path):
+def test_session_most_recent_honors_params_profile(monkeypatch, tmp_path, route_profiles):
     """Issue #62503: session.most_recent must not return the launch profile tip."""
     profile_home = tmp_path / "profiles" / "mlperf"
     profile_home.mkdir(parents=True)
@@ -16184,7 +16184,7 @@ def test_session_most_recent_honors_params_profile(monkeypatch, tmp_path):
         def close(self):
             pass
 
-    monkeypatch.setattr(server, "_profile_home", lambda p: profile_home if p == "mlperf" else None)
+    route_profiles(server, lambda p: profile_home if p == "mlperf" else None)
     monkeypatch.setattr(server, "_get_db", lambda: LaunchDB())
     monkeypatch.setattr(
         "hermes_cli.web_server_sessions._open_session_db_at_path",
@@ -16268,7 +16268,7 @@ def test_handoff_request_uses_session_profile_home(monkeypatch, tmp_path):
     assert get_hermes_home() != profile_home
 
 
-def test_session_create_reports_requested_profile_name(monkeypatch, tmp_path):
+def test_session_create_reports_requested_profile_name(monkeypatch, tmp_path, route_profiles):
     """Issue #62503: session.create info.profile_name must not always be launch."""
     profile_home = tmp_path / "profiles" / "mlperf"
     profile_home.mkdir(parents=True)
@@ -16281,8 +16281,8 @@ def test_session_create_reports_requested_profile_name(monkeypatch, tmp_path):
     monkeypatch.setattr(server, "_start_agent_build", lambda *a, **k: None)
     monkeypatch.setattr(server, "_schedule_agent_build", lambda *a, **k: None)
     monkeypatch.setattr(server, "_schedule_session_cap_enforcement", lambda *a, **k: None)
-    monkeypatch.setattr(server, "_completion_cwd", lambda params=None: str(tmp_path))
-    monkeypatch.setattr(server, "_profile_home", lambda p: profile_home if p == "mlperf" else None)
+    monkeypatch.setattr(server, "_completion_cwd", lambda params=None, **_kw: str(tmp_path))
+    route_profiles(server, lambda p: profile_home if p == "mlperf" else None)
     monkeypatch.setattr(server, "_current_profile_name", lambda: "default")
     monkeypatch.setattr(server, "_claim_active_session_slot", lambda *a, **k: (None, None))
     _clear()
@@ -16296,7 +16296,7 @@ def test_session_create_reports_requested_profile_name(monkeypatch, tmp_path):
         _clear()
 
 
-def test_session_delete_honors_params_profile_sessions_dir(monkeypatch, tmp_path):
+def test_session_delete_honors_params_profile_sessions_dir(monkeypatch, tmp_path, route_profiles):
     """Issue #62503: delete must target the profile state.db + sessions dir."""
     profile_home = tmp_path / "profiles" / "mlperf"
     (profile_home / "sessions").mkdir(parents=True)
@@ -16314,7 +16314,7 @@ def test_session_delete_honors_params_profile_sessions_dir(monkeypatch, tmp_path
         def close(self):
             captured["closed"] = True
 
-    monkeypatch.setattr(server, "_profile_home", lambda p: profile_home if p == "mlperf" else None)
+    route_profiles(server, lambda p: profile_home if p == "mlperf" else None)
     monkeypatch.setattr(server, "_get_db", lambda: None)
     monkeypatch.setattr("hermes_state_registry.acquire", ProfileDB)
 
@@ -16330,132 +16330,6 @@ def test_session_delete_honors_params_profile_sessions_dir(monkeypatch, tmp_path
     assert str(captured["db_path"]).endswith("state.db")
     assert Path(captured["sessions_dir"]) == profile_home / "sessions"
     assert captured.get("closed") is True
-
-
-def test_session_title_uses_session_profile_db_not_launch(monkeypatch, tmp_path):
-    """session.title on a non-launch profile session must not touch launch DB."""
-    profile_home = tmp_path / "profiles" / "mlperf"
-    profile_home.mkdir(parents=True)
-    _stamp_test_profile_home(profile_home)
-    seen: dict = {}
-
-    class LaunchDB:
-        def get_session_title(self, _key):
-            seen["launch_read"] = True
-            return "from-launch"
-
-        def set_session_title(self, _key, _title):
-            seen["launch_write"] = True
-            return True
-
-        def get_session(self, _key):
-            return {"id": _key, "title": "from-launch"}
-
-    class ProfileDB:
-        def __init__(self, db_path=None, **_kwargs):
-            self.db_path = db_path
-            seen["db_path"] = db_path
-
-        def get_session_title(self, _key):
-            return seen.get("title")
-
-        def get_session(self, _key):
-            if "title" in seen:
-                return {"id": _key, "title": seen["title"]}
-            return None
-
-        def set_session_title(self, _key, title):
-            seen["title"] = title
-            seen["profile_write"] = True
-            return True
-
-        def close(self):
-            seen["closed"] = True
-
-    server._sessions["sid"] = {
-        "session_key": "ml-sess",
-        "history": [],
-        "history_lock": __import__("threading").Lock(),
-        "running": False,
-        "pending_title": None,
-        "profile_home": str(profile_home),
-        "profile_incarnation": _TEST_PROFILE_INCARNATION,
-        "agent": None,
-        "created_at": 1.0,
-        "last_active": 1.0,
-    }
-    monkeypatch.setattr(server, "_get_db", lambda: LaunchDB())
-    monkeypatch.setattr("hermes_state_registry.acquire", ProfileDB)
-    try:
-        set_resp = server.handle_request(
-            {
-                "id": "1",
-                "method": "session.title",
-                "params": {"session_id": "sid", "title": "profile-title"},
-            }
-        )
-        assert "result" in set_resp, set_resp
-        assert set_resp["result"]["title"] == "profile-title"
-        assert seen.get("profile_write") is True
-        assert seen.get("launch_write") is None
-        assert str(seen.get("db_path")).endswith("state.db")
-
-        get_resp = server.handle_request(
-            {"id": "2", "method": "session.title", "params": {"session_id": "sid"}}
-        )
-        assert get_resp["result"]["title"] == "profile-title"
-        assert seen.get("launch_read") is None
-    finally:
-        server._sessions.pop("sid", None)
-
-
-def test_session_history_uses_session_profile_db(monkeypatch, tmp_path):
-    """session.history must read durable messages from the profile state.db."""
-    profile_home = tmp_path / "profiles" / "mlperf"
-    profile_home.mkdir(parents=True)
-    _stamp_test_profile_home(profile_home)
-    seen: dict = {}
-
-    class LaunchDB:
-        def get_messages_as_conversation(self, _key, include_ancestors=True, **_kwargs):
-            seen["launch"] = True
-            return [{"role": "user", "content": "launch"}]
-
-    class ProfileDB:
-        def __init__(self, db_path=None, **_kwargs):
-            seen["db_path"] = db_path
-
-        def get_messages_as_conversation(self, _key, include_ancestors=True, **_kwargs):
-            seen["profile"] = True
-            return [{"role": "user", "content": "from-profile"}]
-
-        def close(self):
-            seen["closed"] = True
-
-    server._sessions["sid"] = {
-        "session_key": "ml-sess",
-        "history": [{"role": "user", "content": "mem"}],
-        "history_lock": __import__("threading").Lock(),
-        "running": False,
-        "profile_home": str(profile_home),
-        "profile_incarnation": _TEST_PROFILE_INCARNATION,
-        "agent": None,
-        "created_at": 1.0,
-        "last_active": 1.0,
-    }
-    monkeypatch.setattr(server, "_get_db", lambda: LaunchDB())
-    monkeypatch.setattr("hermes_state_registry.acquire", ProfileDB)
-    try:
-        resp = server.handle_request(
-            {"id": "1", "method": "session.history", "params": {"session_id": "sid"}}
-        )
-        assert "result" in resp, resp
-        assert seen.get("profile") is True
-        assert seen.get("launch") is None
-        # Count comes from profile-backed conversation (1 msg), not bare mem list alone.
-        assert resp["result"]["count"] == 1
-    finally:
-        server._sessions.pop("sid", None)
 
 
 def test_session_history_ships_durable_row_ids(monkeypatch):
@@ -16492,100 +16366,6 @@ def test_session_history_ships_durable_row_ids(monkeypatch):
         assert user_rows and user_rows[0].get("row_id") == 41
     finally:
         server._sessions.pop("rowid-hist-sid", None)
-
-
-def test_session_status_uses_session_profile_db(monkeypatch, tmp_path):
-    """session.status must load meta from the session profile state.db."""
-    profile_home = tmp_path / "profiles" / "mlperf"
-    profile_home.mkdir(parents=True)
-    _stamp_test_profile_home(profile_home)
-    seen: dict = {}
-
-    class LaunchDB:
-        def get_session(self, _key):
-            seen["launch"] = True
-            return {"id": _key, "title": "launch-title", "started_at": 1}
-
-    class ProfileDB:
-        def __init__(self, db_path=None, **_kwargs):
-            seen["db_path"] = db_path
-
-        def get_session(self, _key):
-            seen["profile"] = True
-            return {"id": _key, "title": "profile-title", "started_at": 42}
-
-        def close(self):
-            seen["closed"] = True
-
-    server._sessions["sid"] = {
-        "session_key": "ml-sess",
-        "history": [],
-        "history_lock": __import__("threading").Lock(),
-        "running": False,
-        "profile_home": str(profile_home),
-        "profile_incarnation": _TEST_PROFILE_INCARNATION,
-        "agent": None,
-        "created_at": 1.0,
-        "last_active": 1.0,
-    }
-    monkeypatch.setattr(server, "_get_db", lambda: LaunchDB())
-    monkeypatch.setattr("hermes_state_registry.acquire", ProfileDB)
-    try:
-        resp = server.handle_request(
-            {"id": "1", "method": "session.status", "params": {"session_id": "sid"}}
-        )
-        assert "result" in resp, resp
-        assert "profile-title" in resp["result"]["output"]
-        assert seen.get("profile") is True
-        assert seen.get("launch") is None
-    finally:
-        server._sessions.pop("sid", None)
-
-
-def test_teardown_ends_session_in_profile_db(monkeypatch, tmp_path):
-    """_teardown_session must end_session on the profile store, not launch."""
-    profile_home = tmp_path / "profiles" / "mlperf"
-    profile_home.mkdir(parents=True)
-    _stamp_test_profile_home(profile_home)
-    seen: dict = {}
-
-    class LaunchDB:
-        def get_session(self, _key):
-            seen["launch"] = True
-            return {"id": _key, "source": "tui"}
-
-        def end_session(self, _key, _reason):
-            seen["launch_end"] = True
-
-    class ProfileDB:
-        def __init__(self, db_path=None, **_kwargs):
-            seen["db_path"] = db_path
-
-        def get_session(self, _key):
-            seen["profile"] = True
-            return {"id": _key, "source": "tui"}
-
-        def end_session(self, key, reason):
-            seen["ended"] = (key, reason)
-
-        def close(self):
-            seen["closed"] = True
-
-    monkeypatch.setattr(server, "_get_db", lambda: LaunchDB())
-    monkeypatch.setattr("hermes_state_registry.acquire", ProfileDB)
-    session = {
-        "session_key": "ml-sess",
-        "profile_home": str(profile_home),
-        "profile_incarnation": _TEST_PROFILE_INCARNATION,
-        "agent": None,
-        "history": [],
-        "source": "tui",
-    }
-    server._teardown_session(session, end_reason="closed")
-    assert seen.get("ended") == ("ml-sess", "closed")
-    assert seen.get("launch_end") is None
-    assert seen.get("launch") is None
-    assert str(seen.get("db_path")).endswith("state.db")
 
 
 def test_session_branch_writes_to_parent_profile_db(monkeypatch, tmp_path):
@@ -16835,7 +16615,7 @@ def test_session_branch_stored_copies_parent_history_without_returning_transcrip
     seen: dict = {}
     db = _FakeDB()
 
-    monkeypatch.setattr(server, "_profile_db", lambda _params: _Scope(db))
+    monkeypatch.setattr(server, "_profile_db", lambda _params, **_kw: _Scope(db))
     monkeypatch.setattr(
         server,
         "_seed_branch_row",
@@ -18238,7 +18018,7 @@ def test_verification_status_outside_workspace_is_not_applicable(monkeypatch, tm
     # tmp-root ancestor (e.g. /tmp/package.json left by another tool) would
     # otherwise make _marker_root() resolve tmp_path as a workspace and flip
     # the status to "unverified".
-    import agent.coding_context as coding_context
+    from agent import coding_context
 
     monkeypatch.setattr(coding_context, "project_facts_for", lambda _cwd=None: None)
 
@@ -18274,7 +18054,7 @@ def _stub_urlopen(monkeypatch, *, ok: bool):
         def __exit__(self, *_):
             return False
 
-    def _opener(_url, timeout=2.0):  # noqa: ARG001 — match urllib signature
+    def _opener(_url, timeout=2.0):
         if not ok:
             raise OSError("probe failed")
         return _Resp()
@@ -18296,7 +18076,7 @@ def _stub_urlopen_capture(monkeypatch, *, ok: bool):
         def __exit__(self, *_):
             return False
 
-    def _opener(url, timeout=2.0):  # noqa: ARG001 — match urllib signature
+    def _opener(url, timeout=2.0):
         urls.append(url)
         if not ok:
             raise OSError("probe failed")
@@ -18564,7 +18344,7 @@ def test_browser_manage_connect_default_local_retries_after_launch(monkeypatch):
     # the IPv6 loopback never answers.
     attempts = {"n": 0}
 
-    def _opener(url, timeout=2.0):  # noqa: ARG001 — match urllib signature
+    def _opener(url, timeout=2.0):
         if "[::1]" in url:
             raise OSError("no IPv6 listener")
         attempts["n"] += 1
@@ -18612,7 +18392,7 @@ def test_browser_manage_connect_finds_ipv6_only_browser(monkeypatch):
         def __exit__(self, *_):
             return False
 
-    def _opener(url, timeout=2.0):  # noqa: ARG001 — match urllib signature
+    def _opener(url, timeout=2.0):
         if "[::1]" in url:
             return _Resp()
         raise OSError("IPv4 loopback held by a non-CDP squatter")
@@ -18650,7 +18430,7 @@ def test_browser_manage_connect_squatted_port_launches_on_alternate(monkeypatch)
         def __exit__(self, *_):
             return False
 
-    def _opener(url, timeout=2.0):  # noqa: ARG001 — match urllib signature
+    def _opener(url, timeout=2.0):
         if ":9223" in url and "127.0.0.1" in url:
             return _Resp()  # relaunched browser comes up on the alternate port
         raise OSError("9222 squatted / nothing else listening")
@@ -20246,7 +20026,7 @@ def test_reap_idle_sessions_closes_only_evictable(monkeypatch):
 
 def _periodic_trim_calls(monkeypatch):
     """Stub the reaper's side effects and capture trim_memory calls (delayed import → patch the module attr)."""
-    import hermes_cli.mem_trim as mem_trim
+    from hermes_cli import mem_trim
 
     calls = []
     monkeypatch.setattr(server, "_session_pending_kind", lambda sid: "")
@@ -20311,7 +20091,7 @@ def test_turn_completion_trim_skips_while_another_session_is_running(monkeypatch
 
 
 def test_reap_idle_sessions_logs_trim_failure(monkeypatch, caplog):
-    import hermes_cli.mem_trim as mem_trim
+    from hermes_cli import mem_trim
 
     _periodic_trim_calls(monkeypatch)
     monkeypatch.setattr(mem_trim, "trim_memory", lambda **_kw: (_ for _ in ()).throw(RuntimeError("boom")))
@@ -21235,7 +21015,7 @@ def _fake_tts_modules(monkeypatch, *, requirements=True, playback_stops=None, li
         types.SimpleNamespace(
             check_tts_requirements=lambda: requirements,
             _get_provider=lambda cfg: "edge",
-            _load_tts_config=lambda: {},
+            _load_tts_config=dict,
             get_env_value=lambda key, default="": default,
         ),
     )
@@ -21555,7 +21335,6 @@ def test_speak_text_with_barge_no_monitor_when_voice_mode_off(monkeypatch):
 
     def fake_listen(should_stop, capture=False, on_trigger=None, **_kw):
         listened.set()
-        return None
 
     done_speaking = threading.Event()
     monkeypatch.setitem(
@@ -23296,7 +23075,7 @@ def test_workspace_move_rehomes_running_session(monkeypatch, tmp_path):
     import contextlib
 
     @contextlib.contextmanager
-    def _fake_db(_params, *, writer=False):
+    def _fake_db(_params, *, writer=False, resolved=None):
         yield FakeDB()
 
     monkeypatch.setattr(server, "_profile_db", _fake_db)
@@ -23350,7 +23129,7 @@ def test_load_cfg_raw_sees_replacement_with_pinned_mtime_and_size(monkeypatch, t
     assert server._load_cfg_raw()["model"]["default"] == "aaaa-route"
 
 
-def test_session_create_uses_bound_profile_backend_not_launch(monkeypatch, tmp_path):
+def test_session_create_uses_bound_profile_backend_not_launch(monkeypatch, tmp_path, route_profiles):
     """The regression: launch profile is LOCAL, the session is bound to an SSH profile.
     session.create must read the BOUND profile's backend, keep the remote cwd, and mark it
     explicit — not drop it to the launch dir."""
@@ -23360,7 +23139,7 @@ def test_session_create_uses_bound_profile_backend_not_launch(monkeypatch, tmp_p
     monkeypatch.setenv("TERMINAL_ENV", "local")
     monkeypatch.delenv("TERMINAL_CWD", raising=False)
     (tmp_path / "config.yaml").write_text("terminal:\n  backend: ssh\n", encoding="utf-8")
-    monkeypatch.setattr(server, "_profile_home", lambda name: tmp_path if name == "felix" else None)
+    route_profiles(server, lambda name: tmp_path if name == "felix" else None)
     monkeypatch.setattr(server, "_schedule_agent_build", lambda sid: None)
     monkeypatch.setattr(server, "_schedule_session_cap_enforcement", lambda: None)
 
@@ -23374,7 +23153,7 @@ def test_session_create_uses_bound_profile_backend_not_launch(monkeypatch, tmp_p
         server._sessions.pop(sid, None)
 
 
-def test_workspace_move_accepts_remote_dir_for_bound_ssh_profile(monkeypatch, tmp_path):
+def test_workspace_move_accepts_remote_dir_for_bound_ssh_profile(monkeypatch, tmp_path, route_profiles):
     """session.workspace.move must not reject a remote project dir that does not
     exist on the host when the bound profile is ssh (the 'working directory does
     not exist' error the user hit). Local profiles keep the isdir guard."""
@@ -23382,7 +23161,7 @@ def test_workspace_move_accepts_remote_dir_for_bound_ssh_profile(monkeypatch, tm
     assert not os.path.isdir(remote)
     monkeypatch.setenv("TERMINAL_ENV", "local")  # launch looks local
     (tmp_path / "config.yaml").write_text("terminal:\n  backend: ssh\n", encoding="utf-8")
-    monkeypatch.setattr(server, "_profile_home", lambda name: tmp_path if name == "felix" else None)
+    route_profiles(server, lambda name: tmp_path if name == "felix" else None)
 
     class _DB:
         def get_session(self, key):

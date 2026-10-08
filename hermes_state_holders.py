@@ -2,7 +2,8 @@
 
 This module owns the proof that no foreign process still holds the active or
 an unlinked SQLite DB/WAL/SHM generation.  ``hermes_state`` supplies only the
-SQLite connection factory needed by the final lock probe.
+SQLite connection factory needed by the final lock probe.  Profile delete/rename
+run the same descriptor census over a whole home (:func:`foreign_tree_holders`).
 """
 
 from __future__ import annotations
@@ -12,9 +13,10 @@ import functools
 import logging
 import os
 import sqlite3
+import stat
 import sys
 from pathlib import Path
-from typing import Callable, List, Optional, Sequence, Set, Tuple
+from typing import Callable, Collection, Iterator, List, Optional, Sequence, Set, Tuple
 
 from hermes_state_errors import is_sqlite_lock_error
 
@@ -42,7 +44,7 @@ _PYTHON_LONG_OPTIONS_WITH_OPERANDS = frozenset(
 )
 
 
-def _read_proc_argv(pid: int) -> Optional[List[str]]:
+def _read_proc_argv(pid: int) -> Optional[list[str]]:
     """Read /proc/<pid>/cmdline without losing argv boundaries."""
     try:
         with open(f"/proc/{pid}/cmdline", "rb") as handle:
@@ -83,7 +85,7 @@ def _looks_like_python_executable(program: str) -> bool:
     )
 
 
-def _python_execution_target(argv: Sequence[str]) -> Optional[Tuple[str, str, int]]:
+def _python_execution_target(argv: Sequence[str]) -> Optional[tuple[str, str, int]]:
     """``(kind, target, index)`` of the module or script interpreter options select, else ``None``.
 
     ``kind`` is ``"module"`` or ``"script"``. ``index`` is the argv slot holding the target (the
@@ -192,7 +194,7 @@ def _argv_env_home(argv: Sequence[str]) -> Optional[str]:
     return None
 
 
-def _store_install_layout(this_home: str) -> Tuple[Optional[str], Optional[str]]:
+def _store_install_layout(this_home: str) -> tuple[Optional[str], Optional[str]]:
     """``(<install root>, <our profile name>)`` for the home holding the store, else ``(None, None)``.
 
     Derived with the canonical ``named_profile_home`` predicate, never a ``basename == "profiles"``
@@ -246,9 +248,9 @@ def _argv_home_selection(
     return None
 
 
-def _argv_path_tokens(argv: Sequence[str]) -> List[Tuple[int, str]]:
+def _argv_path_tokens(argv: Sequence[str]) -> list[tuple[int, str]]:
     """``(argv index, normalized absolute path)`` for every path-bearing token."""
-    tokens: List[Tuple[int, str]] = []
+    tokens: list[tuple[int, str]] = []
     for index, token in enumerate(argv):
         if not isinstance(token, str):
             continue
@@ -322,9 +324,7 @@ def _argv_scoped_to_other_home(argv: Sequence[str], db_path: Path) -> bool:
             continue  # shared install root: neutral, every served profile lives under it
         if index == 0 and not argv0_locates_home:
             continue
-        if "/.hermes" in normalized or normalized.endswith("/.hermes"):
-            other_home_seen = True
-        elif os.path.basename(normalized) in _STATE_DB_NAMES:
+        if "/.hermes" in normalized or normalized.endswith("/.hermes") or os.path.basename(normalized) in _STATE_DB_NAMES:
             other_home_seen = True
     return other_home_seen
 
@@ -373,7 +373,7 @@ def _rm_ctypes():
     return _RmProcessInfo, argtypes
 
 
-def _sqlite_family(base: str) -> Tuple[str, str, str]:
+def _sqlite_family(base: str) -> tuple[str, str, str]:
     """The main database file plus the ``-wal``/``-shm`` sidecars SQLite may hold alongside it."""
     return (base, base + "-wal", base + "-shm")
 
@@ -382,7 +382,7 @@ def _sqlite_family(base: str) -> Tuple[str, str, str]:
 _RM_REGISTER_CHUNK = 1000
 
 
-def windows_restart_manager_pids(paths: Sequence[str]) -> List[int]:
+def windows_restart_manager_pids(paths: Sequence[str]) -> list[int]:
     """PIDs Windows Restart Manager reports holding any of *paths* open; raises OSError on API failure.
 
     One ``RmGetList`` answers for every registered file at once, so the cost follows the file
@@ -434,7 +434,7 @@ def windows_restart_manager_pids(paths: Sequence[str]) -> List[int]:
         end(session)
 
 
-def _windows_restart_manager_holders(db_path: Path) -> List[Tuple[int, str]]:
+def _windows_restart_manager_holders(db_path: Path) -> list[tuple[int, str]]:
     """Return foreign processes using state.db or a WAL sidecar via Windows Restart Manager."""
     db_abspath = os.path.abspath(os.fspath(db_path))
     resources = [path for path in _sqlite_family(db_abspath) if os.path.exists(path)]
@@ -444,7 +444,109 @@ def _windows_restart_manager_holders(db_path: Path) -> List[Tuple[int, str]]:
     return [(pid, db_abspath) for pid in windows_restart_manager_pids(resources) if pid != own_pid]
 
 
-def foreign_state_db_holders(db_path: Path) -> List[Tuple[int, str]]:
+def _possible_hermes_holder(pid: int, db_path: Path) -> Optional[list[str]]:
+    """argv of *pid* when it may serve the home of *db_path* though its descriptors cannot be read.
+
+    Only a Hermes process whose own argv does not place it in another home counts. Every host
+    keeps processes whose descriptors only root can read for their whole life, whoever owns them
+    (``sshd: <user>``, ``(sd-pam)``, ``gpg-agent``, setuid helpers and Chromium's sandbox are
+    non-dumpable), so counting every unreadable process would keep each census failing forever.
+    """
+    argv = _read_proc_argv(pid)
+    if argv is not None and _looks_like_hermes(argv) and not _argv_scoped_to_other_home(argv, db_path):
+        return argv
+    return None
+
+
+# ``(target, target_is_watched, descriptor stat)`` -> whether the descriptor is a holder.
+_DescriptorMatch = Callable[[str, bool, os.stat_result], bool]
+
+
+def _proc_descriptor_holder(
+    pid: int, fd_path: str, db_path: Path, is_watched: Callable[[str], bool], matches: _DescriptorMatch,
+) -> Optional[str]:
+    """What one /proc descriptor of *pid* holds when it counts: its target, or why it cannot be read."""
+    try:
+        target = os.readlink(fd_path)
+    except OSError as exc:
+        if exc.errno in (errno.ENOENT, errno.ESRCH) or _possible_hermes_holder(pid, db_path) is None:
+            return None
+        return f"uninspectable descriptor: {fd_path}: {exc}"
+    # Only a path can be watched: ``socket:[...]`` would otherwise resolve against our cwd.
+    target_is_watched = target.startswith("/") and is_watched(canonical_sqlite_path(target))
+    try:
+        fd_stat = os.stat(fd_path)
+    except OSError as exc:
+        if exc.errno in (errno.ENOENT, errno.ESRCH):
+            return None
+        if target_is_watched or _possible_hermes_holder(pid, db_path) is not None:
+            return f"uninspectable descriptor: {target}: {exc}"
+        return None
+    return target if matches(target, target_is_watched, fd_stat) else None
+
+
+def _proc_descriptor_holders(
+    db_path: Path, is_watched: Callable[[str], bool], matches: _DescriptorMatch, pids: Optional[Collection[int]],
+) -> Iterator[tuple[int, str]]:
+    own_pid = os.getpid()
+    if pids is None:
+        pids = [int(name) for name in os.listdir("/proc") if name.isdigit()]
+    for pid in pids:
+        if pid == own_pid:
+            continue
+        fd_dir = f"/proc/{pid}/fd"
+        try:
+            fds = os.listdir(fd_dir)
+        except OSError:
+            argv = _possible_hermes_holder(pid, db_path)
+            if argv is not None:
+                yield pid, f"uninspectable holder: {' '.join(argv)[:80]}"
+            continue
+        for fd in fds:
+            held = _proc_descriptor_holder(pid, f"{fd_dir}/{fd}", db_path, is_watched, matches)
+            if held is not None:
+                yield pid, held
+
+
+def _psutil_descriptor_holders(
+    is_watched: Callable[[str], bool], pids: Optional[Collection[int]],
+) -> Iterator[tuple[int, str]]:
+    if psutil is None:
+        raise RuntimeError("open-file scan unavailable")
+    for process in psutil.process_iter(["pid", "open_files"]):
+        info = process.info
+        pid = int(info["pid"])
+        if pid == os.getpid() or (pids is not None and pid not in pids):
+            continue
+        for opened in info.get("open_files") or ():
+            path = getattr(opened, "path", "")
+            if path and is_watched(canonical_sqlite_path(os.path.realpath(path))):
+                yield pid, path
+
+
+def _descriptor_holders(
+    db_path: Path,
+    is_watched: Callable[[str], bool],
+    matches: _DescriptorMatch,
+    pids: Optional[Collection[int]] = None,
+) -> Iterator[tuple[int, str]]:
+    """``(pid, what)`` per descriptor another process holds that counts; raises when the scan fails.
+
+    The one POSIX census behind state.db maintenance and profile delete/rename; each caller says
+    what counts. ``is_watched`` judges a descriptor's canonical path (`` (deleted)`` stripped)
+    and ``matches(target, watched, stat)`` decides with the open file's identity. Every process
+    /proc lists is read, whoever owns it (only root can read another user's descriptors). A
+    process or descriptor that cannot be read counts as :func:`_possible_hermes_holder` says
+    (anchored on the home of *db_path*), and a watched descriptor whose identity cannot be read
+    always counts. Without /proc (macOS, BSD) psutil reports paths only, so there a watched
+    path is the match and a process psutil may not read is skipped.
+    """
+    if sys.platform.startswith("linux"):
+        return _proc_descriptor_holders(db_path, is_watched, matches, pids)
+    return _psutil_descriptor_holders(is_watched, pids)
+
+
+def foreign_state_db_holders(db_path: Path) -> list[tuple[int, str]]:
     """Return foreign holders of the DB or one of its WAL sidecars.
 
     A scan failure is represented as an unknown holder. Structural maintenance
@@ -460,13 +562,15 @@ def foreign_state_db_holders(db_path: Path) -> List[Tuple[int, str]]:
                 exc,
             )
             return [(-1, f"Windows Restart Manager scan failed: {exc}")]
+    if psutil is None and not sys.platform.startswith("linux"):
+        return [(-1, "open-file scan unavailable")]
 
     # realpath, not abspath: psutil/libproc report the kernel-resolved pathname, so a symlinked
     # HERMES_HOME would otherwise make every holder invisible and let maintenance proceed.
     db_path_str = os.path.realpath(os.fspath(db_path))
     watched = {canonical_sqlite_path(candidate) for candidate in _sqlite_family(db_path_str)}
-    holders: List[Tuple[int, str]] = []
-    watched_ids: Set[Tuple[int, int]] = set()
+    holders: list[tuple[int, str]] = []
+    watched_ids: set[tuple[int, int]] = set()
     db_dev: Optional[int] = None
     for candidate in _sqlite_family(db_path_str):
         try:
@@ -481,101 +585,19 @@ def foreign_state_db_holders(db_path: Path) -> List[Tuple[int, str]]:
         if candidate == db_path_str:
             db_dev = stat_result.st_dev
 
-    if sys.platform.startswith("linux"):
-        try:
-            own_pid = os.getpid()
-            for pid_str in os.listdir("/proc"):
-                if not pid_str.isdigit():
-                    continue
-                pid = int(pid_str)
-                if pid == own_pid:
-                    continue
-                fd_dir = f"/proc/{pid}/fd"
-                try:
-                    fds = os.listdir(fd_dir)
-                except OSError:
-                    argv = _read_proc_argv(pid)
-                    if (
-                        argv is not None
-                        and _looks_like_hermes(argv)
-                        and not _argv_scoped_to_other_home(argv, db_path)
-                    ):
-                        cmdline = " ".join(argv)
-                        holders.append((pid, f"uninspectable holder: {cmdline[:80]}"))
-                    continue
-                for fd in fds:
-                    fd_path = f"{fd_dir}/{fd}"
-                    try:
-                        target = os.readlink(fd_path)
-                    except OSError as exc:
-                        if exc.errno in (errno.ENOENT, errno.ESRCH):
-                            continue
-                        argv = _read_proc_argv(pid)
-                        if (
-                            argv is not None
-                            and _looks_like_hermes(argv)
-                            and not _argv_scoped_to_other_home(argv, db_path)
-                        ):
-                            holders.append(
-                                (
-                                    pid,
-                                    f"uninspectable descriptor: {fd_path}: {exc}",
-                                )
-                            )
-                        continue
-                    target_is_watched = canonical_sqlite_path(target) in watched
-                    try:
-                        fd_stat = os.stat(fd_path)
-                    except OSError as exc:
-                        if exc.errno in (errno.ENOENT, errno.ESRCH):
-                            continue
-                        if target_is_watched:
-                            holders.append(
-                                (pid, f"uninspectable descriptor: {target}: {exc}")
-                            )
-                        else:
-                            argv = _read_proc_argv(pid)
-                            if (
-                                argv is not None
-                                and _looks_like_hermes(argv)
-                                and not _argv_scoped_to_other_home(argv, db_path)
-                            ):
-                                holders.append(
-                                    (
-                                        pid,
-                                        "uninspectable descriptor: "
-                                        f"{target}: {exc}",
-                                    )
-                                )
-                        continue
-                    if (fd_stat.st_dev, fd_stat.st_ino) in watched_ids or (
-                        target_is_watched
-                        and target.endswith(" (deleted)")
-                        and db_dev is not None
-                        and fd_stat.st_dev == db_dev
-                    ):
-                        holders.append((pid, target))
-        except Exception as exc:
-            logger.warning(
-                "Could not prove state.db has no foreign holders; "
-                "deferring structural maintenance: %s",
-                exc,
-            )
-            holders.append((-1, f"open-file scan failed: {exc}"))
-        return holders
+    def matches(target: str, target_is_watched: bool, fd_stat: os.stat_result) -> bool:
+        # Identity is authoritative even when /proc spells another path; an unlinked generation
+        # has no identity left to compare, only its old pathname on the database's device.
+        return (fd_stat.st_dev, fd_stat.st_ino) in watched_ids or (
+            target_is_watched
+            and target.endswith(" (deleted)")
+            and db_dev is not None
+            and fd_stat.st_dev == db_dev
+        )
 
-    if psutil is None:
-        return [(-1, "open-file scan unavailable")]
     try:
-        for process in psutil.process_iter(["pid", "open_files"]):
-            info = process.info
-            pid = int(info["pid"])
-            if pid == os.getpid():
-                continue
-            for opened in info.get("open_files") or ():
-                path = getattr(opened, "path", "")
-                if path and canonical_sqlite_path(os.path.realpath(path)) in watched:
-                    holders.append((pid, path))
+        for holder in _descriptor_holders(db_path, watched.__contains__, matches):
+            holders.append(holder)
     except Exception as exc:
         logger.warning(
             "Could not prove state.db has no foreign holders; "
@@ -586,9 +608,61 @@ def foreign_state_db_holders(db_path: Path) -> List[Tuple[int, str]]:
     return holders
 
 
+def _tree_identities(root: str) -> set[tuple[int, int]]:
+    """``(st_dev, st_ino)`` of every entry deleting *root* frees.
+
+    A symlink, and a non-directory with another link, outlive the tree: a holder of what they
+    name is not a holder of the tree.
+    """
+    identities: set[tuple[int, int]] = set()
+    for directory, _dirnames, filenames in os.walk(root):
+        for path in (directory, *(os.path.join(directory, name) for name in filenames)):
+            try:
+                entry = os.lstat(path)
+            except OSError:
+                continue
+            if stat.S_ISDIR(entry.st_mode) or (not stat.S_ISLNK(entry.st_mode) and entry.st_nlink == 1):
+                identities.add((entry.st_dev, entry.st_ino))
+    return identities
+
+
+def foreign_tree_holders(root: Path, pids: Optional[Collection[int]] = None) -> list[tuple[int, str]]:
+    """``(pid, what)`` per descriptor another process holds in the tree at *root*; raises when the
+    scan cannot finish. *pids* narrows the scan. POSIX only: Windows asks Restart Manager.
+
+    Profile delete/rename gate an rmtree/rename of the whole home on this, so a descriptor counts
+    by its kernel path under the resolved root (an unlinked file too: /proc keeps its old path
+    with `` (deleted)``) or by the identity of an entry the deletion frees. Identity catches a
+    holder that opened the file through a bind mount in another mount namespace, which /proc
+    spells with that namespace's path: a Docker sandbox run as the host user sees
+    ``<home>/sandboxes/<task>`` as ``/workspace``. Unreadable processes follow the state.db rule,
+    anchored on this home; that covers another user's gateway in a group-shared (0770) install,
+    which no descriptor scan of ours can read.
+    """
+    resolved = os.path.realpath(os.fspath(root))
+    prefix = resolved.rstrip(os.sep) + os.sep
+    # Walked on first need: psutil (no /proc) never compares identities.
+    identities = functools.cache(lambda: _tree_identities(resolved))
+
+    def is_watched(path: str) -> bool:
+        return path == resolved or path.startswith(prefix)
+
+    def matches(_target: str, target_is_watched: bool, fd_stat: os.stat_result) -> bool:
+        return target_is_watched or (fd_stat.st_dev, fd_stat.st_ino) in identities()
+
+    # The argv fallback compares homes as the caller spells them, as a holder's argv does.
+    anchor = Path(os.path.abspath(os.fspath(root))) / "state.db"
+    try:
+        return list(_descriptor_holders(anchor, is_watched, matches, pids))
+    except Exception as exc:
+        raise RuntimeError(
+            f"Cannot prove no other process holds files under {root}: open-file scan failed: {exc}"
+        ) from exc
+
+
 def in_process_state_db_holders(
     db_path: Path, *, exclude=None
-) -> List[Tuple[int, str]]:
+) -> list[tuple[int, str]]:
     """Return holders of ``db_path`` inside THIS process, other than *exclude*.
 
     :func:`foreign_state_db_holders` skips ``os.getpid()`` by design, so it answers a
@@ -618,8 +692,8 @@ def held_store_refusal(db_path: Path, *, command: str, force_hint: Optional[str]
     from hermes_constants import profile_cli_selector
     from hermes_state_errors import STORAGE_RECOVERY_DOCS_URL
 
-    by_pid: dict[int, Set[str]] = {}
-    unknown: List[str] = []
+    by_pid: dict[int, set[str]] = {}
+    unknown: list[str] = []
     for pid, target in holders:
         if pid <= 0 or target.startswith("uninspectable"):
             unknown.append(target)

@@ -12,6 +12,7 @@ import psutil
 import pytest
 
 from hermes_cli import profile_lifecycle, profiles
+from hermes_constants import named_profile_is_deleted
 from hermes_cli.sqlite_safe_read import connect_tracked, has_live_connection
 from hermes_state import SessionDB
 from hermes_state_dbfile import _pread_db_header
@@ -76,7 +77,7 @@ def test_closed_child_allows_profile_delete_but_live_sibling_refuses(tmp_path, m
     for name in ("_cleanup_gateway_service", "_maybe_unregister_gateway_service",
                  "_maybe_register_gateway_service", "_stop_bot_desktop", "_notify_multiplexer"):
         monkeypatch.setattr(profiles, name, lambda *a, **k: None)
-    monkeypatch.setattr(profiles, "_profile_bound_backend_pids", lambda *a, **k: [])
+    monkeypatch.setattr("hermes_cli.profiles_process_stop._profile_bound_backend_pids", lambda *a, **k: [])
     monkeypatch.setattr(profile_lifecycle, "_PROFILE_DB_RELEASE_TIMEOUT_SECONDS", 0)
 
     # A -> B -> A includes a fresh incarnation at the reused pathname.
@@ -89,7 +90,7 @@ def test_closed_child_allows_profile_delete_but_live_sibling_refuses(tmp_path, m
             assert child.pid in profile_lifecycle.external_profile_file_holders(home)
             with pytest.raises(RuntimeError, match="external process"):
                 profiles.delete_profile(name, yes=True)
-            assert home.is_dir() and not profiles.profile_home_is_tombstoned(home)
+            assert home.is_dir() and not named_profile_is_deleted(home)
             pipe.send("close")
             assert not _receive(pipe)["live"]
             assert child.is_alive()
@@ -232,28 +233,33 @@ def _assert_concurrent_opener_keeps_locks(path, monkeypatch, opener):
         except BaseException as exc:
             errors.append(exc)
 
+    def hold_recovery_lock():
+        # A same-thread connection: hold the write lock, then close it here.
+        with close_connection(session_recovery._connect(path)) as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            locked.set()
+            attempting.set()
+            assert finish_reader.wait(15)
+            conn.execute("ROLLBACK")
+
+    def hold_writer_lock():
+        conn = connect_tracked(path, check_same_thread=False, isolation_level=None)
+        new_connections.append(conn)
+        conn.execute("BEGIN IMMEDIATE")
+        locked.set()
+        attempting.set()
+
+    successors = {
+        "readiness": lambda: results.append(_probe_state_db(path.parent)),
+        "doctor": lambda: results.append(_session_count(path)),
+        "metrics": lambda: results.append(_first_session_started_at(path.parent)),
+        "recovery": hold_recovery_lock,
+        "writer": hold_writer_lock,
+    }
+
     def open_successor():
         try:
-            if opener == "readiness":
-                results.append(_probe_state_db(path.parent))
-            elif opener == "doctor":
-                results.append(_session_count(path))
-            elif opener == "metrics":
-                results.append(_first_session_started_at(path.parent))
-            elif opener == "recovery":
-                # A same-thread connection: hold the write lock, then close it here.
-                with close_connection(session_recovery._connect(path)) as conn:
-                    conn.execute("BEGIN IMMEDIATE")
-                    locked.set()
-                    attempting.set()
-                    assert finish_reader.wait(15)
-                    conn.execute("ROLLBACK")
-            else:
-                conn = connect_tracked(path, check_same_thread=False, isolation_level=None)
-                new_connections.append(conn)
-                conn.execute("BEGIN IMMEDIATE")
-                locked.set()
-                attempting.set()
+            successors[opener]()
         except BaseException as exc:
             errors.append(exc)
 

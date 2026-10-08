@@ -12,7 +12,6 @@ from __future__ import annotations
 import os
 import re
 import secrets
-import stat
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Iterator
@@ -22,6 +21,8 @@ from hermes_constants import (
     profile_deletion_marker_path,
 )
 from hermes_cli.profile_lifecycle import (
+    _profile_lifecycle_modes,
+    _write_token_file,
     profile_lifecycle_lease as _profile_mutation_lease,
 )
 from pm.filesystem import hard_link_refused
@@ -34,25 +35,10 @@ def _incarnation_path(profile_home: Path | str) -> Path:
     return Path(profile_home) / PROFILE_INCARNATION_FILENAME
 
 
-def _marker_mode(profile_home: Path) -> int:
-    try:
-        return 0o660 if profile_home.stat().st_mode & stat.S_IWGRP else 0o600
-    except OSError:
-        return 0o600
-
-
 def _temp_marker_path(profile_home: Path) -> Path:
     return profile_home / (
         f"{PROFILE_INCARNATION_FILENAME}.{os.getpid()}.{secrets.token_hex(6)}.tmp"
     )
-
-
-def _write_token_file(path: Path, token: str, mode: int) -> None:
-    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, mode)
-    with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as handle:
-        handle.write(token + "\n")
-        handle.flush()
-        os.fsync(handle.fileno())
 
 
 def _validate_incarnation(value: str, path: Path) -> str:
@@ -109,18 +95,21 @@ def profile_incarnation_lease(
     missing/retired generation raises FileNotFoundError.
     """
     home = Path(profile_home)
-    if profile_deletion_marker_path(home) is None:
+    marker = profile_deletion_marker_path(home)
+    if marker is None:
         yield home
         return
 
+    # Leases fence keystrokes, uploads and cold SessionDB opens: the checks
+    # under the lock reuse this resolution instead of walking the path again.
     with _profile_mutation_lease(home):
-        if named_profile_home_is_unavailable(home):
+        if named_profile_home_is_unavailable(home, marker=marker):
             raise FileNotFoundError(
                 f"Named profile home is missing or being deleted: {home}"
             )
         if expected_incarnation is None and require_incarnation:
             raise FileNotFoundError(f"Named profile incarnation is required: {home}")
-        assert_profile_incarnation_current(home, expected_incarnation)
+        assert_profile_incarnation_current(home, expected_incarnation, named=True)
         yield home
 
 
@@ -131,7 +120,7 @@ def write_fresh_profile_incarnation(profile_home: Path | str) -> str:
         raise FileNotFoundError(f"Profile home does not exist: {home}")
     token = secrets.token_hex(16)
     path = _incarnation_path(home)
-    mode = _marker_mode(home)
+    mode = _profile_lifecycle_modes(home)[1]
     temp = _temp_marker_path(home)
     from utils import atomic_replace
 
@@ -167,7 +156,7 @@ def ensure_profile_incarnation(profile_home: Path | str) -> str | None:
         path = _incarnation_path(home)
         temp = _temp_marker_path(home)
         try:
-            _write_token_file(temp, token, _marker_mode(home))
+            _write_token_file(temp, token, _profile_lifecycle_modes(home)[1])
             try:
                 # Hard-link publication is atomic and never replaces another
                 # process's winner. The marker becomes visible only after its
@@ -200,10 +189,16 @@ def ensure_profile_incarnation(profile_home: Path | str) -> str | None:
 def profile_incarnation_matches(
     profile_home: Path | str,
     expected_incarnation: str,
+    *,
+    named: bool = False,
 ) -> bool:
-    """Return whether the currently published home is the expected generation."""
+    """Return whether the currently published home is the expected generation.
+
+    ``named``: the caller already resolved *profile_home* as a named home, so skip that resolve.
+    """
     try:
-        current = read_profile_incarnation(profile_home)
+        current = (read_incarnation_marker(_incarnation_path(profile_home)) if named
+                   else read_profile_incarnation(profile_home))
     except (OSError, RuntimeError):
         return False
     return current is not None and secrets.compare_digest(current, expected_incarnation)
@@ -212,9 +207,11 @@ def profile_incarnation_matches(
 def assert_profile_incarnation_current(
     profile_home: Path | str,
     expected_incarnation: str | None,
+    *,
+    named: bool = False,
 ) -> None:
     """Refuse a caller bound to a retired generation; ``None`` binds no generation."""
     if expected_incarnation is not None and not profile_incarnation_matches(
-        profile_home, expected_incarnation,
+        profile_home, expected_incarnation, named=named,
     ):
         raise FileNotFoundError(f"Named profile incarnation is stale: {profile_home}")

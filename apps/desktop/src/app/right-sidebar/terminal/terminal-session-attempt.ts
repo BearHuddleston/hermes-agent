@@ -33,7 +33,9 @@ if (typeof window !== 'undefined') {
 
   window.addEventListener('pagehide', markTearingDown)
   window.addEventListener('beforeunload', markTearingDown)
-  window.addEventListener('pageshow', () => { appTearingDown = false })
+  window.addEventListener('pageshow', () => {
+    appTearingDown = false
+  })
 }
 
 interface SessionAttemptOptions {
@@ -93,8 +95,8 @@ export function createSessionAttemptController(
     let current = true
     let attemptSessionId: string | null = null
 
-    const releaseSession = (sid: string) => persistent && terminalApi.detach
-      ? terminalApi.detach(sid) : terminalApi.dispose(sid)
+    const releaseSession = (sid: string) =>
+      persistent && terminalApi.detach ? terminalApi.detach(sid) : terminalApi.dispose(sid)
 
     const subscriptions: Array<() => void> = []
 
@@ -116,6 +118,13 @@ export function createSessionAttemptController(
 
     cleanupAttempt = release
 
+    // Arm Enter to start (or resume) the next attempt in the same scrollback.
+    const armRetry = (message: string) => {
+      setStatus('closed')
+      retrySession = startSession
+      term.write(`${message}\r\n`)
+    }
+
     void terminalApi
       // Prefer the last observed cwd so retry/relaunch stays in the same directory.
       .start({ cols: term.cols, cwd: resolveCwd(), rows: term.rows, restoreKey: id, resumeOnly })
@@ -123,7 +132,9 @@ export function createSessionAttemptController(
         persistent = Boolean(session.persistent)
         resumeOnly = persistent
 
-        if (persistent) {markTerminalPersistent(id)}
+        if (persistent) {
+          markTerminalPersistent(id)
+        }
 
         if (isDisposed() || !current) {
           void releaseSession(session.id)
@@ -138,11 +149,15 @@ export function createSessionAttemptController(
 
         subscriptions.push(
           terminalApi.onData(session.id, (data, options) => {
-            if (!current || isDisposed()) {return}
+            if (!current || isDisposed()) {
+              return
+            }
 
             if (options?.replay) {
               ++replayWrites
-              term.write(data, () => { --replayWrites })
+              term.write(data, () => {
+                --replayWrites
+              })
             } else if (persistent) {
               term.write(data)
             } else {
@@ -157,18 +172,16 @@ export function createSessionAttemptController(
             release()
 
             if (persistent && exit.signal) {
-              setStatus('closed')
               resumeOnly = exit.signal !== 'expired'
-              retrySession = startSession
-              term.write(`\r\n${TERMINAL_EXIT_MESSAGES[exit.signal] || 'Terminal disconnected. Press Enter to reconnect.'}\r\n`)
+              armRetry(
+                `\r\n${TERMINAL_EXIT_MESSAGES[exit.signal] || 'Terminal disconnected. Press Enter to reconnect.'}`
+              )
 
               return
             }
 
             if (exit.signal === 'disconnected') {
-              setStatus('closed')
-              retrySession = startSession
-              term.write('\r\nTerminal disconnected. Press Enter to start a new shell; scrollback is preserved.\r\n')
+              armRetry('\r\nTerminal disconnected. Press Enter to start a new shell; scrollback is preserved.')
 
               return
             }
@@ -179,14 +192,19 @@ export function createSessionAttemptController(
         )
 
         if (persistent && terminalApi.onState) {
-          subscriptions.push(terminalApi.onState(session.id, state => {
-            if (!current || isDisposed() || appTearingDown) {return}
-            setStatus(state === 'disconnected' ? 'closed' : state)
+          subscriptions.push(
+            terminalApi.onState(session.id, state => {
+              if (!current || isDisposed() || appTearingDown) {
+                return
+              }
 
-            if (state === 'reconnecting') {
-              term.write('\r\nTerminal disconnected. Reconnecting to the same shell…\r\n')
-            }
-          }))
+              setStatus(state === 'disconnected' ? 'closed' : state)
+
+              if (state === 'reconnecting') {
+                term.write('\r\nTerminal disconnected. Reconnecting to the same shell…\r\n')
+              }
+            })
+          )
         }
 
         // onExit may replay a buffered exit before returning its unsubscribe.
@@ -206,7 +224,9 @@ export function createSessionAttemptController(
           return
         }
 
-        if (!persistent) {setStatus('open')}
+        if (!persistent) {
+          setStatus('open')
+        }
 
         window.requestAnimationFrame(() => {
           if (current && !isDisposed()) {
@@ -220,21 +240,24 @@ export function createSessionAttemptController(
         }
 
         release()
-        retrySession = startSession
-        setStatus('closed')
         const expired = error && typeof error === 'object' && 'signal' in error && error.signal === 'expired'
 
         if (expired) {
           resumeOnly = false
-          term.write(`${TERMINAL_EXIT_MESSAGES.expired}\r\n`)
+          armRetry(TERMINAL_EXIT_MESSAGES.expired)
         } else {
-          term.write(`Terminal failed to start: ${error instanceof Error ? error.message : String(error)}. Press Enter to retry.\r\n`)
+          armRetry(
+            `Terminal failed to start: ${error instanceof Error ? error.message : String(error)}. Press Enter to retry.`
+          )
         }
       })
   }
 
   const input = (data: string) => {
-    if (replayWrites || isReplayingHistory()) {return}
+    if (replayWrites || isReplayingHistory()) {
+      return
+    }
+
     const sessionId = sessionIdRef.current
 
     if (!sessionId && retrySession && data === '\r') {

@@ -497,12 +497,12 @@ _RO_MOUNT_SOURCES = (
     ("get_cache_directory_mounts", False, "cache dir"))
 
 
-def _readonly_skill_mount_args(*, fingerprint_args: list[str] | None = None) -> list[str]:
+def _readonly_skill_mount_args(*, fingerprint_args: list[str]) -> list[str]:
     """``-v host:container:ro`` args for credential files, skill dirs and cache dirs. Read-only so the
     container can authenticate/read but never modify host state. Missing or wrong-kind sources are
     skipped with a warning (Docker-in-Docker auto-creates a missing file source as a directory,
-    which would exit 125). If supplied, fingerprint_args receives the same mounts with known
-    generated skills copies identified by a distinct marker and their original source."""
+    which would exit 125). fingerprint_args receives the same mounts with generated skills copies
+    (the entries carrying ``reuse_source``) identified by a distinct marker and their original source."""
     args: list[str] = []
     try:
         import tools.credential_files as cf
@@ -518,11 +518,10 @@ def _readonly_skill_mount_args(*, fingerprint_args: list[str] | None = None) -> 
                     logger.warning("Docker: skipping %s mount — %s: %s", noun.split()[0], problem, src)
                     continue
                 args.extend(["-v", f"{entry['host_path']}:{entry['container_path']}:ro"])
-                if fingerprint_args is not None:
-                    source, kind = entry["host_path"], "-v"
-                    if getter == "get_skills_directory_mount" and "reuse_source" in entry:
-                        source, kind = entry["reuse_source"], "<sanitized-skills-copy>"
-                    fingerprint_args.extend([kind, f"{source}:{entry['container_path']}:ro"])
+                source, kind = entry["host_path"], "-v"
+                if "reuse_source" in entry:
+                    source, kind = entry["reuse_source"], "<sanitized-skills-copy>"
+                fingerprint_args.extend([kind, f"{source}:{entry['container_path']}:ro"])
                 logger.info("Docker: mounting %s %s -> %s", noun, entry["host_path"], entry["container_path"])
     except Exception as e:
         logger.debug("Docker: could not load credential file mounts: %s", e)

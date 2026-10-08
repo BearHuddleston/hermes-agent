@@ -123,6 +123,12 @@ const PROFILE_DROPDOWN_THRESHOLD = 13
 // surface (drag, hold-to-recolor), and in a browser tab they read as chrome.
 const ALWAYS_CONDENSED = isBrowserHostedDesktop()
 
+// The threshold counts the whole fleet: fourteen squares are fourteen squares
+// wherever they live.
+function railCondensed(profileCount: number, restGroups: readonly FleetGroup[]): boolean {
+  return ALWAYS_CONDENSED || profileCount + countRestAgents(restGroups) > PROFILE_DROPDOWN_THRESHOLD
+}
+
 // #91710: a profile that finished (or blocked, or is still working) while
 // another was selected carries an indicator on its rail square and dropdown
 // row. It paints the session status dot's own class for the same state, so a
@@ -283,9 +289,7 @@ export function ProfileRail() {
 
   // Too many profiles for the square strip → collapse to the select. Declared
   // ahead of the wheel effect, which re-binds when the strip mounts/unmounts.
-  // The threshold counts the whole fleet: fourteen squares are fourteen
-  // squares wherever they live.
-  const condensed = ALWAYS_CONDENSED || profiles.length + countRestAgents(restGroups) > PROFILE_DROPDOWN_THRESHOLD
+  const condensed = railCondensed(profiles.length, restGroups)
 
   const measureScroll = useCallback(() => {
     const el = scrollRef.current

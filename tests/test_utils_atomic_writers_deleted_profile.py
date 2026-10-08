@@ -19,11 +19,8 @@ from pathlib import Path
 
 import pytest
 
-from hermes_constants import (
-    mark_named_profile_deleted,
-    named_profile_home,
-    set_hermes_home_override,
-)
+from hermes_cli.profile_lifecycle import mark_profile_deleting
+from hermes_constants import named_profile_home, set_hermes_home_override
 from utils import atomic_json_write, atomic_write_text
 
 
@@ -32,7 +29,7 @@ def _tombstoned_profile(tmp_path: Path) -> Path:
     (tmp_path / "config.yaml").write_text("{}\n", encoding="utf-8")
     profile = tmp_path / "profiles" / "p1"
     profile.mkdir(parents=True)
-    mark_named_profile_deleted(profile)
+    mark_profile_deleting(profile)
     import shutil
 
     shutil.rmtree(profile)
@@ -129,7 +126,7 @@ class TestConcurrentDeleteDuringWrite:
 
         def delete_then_mkdir(self, *args, **kwargs):
             monkeypatch.setattr(Path, "mkdir", real_mkdir)
-            mark_named_profile_deleted(profile)
+            mark_profile_deleting(profile)
             shutil.rmtree(profile)
             return real_mkdir(self, *args, **kwargs)
 

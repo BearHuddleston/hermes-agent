@@ -6,7 +6,6 @@ call time so imports stay one-way (both of those modules import this one lazily)
 
 import contextlib
 import os
-import re
 import shlex
 import subprocess
 import sys
@@ -83,13 +82,11 @@ def _iter_process_table() -> list[tuple[int, str]]:
 
 def _is_dashboard_lifecycle_probe(command: str) -> bool:
     """True for short-lived ``--stop`` / ``--status`` web-server commands."""
-    # Shell/process wrappers can carry the complete Hermes command as one
-    # quoted argv token. The exact flag boundary handles that shape before the
-    # structured parser below handles ordinary console-script argv.
-    if re.search(r"(?<!\S)--(?:status|stop)(?=\s|$|['\";])", command):
-        return True
+    # Tokenized exactly like ``_hermes_holder_subcommand``: process-table rows are
+    # ``list2cmdline``-quoted, so a POSIX split rejects a bare apostrophe in an install
+    # path the classifier already accepted as a server, and the probe would be reaped.
     try:
-        argv = shlex.split(command, posix=sys.platform != "win32")
+        argv = [token.strip("\"'") for token in shlex.split(command, posix=False)]
     except ValueError:
         return False
     index = _dashboard_subcommand_index(argv)
@@ -107,15 +104,10 @@ def _is_hermes_web_server_command(command: str) -> bool:
 
 def _ledger_web_server_processes() -> dict[int, str]:
     """Positively identified live web servers for this Hermes install."""
-    try:
-        from hermes_cli.process_identity import ledger_entries
-
-        entries = ledger_entries(verified_only=True)
-    except Exception:
-        return {}
+    from hermes_cli.process_identity import ledger_entries
 
     processes: dict[int, str] = {}
-    for entry in entries:
+    for entry in ledger_entries(verified_only=True):
         if entry.get("purpose") not in WEB_SERVER_PURPOSES:
             continue
         pid = entry.get("pid")

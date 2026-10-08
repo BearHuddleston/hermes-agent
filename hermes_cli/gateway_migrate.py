@@ -251,7 +251,7 @@ def _live_gateway_pid(home: Path) -> Optional[int]:
     not abort a migration plan).
 
     Topology REPORTING, not ownership: ``live_gateway_pid_for_home`` deliberately answers with the
-    host multiplexer's PID for every home it serves (``gateway.status._host_gateway_serves_home``),
+    host multiplexer's PID for every home it serves (``gateway.status_home_evidence._host_gateway_serves_home``),
     so "this profile is being served" reads as a live PID. Use :func:`_own_gateway_pid` for the
     question this command acts on.
     """
@@ -378,7 +378,7 @@ def _service_op(kind: str, system: bool, verb: str, home: Path, *, run_as_user: 
 
 
 def _stop_gateway_process(home: Path) -> None:
-    from hermes_cli.profiles import _stop_gateway_process
+    from hermes_cli.profiles_process_stop import _stop_gateway_process
     _stop_gateway_process(home)
 
 
@@ -700,7 +700,7 @@ def format_plan(plan: MigrationPlan, *, dry_run: bool) -> list[str]:
     head = "Migration plan (dry run — nothing changed)" if dry_run else "Migration plan"
     lines = [head, f"  default home: {plan.default_home}", "", "  profile      gateway pid   service"]
     for p in plan.profiles:
-        lines.append(f"  {p.name:<12} {str(p.pid or '-'):<13} {p.service_label()}")
+        lines.append(f"  {p.name:<12} {p.pid or '-'!s:<13} {p.service_label()}")
     if plan.standalone_by_config:
         lines.append(f"  Standalone by config (gateway.standalone: true), left alone: "
                      f"{', '.join(plan.standalone_by_config)}")

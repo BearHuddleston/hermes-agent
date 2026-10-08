@@ -382,6 +382,8 @@ class TestMkdirUnderHermesHome:
     ):
         import shutil
 
+        from hermes_cli.profile_lifecycle import mark_profile_deleting
+
         (tmp_path / "config.yaml").write_text("{}\n", encoding="utf-8")
         home = tmp_path / "profiles" / "worker"
         home.mkdir(parents=True)
@@ -390,7 +392,7 @@ class TestMkdirUnderHermesHome:
         def delete_then_mkdir(self, *args, **kwargs):
             # ``hermes profile delete`` tombstones, then removes the tree; it wins the race here.
             monkeypatch.setattr(Path, "mkdir", real_mkdir)
-            hermes_constants.mark_named_profile_deleted(home)
+            mark_profile_deleting(home)
             if removed:
                 shutil.rmtree(home)
             return real_mkdir(self, *args, **kwargs)

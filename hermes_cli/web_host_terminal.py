@@ -37,41 +37,22 @@ def shell_command(candidate: str) -> Optional[str]:
 
 
 def shell_spec() -> tuple[list[str], str]:
-    """Resolve the same interactive-shell ladder the native Desktop uses."""
-    override = (os.environ.get("HERMES_DESKTOP_SHELL") or "").strip()
-    if os.name != "nt":
-        override = override or (os.environ.get("SHELL") or "").strip()
-    command = shell_command(override)
+    """Resolve the interactive-shell ladder the native Desktop uses (electron/terminal-ipc.ts).
 
+    POSIX honours ``$SHELL``, then /bin/zsh, /bin/bash, /bin/sh. Windows ignores ``$SHELL``
+    (usually a stray MSYS/Git path) and takes PowerShell 7, Windows PowerShell, ``COMSPEC``,
+    then cmd.exe. Electron's ``HERMES_DESKTOP_SHELL`` override is not read here: settings do
+    not ride on ``HERMES_*`` environment variables.
+    """
     if os.name == "nt":
-        if not command:
-            command = shell_command("pwsh.exe") or shell_command("pwsh")
-        if not command:
-            system_root = (
-                os.environ.get("SystemRoot")
-                or os.environ.get("windir")
-                or r"C:\Windows"
-            )
-            command = shell_command(
-                str(
-                    Path(system_root)
-                    / "System32"
-                    / "WindowsPowerShell"
-                    / "v1.0"
-                    / "powershell.exe"
-                )
-            )
-        command = command or shell_command("powershell.exe")
-        command = command or shell_command(os.environ.get("COMSPEC", "")) or "cmd.exe"
-    elif not command:
-        command = next(
-            (
-                resolved
-                for candidate in ("/bin/zsh", "/bin/bash", "/bin/sh")
-                if (resolved := shell_command(candidate))
-            ),
-            "/bin/sh",
-        )
+        system_root = os.environ.get("SystemRoot") or os.environ.get("windir") or r"C:\Windows"
+        windows_powershell = Path(system_root) / "System32" / "WindowsPowerShell" / "v1.0" / "powershell.exe"
+        ladder = ("pwsh.exe", "pwsh", str(windows_powershell), "powershell.exe", os.environ.get("COMSPEC", ""))
+        fallback = "cmd.exe"
+    else:
+        ladder = (os.environ.get("SHELL", ""), "/bin/zsh", "/bin/bash", "/bin/sh")
+        fallback = "/bin/sh"
+    command = next(filter(None, map(shell_command, ladder)), fallback)
 
     name = Path(command).name.lower()
     if name.startswith(("pwsh", "powershell")):

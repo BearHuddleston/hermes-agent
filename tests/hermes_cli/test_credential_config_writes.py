@@ -9,7 +9,7 @@ import hermes_yaml as yaml
 
 from agent import secret_scope
 from hermes_cli import auth, config, credential_lifecycle, profile_lifecycle
-from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+from hermes_constants import named_profile_is_deleted, reset_hermes_home_override, set_hermes_home_override
 
 
 @pytest.fixture
@@ -140,4 +140,4 @@ def test_credential_write_cannot_recreate_home_deleted_after_read(homes, monkeyp
         reset_hermes_home_override(home_token)
     assert deleted, "the write must reach the post-read deletion barrier"
     assert not home.exists()
-    assert profile_lifecycle.profile_home_is_tombstoned(home)
+    assert named_profile_is_deleted(home)

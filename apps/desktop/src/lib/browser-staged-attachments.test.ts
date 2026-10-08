@@ -7,6 +7,7 @@ import type { HermesStagedUpload } from '@/global'
 import {
   $composerAttachments, clearSessionDraft, type ComposerAttachment, stashSessionDraft, takeSessionDraft
 } from '@/store/composer'
+import { $notifications, clearNotifications } from '@/store/notifications'
 import { $connection, $sessions } from '@/store/session'
 
 import { installBrowserDesktopBridge } from './browser-desktop-bridge'
@@ -59,6 +60,7 @@ async function installBrowser(withProvenance = true) {
 
 afterEach(() => {
   cleanup()
+  clearNotifications()
   $composerAttachments.set([])
   clearSessionDraft('staged-attachment-contract')
   $sessions.set([])
@@ -282,6 +284,35 @@ describe('browser staged attachment transport', () => {
       expect(failure).not.toBeInstanceOf(SyntaxError)
       expect((failure as Error).message).toMatch(message)
     }
+  })
+
+  it('names the staging failure in the drop warning instead of a bare "Could not attach"', async () => {
+    Object.assign(window, { __HERMES_SESSION_TOKEN__: 'test-token' })
+    const nginx413 = '<html><head><title>413 Request Entity Too Large</title></head><body>nginx</body></html>'
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response(nginx413, { status: 413 }))
+    )
+    expect(installBrowserDesktopBridge()).toBe(true)
+
+    const { result } = renderHook(() =>
+      useComposerActions({ activeSessionId: null, currentCwd: '/workspace', requestGateway: vi.fn() })
+    )
+
+    let attached = true
+
+    await act(async () => {
+      attached = await result.current.attachDroppedItems([{ file: file(), path: '' }])
+    })
+
+    expect(attached).toBe(false)
+    expect($composerAttachments.get()).toEqual([])
+    expect($notifications.get()).toEqual([
+      expect.objectContaining({
+        kind: 'warning',
+        message: expect.stringMatching(/notes\.txt.*\(413\): the file is larger than the server or a proxy/)
+      })
+    ])
   })
 
   it.each([

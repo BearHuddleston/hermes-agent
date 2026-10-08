@@ -27,9 +27,8 @@ from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 
 from hermes_cli import web_server_file_tickets as file_tickets
 from hermes_cli._subprocess_compat import windows_hide_flags
-from hermes_cli.profile_incarnation import profile_incarnation_lease
 from hermes_cli.sqlite_safe_read import LiveConnectionError, offline_file_access
-from hermes_cli.web_routers.uploads import _removed_on_failure, _resolve_upload_generation
+from hermes_cli.staged_uploads import leased_profile_dir, removed_on_failure, resolve_upload_generation
 from hermes_cli.web_deps import late
 from hermes_cli.web_server_files import (
     _fs_path, _hosted_fs_read_guard, _managed_file_entry, _managed_response_meta, _resolve_managed_path,
@@ -253,7 +252,7 @@ def _fs_git_branch(cwd: str) -> str:
     try:
         # git emits UTF-8 (branch names, localized "not a git repository" stderr); the locale codec
         # (cp936 on zh-CN Windows) raised inside communicate()'s reader threads on every poll (#83851).
-        run_kwargs: Dict[str, Any] = {"capture_output": True, "text": True, "encoding": "utf-8",
+        run_kwargs: dict[str, Any] = {"capture_output": True, "text": True, "encoding": "utf-8",
                                       "errors": "replace", "timeout": 2, "check": False}
         if sys.platform == "win32":
             run_kwargs["creationflags"] = windows_hide_flags()
@@ -481,42 +480,24 @@ async def upload_chat_image(payload: ChatImageUpload, profile: Optional[str] = N
     dir ``clipboard.paste`` / ``image.attach`` use).
     """
     def _run():
-        from hermes_constants import mkdir_under_hermes_home, named_profile_home_is_unavailable
-
         data, mime_type, ext = _decode_chat_image_upload(payload)
-        home, expected_incarnation = _resolve_upload_generation(profile)
+        home, expected_incarnation = resolve_upload_generation(profile)
 
-        try:
-            with profile_incarnation_lease(
-                home,
-                expected_incarnation,
-                require_incarnation=expected_incarnation is not None,
-            ):
-                img_dir = home / "images"
-                with _io_errors("Image directory is not writable", "Could not create image directory"):
-                    try:
-                        mkdir_under_hermes_home(img_dir)
-                    except FileNotFoundError:
-                        raise HTTPException(status_code=404, detail="Profile home is unavailable")
+        with leased_profile_dir(
+            home,
+            expected_incarnation,
+            "images",
+            denied="Image directory is not writable",
+            failed="Could not create image directory",
+        ) as img_dir:
+            stem = Path(_sanitize_chat_image_filename(payload.filename)).stem or "pasted-image"
+            stem = re.sub(r"[^A-Za-z0-9_.-]+", "_", stem).strip("._-") or "pasted-image"
+            ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+            target = img_dir / f"dashboard_{ts}_{secrets.token_hex(4)}_{stem}{ext}"
 
-                stem = Path(_sanitize_chat_image_filename(payload.filename)).stem or "pasted-image"
-                stem = re.sub(r"[^A-Za-z0-9_.-]+", "_", stem).strip("._-") or "pasted-image"
-                ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-                target = img_dir / f"dashboard_{ts}_{secrets.token_hex(4)}_{stem}{ext}"
-
-                with _removed_on_failure(target):
-                    with _io_errors("Image directory is not writable", "Could not write image"):
-                        target.write_bytes(data)
-                    if named_profile_home_is_unavailable(home) or not target.is_file():
-                        raise HTTPException(
-                            status_code=404,
-                            detail="Profile was deleted during upload",
-                        )
-        except FileNotFoundError as exc:
-            raise HTTPException(
-                status_code=404,
-                detail="Profile was deleted or replaced during upload",
-            ) from exc
+            # A named home's retirement tombstones under this same lease, so it is ordered after the write.
+            with removed_on_failure(target), _io_errors("Image directory is not writable", "Could not write image"):
+                target.write_bytes(data)
 
         return {
             "ok": True,
@@ -526,9 +507,7 @@ async def upload_chat_image(payload: ChatImageUpload, profile: Optional[str] = N
             "mime_type": mime_type,
         }
 
-    # _profile_scope takes _SKILLS_PROFILE_LOCK and the body does file I/O — both
-    # off the loop; to_thread copies the contextvar context so the override
-    # stays scoped to the worker thread.
+    # The body does file I/O under the profile's lifecycle lease: keep it off the loop.
     return await asyncio.to_thread(_run)
 
 
@@ -670,11 +649,11 @@ def _open_ticket_file(request: Request, authority: file_tickets.FileAuthority, *
 async def issue_file_ticket(payload: FileTicketRequest, request: Request):
     """Ticket a browser download/media URL instead of putting the session token in it."""
     from hermes_cli.profile_incarnation import ensure_profile_incarnation
-    from hermes_cli.web_server_cron import _cron_profile_home
+    from hermes_cli.web_routers.sessions import _history_profile_home
     from hermes_constants import named_profile_home
 
     def owner_generation():
-        home = _cron_profile_home(payload.profile)[1] if payload.profile else get_hermes_home()
+        home = _history_profile_home(payload.profile)
         return Path(home), ensure_profile_incarnation(home)
 
     def capture():

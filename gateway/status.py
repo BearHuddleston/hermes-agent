@@ -26,6 +26,7 @@ from gateway.status_inline_source import (
     inline_bootstrap_argv,
     inline_source_flag_index,
 )
+from gateway.status_home_evidence import _bare_argv_record_serves_home, _host_gateway_serves_home
 from hermes_constants import _get_platform_default_hermes_home, get_hermes_home, get_process_hermes_home
 from hermes_cli._subprocess_compat import pid_exists_stdlib
 from utils import atomic_json_write
@@ -727,23 +728,6 @@ def _command_line_belongs_to_profile(command: str, profile_home: Path) -> bool:
     return not hermes_home_assignments(command_lc) or command_line_names_hermes_home(command_lc, home_lc)
 
 
-def _host_gateway_serves_home(pid: int, profile_home: Path) -> bool:
-    """Does the ONE host gateway — PID ``pid`` — serve ``profile_home``'s profile?
-
-    Argv cannot answer this: the host singleton runs ONE home's (usually bare/default) command line
-    while multiplexing every profile, so :func:`_command_line_belongs_to_profile` rejects every
-    secondary and the profile reads as "not running" while its messages are being served. The live
-    served set is the only proof; the argv rule stays as the fallback when no record exists.
-    """
-    try:
-        from gateway.host_attach import host_gateway, profile_name_for_home
-
-        owner = host_gateway()
-    except Exception:
-        return False
-    return owner is not None and owner.pid == pid and owner.serves(profile_name_for_home(profile_home))
-
-
 def _record_matches_live_gateway_pid(
     record: dict[str, Any], pid: int, *, expected_home: Optional[Path] = None
 ) -> bool:
@@ -760,25 +744,7 @@ def _record_matches_live_gateway_pid(
         return True
     if expected_home is None or _command_line_belongs_to_profile(live_cmdline, expected_home):
         return True
-    try:
-        tokens = [token.strip("\"'").lower() for token in shlex.split(live_cmdline, posix=False)]
-    except ValueError:
-        return False
-    if any(token in {"-p", "--profile"} or token.startswith(("-p=", "--profile=", "hermes_home=")) for token in tokens):
-        return False
-    # Environment and sticky-profile launches can have bare OS argv. Their
-    # recorded home is usable only while the exact process fingerprint survives.
-    home = record.get("hermes_home")
-    started = record.get("start_time")
-    if (
-        not isinstance(home, str) or not home.strip()
-        or not isinstance(started, (int, float)) or isinstance(started, bool)
-        or not math.isfinite(started) or started <= 0
-        or started != _get_process_start_time(pid)
-        or not _record_looks_like_gateway(record)
-    ):
-        return False
-    return _same_hermes_home(home, expected_home)
+    return _bare_argv_record_serves_home(record, pid, live_cmdline, expected_home)
 
 
 def _record_argv() -> list[str]:
@@ -825,16 +791,13 @@ def _get_code_identity_fields() -> dict[str, Any]:
         return {}
 
 
-def _pid_record_belongs_to_current_profile(
-    record: Optional[dict[str, Any]], *, expected_home: Optional[Path | str] = None
-) -> bool:
+def _pid_record_belongs_to_current_profile(record: Optional[dict[str, Any]]) -> bool:
     """True when the record's ``hermes_home`` matches the current process (legacy records: True);
     another HERMES_HOME's record must be ignored or the default gateway assumes its identity."""
     if not isinstance(record, dict):
         return False
     record_home = record.get("hermes_home")
-    target_home = expected_home if expected_home is not None else _get_process_hermes_home()
-    return not record_home or _same_hermes_home(record_home, target_home)
+    return not record_home or _same_hermes_home(record_home, _get_process_hermes_home())
 
 
 def _build_runtime_status_record() -> dict[str, Any]:

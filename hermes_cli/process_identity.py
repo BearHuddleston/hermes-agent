@@ -380,19 +380,16 @@ def reapable_ledger_identities() -> dict[int, float]:
     rather than guessing from argv.
     """
     identities: dict[int, float] = {}
-    try:
-        for entry in ledger_entries():
-            pid, created = entry.get("pid"), entry.get("create_time")
-            if (
-                entry.get("purpose") in REAPABLE_PURPOSES
-                and isinstance(pid, int)
-                and pid > 0
-                and isinstance(created, (int, float))
-                and not isinstance(created, bool)
-            ):
-                identities[pid] = float(created)
-    except Exception:
-        return {}
+    for entry in ledger_entries():
+        pid, created = entry.get("pid"), entry.get("create_time")
+        if (
+            entry.get("purpose") in REAPABLE_PURPOSES
+            and isinstance(pid, int)
+            and pid > 0
+            and isinstance(created, (int, float))
+            and not isinstance(created, bool)
+        ):
+            identities[pid] = float(created)
     return identities
 
 
@@ -558,20 +555,20 @@ def _kill_process_tree_windows(proc) -> None:
     for child in descendants:
         try:
             child.terminate()
-        except Exception:  # noqa: BLE001 - raced away or refused; keep going
+        except Exception:
             pass
     try:
         proc.terminate()
-    except Exception:  # noqa: BLE001
+    except Exception:
         pass
     try:
         _, alive = psutil.wait_procs(descendants + [proc], timeout=2.0)
-    except Exception:  # noqa: BLE001 - broken fake/raced process; nothing more to force-kill
+    except Exception:
         return
     for survivor in alive:
         try:
             survivor.kill()
-        except Exception:  # noqa: BLE001
+        except Exception:
             pass
 
 

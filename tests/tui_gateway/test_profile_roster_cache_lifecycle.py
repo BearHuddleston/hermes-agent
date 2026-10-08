@@ -1,5 +1,4 @@
 """Roster memos must not turn transient admission failures into durable state."""
-import threading
 
 import pytest
 
@@ -25,35 +24,20 @@ def profile(tmp_path, monkeypatch):
     cache.invalidate()
 
 
-def test_readonly_roster_remains_available_during_mutation_lease(profile):
-    acquired, release = threading.Event(), threading.Event()
-
-    def hold():
-        with profile_lifecycle.profile_lifecycle_lease(profile):
-            acquired.set()
-            assert release.wait(10)
-
-    thread = threading.Thread(target=hold)
-    thread.start()
-    try:
-        assert acquired.wait(5)
-        during = {}
-        srv._profile_session_fields(during, profile)
-        # Read-only admission uses an incarnation/directory snapshot, so a
-        # writer's lease alone must not hide an otherwise live profile.
-        assert during["last_session"]["title"] == "steady chat"
-    finally:
-        release.set()
-        thread.join(5)
-    assert not thread.is_alive()
+def test_readonly_roster_remains_available_during_mutation_lease(profile, busy_profile_lease):
+    end_hold = busy_profile_lease(profile)
+    during = {}
+    srv._profile_session_fields(during, profile)
+    # Read-only admission uses an incarnation/directory snapshot, so a
+    # writer's lease alone must not hide an otherwise live profile.
+    assert during["last_session"]["title"] == "steady chat"
+    assert end_hold()
     after = {}
     srv._profile_session_fields(after, profile)
     assert after["last_session"]["title"] == "steady chat"
 
 
 def test_warm_hit_rechecks_retirement_before_publication(profile, monkeypatch):
-    import hermes_constants
-
     warm = {}
     srv._profile_session_fields(warm, profile)
     assert warm["last_session"]["title"] == "steady chat"
@@ -71,7 +55,7 @@ def test_warm_hit_rechecks_retirement_before_publication(profile, monkeypatch):
         srv._profile_session_fields(row, profile)
         assert row == dict(last_session=None, worker_session=None, canonical_session=None)
     finally:
-        hermes_constants.clear_named_profile_deleted(profile)
+        profile_lifecycle.clear_profile_deletion_marker(profile)
     monkeypatch.setattr(cache, "cached_session_fields", real)
     recovered = {}
     srv._profile_session_fields(recovered, profile)

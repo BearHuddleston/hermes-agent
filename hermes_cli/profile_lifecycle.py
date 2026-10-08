@@ -25,8 +25,8 @@ import threading
 import time
 from typing import Callable, Iterable, Iterator
 
-from hermes_constants import get_default_hermes_root, profile_deletion_marker_path
-from pm.filesystem import lock_fd
+from hermes_constants import get_default_hermes_root, named_profile_is_deleted, profile_deletion_marker_path
+from pm.filesystem import lock_fd, unlock_fd
 
 logger = logging.getLogger(__name__)
 
@@ -83,18 +83,7 @@ def _cross_process_profile_mutation_lock(lock_path: Path, *, deadline: float) ->
         yield
     finally:
         if acquired:
-            try:
-                if sys.platform == "win32":
-                    import msvcrt
-
-                    handle.seek(0)
-                    msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
-                else:
-                    import fcntl
-
-                    fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
-            except OSError:
-                pass
+            unlock_fd(handle.fileno())
         handle.close()
 
 
@@ -187,6 +176,15 @@ def profile_deletion_marker(profile_dir: Path | str) -> Path:
     return marker
 
 
+def _write_token_file(path: Path, token: str, mode: int) -> None:
+    """Create *path* exclusively and flush *token* to disk before the caller publishes it."""
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, mode)
+    with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as handle:
+        handle.write(token + "\n")
+        handle.flush()
+        os.fsync(handle.fileno())
+
+
 def mark_profile_deleting(
     profile_dir: Path | str,
     profile_incarnation: str | None = None,
@@ -207,11 +205,7 @@ def mark_profile_deleting(
             f".{marker.name}.{os.getpid()}.{secrets.token_hex(6)}.tmp"
         )
         try:
-            fd = os.open(temp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, file_mode)
-            with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as handle:
-                handle.write(profile_incarnation + "\n")
-                handle.flush()
-                os.fsync(handle.fileno())
+            _write_token_file(temp, profile_incarnation, file_mode)
             from utils import atomic_replace
 
             atomic_replace(temp, marker)
@@ -232,12 +226,6 @@ def clear_profile_deletion_marker(profile_dir: Path | str) -> None:
     # parent can race another publisher between mkdir and atomic replace.
 
 
-def profile_home_is_tombstoned(profile_dir: Path | str) -> bool:
-    """Return whether profile deletion has been committed for this home."""
-    marker = profile_deletion_marker_path(Path(profile_dir))
-    return marker is not None and marker.is_file()
-
-
 def retire_in_process_profile_resources(
     profile_dir: Path | str,
     profile_incarnation: str | None = None,
@@ -250,12 +238,10 @@ def retire_in_process_profile_resources(
     retire_sessions = getattr(gateway_server, "retire_profile_home", None)
     if callable(retire_sessions):
         try:
-            result = retire_sessions(
+            retired += retire_sessions(
                 profile_dir,
                 profile_incarnation=profile_incarnation,
             )
-            if isinstance(result, int) and not isinstance(result, bool):
-                retired += max(0, result)
         except Exception as exc:
             logger.debug("Failed to retire in-process profile sessions", exc_info=True)
             retire_error = exc
@@ -264,7 +250,7 @@ def retire_in_process_profile_resources(
     release_goals_db = getattr(goals_module, "release_session_db_for_home", None)
     if callable(release_goals_db):
         try:
-            retired += int(bool(release_goals_db(profile_dir)))
+            retired += release_goals_db(profile_dir)
         except Exception:
             logger.debug("Failed to release cached profile SessionDB", exc_info=True)
 
@@ -272,7 +258,7 @@ def retire_in_process_profile_resources(
         from plugins.memory import import_provider_module
 
         memory_store = import_provider_module("holographic", "store").MemoryStore
-        retired += max(0, int(memory_store.release_all_under(profile_dir) or 0))
+        retired += memory_store.release_all_under(profile_dir)
     except Exception:
         logger.debug("Failed to release profile memory-store connections", exc_info=True)
     if retire_error is not None:
@@ -332,32 +318,37 @@ def external_profile_file_holders(
 ) -> list[int]:
     """External PIDs with an open file under ``profile_dir``; ``candidates`` narrows the answer.
 
-    Windows asks Restart Manager. Elsewhere (and if that fails) every same-user process's open
-    files are read, ownership settled first: fetching another user's (system) process handles
-    can fault inside psutil on Windows and kill the interpreter. A process whose owner cannot be
-    read is skipped for the same reason, and an unreadable current user leaves nothing provably
-    same-user to scan.
+    POSIX runs the descriptor census state.db maintenance runs
+    (``hermes_state_holders.foreign_tree_holders`` says what counts) and raises when it cannot
+    finish, so an incomplete scan never reads as released. Windows asks Restart Manager; if that
+    fails, every same-user process's open files are read, ownership settled first: fetching
+    another user's (system) process handles can fault inside psutil on Windows and kill the
+    interpreter. A process whose owner cannot be read is skipped for the same reason, and an
+    unreadable current user leaves nothing provably same-user to scan.
     """
     profile_dir = Path(profile_dir)
+    wanted = None if candidates is None else set(candidates)
+    if sys.platform != "win32":
+        from hermes_state_holders import foreign_tree_holders
+
+        return list(dict.fromkeys(pid for pid, _held in foreign_tree_holders(profile_dir, wanted)))
     try:
         root = profile_dir.resolve()
     except OSError:
         root = profile_dir
-    wanted = None if candidates is None else set(candidates)
-    if sys.platform == "win32":
-        try:
-            holders = _windows_profile_holders(root)
-        except Exception:
-            logger.debug("Restart Manager census failed; reading open files per process", exc_info=True)
-        else:
-            return [pid for pid in holders if wanted is None or pid in wanted]
+    try:
+        holders = _windows_profile_holders(root)
+    except Exception:
+        logger.debug("Restart Manager census failed; reading open files per process", exc_info=True)
+    else:
+        return [pid for pid in holders if wanted is None or pid in wanted]
     try:
         import psutil  # type: ignore
-    except Exception:
+    except ImportError:
         return []
     try:
         current_user = psutil.Process(os.getpid()).username()
-    except Exception:
+    except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess, OSError):
         return []
 
     holders: list[int] = []
@@ -385,6 +376,8 @@ def external_profile_file_holders(
         except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
             continue
         except Exception:
+            # One process's unreadable handle table must not fail the census for the rest.
+            logger.debug("open-file census skipped a process", exc_info=True)
             continue
     return holders
 
@@ -428,7 +421,7 @@ def create_profile_generation(
     if profile_dir.exists():
         raise FileExistsError(f"Profile '{canon}' already exists at {profile_dir}")
 
-    prior_tombstone = profile_home_is_tombstoned(profile_dir)
+    prior_tombstone = named_profile_is_deleted(profile_dir)
     mark_profile_deleting(profile_dir)
     staging_root = profiles_root / ".profile-creating"
     staging_parent = staging_root / f"{canon}-{os.getpid()}-{secrets.token_hex(6)}"
@@ -473,7 +466,7 @@ def import_profile_generation(
     profile_dir = Path(profile_dir)
     if profile_dir.exists():
         raise FileExistsError(f"Profile '{canon}' already exists at {profile_dir}")
-    had_tombstone = profile_home_is_tombstoned(profile_dir)
+    had_tombstone = named_profile_is_deleted(profile_dir)
     mark_profile_deleting(profile_dir)
     try:
         incarnation = build_and_move()
@@ -540,7 +533,7 @@ def move_profile_generation(
     """Move a retired generation and publish only its new pathname."""
     old_dir = Path(old_dir)
     new_dir = Path(new_dir)
-    new_had_tombstone = profile_home_is_tombstoned(new_dir)
+    new_had_tombstone = named_profile_is_deleted(new_dir)
     mark_profile_deleting(new_dir)
     try:
         old_dir.rename(new_dir)

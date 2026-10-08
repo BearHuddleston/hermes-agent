@@ -47,14 +47,14 @@ def _start_session_work(target, *, name: str, session: dict | None = None):
         raise
 
 
-def _notify_session_boundary(event_type: str, session_id: str | None, platform: str | None = None) -> None:
-    """Fire session lifecycle hooks with CLI parity."""
+def _notify_session_boundary(event_type: str, session_id: str | None, platform: str | None = None) -> list[str]:
+    """Fire session lifecycle hooks with CLI parity; returns plugin ``on_session_finalize`` user messages."""
     with contextlib.suppress(Exception):
-        from hermes_cli.lifecycle import finalize_session, invoke_hook
+        from hermes_cli.lifecycle import finalize_session, invoke_hook, session_end_messages
         if event_type == "on_session_finalize":
-            finalize_session(session_id=session_id, platform=_resolve_agent_platform(platform))
-        else:
-            invoke_hook(event_type, session_id=session_id, platform=_resolve_agent_platform(platform))
+            return session_end_messages(finalize_session(session_id=session_id, platform=_resolve_agent_platform(platform)))
+        invoke_hook(event_type, session_id=session_id, platform=_resolve_agent_platform(platform))
+    return []
 
 
 _SESSION_OWNERSHIP_UNAVAILABLE = "Hermes could not safely reserve this session. Try again."
@@ -397,7 +397,8 @@ def _finalize_session(session: dict | None, end_reason: str = "tui_close") -> No
 
     session_key = session.get("session_key")
     session_id = getattr(agent, "session_id", None) or session_key
-    _notify_session_boundary("on_session_finalize", session_id, _session_source(session))
+    # Returned to the client by ``session.close`` (the TUI shows them after its /new reset); reaper paths have no client.
+    session["_end_msgs"] = _notify_session_boundary("on_session_finalize", session_id, _session_source(session)) or []
     # End the state.db row so it doesn't linger as a ghost in /resume. Use session_id (agent.session_id), not
     # session_key: after compression the key may be the stale ended parent while session_id is the live continuation.
     # Fix for #20001.
@@ -573,33 +574,26 @@ def _teardown_popped_session(
     if session is None:
         return False
     settled = True
-    seen_threads: set[int] = set()
-    for label, thread in (
-        ("turn", session.get("_run_thread")),
-        ("agent build", session.get("_agent_build_thread")),
-    ):
-        if (
-            end_reason == "tui_shutdown"
-            or thread is None
-            or thread is threading.current_thread()
-            or id(thread) in seen_threads
-        ):
-            continue
-        seen_threads.add(id(thread))
-        try:
-            if thread.is_alive():
-                thread.join(timeout=_TURN_SETTLE_BEFORE_CLOSE_SECONDS)
-            if thread.is_alive():
-                logger.warning(
-                    "session %s thread still alive after %.1fs teardown grace",
-                    label,
-                    _TURN_SETTLE_BEFORE_CLOSE_SECONDS,
-                )
-                settled = False
-        except Exception:
-            logger.debug("failed waiting for session %s thread", label, exc_info=True)
-            settled = False
     if end_reason != "tui_shutdown":
+        for label, thread in (
+            ("turn", session.get("_run_thread")),
+            ("agent build", session.get("_agent_build_thread")),
+        ):
+            if thread is None or thread is threading.current_thread():
+                continue
+            try:
+                if thread.is_alive():
+                    thread.join(timeout=_TURN_SETTLE_BEFORE_CLOSE_SECONDS)
+                if thread.is_alive():
+                    logger.warning(
+                        "session %s thread still alive after %.1fs teardown grace",
+                        label,
+                        _TURN_SETTLE_BEFORE_CLOSE_SECONDS,
+                    )
+                    settled = False
+            except Exception:
+                logger.debug("failed waiting for session %s thread", label, exc_info=True)
+                settled = False
         _settle_isolated_turn_before_close(session)
     _teardown_session(session, end_reason=end_reason)
     return settled
@@ -623,6 +617,12 @@ def _profile_home_rejected(
         profile_incarnation,
         require_incarnation=require_incarnation,
     )
+
+
+def _session_profile_rejected(record: dict) -> bool:
+    """Whether a session record's captured profile generation is stale, deleting, or missing."""
+    return _profile_home_rejected(
+        record.get("profile_home"), record.get("profile_incarnation"), require_incarnation=True)
 
 
 def allow_profile_home(
@@ -674,6 +674,11 @@ def retire_profile_home(
 
 def _capture_profile_incarnation(profile_home: Path | str | None) -> str | None:
     return _profile_lifecycle.capture(profile_home or _hermes_home)
+
+
+def _session_slot_current(sid: str, session: dict) -> bool:
+    """Caller holds ``_sessions_lock``: ``sid`` still maps to this record and no teardown has claimed it."""
+    return _sessions.get(sid) is session and not session.get("_closing")
 
 
 def _session_profile_identity_matches(

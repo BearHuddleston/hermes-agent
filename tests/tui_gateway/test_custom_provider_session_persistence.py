@@ -81,7 +81,7 @@ class TestRuntimeModelConfigPersistsEntryIdentity:
 
 
     def test_keeps_bare_custom_when_no_entry_matches(self, monkeypatch):
-        monkeypatch.setattr(rp, "load_config", lambda: {})
+        monkeypatch.setattr(rp, "load_config", dict)
 
         from tui_gateway.server import _runtime_model_config
 
@@ -424,7 +424,7 @@ class TestStaleProviderNameFallsBack:
         configured default instead of failing the build."""
         config = {"custom_providers": NAMED_CONFIG["custom_providers"]}
         monkeypatch.setattr(rp, "load_config", lambda: config)
-        monkeypatch.setattr(rp, "_get_model_config", lambda: {})
+        monkeypatch.setattr(rp, "_get_model_config", dict)
 
         from tui_gateway.server import _stored_session_runtime_overrides
 
@@ -590,13 +590,14 @@ class TestRoomPlumbingRuntimeOverrides:
 
 
 class TestFollowProfileConfigRuntimeOverrides:
-    def test_composer_pick_on_bot_chat_survives_resume_until_profile_model_changes(self, monkeypatch, tmp_path):
+    def test_composer_pick_on_bot_chat_survives_resume_until_profile_model_changes(self, monkeypatch, tmp_path,
+                                                                                   route_profiles):
         """Production path, A->B->A shape: a composer /model pick on a follow_profile_config Bot Chat under
         profile B persists its provenance marker into B's real SessionDB row via ``_apply_model_switch``;
         ``session.resume`` on the deferred (cold, agent-less) path restores the pin while B's config.yaml
         model is unchanged, and drops it once B's profile model moves. Launch home A has a different
         model the whole time, so the compare must run under B's scope, not the launch profile's."""
-        import tui_gateway.server as server
+        from tui_gateway import server
 
         launch, secondary = tmp_path / "a", tmp_path / "b"
         for home, model in ((launch, "launch/model"), (secondary, "profile/default")):
@@ -619,7 +620,7 @@ class TestFollowProfileConfigRuntimeOverrides:
 
         monkeypatch.setenv("HERMES_HOME", str(launch))
         monkeypatch.setattr(server, "_hermes_home", str(launch))
-        monkeypatch.setattr(server, "_profile_home", lambda p: secondary if p == "b" else None)
+        route_profiles(server, lambda p: secondary if p == "b" else None)
         monkeypatch.setattr(server, "_get_db", lambda: SessionDB(db_path=launch / "state.db"))
         monkeypatch.setattr(server, "_enable_gateway_prompts", lambda: None)
         monkeypatch.setattr(server, "_schedule_resume_hydration", lambda *a, **k: None)
@@ -666,12 +667,13 @@ class TestFollowProfileConfigRuntimeOverrides:
                 for sid in [s for s in server._sessions if s not in known]:
                     server._sessions.pop(sid, None)
 
-    def test_create_time_composer_pick_on_bot_chat_records_owning_profile_marker(self, monkeypatch, tmp_path):
+    def test_create_time_composer_pick_on_bot_chat_records_owning_profile_marker(self, monkeypatch, tmp_path,
+                                                                                 route_profiles):
         """A composer pick handed to ``session.create`` on a follow_profile_config chat is the same
         chat-scoped pick a mid-chat switch records: the record carries the OWNING profile's model as the
         divergence marker (not the launch profile's), the first row write persists it, and the resume read
         under that profile restores model AND provider instead of the ambient fallback (#123805)."""
-        import tui_gateway.server as server
+        from tui_gateway import server
 
         launch, secondary = tmp_path / "a", tmp_path / "b"
         for home, model in ((launch, "launch/model"), (secondary, "profile/default")):
@@ -680,7 +682,7 @@ class TestFollowProfileConfigRuntimeOverrides:
             (home / ".env").write_text("")
         monkeypatch.setenv("HERMES_HOME", str(launch))
         monkeypatch.setattr(server, "_hermes_home", str(launch))
-        monkeypatch.setattr(server, "_profile_home", lambda p: secondary if p == "b" else None)
+        route_profiles(server, lambda p: secondary if p == "b" else None)
         monkeypatch.setattr(server, "_enable_gateway_prompts", lambda: None)
         monkeypatch.setattr(server, "_schedule_agent_build", lambda *a, **k: None)
         monkeypatch.setattr(server, "_schedule_session_cap_enforcement", lambda *a, **k: None)
@@ -709,7 +711,7 @@ class TestFollowProfileConfigRuntimeOverrides:
 
     def test_profile_model_change_supersedes_composer_override_on_resume_and_live(self, monkeypatch):
         """Changing the Bot profile invalidates both stored and live chat pins."""
-        import tui_gateway.server as server
+        from tui_gateway import server
 
         monkeypatch.setattr(server, "_config_model_target", lambda: ("profile/new-default", "nous"))
         row = {
@@ -806,14 +808,13 @@ class TestFollowProfileConfigRuntimeOverrides:
     def test_ensure_db_row_persists_contract_marker(self, monkeypatch):
         """_ensure_session_db_row stamps follow_profile_config into the row's
         model_config when the session carries the contract."""
-        import tui_gateway.server as server
+        from tui_gateway import server
 
         captured = {}
 
         class FakeDB:
             def create_session(self, *args, **kwargs):
                 captured["model_config"] = kwargs.get("model_config")
-                return None
 
         monkeypatch.setattr(server, "_get_db", lambda: FakeDB())
         monkeypatch.setattr(server, "_resolve_model", lambda: "glm-5.1")
@@ -832,14 +833,13 @@ class TestFollowProfileConfigRuntimeOverrides:
     def test_ensure_db_row_omits_marker_without_contract(self, monkeypatch):
         """Sessions without the contract do NOT get the marker — normal chats
         keep the stored-runtime restore."""
-        import tui_gateway.server as server
+        from tui_gateway import server
 
         captured = {}
 
         class FakeDB:
             def create_session(self, *args, **kwargs):
                 captured["model_config"] = kwargs.get("model_config")
-                return None
 
         monkeypatch.setattr(server, "_get_db", lambda: FakeDB())
         monkeypatch.setattr(server, "_resolve_model", lambda: "glm-5.1")

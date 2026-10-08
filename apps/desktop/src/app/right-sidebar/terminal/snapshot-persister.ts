@@ -80,37 +80,26 @@ export function createSnapshotPersister(
       // budget based on that capacity can start after the cursor and serialize
       // nothing (for example after a tall resize). The cursor is the live end;
       // if real content exists below it, provenance is uncertain and falls back.
-      const end = cursorLine
-
       const liveWindow = resolveLiveSnapshotWindow(
         liveStartMarker.line,
-        end,
         cursorLine,
-        PERSISTENT_SESSION_SCROLLBACK,
         term.markers.includes(liveStartMarker) && lastContentLine <= cursorLine
       )
 
-      let restored = reviveBuffer
-      let live: string
-      let nextSnapshot: string
-
-      if (liveWindow) {
-        // Once live output alone exceeds the replay budget, the restored prefix
-        // has scrolled out and should no longer be carried into future sessions.
-        if (!liveWindow.keepRestored) {
-          restored = ''
-        }
-
-        live = serialize.serialize({ excludeAltBuffer: true, range: { end, start: liveWindow.start } })
-        nextSnapshot = mergeReviveSnapshot(restored, live, getShellName(), liveWindow.keepRestored)
-      } else {
-        // A reset, clear-screen, or scrollback trim can invalidate the logical
-        // boundary. The current normal buffer is then authoritative, but its
-        // restored/live provenance is unknown, so persist it without text-based
-        // greeting or prompt cleanup rather than risk deleting real output.
-        live = serialize.serialize({ excludeAltBuffer: true, scrollback: PERSISTENT_SESSION_SCROLLBACK })
-        nextSnapshot = live
-      }
+      // Once live output alone exceeds the replay budget, the restored prefix
+      // has scrolled out and should no longer be carried into future sessions.
+      // Without a window, a reset, clear-screen, or scrollback trim invalidated
+      // the logical boundary: the current normal buffer is authoritative, but
+      // its restored/live provenance is unknown, so persist it without
+      // text-based greeting or prompt cleanup rather than risk deleting real output.
+      const nextSnapshot = liveWindow
+        ? mergeReviveSnapshot(
+            liveWindow.keepRestored ? reviveBuffer : '',
+            serialize.serialize({ excludeAltBuffer: true, range: { end: cursorLine, start: liveWindow.start } }),
+            getShellName(),
+            liveWindow.keepRestored
+          )
+        : serialize.serialize({ excludeAltBuffer: true, scrollback: PERSISTENT_SESSION_SCROLLBACK })
 
       updateTerminalReviveBuffer(id, nextSnapshot)
     } catch {

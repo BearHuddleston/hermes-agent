@@ -89,10 +89,52 @@ def _adopt_profile_incarnation(home: Path) -> None:
         ensure_profile_incarnation(home)
 
 
+def _hermes_home_identity(
+    home: Path, *, named_profile: bool,
+) -> tuple[int, int, str | None] | None:
+    """The memo identity of one home skeleton pass: ``(st_dev, st_ino, incarnation)``.
+
+    Named homes need a persisted generation: filesystems can reuse inode and ctime together.
+    No ctime either: every create/import mints a fresh token, while every write in the profile
+    root (config.yaml, auth.json, state.db -wal/-shm) moves ctime and would force a re-init.
+    """
+    try:
+        value = home.stat()
+        incarnation = None
+        if named_profile:
+            from hermes_cli.profile_incarnation import PROFILE_INCARNATION_FILENAME, read_incarnation_marker
+
+            # Callers already derived named_profile, so read the marker directly (this runs on
+            # every load). A tokenless home cannot prove a reusable cache identity until
+            # initialize_home adopts a marker, which it does whenever the lifecycle lease is free.
+            incarnation = read_incarnation_marker(home / PROFILE_INCARNATION_FILENAME)
+            if incarnation is None:
+                return None
+    except OSError:
+        return None
+    return (value.st_dev, value.st_ino, incarnation)
+
+
+def ensure_home(home: Path, subdirs: tuple[str, ...], ensured: dict[str, tuple[int, int, str | None]]) -> None:
+    """``hermes_cli.config.ensure_hermes_home``: initialize *home* unless *ensured* already holds the
+    identity of its live generation."""
+    # Named profiles must be created explicitly. Check tombstones BEFORE the memo so a stale
+    # empty shell cannot skip the deleted-profile guard.
+    from hermes_constants import assert_named_profile_home_available, profile_deletion_marker_path
+    marker = profile_deletion_marker_path(home)
+    named_profile = marker is not None
+    if named_profile:  # Only a named home can be unavailable; skip re-resolving every other one.
+        assert_named_profile_home_available(home, marker=marker)
+    current_identity = _hermes_home_identity(home, named_profile=named_profile)
+    if current_identity is not None and ensured.get(str(home)) == current_identity:
+        return
+    initialize_home(home, subdirs, ensured)
+
+
 def initialize_home(
     home: Path, subdirs: tuple[str, ...], ensured: dict[str, tuple[int, int, str | None]],
 ) -> None:
-    from hermes_cli.config import _ensure_default_soul_md, _hermes_home_identity, is_managed
+    from hermes_cli.config import _ensure_default_soul_md, is_managed
     from hermes_constants import assert_named_profile_home_available, profile_deletion_marker_path
 
     named_profile = profile_deletion_marker_path(home) is not None

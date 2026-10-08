@@ -24,7 +24,6 @@ import { $connection } from '@/store/session'
 import { setAppearance } from '@/store/translucency'
 
 import { $accentOverride } from './accent-override'
-import { beginAppearancePick, confirmAppearance, peerPickChange, settleAppearancePick } from './appearance-picks'
 import {
   $backendCustomCSS,
   $backendThemes,
@@ -37,11 +36,12 @@ import { harmonize, readableInk } from './color'
 import { BUILTIN_THEME_LIST, DEFAULT_SKIN_NAME, DEFAULT_TYPOGRAPHY, nousTheme, RETIRED_SKINS } from './presets'
 import {
   $profileAppearance,
-  appearanceIsCurrent,
-  markLocalAppearanceChange,
+  adoptedAppearance,
+  type AppearanceField,
+  isThemeMode,
   profileAppearanceOwner,
   type ProfileAppearancePatch,
-  reconcileProfileAppearance,
+  refreshProfileAppearance,
   saveProfileAppearance
 } from './profile-appearance'
 import { retintTheme } from './retint'
@@ -83,8 +83,7 @@ const normalizeSkin = (name: string | null): string =>
  * setting — and with per-appearance translucency it also handed them light's
  * much heavier tint, tuned for a bright desktop they don't have.
  */
-const normalizeMode = (value: string | null): ThemeMode =>
-  value === 'light' || value === 'dark' || value === 'system' ? value : 'system'
+const normalizeMode = (value: string | null): ThemeMode => (isThemeMode(value) ? value : 'system')
 
 // ─── Per-profile appearance persistence ─────────────────────────────────────
 // Skin and mode are each stored per profile. "default" isn't a real profile —
@@ -177,101 +176,104 @@ const storedSkin = (profile: string): string =>
 const APPEARANCE_KEYS = new Set([
   SKIN_KEY,
   PROFILE_SKINS_KEY,
+  INHERITED_SKIN_KEY,
   MODE_KEY,
   PROFILE_MODES_KEY,
-  INHERITED_SKIN_KEY,
   INHERITED_MODE_KEY
 ])
 
 const rememberActiveProfileKey = (profile: string) => persistString(LAST_PROFILE_KEY, profile)
 
-type AppearanceField = keyof ProfileAppearancePatch
+// The profile picks are assigned to (read fresh, so callbacks stay stable across switches).
+const liveProfile = () => normalizeProfileKey($activeGatewayProfile.get())
 
 const APPEARANCE_PREFS: Record<AppearanceField, Pick<ReturnType<typeof profilePref>, 'own' | 'pick' | 'put'>> = {
   theme: skinPref,
   theme_mode: modePref
 }
 
-// The boot cache keeps its existing per-profile format. A failed pick says so
-// while it is the newest: a later pick here or in a peer window, or this
-// window adopting another gateway's config (even the same value), supersedes it.
-interface PendingPicks {
-  owner: string
-  profile: string
-  field: AppearanceField
-  latest: symbol
+// This window's newest pick per (owner, field): it paints at once, over the
+// config, until its save settles.
+const pendingPicks = new Map<string, { value: string }>()
+const pickKey = (owner: string, field: AppearanceField) => `${owner}\0${field}`
+
+/** A profile's value on the live connection: a pick in flight here, then its config.yaml, else undefined (the cache decides). */
+function configured(profile: string, field: AppearanceField): string | undefined {
+  const owner = profileAppearanceOwner(profile)
+
+  return pendingPicks.get(pickKey(owner, field))?.value ?? (adoptedAppearance(owner, field) || undefined)
 }
-const latestPick = new Map<string, PendingPicks>()
-const appearanceCacheKey = (profile: string, field: AppearanceField) => `${profile}\0${field}`
+
+const skinOf = (profile: string): string => configured(profile, 'theme') ?? storedSkin(profile)
+
+const modeOf = (profile: string): ThemeMode =>
+  normalizeMode(configured(profile, 'theme_mode') ?? modePref.stored(profile))
+
+/** The cache follows the live connection's config.yaml, so the next boot
+ *  paints it before any fetch; a pick in flight here keeps its slot until it
+ *  settles. Adopting a config is not a pick. */
+function cacheAdopted(profile: string): void {
+  const owner = profileAppearanceOwner(profile)
+
+  for (const field of ['theme', 'theme_mode'] as const) {
+    const value = adoptedAppearance(owner, field)
+
+    if (value && !pendingPicks.has(pickKey(owner, field)) && APPEARANCE_PREFS[field].own(profile) !== value) {
+      APPEARANCE_PREFS[field].put(profile, value)
+    }
+  }
+}
 
 /**
- * Cache a pick and write it to the profile's config.yaml. A failed write puts
- * the last confirmed pick back (unless a newer owner replaced it)
- * and says so, like every config-backed setting — otherwise the next config
- * load would silently undo it. A save that raced another window's save or
- * read settles by re-reading the config.
+ * Paint a pick at once and write it to the profile's config.yaml. Once the save
+ * lands the cache follows, unless a newer save already answered, and that cache
+ * write is how peer windows learn of it. A failed save repaints what the config
+ * last said and says so, like every config-backed setting; only the newest pick
+ * repaints or reports. A bare renderer (tests, the design preview) has no
+ * backend: the pick is only cached.
  */
-function commitPick(profile: string, field: AppearanceField, value: string, onRollback: () => void): void {
+function commitPick(profile: string, field: AppearanceField, value: string, repaint: () => void): void {
   const pref = APPEARANCE_PREFS[field]
-  const key = appearanceCacheKey(profile, field)
-  const pick = Symbol()
+
+  if (!window.hermesDesktop) {
+    pref.pick(profile, value)
+    repaint()
+
+    return
+  }
+
   const owner = profileAppearanceOwner(profile)
-  const pending = latestPick.get(key)
-  const picks = pending?.owner === owner ? pending : { owner, profile, field, latest: pick }
-  const sharedPick = beginAppearancePick(profile, field, owner, pref.own(profile), value)
+  const key = pickKey(owner, field)
+  const pick = { value }
 
-  picks.latest = pick
-  latestPick.set(key, picks)
-  pref.pick(profile, value)
+  const settle = () => {
+    const newest = pendingPicks.get(key) === pick
 
-  const settle = (saved: boolean) => {
-    const { reconcile, value: confirmed } = settleAppearancePick(sharedPick, saved, pref.own(profile))
-
-    if (confirmed !== undefined) {
-      pref.put(profile, confirmed)
-
-      if (profileAppearanceOwner(profile) === owner) { onRollback() }
+    if (newest) {
+      pendingPicks.delete(key)
+      cacheAdopted(profile)
+      repaint()
     }
 
-    if (reconcile) { reconcileProfileAppearance(owner) }
+    return newest
   }
 
-  saveProfileAppearance(profile, { [field]: value }).then(() => {
-    settle(true)
+  pendingPicks.set(key, pick)
+  repaint()
+  saveProfileAppearance(profile, { [field]: value })
+    .then(() => {
+      // Unless a newer save already answered, this is the profile's config now.
+      if (adoptedAppearance(owner, field) === value) {
+        pref.pick(profile, value)
+      }
 
-    if (latestPick.get(key) !== picks) { return }
-
-    if (picks.latest === pick) { latestPick.delete(key) }
-  }).catch(error => {
-    settle(false)
-
-    if (latestPick.get(key) !== picks || picks.latest !== pick) {
-      return
-    }
-
-    latestPick.delete(key)
-
-    notifyError(error, translateNow('settings.config.autosaveFailed'))
-  })
-}
-
-/** Storage events carry the whole named-profile map, including inactive profiles. */
-function changedAppearanceProfiles(event: StorageEvent): string[] {
-  const record = (raw: string | null): Record<string, string> => {
-    try {
-      const parsed: unknown = JSON.parse(raw || 'null')
-
-      return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
-        ? Object.fromEntries(Object.entries(parsed).filter((entry): entry is [string, string] => typeof entry[1] === 'string'))
-        : {}
-    } catch { return {} }
-  }
-
-  const before = record(event.oldValue)
-  const after = record(event.newValue)
-
-  return [...new Set([...Object.keys(before), ...Object.keys(after)])]
-    .filter(profile => profile !== 'default' && before[profile] !== after[profile])
+      settle()
+    })
+    .catch(error => {
+      if (settle()) {
+        notifyError(error, translateNow('settings.config.autosaveFailed'))
+      }
+    })
 }
 
 // Profiles whose config was already checked for a local pick to upload.
@@ -298,7 +300,7 @@ function seedFromLocalPick(appearance: { profile: string; theme: string; mode: s
 
   const patch: ProfileAppearancePatch = {
     ...(skin && !RETIRED_SKINS.has(skin) ? { theme: skin } : {}),
-    ...(mode === 'light' || mode === 'dark' || mode === 'system' ? { theme_mode: mode } : {})
+    ...(isThemeMode(mode) ? { theme_mode: mode } : {})
   }
 
   if (Object.keys(patch).length) {
@@ -666,119 +668,54 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
     typeof window === 'undefined' ? 'system' : modePref.resolve(BOOT_PROFILE_KEY)
   )
 
-  // Follow profile switches: paint the profile's assigned skin + mode and
-  // remember it for the next boot's first paint.
-  useEffect(() => {
-    rememberActiveProfileKey(profileKey)
-    setThemeNameState(storedSkin(profileKey))
-    setModeState(modePref.resolve(profileKey))
-  }, [profileKey])
+  // Remember the profile for the next boot's first paint.
+  useEffect(() => rememberActiveProfileKey(profileKey), [profileKey])
 
-  // Adopt the profile's config.yaml appearance: it is the authority, and the
-  // local cache follows it so the next boot paints it before any fetch. Never
-  // written back. An unset value leaves the local pick painted (and may seed
-  // the config from it once).
+  const repaint = useCallback((profile: string = liveProfile()) => {
+    setThemeNameState(skinOf(profile))
+    setModeState(modeOf(profile))
+  }, [])
+
+  // Follow profile switches and adopt the profile's config.yaml appearance:
+  // it is the authority, so the cache follows it and it paints under any pick
+  // still in flight here. An unset value leaves the local pick painted (and
+  // may seed the config from it once).
   const configAppearance = useStore($profileAppearance)
   const appearanceOwner = profileAppearanceOwner(profileKey)
+  const ownAppearance = configAppearance?.owner === appearanceOwner ? configAppearance : null
 
   useEffect(() => {
-    if (!configAppearance || configAppearance.owner !== appearanceOwner || !appearanceIsCurrent(configAppearance)) {
-      return
+    cacheAdopted(profileKey)
+    repaint(profileKey)
+
+    if (ownAppearance) {
+      seedFromLocalPick(ownAppearance)
     }
-
-    const { mode: configMode, theme } = configAppearance
-
-    if (theme) {
-      latestPick.delete(appearanceCacheKey(profileKey, 'theme'))
-      confirmAppearance(profileKey, 'theme', appearanceOwner, theme)
-
-      if (skinPref.own(profileKey) !== theme) {
-        skinPref.put(profileKey, theme)
-      }
-
-      setThemeNameState(theme)
-    }
-
-    if (configMode) {
-      latestPick.delete(appearanceCacheKey(profileKey, 'theme_mode'))
-      confirmAppearance(profileKey, 'theme_mode', appearanceOwner, configMode)
-
-      if (modePref.own(profileKey) !== configMode) {
-        modePref.put(profileKey, configMode)
-      }
-
-      setModeState(configMode)
-    }
-
-    seedFromLocalPick(configAppearance)
-  }, [appearanceOwner, configAppearance, profileKey])
+  }, [appearanceOwner, ownAppearance, profileKey, repaint])
 
   // Appearance is per-profile localStorage, and every desktop window is another
   // renderer on the same origin — so a switch made in the HUD (or any peer
   // window) only ever repainted the window it was made in. `storage` fires in
-  // the OTHER windows, which is exactly the set that needs to catch up.
+  // the OTHER windows, which is exactly the set that needs to catch up. A peer
+  // caches a config value only once its save landed or it adopted a config, so
+  // a re-read here orders it by revision; until then the cache paints only what
+  // this window's config leaves unset.
   useEffect(() => {
     const onStorage = (event: StorageEvent) => {
       if (event.storageArea && event.storageArea !== window.localStorage) {
         return
       }
 
-      const peer = peerPickChange(event)
-
-      if (peer) {
-        markLocalAppearanceChange(peer.profile, peer.owner)
-
-        // Only a newer pick supersedes this window's pending one; a peer's
-        // config read leaves its failure to say so.
-        if (peer.picked) { latestPick.delete(appearanceCacheKey(peer.profile, peer.field)) }
-
-        // The window that settled it re-reads only while it is still on the owner.
-        if (peer.reconcile) { reconcileProfileAppearance(peer.owner) }
+      if (event.key === null || APPEARANCE_KEYS.has(event.key)) {
+        repaint()
+        void refreshProfileAppearance()
       }
-
-      if (event.key !== null && !APPEARANCE_KEYS.has(event.key)) {
-        return
-      }
-
-      const live = normalizeProfileKey($activeGatewayProfile.get())
-
-      const adopt = (profile: string, field: AppearanceField) => {
-        const pending = latestPick.get(appearanceCacheKey(profile, field))
-
-        // The shared cache is per profile, but a pending request still belongs
-        // to the connection captured when it began, even after navigation.
-        if (pending) { markLocalAppearanceChange(profile, pending.owner) }
-        markLocalAppearanceChange(profile)
-      }
-
-      if (event.key === null) {
-        for (const pending of latestPick.values()) { adopt(pending.profile, pending.field) }
-        markLocalAppearanceChange(live)
-      } else if (event.key === PROFILE_SKINS_KEY || event.key === PROFILE_MODES_KEY) {
-        const field = event.key === PROFILE_SKINS_KEY ? 'theme' : 'theme_mode'
-
-        for (const profile of changedAppearanceProfiles(event)) { adopt(profile, field) }
-      } else if (event.key === INHERITED_SKIN_KEY || event.key === INHERITED_MODE_KEY) {
-        // No profile's own pick changed, only what an unassigned profile paints.
-        const field = event.key === INHERITED_SKIN_KEY ? 'theme' : 'theme_mode'
-
-        if (APPEARANCE_PREFS[field].own(live) === null) { markLocalAppearanceChange(live) }
-      } else {
-        const field = event.key === SKIN_KEY ? 'theme' : 'theme_mode'
-        adopt('default', field)
-
-        // Unassigned named profiles inherit the legacy/default slot.
-        if (APPEARANCE_PREFS[field].own(live) === null) { markLocalAppearanceChange(live) }
-      }
-
-      setThemeNameState(storedSkin(live))
-      setModeState(modePref.resolve(live))
     }
 
     window.addEventListener('storage', onStorage)
 
     return () => window.removeEventListener('storage', onStorage)
-  }, [])
+  }, [repaint])
 
   const systemDark = useMediaQuery('(prefers-color-scheme: dark)')
   const resolvedMode = resolveMode(mode, systemDark)
@@ -833,34 +770,23 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
   // material, titlebar, new-window pre-paint background).
   useEffect(() => syncNativeTheme(mode, renderedMode), [mode, renderedMode])
 
-  // Assign to whichever profile is live right now (read fresh so the callbacks
-  // stay stable across profile switches).
-  const liveProfile = () => normalizeProfileKey($activeGatewayProfile.get())
+  const setTheme = useCallback(
+    (name: string) => {
+      recordFeatureUse('skins')
+      setPreview(null)
+      commitPick(liveProfile(), 'theme', normalizeSkin(name), repaint)
+    },
+    [repaint]
+  )
 
-  const setTheme = useCallback((name: string) => {
-    const next = normalizeSkin(name)
-    recordFeatureUse('skins')
-    const profile = liveProfile()
-    setPreview(null)
-    setThemeNameState(next)
-    commitPick(profile, 'theme', next, () => {
-      if (liveProfile() === profile) {
-        setThemeNameState(storedSkin(profile))
-      }
-    })
-  }, [])
-
-  const setMode = useCallback((next: ThemeMode) => {
-    recordFeatureUse('skins')
-    const profile = liveProfile()
-    setPreview(null)
-    setModeState(next)
-    commitPick(profile, 'theme_mode', next, () => {
-      if (liveProfile() === profile) {
-        setModeState(modePref.resolve(profile))
-      }
-    })
-  }, [])
+  const setMode = useCallback(
+    (next: ThemeMode) => {
+      recordFeatureUse('skins')
+      setPreview(null)
+      commitPick(liveProfile(), 'theme_mode', next, repaint)
+    },
+    [repaint]
+  )
 
   const previewTheme = useCallback((name: string, previewMode: 'light' | 'dark') => {
     setPreview(resolveTheme(name) ? { name, mode: previewMode } : null)

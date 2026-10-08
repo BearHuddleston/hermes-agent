@@ -17,6 +17,7 @@ import {
   remoteHtmlPreviewDocument,
   validatedRemoteHtmlDataUrl
 } from './local-preview'
+import { previewArtifactKey } from './preview-targets'
 
 describe('isLoopbackPreviewUrl', () => {
   it.each(['http://localhost:5173', 'https://127.0.0.2:8443/app', 'http://0.0.0.0:3000', 'http://[::1]:4173'])(
@@ -214,21 +215,38 @@ describe('remote HTML previews', () => {
 })
 
 describe('preview path resolution', () => {
-  it('resolves file URLs back to the same filesystem target', () => {
-    const paths = [
-      ['C:\\work tree\\résumé #1.py', 'C:/work tree/résumé #1.py'],
-      ['\\\\server\\share\\source.py', '//server/share/source.py'],
-      ['/srv/source.py', '/srv/source.py'],
-      ['/srv/name\\with%20spaces.py', '/srv/name\\with%20spaces.py'],
-      ['//srv/share/source.py', '//srv/share/source.py']
-    ]
+  // Drive and UNC URLs read back as native Windows paths, so a UNC target
+  // keeps its host when re-serialized instead of becoming `file:////server/...`.
+  it.each([
+    'C:\\work tree\\résumé #1.py',
+    '\\\\server\\share\\source.py',
+    '/srv/source.py',
+    '/srv/name\\with%20spaces.py',
+    '//srv/share/source.py'
+  ])('resolves the file URL of %s back to the same filesystem target', path => {
+    const target = localPreviewTarget(pathToFileUrl(path), '/unrelated/cwd')
 
-    for (const [path, expected] of paths) {
-      expect(localPreviewTarget(pathToFileUrl(path), '/unrelated/cwd')?.path).toBe(expected)
-    }
-
-    expect(localPreviewTarget('file:///C:/work%20tree/source.py')?.path).toBe('C:/work tree/source.py')
+    expect(target?.path).toBe(path)
+    expect(target?.url).toBe(pathToFileUrl(path))
   })
+
+  it.each([
+    ['file:///C:/work%20tree/source.py', 'C:\\work tree\\source.py', 'file:///C%3A/work%20tree/source.py'],
+    ['file://server/share/source.py', '\\\\server\\share\\source.py', 'file://server/share/source.py']
+  ])('reads %s as the Windows path %s', (url, path, fileUrl) => {
+    expect(localPreviewTarget(url)).toMatchObject({ label: 'source.py', path, url: fileUrl })
+  })
+
+  // Decoding `..%2f` would add a segment the URL parser never normalized. Such
+  // a URL keeps its text undecoded, as an unparseable one does, and the preview
+  // artifact key leaves it raw too.
+  it.each(['file:///srv/project/..%2f..%2fetc/passwd', 'file:///C:/work/..%5c..%5cWindows/win.ini'])(
+    'does not decode the encoded separators in %s into path segments',
+    url => {
+      expect(localPreviewTarget(url, '/unrelated/cwd')?.path).toBe(url.slice('file://'.length))
+      expect(previewArtifactKey(url, '/unrelated/cwd')).toBe(url)
+    }
+  )
 
   it('keeps absolute filesystem targets independent of the working directory', async () => {
     window.hermesDesktop = { normalizePreviewTarget: vi.fn(async () => null) } as never

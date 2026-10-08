@@ -17,6 +17,7 @@ import psutil
 import pytest
 
 from hermes_cli import profile_lifecycle, profiles
+from hermes_constants import named_profile_is_deleted
 
 pytestmark = pytest.mark.platforms("windows")
 
@@ -40,7 +41,7 @@ def profile_home(tmp_path, monkeypatch):
     for name in ("_cleanup_gateway_service", "_maybe_unregister_gateway_service",
                  "_maybe_register_gateway_service", "_stop_bot_desktop", "_notify_multiplexer"):
         monkeypatch.setattr(profiles, name, lambda *a, **k: None)
-    monkeypatch.setattr(profiles, "_profile_bound_backend_pids", lambda *a, **k: [])
+    monkeypatch.setattr("hermes_cli.profiles_process_stop._profile_bound_backend_pids", lambda *a, **k: [])
     monkeypatch.setattr(profile_lifecycle, "_PROFILE_DB_RELEASE_TIMEOUT_SECONDS", 0)
     return profiles.create_profile("worker", no_alias=True, no_skills=True)
 
@@ -63,7 +64,7 @@ def test_orphaned_holder_without_a_profile_reference_blocks_deletion(profile_hom
         assert holder.pid in profile_lifecycle.external_profile_file_holders(profile_home)
         with pytest.raises(RuntimeError, match=str(holder.pid)):
             profiles.delete_profile("worker", yes=True)
-        assert log.is_file() and not profiles.profile_home_is_tombstoned(profile_home)
+        assert log.is_file() and not named_profile_is_deleted(profile_home)
     finally:
         holder.kill()
         holder.wait(10)

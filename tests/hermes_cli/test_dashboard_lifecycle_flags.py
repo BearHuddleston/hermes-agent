@@ -83,7 +83,7 @@ class TestDashboardStatus:
             real_port = listener.getsockname()[1]
             monkeypatch.setattr(dashboard_procs, "_iter_process_table", lambda: [
                 (pid, "/usr/local/bin/hermes serve --host 127.0.0.1 --port 0 --ssh-isolated")])
-            monkeypatch.setattr(process_identity, "ledger_entries", lambda: [
+            monkeypatch.setattr(process_identity, "ledger_entries", lambda *a, **k: [
                 {"pid": pid, "purpose": "serve", "host": "127.0.0.1", "port": real_port}])
             monkeypatch.setattr("gateway.status._pid_exists", lambda p: p == pid)
 

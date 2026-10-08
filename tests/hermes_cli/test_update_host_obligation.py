@@ -24,6 +24,8 @@ import hermes_cli.update_cmd_fleet as fleet
 import hermes_cli.update_host_obligation as host_obligation
 import hermes_cli.update_restart_recovery as recovery
 from hermes_cli import update_cmd
+from hermes_cli.profile_lifecycle import mark_profile_deleting
+from hermes_constants import profile_tombstone_path
 
 SHA = "a" * 40
 
@@ -61,7 +63,7 @@ def _arm(profile_runtime: str) -> None:
 def no_live_fleet(monkeypatch):
     """No fleet matrix rows: the obligation can never be discharged by evidence in these tests."""
     monkeypatch.setattr(fleet, "_current_checkout_sha", lambda: SHA)
-    monkeypatch.setattr("hermes_cli.update_receipt.collect_fleet_versions", lambda: [])
+    monkeypatch.setattr("hermes_cli.update_receipt.collect_fleet_versions", list)
 
 
 def test_obligation_armed_by_one_profile_is_owed_by_every_other(two_profiles, no_live_fleet, monkeypatch):
@@ -345,17 +347,23 @@ def test_every_host_record_write_makes_its_rename_durable(tmp_path, monkeypatch)
 
 
 @pytest.mark.skipif(getattr(os, "geteuid", lambda: 1)() == 0, reason="root ignores directory permissions")
-@pytest.mark.parametrize("unreadable", ["roster", "profile"])
+@pytest.mark.parametrize("unreadable", ["roster", "profile", "tombstones"])
 def test_an_unreadable_profile_roster_never_admits_a_private_restart_marker(
-        two_profiles, no_live_fleet, monkeypatch, tmp_path, unreadable):
-    """Host record unwritable AND the profile roster (or one profile's identity) unreadable: that is
-    an UNKNOWN inventory, not a single-profile install. The default profile's marker would hide the
-    debt from the profile nobody could read, so the arm refuses (review S2 residual)."""
+        two_profiles, no_live_fleet, monkeypatch, tmp_path, caplog, unreadable):
+    """Host record unwritable AND the profile roster (or one profile's identity or tombstone)
+    unreadable: that is an UNKNOWN inventory, not a single-profile install. The default profile's
+    marker would hide the debt from the profile nobody could read, so the arm refuses and says the
+    roster is unreadable (review S2 residual)."""
     (two_profiles["writer"] / "config.yaml").write_text("{}\n", encoding="utf-8")  # the one named profile
     _enter(monkeypatch, tmp_path)  # the default profile arms
     lock_dir = tmp_path / "gateway-locks"
     lock_dir.mkdir(parents=True, exist_ok=True)
-    blind = tmp_path / "profiles" if unreadable == "roster" else two_profiles["writer"]
+    blind = {
+        "roster": tmp_path / "profiles",
+        "profile": two_profiles["writer"],
+        "tombstones": profile_tombstone_path(two_profiles["writer"]).parent,
+    }[unreadable]
+    blind.mkdir(exist_ok=True)
     lock_dir.chmod(0o500)
     blind.chmod(0o300 if unreadable == "roster" else 0o000)  # roster: traversable, not listable
     try:
@@ -365,7 +373,31 @@ def test_an_unreadable_profile_roster_never_admits_a_private_restart_marker(
         lock_dir.chmod(0o700)
 
     assert armed is False
+    assert "the profile list is unreadable" in caplog.text
     assert fleet._fleet_restart_pending_marker_path().is_file(), "the arming profile still keeps its marker"
+
+
+@pytest.mark.platforms("posix")
+@pytest.mark.skipif(getattr(os, "geteuid", lambda: 1)() == 0, reason="root ignores directory permissions")
+def test_a_deleted_profile_reached_through_an_alias_is_not_a_second_tenant(two_profiles, no_live_fleet, monkeypatch, tmp_path):
+    """The roster check reads the same tombstone as profile listing: an entry symlinked to another
+    profile's home shares that home's tombstone, so deleting it through the alias leaves only the
+    default profile, and the arming profile's marker is the whole debt."""
+    _enter(monkeypatch, tmp_path)  # the default profile arms
+    for home in two_profiles.values():
+        (home / "config.yaml").write_text("{}\n", encoding="utf-8")
+    (tmp_path / "profiles" / "scribe").symlink_to(two_profiles["writer"], target_is_directory=True)
+    for alias_or_home in (two_profiles["coder"], tmp_path / "profiles" / "scribe"):
+        mark_profile_deleting(alias_or_home)
+    lock_dir = tmp_path / "gateway-locks"
+    lock_dir.mkdir(parents=True, exist_ok=True)
+    lock_dir.chmod(0o500)
+    try:
+        armed = fleet._write_fleet_restart_pending_marker(expected_sha=SHA)
+    finally:
+        lock_dir.chmod(0o700)
+
+    assert armed is True
 
 
 def test_unreadable_host_record_is_never_discharged_by_the_legacy_marker(two_profiles, no_live_fleet, monkeypatch, tmp_path):

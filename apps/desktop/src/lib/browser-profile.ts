@@ -1,11 +1,11 @@
 import type { DesktopProfileRoute } from '@/global'
+import { requireBrowserConnection } from '@/lib/browser-connection'
 
 import { readJson } from './storage'
 
 interface BrowserProfileOptions {
   basePath: string
   currentProfile: () => string | null
-  requireConnection: (connectionId?: string | null) => void
   openWindow: (target: URL) => Promise<{ ok: true }>
 }
 
@@ -22,7 +22,6 @@ function setUrlProfile(url: URL, profile: string | null): void {
 export function createBrowserProfileBridge({
   basePath,
   currentProfile,
-  requireConnection,
   openWindow
 }: BrowserProfileOptions): Pick<Window['hermesDesktop'], 'openWindow' | 'profile'> {
   // localStorage supplies origin isolation; the base path separates colocated servers.
@@ -44,7 +43,7 @@ export function createBrowserProfileBridge({
       throw new Error('Invalid connection id.')
     }
 
-    requireConnection(connectionId)
+    requireBrowserConnection(connectionId)
 
     return { connectionId, profile }
   }

@@ -44,7 +44,8 @@ def _mount(monkeypatch, db, home, tmp_path, *, defer_history=False):
     events = []
     built = threading.Event()
     monkeypatch.setattr("hermes_state_registry.acquire", lambda db_path=None, **kwargs: db)
-    monkeypatch.setattr(server, "_profile_home", lambda p: home if p else None)
+    monkeypatch.setattr(server, "_resolve_profile_home",
+                        lambda p: (home, server._capture_profile_incarnation(home)) if p else (None, None))
     monkeypatch.setattr(server, "_profile_configured_cwd", lambda _: str(tmp_path))
     monkeypatch.setattr(server, "_default_session_cwd", lambda: str(tmp_path))
     monkeypatch.setattr(server, "_get_db", lambda: db)
@@ -190,7 +191,7 @@ def test_compute_host_child_turn_reopens_a_finalized_row(tmp_path, monkeypatch):
     }
     server._sessions["child-sid"] = session
     # Cut the turn right after admission (the reopen runs BEFORE admission).
-    import tui_gateway.prompt_turn as prompt_turn
+    from tui_gateway import prompt_turn
     monkeypatch.setattr(server, "_prepare_turn_input", lambda *a, **k: None, raising=False)
     monkeypatch.setattr(prompt_turn, "_prepare_turn_input", lambda *a, **k: None, raising=False)
     out = io.StringIO()
