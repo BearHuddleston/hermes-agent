@@ -286,39 +286,14 @@ def _stage_browser_file_attachment(
     generations; do not infer either identity from the ambient profile.
     """
     from hermes_constants import WEBAPP_ATTACHMENT_MAX_BYTES
-    from hermes_cli.install_identity import get_install_id
     from hermes_cli.profile_lifecycle import profile_lifecycle_lease
+    from hermes_cli.staged_uploads import parse_staged_upload, resolve_staged_upload
 
-    if not isinstance(staged_upload, dict):
-        raise ValueError("invalid staged upload")
-    install_id = get_install_id()
-    if not install_id or staged_upload.get("install_id") != install_id:
-        raise ValueError("Staged attachment belongs to another Hermes backend; select the file again")
-    raw_home = staged_upload.get("profile_home")
-    raw_path = staged_upload.get("path")
-    incarnation = staged_upload.get("profile_incarnation")
-    if (
-        not isinstance(raw_home, str) or not raw_home
-        or not isinstance(raw_path, str) or not raw_path
-        or (incarnation is not None and not isinstance(incarnation, str))
-    ):
-        raise ValueError("invalid staged upload source")
-
+    raw_home, raw_path, incarnation = parse_staged_upload(staged_upload)
     # Acquire both pathname locks in sorted order before checking generations.
     with profile_lifecycle_lease(raw_home, owner[1] or _hermes_home):
         with _profile_home_lease(raw_home, incarnation) as home, _profile_home_lease(owner[1], owner[2]):
-            source = Path(raw_path)
-            if source.is_symlink():
-                raise ValueError("staged upload is no longer a regular file")
-            source = source.resolve(strict=True)
-            if (
-                source.parent != (home / "uploads").resolve(strict=True)
-                or not source.name.startswith("web-")
-                or not source.is_file()
-            ):
-                raise ValueError("staged upload is outside its source profile")
-            if source.stat().st_size > WEBAPP_ATTACHMENT_MAX_BYTES:
-                raise ValueError("staged upload exceeds the browser attachment size limit")
+            source = resolve_staged_upload(home, raw_path)
             # Keep the existing out-of-workspace copy into attachments/, which
             # is visible to container/SSH terminal backends through cache mounts.
             return _stage_session_file_attachment(

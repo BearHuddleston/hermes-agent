@@ -211,7 +211,7 @@ def test_upload_bound_stops_parser_and_closes_spools(upload_app, monkeypatch, de
     def handler_must_not_run(*args, **kwargs):
         pytest.fail("upload handler ran after oversized multipart parsing")
 
-    monkeypatch.setattr(uploads, "_resolve_upload_generation", handler_must_not_run)
+    monkeypatch.setattr(uploads, "resolve_upload_generation", handler_must_not_run)
 
     async def run():
         async with httpx.AsyncClient(

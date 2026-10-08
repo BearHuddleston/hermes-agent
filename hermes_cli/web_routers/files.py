@@ -27,9 +27,8 @@ from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 
 from hermes_cli import web_server_file_tickets as file_tickets
 from hermes_cli._subprocess_compat import windows_hide_flags
-from hermes_cli.profile_incarnation import profile_incarnation_lease
 from hermes_cli.sqlite_safe_read import LiveConnectionError, offline_file_access
-from hermes_cli.web_routers.uploads import _removed_on_failure, _resolve_upload_generation
+from hermes_cli.staged_uploads import leased_profile_dir, removed_on_failure, resolve_upload_generation
 from hermes_cli.web_deps import late
 from hermes_cli.web_server_files import (
     _fs_path, _hosted_fs_read_guard, _managed_file_entry, _managed_response_meta, _resolve_managed_path,
@@ -481,37 +480,24 @@ async def upload_chat_image(payload: ChatImageUpload, profile: Optional[str] = N
     dir ``clipboard.paste`` / ``image.attach`` use).
     """
     def _run():
-        from hermes_constants import mkdir_under_hermes_home
-
         data, mime_type, ext = _decode_chat_image_upload(payload)
-        home, expected_incarnation = _resolve_upload_generation(profile)
+        home, expected_incarnation = resolve_upload_generation(profile)
 
-        try:
-            with profile_incarnation_lease(
-                home,
-                expected_incarnation,
-                require_incarnation=expected_incarnation is not None,
-            ):
-                img_dir = home / "images"
-                with _io_errors("Image directory is not writable", "Could not create image directory"):
-                    try:
-                        mkdir_under_hermes_home(img_dir)
-                    except FileNotFoundError:
-                        raise HTTPException(status_code=404, detail="Profile home is unavailable")
+        with leased_profile_dir(
+            home,
+            expected_incarnation,
+            "images",
+            denied="Image directory is not writable",
+            failed="Could not create image directory",
+        ) as img_dir:
+            stem = Path(_sanitize_chat_image_filename(payload.filename)).stem or "pasted-image"
+            stem = re.sub(r"[^A-Za-z0-9_.-]+", "_", stem).strip("._-") or "pasted-image"
+            ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+            target = img_dir / f"dashboard_{ts}_{secrets.token_hex(4)}_{stem}{ext}"
 
-                stem = Path(_sanitize_chat_image_filename(payload.filename)).stem or "pasted-image"
-                stem = re.sub(r"[^A-Za-z0-9_.-]+", "_", stem).strip("._-") or "pasted-image"
-                ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-                target = img_dir / f"dashboard_{ts}_{secrets.token_hex(4)}_{stem}{ext}"
-
-                # A named home's retirement tombstones under this same lease, so it is ordered after the write.
-                with _removed_on_failure(target), _io_errors("Image directory is not writable", "Could not write image"):
-                    target.write_bytes(data)
-        except FileNotFoundError as exc:
-            raise HTTPException(
-                status_code=404,
-                detail="Profile was deleted or replaced during upload",
-            ) from exc
+            # A named home's retirement tombstones under this same lease, so it is ordered after the write.
+            with removed_on_failure(target), _io_errors("Image directory is not writable", "Could not write image"):
+                target.write_bytes(data)
 
         return {
             "ok": True,
