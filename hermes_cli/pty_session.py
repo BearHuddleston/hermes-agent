@@ -10,6 +10,7 @@ import asyncio
 import logging
 import threading
 import time
+from concurrent.futures import Executor
 from pathlib import Path
 from typing import Callable, Dict, Optional, Tuple
 
@@ -83,7 +84,10 @@ def _key_segments(key: str) -> tuple[str, str]:
 
 
 class PtySession:
-    def __init__(self, key: str, bridge, *, buffer_cap: int, read_timeout: float, active_session_file: Optional[Path] = None) -> None:
+    def __init__(
+        self, key: str, bridge, *, buffer_cap: int, read_timeout: float,
+        active_session_file: Optional[Path] = None, drain_executor: Optional[Executor] = None,
+    ) -> None:
         self.key = key
         self.bridge = bridge
         self.active_session_file = active_session_file
@@ -94,6 +98,8 @@ class PtySession:
         # Admission can fail before the first attach (e.g. lost metadata).
         self.last_detached_at: Optional[float] = time.monotonic()
         self._read_timeout = read_timeout
+        # Runs the blocking reads; None is the loop's default executor.
+        self._drain_executor = drain_executor
         self._ws = None
         self._attach_generation = 0
         # Only final sink writes and viewer claims hold this lock. Profile
@@ -112,7 +118,7 @@ class PtySession:
         loop = asyncio.get_running_loop()
         while self.alive:
             try:
-                chunk = await loop.run_in_executor(None, self.bridge.read, self._read_timeout)
+                chunk = await loop.run_in_executor(self._drain_executor, self.bridge.read, self._read_timeout)
             except OSError:
                 chunk = None
             if chunk is None:                       # EOF — the agent process exited
@@ -336,11 +342,15 @@ async def run_reaper(registry: "PtySessionRegistry", *, interval: float = 60.0) 
 
 
 class PtySessionRegistry:
-    def __init__(self, *, ttl: float, max_sessions: int, buffer_cap: int, read_timeout: float) -> None:
+    def __init__(
+        self, *, ttl: float, max_sessions: int, buffer_cap: int, read_timeout: float,
+        drain_executor: Optional[Executor] = None,
+    ) -> None:
         self._ttl = ttl
         self._max = max_sessions
         self._buffer_cap = buffer_cap
         self._read_timeout = read_timeout
+        self._drain_executor = drain_executor
         self._sessions: Dict[str, PtySession] = {}
         # One registry-wide reservation spans lookup, spawn, and registration:
         # racing connections with one attach token must share one tracked PTY.
@@ -417,6 +427,7 @@ class PtySessionRegistry:
             buffer_cap=self._buffer_cap,
             read_timeout=self._read_timeout,
             active_session_file=active_session_file,
+            drain_executor=self._drain_executor,
         )
         await session.start()
         self._sessions[key] = session

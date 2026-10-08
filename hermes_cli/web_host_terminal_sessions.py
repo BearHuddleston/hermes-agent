@@ -6,6 +6,7 @@ The existing PTY registry owns processes/drains; this module owns host admission
 from __future__ import annotations
 
 import asyncio
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager, suppress
 from dataclasses import dataclass
 import json
@@ -27,6 +28,7 @@ from hermes_constants import get_hermes_home, named_profile_home_is_unavailable
 
 # No survival across backend restart. Disconnects retain a bounded ANSI tail.
 RETENTION_SECONDS = 15 * 60
+_MAX_SHELLS = 16
 # Inbound frames buffered while one batch is written (backpressure bound).
 _INPUT_BATCH_FRAMES = 64
 TOKEN_RE = re.compile(r"^[A-Za-z0-9_-]{43}$")
@@ -95,7 +97,12 @@ def _request_home(profile: str | None) -> Path:
 
 class HostTerminalRegistry(PtySessionRegistry):
     def __init__(self):
-        super().__init__(ttl=RETENTION_SECONDS, max_sessions=16, buffer_cap=1024 * 1024, read_timeout=0.2)
+        # Every live shell keeps a read in flight. On the loop's default executor, retained
+        # shells would queue the keystroke fences, ownership checks, uploads and SessionDB
+        # hops that share it; a pool sized to capacity gives each shell its own reader.
+        super().__init__(
+            ttl=RETENTION_SECONDS, max_sessions=_MAX_SHELLS, buffer_cap=1024 * 1024, read_timeout=0.2,
+            drain_executor=ThreadPoolExecutor(_MAX_SHELLS, thread_name_prefix="host-pty-drain"))
         self.owners: dict[str, HostOwner] = {}
 
     def _reap_one_idle_or_raise(self) -> None:
@@ -178,6 +185,9 @@ class HostTerminalRegistry(PtySessionRegistry):
     async def close_all(self):
         await super().close_all()
         self.owners.clear()
+        # Every drain is cancelled by now; a read still in flight returns within its
+        # timeout, so let it finish behind us. A closed registry never spawns again.
+        self._drain_executor.shutdown(wait=False)
 
 
 def get_host_terminals(app) -> HostTerminalRegistry:
