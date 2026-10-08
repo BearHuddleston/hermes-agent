@@ -40,7 +40,7 @@ def profile_home(tmp_path, monkeypatch):
     for name in ("_cleanup_gateway_service", "_maybe_unregister_gateway_service",
                  "_maybe_register_gateway_service", "_stop_bot_desktop", "_notify_multiplexer"):
         monkeypatch.setattr(profiles, name, lambda *a, **k: None)
-    monkeypatch.setattr(profiles, "_profile_bound_backend_pids", lambda *a, **k: [])
+    monkeypatch.setattr("hermes_cli.profiles_process_stop._profile_bound_backend_pids", lambda *a, **k: [])
     monkeypatch.setattr(profile_lifecycle, "_PROFILE_DB_RELEASE_TIMEOUT_SECONDS", 0)
     return profiles.create_profile("worker", no_alias=True, no_skills=True)
 

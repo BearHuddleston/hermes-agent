@@ -197,7 +197,7 @@ class TestProfileDeleteStopRefusal:
             record = _pid_record(proc, root_home)
             (tim_home / "gateway.pid").write_text(json.dumps(record))
 
-            from hermes_cli.profiles import _stop_gateway_process
+            from hermes_cli.profiles_process_stop import _stop_gateway_process
 
             _stop_gateway_process(tim_home)
             out = capsys.readouterr().out
@@ -221,7 +221,7 @@ class TestProfileDeleteStopRefusal:
             record = _pid_record(proc, tim_home)
             (tim_home / "gateway.pid").write_text(json.dumps(record))
 
-            from hermes_cli.profiles import _stop_gateway_process
+            from hermes_cli.profiles_process_stop import _stop_gateway_process
 
             _stop_gateway_process(tim_home)
             deadline = time.monotonic() + 15.0

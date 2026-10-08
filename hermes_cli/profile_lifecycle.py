@@ -353,11 +353,11 @@ def external_profile_file_holders(
             return [pid for pid in holders if wanted is None or pid in wanted]
     try:
         import psutil  # type: ignore
-    except Exception:
+    except ImportError:
         return []
     try:
         current_user = psutil.Process(os.getpid()).username()
-    except Exception:
+    except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess, OSError):
         return []
 
     holders: list[int] = []
@@ -385,6 +385,8 @@ def external_profile_file_holders(
         except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
             continue
         except Exception:
+            # One process's unreadable handle table must not fail the census for the rest.
+            logger.debug("open-file census skipped a process", exc_info=True)
             continue
     return holders
 

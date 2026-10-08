@@ -391,7 +391,7 @@ def reapable_ledger_identities() -> dict[int, float]:
                 and not isinstance(created, bool)
             ):
                 identities[pid] = float(created)
-    except Exception:
+    except OSError:
         return {}
     return identities
 

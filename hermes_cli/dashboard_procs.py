@@ -107,11 +107,11 @@ def _is_hermes_web_server_command(command: str) -> bool:
 
 def _ledger_web_server_processes() -> dict[int, str]:
     """Positively identified live web servers for this Hermes install."""
-    try:
-        from hermes_cli.process_identity import ledger_entries
+    from hermes_cli.process_identity import ledger_entries
 
+    try:
         entries = ledger_entries(verified_only=True)
-    except Exception:
+    except OSError:
         return {}
 
     processes: dict[int, str] = {}

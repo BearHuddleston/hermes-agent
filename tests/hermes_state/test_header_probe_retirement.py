@@ -76,7 +76,7 @@ def test_closed_child_allows_profile_delete_but_live_sibling_refuses(tmp_path, m
     for name in ("_cleanup_gateway_service", "_maybe_unregister_gateway_service",
                  "_maybe_register_gateway_service", "_stop_bot_desktop", "_notify_multiplexer"):
         monkeypatch.setattr(profiles, name, lambda *a, **k: None)
-    monkeypatch.setattr(profiles, "_profile_bound_backend_pids", lambda *a, **k: [])
+    monkeypatch.setattr("hermes_cli.profiles_process_stop._profile_bound_backend_pids", lambda *a, **k: [])
     monkeypatch.setattr(profile_lifecycle, "_PROFILE_DB_RELEASE_TIMEOUT_SECONDS", 0)
 
     # A -> B -> A includes a fresh incarnation at the reused pathname.

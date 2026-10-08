@@ -378,7 +378,7 @@ def _service_op(kind: str, system: bool, verb: str, home: Path, *, run_as_user: 
 
 
 def _stop_gateway_process(home: Path) -> None:
-    from hermes_cli.profiles import _stop_gateway_process
+    from hermes_cli.profiles_process_stop import _stop_gateway_process
     _stop_gateway_process(home)
 
 

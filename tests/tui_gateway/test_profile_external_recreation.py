@@ -55,7 +55,7 @@ def test_registered_rpc_admits_new_generation_and_fences_old(tmp_path, monkeypat
     for name in ("_cleanup_gateway_service", "_maybe_unregister_gateway_service",
                  "_maybe_register_gateway_service", "_stop_bot_desktop", "_notify_multiplexer"):
         monkeypatch.setattr(profiles, name, lambda *a, **k: None)
-    monkeypatch.setattr(profiles, "_profile_bound_backend_pids", lambda *a, **k: [])
+    monkeypatch.setattr("hermes_cli.profiles_process_stop._profile_bound_backend_pids", lambda *a, **k: [])
     monkeypatch.setattr(server, "_hermes_home", root)
     monkeypatch.setattr(server, "_sessions", {})
     monkeypatch.setattr(server, "_served_profile_homes", set())

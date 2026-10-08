@@ -140,7 +140,7 @@ def test_dashboard_scan_selects_entrypoint_plus_subcommand_tokens_never_substrin
 
     monkeypatch.setattr(dashboard_procs, "_iter_process_table",
                         lambda: [(4242, DECOY), *((5000 + i, cmd) for i, cmd in enumerate(BACKENDS))])
-    monkeypatch.setattr(process_identity, "ledger_entries", lambda: [])
+    monkeypatch.setattr(process_identity, "ledger_entries", lambda *a, **k: [])
     assert dashboard_procs._scan_dashboard_processes() == [(5000, BACKENDS[0]), (5001, BACKENDS[1])]
 
 
