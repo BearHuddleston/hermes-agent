@@ -10,11 +10,20 @@
  */
 
 import { useStore } from '@nanostores/react'
-import { type CSSProperties, Fragment, type ReactNode, type RefObject, useEffect, useRef, useState } from 'react'
+import {
+  type ComponentProps,
+  type CSSProperties,
+  Fragment,
+  type ReactNode,
+  type PointerEvent as ReactPointerEvent,
+  type RefObject,
+  useEffect,
+  useRef,
+  useState
+} from 'react'
 
 import { ShellMenuItems } from '@/app/context-menu/shell-menu-items'
-import { TITLEBAR_DRAG_HANDLE_WIDTH, TITLEBAR_HEIGHT } from '@/app/shell/titlebar'
-import { useTouchTitlebar } from '@/app/shell/use-touch-titlebar'
+import { TITLEBAR_DRAG_HANDLE_WIDTH } from '@/app/shell/titlebar'
 import { ActionsContextMenu, type MenuKit, renderActionItem } from '@/components/ui/actions-menu'
 import { Codicon } from '@/components/ui/codicon'
 import { DecodeText } from '@/components/ui/decode-text'
@@ -94,6 +103,7 @@ import { usePanelTitlebar } from './panel-titlebar'
 import { tabStripVisibleForZone } from './strip-visibility'
 import { useActiveTabVisible } from './tab-strip-scroll'
 import { paneChrome } from './track-model'
+import { useZoneHeaderLayout } from './zone-header-layout'
 
 /** Right-click zone menu: the tab verbs (close this / others / to the right /
  *  all) plus the strip's own chrome toggles. Same items and icons as a session
@@ -243,6 +253,108 @@ function ZoneMenu({
   )
 }
 
+type ZoneMenuProps = ComponentProps<typeof ZoneMenu>
+
+interface ZoneBodyMenuProps extends Omit<ZoneMenuProps, 'allowOpen' | 'includeAppActions'> {
+  label: string
+}
+
+/** The body's zone menu, app actions included. A touch hold on message text,
+ *  an editable, a link or media keeps the browser's selection/paste callout;
+ *  the hold opens this menu only on plain pane chrome. */
+function ZoneBodyMenu({ children, label, ...menu }: ZoneBodyMenuProps) {
+  // Whether the touch now down landed on browser-owned body content.
+  const touchOwnedByBrowser = useRef(false)
+
+  return (
+    <ZoneMenu {...menu} allowOpen={() => !touchOwnedByBrowser.current} includeAppActions>
+      <div
+        aria-label={label}
+        data-zone-body={menu.nodeId}
+        onPointerCancel={() => void (touchOwnedByBrowser.current = false)}
+        onPointerDown={event => void (touchOwnedByBrowser.current = isBrowserOwnedTouch(event.nativeEvent))}
+        onPointerUp={() => void (touchOwnedByBrowser.current = false)}
+        style={{ display: 'contents' }}
+      >
+        {children}
+      </div>
+    </ZoneMenu>
+  )
+}
+
+interface EditVeilProps extends Omit<ZoneMenuProps, 'children'> {
+  label: string
+  onPointerDown: (event: ReactPointerEvent<HTMLDivElement>) => void
+  /** Where the zone's header ends. */
+  top: number
+}
+
+/** The edit-mode drag veil over a zone's body, carrying the zone menu. */
+function EditVeil({ label, onPointerDown, top, ...menu }: EditVeilProps) {
+  return (
+    <ZoneMenu {...menu}>
+      <div
+        // z-50: pane CONTENT may carry its own stacked chrome (the
+        // terminal rail is z-40) — the edit veil must cover all of it.
+        // The scrim mixes the accent over the CHROME BG (not transparent)
+        // so it properly dims content in dark themes instead of leaving a
+        // barely-tinted wash; the light blur reads as "edit mode" the same
+        // way the zone editor's backdrop does.
+        className="absolute inset-x-0 bottom-0 z-50 flex cursor-grab items-center justify-center outline-1 -outline-offset-2 outline-dashed backdrop-blur-[2px]"
+        onPointerDown={onPointerDown}
+        style={{
+          top,
+          background:
+            'color-mix(in srgb, var(--ui-accent) 6%, color-mix(in srgb, var(--ui-bg-chrome) 55%, transparent))',
+          outlineColor: 'color-mix(in srgb, var(--ui-accent) 55%, transparent)'
+        }}
+      >
+        <span className="flex max-w-[calc(100%-1rem)] items-center gap-1.5 rounded-md border border-(--ui-stroke-secondary) bg-popover px-2 py-1 text-[0.64rem] font-semibold uppercase tracking-[0.16em] text-(--ui-text-secondary)">
+          <Codicon className="shrink-0" name="gripper" size="0.8125rem" />
+          <span className="min-w-0 truncate">{label}</span>
+        </span>
+      </div>
+    </ZoneMenu>
+  )
+}
+
+type CompactTabPickerProps = ComponentProps<typeof CompactTabPicker>
+
+interface CompactZoneTabsProps extends Pick<CompactTabPickerProps, 'activeId' | 'newTab' | 'tabs'> {
+  belowControls: boolean
+  /** The active tab takes Close (see TreeGroup's `closeableTab`). */
+  closeable: boolean
+  node: GroupNode
+}
+
+/** A narrow touch zone's tab row: the picker in place of the scrolling strip.
+ *  Picking a tab is a strip tap, so a minimized zone restores first. */
+function CompactZoneTabs({ activeId, belowControls, closeable, newTab, node, tabs }: CompactZoneTabsProps) {
+  return (
+    <div
+      className={cn('flex min-w-0 flex-1', belowControls && 'absolute inset-x-0 bottom-0')}
+      data-zone-tabstrip={node.id}
+      onPointerDownCapture={() => noteActiveTreeGroup(node.id)}
+    >
+      <CompactTabPicker
+        activeId={activeId}
+        newTab={node.minimized ? null : newTab}
+        onClose={closeable ? () => closeTabPane(activeId) : undefined}
+        onSelect={paneId => {
+          clearTabSelection()
+
+          if (node.minimized) {
+            restoreTreePane(paneId)
+          }
+
+          activateTreePane(node.id, paneId)
+        }}
+        tabs={tabs}
+      />
+    </div>
+  )
+}
+
 export function TreeGroup({
   node,
   parentAxis,
@@ -258,14 +370,10 @@ export function TreeGroup({
 }) {
   const { t } = useI18n()
   const ref = useRef<HTMLDivElement>(null)
-  const touchTitlebar = useTouchTitlebar()
-  const titlebarHeight = touchTitlebar ? 44 : TITLEBAR_HEIGHT
   const stripRef = useRef<HTMLDivElement>(null)
   // The scrolling tab list inside the header (the strip also holds the
   // minimize chevron, which must not scroll away).
   const tabsRef = useRef<HTMLDivElement>(null)
-  // Whether the touch now down landed on browser-owned body content.
-  const bodyTouchOwnedByBrowser = useRef(false)
   const measuredBelowControls = usePanelTitlebar(ref, topEdge, Boolean(node.minimized))
   // The chip under the last right-click — the pane the zone menu's Split
   // actions carry into the new zone (header background = the active pane).
@@ -316,14 +424,17 @@ export function TreeGroup({
     : (resolveRememberedActivePane(memoryKey, shown) ?? shown[0] ?? '')
 
   const active = paneFor(activeId)
-  const compactTabs = touchTitlebar && narrow && shown.some(isSessionStripPane)
-  const tabStripHeight = compactTabs ? 44 : 28
   const isEmpty = shown.length === 0
   const sidebarGroup = !node.panes.some(id => id === 'workspace' || paneChrome(paneFor(id)).placement === 'main')
-  // The compact picker needs a full touch row: the titlebar's fit threshold
-  // also has to accommodate the drag handle and the separate new-tab target.
-  const tabsBelowControls = topEdge && (compactTabs || sidebarGroup || measuredBelowControls)
-  const tabsInTitlebar = topEdge && !tabsBelowControls
+
+  const { compactTabs, tabStripHeight, tabsBelowControls, tabsInTitlebar, titlebarHeight } = useZoneHeaderLayout({
+    measuredBelowControls,
+    narrow,
+    shown,
+    sidebarGroup,
+    topEdge
+  })
+
   const pageHeader = paneChrome(active).headerContent
 
   // What the strip's "+" makes. The pane you are LOOKING AT answers first (a
@@ -421,6 +532,8 @@ export function TreeGroup({
   // A minimized group IS its header, so it shows one regardless.
   const headerVisible =
     !isEmpty && !verticalCollapse && (Boolean(node.minimized) || stripVisible || Boolean(pageHeader))
+
+  const topHeaderHeight = titlebarHeight + (tabsBelowControls && headerVisible ? tabStripHeight : 0)
 
   // Keep the activated tab — and, on the last one, the trailing "+" — inside
   // the strip's scroll window. Opening a tab past the right edge otherwise
@@ -578,7 +691,7 @@ export function TreeGroup({
         <div
           className="relative flex min-w-0 shrink-0 bg-(--ui-sidebar-surface-background)"
           data-panel-header=""
-          style={topEdge ? { height: titlebarHeight + (tabsBelowControls && headerVisible ? tabStripHeight : 0) } : undefined}
+          style={topEdge ? { height: topHeaderHeight } : undefined}
         >
           {topEdge && (
             <div aria-hidden="true" className="shrink-0" style={{ width: 'var(--panel-titlebar-left, 100%)' }} />
@@ -594,24 +707,14 @@ export function TreeGroup({
               <PaneTab active>{pageHeader()}</PaneTab>
             </div>
           ) : headerVisible && compactTabs ? (
-            <div
-              className={cn('flex min-w-0 flex-1', tabsBelowControls && 'absolute inset-x-0 bottom-0')}
-              data-zone-tabstrip={node.id}
-              onPointerDownCapture={() => noteActiveTreeGroup(node.id)}
-            >
-              <CompactTabPicker
-                activeId={activeId}
-                newTab={node.minimized ? null : newTab}
-                onClose={closeableTab(activeId) ? () => closeTab(activeId) : undefined}
-                onSelect={paneId => {
-                  clearTabSelection()
-
-                  if (node.minimized) { restoreTreePane(paneId) }
-                  activateTreePane(node.id, paneId)
-                }}
-                tabs={shown.map(id => ({ id, title: tabText(id), label: tabLabel(id) }))}
-              />
-            </div>
+            <CompactZoneTabs
+              activeId={activeId}
+              belowControls={tabsBelowControls}
+              closeable={closeableTab(activeId)}
+              newTab={newTab}
+              node={node}
+              tabs={shown.map(id => ({ id, label: tabLabel(id), title: tabText(id) }))}
+            />
           ) : headerVisible ? (
             <ZoneMenu {...zoneMenu}>
               <PaneTabStrip
@@ -831,23 +934,9 @@ export function TreeGroup({
           wrap={
             !isEmpty
               ? body => (
-                  <ZoneMenu {...zoneMenu} allowOpen={() => !bodyTouchOwnedByBrowser.current} includeAppActions>
-                    {/* A touch hold on message text, an editable, a link or
-                        media keeps the browser's selection/paste callout; the
-                        hold opens this menu only on plain pane chrome. */}
-                    <div
-                      aria-label={t.zones.zoneMenuLabel(String(tabLabel(activeId)))}
-                      data-zone-body={node.id}
-                      onPointerCancel={() => void (bodyTouchOwnedByBrowser.current = false)}
-                      onPointerDown={event =>
-                        void (bodyTouchOwnedByBrowser.current = isBrowserOwnedTouch(event.nativeEvent))
-                      }
-                      onPointerUp={() => void (bodyTouchOwnedByBrowser.current = false)}
-                      style={{ display: 'contents' }}
-                    >
-                      {body}
-                    </div>
-                  </ZoneMenu>
+                  <ZoneBodyMenu {...zoneMenu} label={t.zones.zoneMenuLabel(String(tabLabel(activeId)))}>
+                    {body}
+                  </ZoneBodyMenu>
                 )
               : undefined
           }
@@ -919,29 +1008,12 @@ export function TreeGroup({
           starts below the header so tabs/headers stay directly interactive
           (drag any tab, right-click for the zone menu). */}
       {editMode && !dragging && !isEmpty && !node.minimized && (
-        <ZoneMenu {...zoneMenu}>
-          <div
-            // z-50: pane CONTENT may carry its own stacked chrome (the
-            // terminal rail is z-40) — the edit veil must cover all of it.
-            // The scrim mixes the accent over the CHROME BG (not transparent)
-            // so it properly dims content in dark themes instead of leaving a
-            // barely-tinted wash; the light blur reads as "edit mode" the same
-            // way the zone editor's backdrop does.
-            className="absolute inset-x-0 bottom-0 z-50 flex cursor-grab items-center justify-center outline-1 -outline-offset-2 outline-dashed backdrop-blur-[2px]"
-            onPointerDown={e => startPaneDrag(activeId, e, undefined, undefined, tabText(activeId))}
-            style={{
-              top: topEdge ? titlebarHeight + (tabsBelowControls && headerVisible ? tabStripHeight : 0) : headerVisible ? tabStripHeight : 0,
-              background:
-                'color-mix(in srgb, var(--ui-accent) 6%, color-mix(in srgb, var(--ui-bg-chrome) 55%, transparent))',
-              outlineColor: 'color-mix(in srgb, var(--ui-accent) 55%, transparent)'
-            }}
-          >
-            <span className="flex max-w-[calc(100%-1rem)] items-center gap-1.5 rounded-md border border-(--ui-stroke-secondary) bg-popover px-2 py-1 text-[0.64rem] font-semibold uppercase tracking-[0.16em] text-(--ui-text-secondary)">
-              <Codicon className="shrink-0" name="gripper" size="0.8125rem" />
-              <span className="min-w-0 truncate">{tabText(activeId)}</span>
-            </span>
-          </div>
-        </ZoneMenu>
+        <EditVeil
+          {...zoneMenu}
+          label={tabText(activeId)}
+          onPointerDown={e => startPaneDrag(activeId, e, undefined, undefined, tabText(activeId))}
+          top={topEdge ? topHeaderHeight : headerVisible ? tabStripHeight : 0}
+        />
       )}
 
       {/* FancyZones drop overlay — its own component so the per-frame drop

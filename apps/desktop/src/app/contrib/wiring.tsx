@@ -293,6 +293,18 @@ function useRecoveryRequestToasts(): void {
   }, [cronReviewRequest, navigate])
 }
 
+// Where the fixed titlebar clusters sit (the same vars AppShell sets). Browser
+// touch chrome pins them flush in its 44px band, at touch-target size.
+function useTitlebarControlsVars(controlsPos: { left: number; top: number }): CSSProperties {
+  const touchTitlebar = useTouchTitlebar()
+
+  return {
+    '--titlebar-controls-left': `${controlsPos.left}px`,
+    '--titlebar-controls-top': `${touchTitlebar ? 0 : controlsPos.top}px`,
+    ...(touchTitlebar ? { '--titlebar-control-size': '44px', '--titlebar-control-height': '44px' } : {})
+  } as CSSProperties
+}
+
 export function ContribWiring({ children }: { children: ReactNode }) {
   const queryClient = useQueryClient()
   const location = useLocation()
@@ -1224,7 +1236,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
   const rightTitlebarTools = useTitlebarToolContributions('right')
   const connection = useStore($connection)
   const controlsPos = titlebarControlsPosition(connection?.windowButtonPosition, Boolean(connection?.isFullscreen))
-  const touchTitlebar = useTouchTitlebar()
+  const controlsVars = useTitlebarControlsVars(controlsPos)
   // Windows/WSLg reserve native min/max/close on the right (AppShell parity:
   // prefer the live WCO measurement, fall back to the static reservation).
   const measuredOverlayWidth = useWindowControlsOverlayWidth()
@@ -1264,9 +1276,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
         className="contents"
         style={
           {
-            '--titlebar-controls-left': `${controlsPos.left}px`,
-            '--titlebar-controls-top': `${touchTitlebar ? 0 : controlsPos.top}px`,
-            ...(touchTitlebar ? { '--titlebar-control-size': '44px', '--titlebar-control-height': '44px' } : {}),
+            ...controlsVars,
             '--titlebar-controls-width': leftToolsWidth,
             '--titlebar-controls-y-nudge': titlebarControlsYNudge(titlebarChrome),
             '--titlebar-tools-right': titlebarToolsRight,

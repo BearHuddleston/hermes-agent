@@ -87,6 +87,16 @@ function writeRaw(store: Storage, key: string, value: string): boolean {
   }
 }
 
+type FieldGuard = (value: unknown) => boolean
+
+const isString: FieldGuard = value => typeof value === 'string'
+const isBoolean: FieldGuard = value => typeof value === 'boolean'
+const isFiniteNumber: FieldGuard = value => typeof value === 'number' && Number.isFinite(value)
+const isStringArray: FieldGuard = value => Array.isArray(value) && value.every(isString)
+
+// An absent optional field is valid; a present one must pass its guard.
+const optional = (value: unknown, guard: FieldGuard): boolean => value === undefined || guard(value)
+
 function isSnapshot(value: unknown): value is InFlightTurnSnapshot {
   if (!value || typeof value !== 'object') {
     return false
@@ -108,30 +118,26 @@ function isSnapshot(value: unknown): value is InFlightTurnSnapshot {
             Boolean(part) &&
             typeof part === 'object' &&
             typeof part.type === 'string' &&
-            (part.sourceRowId === undefined ||
-              (typeof part.sourceRowId === 'number' && Number.isFinite(part.sourceRowId))) &&
+            optional(part.sourceRowId, isFiniteNumber) &&
             (part.type !== 'text' && part.type !== 'reasoning'
               ? part.type !== 'tool-call' ||
                 (typeof part.toolName === 'string' &&
-                  (part.toolCallId === undefined || typeof part.toolCallId === 'string') &&
-                  (part.isError === undefined || typeof part.isError === 'boolean'))
-              : typeof part.text === 'string' && (part.parentId === undefined || typeof part.parentId === 'string'))
+                  optional(part.toolCallId, isString) &&
+                  optional(part.isError, isBoolean))
+              : typeof part.text === 'string' && optional(part.parentId, isString))
         ) &&
-        (message.timestamp === undefined ||
-          (typeof message.timestamp === 'number' && Number.isFinite(message.timestamp))) &&
-        (message.pending === undefined || typeof message.pending === 'boolean') &&
-        (message.userOriginated === undefined || typeof message.userOriginated === 'boolean') &&
-        (message.runtimeTurnStartedAt === undefined ||
-          (typeof message.runtimeTurnStartedAt === 'number' && Number.isFinite(message.runtimeTurnStartedAt))) &&
-        (message.error === undefined || typeof message.error === 'string') &&
-        (message.branchGroupId === undefined || typeof message.branchGroupId === 'string') &&
-        (message.hidden === undefined || typeof message.hidden === 'boolean') &&
-        (message.interim === undefined || typeof message.interim === 'boolean') &&
-        (message.recovered === undefined || typeof message.recovered === 'boolean') &&
-        (message.durableComplete === undefined || typeof message.durableComplete === 'boolean') &&
-        (message.attachmentRefs === undefined ||
-          (Array.isArray(message.attachmentRefs) && message.attachmentRefs.every(ref => typeof ref === 'string'))) &&
-        (message.rowId === undefined || (typeof message.rowId === 'number' && Number.isFinite(message.rowId)))
+        optional(message.timestamp, isFiniteNumber) &&
+        optional(message.pending, isBoolean) &&
+        optional(message.userOriginated, isBoolean) &&
+        optional(message.runtimeTurnStartedAt, isFiniteNumber) &&
+        optional(message.error, isString) &&
+        optional(message.branchGroupId, isString) &&
+        optional(message.hidden, isBoolean) &&
+        optional(message.interim, isBoolean) &&
+        optional(message.recovered, isBoolean) &&
+        optional(message.durableComplete, isBoolean) &&
+        optional(message.attachmentRefs, isStringArray) &&
+        optional(message.rowId, isFiniteNumber)
     ) &&
     (snapshot.streamId === null || typeof snapshot.streamId === 'string') &&
     (snapshot.turnStartedAt === null || typeof snapshot.turnStartedAt === 'number') &&

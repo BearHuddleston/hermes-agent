@@ -407,6 +407,12 @@ function GlassRow({ children, label }: GlassRowProps) {
   )
 }
 
+// TRANSLUCENCY_SUPPORTED is fixed when its module loads, which can precede the
+// browser bridge marking the host, so the row re-checks the host at render.
+function windowTranslucencyAvailable(): boolean {
+  return TRANSLUCENCY_SUPPORTED && !isBrowserHostedDesktop()
+}
+
 interface AppearanceSettingsProps {
   subpage?: string
 }
@@ -447,7 +453,6 @@ export function AppearanceSettings({ subpage }: AppearanceSettingsProps = {}) {
   const installs = useStore($marketplaceInstalls)
   const profiles = useStore($profiles)
   const activeProfileKey = normalizeProfileKey(useStore($activeGatewayProfile))
-  const browserHosted = isBrowserHostedDesktop()
   const a = t.settings.appearance
 
   // A pointer held on the intensity slider when this overlay closes (Escape
@@ -794,7 +799,7 @@ export function AppearanceSettings({ subpage }: AppearanceSettingsProps = {}) {
 
           {/* Linux has neither half of this setting (see TRANSLUCENCY_SUPPORTED),
               so the row is absent there rather than offering a dead lever. */}
-          {show('window-layout') && TRANSLUCENCY_SUPPORTED && !browserHosted && (
+          {show('window-layout') && windowTranslucencyAvailable() && (
             <ListRow
               action={
                 <div

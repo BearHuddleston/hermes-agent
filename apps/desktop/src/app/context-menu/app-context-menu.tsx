@@ -60,6 +60,16 @@ function isNativeMediaContextMenu(event: MouseEvent): boolean {
   return [event.target, ...path].some(target => target instanceof HTMLMediaElement)
 }
 
+/** Take a gesture the app menu answers away from other renderer handlers,
+ * cancelling the browser's native menu only where it would open alongside. */
+function claimContextMenuGesture(event: MouseEvent) {
+  if (isBrowserHostedDesktop()) {
+    event.preventDefault()
+  }
+
+  event.stopPropagation()
+}
+
 function isLoopbackUrl(url: string): boolean {
   try {
     return LOOPBACK_HOST_RE.test(new URL(url).hostname)
@@ -597,11 +607,7 @@ export function AppContextMenu() {
       const terminal = terminalMenuHandleFor(element)
 
       if (terminal) {
-        if (isBrowserHostedDesktop()) {
-          event.preventDefault()
-        }
-
-        event.stopPropagation()
+        claimContextMenuGesture(event)
         openTerminalContextMenu(event.clientX, event.clientY, terminal)
 
         return
@@ -632,11 +638,7 @@ export function AppContextMenu() {
         return
       }
 
-      if (isBrowserHostedDesktop()) {
-        event.preventDefault()
-      }
-
-      event.stopPropagation()
+      claimContextMenuGesture(event)
       openDomContextMenu(event.clientX, event.clientY, target)
     }
 

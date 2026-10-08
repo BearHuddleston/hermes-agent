@@ -433,16 +433,21 @@ export function useComposerActions({
    *  attach paths funnel through here. */
   const attachToMain = useCallback(
     (attachment: ComposerAttachment) => {
-      const stagedUpload = attachment.kind === 'file' && attachment.path
-        ? window.hermesDesktop?.getStagedFileForAttach?.(attachment.path)
-        : undefined
+      const stagedUpload =
+        attachment.kind === 'file' && attachment.path
+          ? window.hermesDesktop?.getStagedFileForAttach?.(attachment.path)
+          : undefined
 
-      const displayName = attachment.kind === 'file' && attachment.path
-        && attachment.label === pathLabel(attachment.path)
-        ? window.hermesDesktop?.getStagedFileDisplayName?.(attachment.path)
-        : undefined
+      const displayName =
+        attachment.kind === 'file' && attachment.path && attachment.label === pathLabel(attachment.path)
+          ? window.hermesDesktop?.getStagedFileDisplayName?.(attachment.path)
+          : undefined
 
-      scope.add({ ...attachment, ...(stagedUpload ? { stagedUpload } : {}), ...(displayName ? { label: displayName } : {}) })
+      scope.add({
+        ...attachment,
+        ...(stagedUpload ? { stagedUpload } : {}),
+        ...(displayName ? { label: displayName } : {})
+      })
       requestComposerFocus(scope.target)
     },
     [scope]
@@ -816,7 +821,7 @@ export function useComposerActions({
         const fallbackPath =
           !knownPath && window.hermesDesktop?.getPathForFile ? window.hermesDesktop.getPathForFile(file) : ''
 
-        let filePath = knownPath || fallbackPath || ''
+        const filePath = knownPath || fallbackPath || ''
         const isImage = file.type.startsWith('image/') || isImagePath(file.name) || (filePath && isImagePath(filePath))
 
         if (isImage) {
@@ -839,11 +844,10 @@ export function useComposerActions({
           continue
         }
 
-        if (!filePath) {
-          filePath = await stageDroppedFilePath(candidate)
-        }
+        // The resolved native path wins; with none, the File bytes are staged.
+        const contextPath = await stageDroppedFilePath({ ...candidate, path: filePath })
 
-        if (filePath && attachContextFilePath(filePath)) {
+        if (contextPath && attachContextFilePath(contextPath)) {
           attached = true
 
           continue

@@ -20,12 +20,8 @@ import {
 } from '@/lib/gateway-liveness-policy'
 import { isMissingRpcMethod } from '@/lib/gateway-rpc'
 import { traceIdentityChange } from '@/lib/identity-trace'
-import {
-  isTimeoutError,
-  RECONNECT_ATTEMPT_TIMEOUT_MS,
-  SOURCE_SWITCH_DIAL_TIMEOUT_MS,
-  withTimeout
-} from '@/lib/with-timeout'
+import { RECONNECT_ATTEMPT_TIMEOUT_MS, SOURCE_SWITCH_DIAL_TIMEOUT_MS, withTimeout } from '@/lib/with-timeout'
+import { isMissingConnectionError, isMissingProfileError, isStalledDialError } from '@/store/gateway-dial-errors'
 import { notifyError, RECOVERY_ACTIONS } from '@/store/notifications'
 import { markNativeNotifyBaseline } from '@/store/notify-baseline'
 import { setConnection, setGatewayState } from '@/store/session'
@@ -908,16 +904,6 @@ async function openSecondary(entry: Secondary, spawnPriority: SpawnPriority = 'b
 // ensureActiveGatewayOpen) re-arms it with a fresh budget.
 const SECONDARY_STALLED_DIAL_BUDGET = 3
 
-function isStalledDialError(error: unknown): boolean {
-  if (isTimeoutError(error)) {
-    return true
-  }
-
-  const message = error instanceof Error ? error.message : String(error ?? '')
-
-  return message.includes('timed out while waiting for a free slot')
-}
-
 function rearmSecondary(entry: Secondary, priority: SpawnPriority = 'foreground'): void {
   const reauthError = g.reauthFailures.get(entry.scope)?.error
 
@@ -1068,25 +1054,6 @@ async function reconnectSecondary(entry: Secondary): Promise<void> {
       scheduleReconnect(entry)
     }
   }
-}
-
-// Electron's getConnectionFor rejects with `No connection with id "…"` when
-// the registry entry is gone. That is a permanent condition for the scoped
-// socket, unlike transient transport errors.
-function isMissingConnectionError(error: unknown): boolean {
-  const message = error instanceof Error ? error.message : String(error ?? '')
-
-  return message.includes('No connection with id')
-}
-
-// Electron's spawn guard (assertLocalProfileCanStart) rejects with these when
-// the profile's directory is gone or its DELETE is still in flight. For a
-// renderer socket that condition is permanent: the backend it reconnects to
-// can never come back, and every retry hammers the guard (#88769).
-function isMissingProfileError(error: unknown): boolean {
-  const message = error instanceof Error ? error.message : String(error ?? '')
-
-  return message.includes('no longer exists') || message.includes('is being deleted')
 }
 
 function createSecondary(profile: string, connectionId: null | string = null): Secondary {
