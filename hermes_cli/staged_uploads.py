@@ -30,7 +30,8 @@ from hermes_cli.profile_incarnation import (
 from hermes_cli.web_deps import late
 
 
-_profile_scope = late("_profile_scope", "hermes_cli.web_server_profiles")
+_is_current_profile = late("_is_current_profile", "hermes_cli.web_server_profiles")
+_resolve_profile_dir = late("_resolve_profile_dir", "hermes_cli.web_server_profiles")
 _UPLOADS_DIR = "uploads"
 _STAGED_PREFIX = "web-"
 _CHUNK_BYTES = 1024 * 1024
@@ -77,21 +78,28 @@ def removed_on_failure(target: Path):
 
 
 def resolve_upload_generation(profile: str | None) -> tuple[Path, str | None]:
-    """Resolve one profile home and capture the named generation it denotes."""
+    """Resolve one profile home and capture the named generation it denotes.
+
+    The home ``_profile_scope`` would bind, with its 400/404s, but without entering it: nothing
+    here reads config or secrets, so an upload must not queue on that scope's process-wide skills
+    lock or wait on its secret-source hydration.
+    """
     from hermes_constants import get_hermes_home, named_profile_home_is_unavailable
 
-    with _profile_scope(profile) as scoped_home:
-        home = Path(scoped_home or get_hermes_home())
-        if named_profile_home_is_unavailable(home):
-            raise HTTPException(status_code=404, detail="Profile home is unavailable")
-        try:
-            incarnation = ensure_profile_incarnation(home)
-        except FileNotFoundError as exc:
-            raise HTTPException(
-                status_code=404,
-                detail="Profile home is unavailable",
-            ) from exc
-        return home, incarnation
+    if _is_current_profile(profile):
+        home = get_hermes_home()
+    else:
+        home = _resolve_profile_dir(profile.strip())
+    if named_profile_home_is_unavailable(home):
+        raise HTTPException(status_code=404, detail="Profile home is unavailable")
+    try:
+        incarnation = ensure_profile_incarnation(home)
+    except FileNotFoundError as exc:
+        raise HTTPException(
+            status_code=404,
+            detail="Profile home is unavailable",
+        ) from exc
+    return home, incarnation
 
 
 @contextmanager

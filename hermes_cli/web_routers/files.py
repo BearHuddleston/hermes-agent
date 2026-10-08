@@ -507,9 +507,7 @@ async def upload_chat_image(payload: ChatImageUpload, profile: Optional[str] = N
             "mime_type": mime_type,
         }
 
-    # _profile_scope takes _SKILLS_PROFILE_LOCK and the body does file I/O — both
-    # off the loop; to_thread copies the contextvar context so the override
-    # stays scoped to the worker thread.
+    # The body does file I/O under the profile's lifecycle lease: keep it off the loop.
     return await asyncio.to_thread(_run)
 
 
