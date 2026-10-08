@@ -27,7 +27,7 @@ import type { SessionMessage, SessionResumeResult } from '@/types/hermes'
 
 import { useMessageStream } from './use-message-stream'
 import { useSessionActions } from './use-session-actions'
-import { appendLiveSessionProjection } from './use-session-actions/utils'
+import { appendLiveSessionProjection } from './use-session-actions/live-session-projection'
 import { useSessionStateCache } from './use-session-state-cache'
 
 vi.mock('@/hermes', async original => ({

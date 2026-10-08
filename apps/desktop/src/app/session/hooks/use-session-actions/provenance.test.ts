@@ -3,7 +3,8 @@ import { describe, expect, it } from 'vitest'
 import { type ChatMessage, chatMessageText, toChatMessages } from '@/lib/chat-messages'
 import type { SessionResumeResult } from '@/types/hermes'
 
-import { appendLiveSessionProjection, chatMessagesEquivalent, overlayConcurrentMessageChanges, preserveLocalPendingTurnMessages } from './utils'
+import { appendLiveSessionProjection } from './live-session-projection'
+import { chatMessagesEquivalent, overlayConcurrentMessageChanges, preserveLocalPendingTurnMessages } from './utils'
 
 const snapshot = (
   user: string,

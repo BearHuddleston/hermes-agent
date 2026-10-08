@@ -1,8 +1,8 @@
 import type { ChatMessage } from '@/lib/chat-messages'
 import type { SessionMessage, SessionResumeResult } from '@/types/hermes'
 
+import { finiteTurnStartedAt } from './live-session-projection'
 import { isInflightPromptRow, reconcilePersistedLiveTurn } from './persisted-live-turn'
-import { finiteTurnStartedAt } from './utils'
 
 type LiveTurnProjection = Pick<SessionResumeResult, 'inflight' | 'queued' | 'session_id' | 'turn_started_at'>
 
