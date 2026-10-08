@@ -31,7 +31,7 @@ def _handle_admitted_request(req: dict) -> dict | None:
             return _err(rid, 4000, problem)
     token = _current_rpc_method.set(method)
     try:
-        response = fn(rid, params)
+        response = _call_with_chat_access(rid, method, params, fn)
     except ProfileUnavailableError as exc:
         return _err(rid, 4064, str(exc))
     finally:
@@ -53,6 +53,8 @@ def dispatch(req: dict, transport: Optional[Transport] = None) -> dict | None:
         from tui_gateway import server_requests
         if server_requests.is_response_frame(req):
             # The renderer answering one of OUR requests (clarify, approval, …): no response frame goes back.
+            if _shared_turn_refuses_response(req, t):
+                return None
             if not server_requests.resolve_response(req, t) and not _relay_compute_host_response(req):
                 logger.debug("dropping response for unknown server request id=%r", req.get("id"))
             return None

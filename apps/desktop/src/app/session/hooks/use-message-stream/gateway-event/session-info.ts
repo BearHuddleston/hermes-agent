@@ -29,6 +29,7 @@ import {
   setWorkspaceCwdOwner,
   setYoloActive
 } from '@/store/session'
+import { noteSharedTurn } from '@/store/shared-turns'
 import { reportInstallMethodWarning } from '@/store/updates'
 
 import {
@@ -154,6 +155,15 @@ export function handleSessionInfoEvent(ctx: GatewayEventContext): boolean {
     // conversation already on screen — if so, re-bind the pane so every
     // subsequent isActiveEvent gate keeps matching (#93942 scenario B).
     const rebound = maybeRebindPaneToRebuiltRuntime(ctx)
+
+    // Shared chats: who may answer / stop the running turn (tui_gateway/shared_turns.py).
+    if (sessionId && payload && 'turn_control' in payload) {
+      noteSharedTurn(sessionId, {
+        chatOwner: payload.chat_owner ?? null,
+        control: payload.turn_control === 'anyone' ? 'anyone' : 'sender',
+        owner: payload.turn_owner ?? null
+      })
+    }
 
     // Apply session-scoped fields when the event targets the active
     // session, OR when it's a global broadcast and we have no session.

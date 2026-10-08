@@ -1,5 +1,11 @@
 /// <reference types="vite/client" />
 
+// Source of the chat-app multiplayer runtime (src/app/apps/frame-runtime.ts), bundled by vite.config.ts.
+declare module 'virtual:hermes-app-runtime' {
+  const source: string
+  export default source
+}
+
 // @novnc/novnc ships no typings (its export is core/rfb.js); the surface the Bot Screen pane uses.
 // Declared here because `apps/desktop/src/**/*.d.ts` is gitignored except for the allowlisted files,
 // and an ambient `declare module` only works in a script-scoped (import-free) declaration file.

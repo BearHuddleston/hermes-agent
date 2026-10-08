@@ -437,7 +437,18 @@ async def _ws_gate(ws: WebSocket, kind: str) -> Optional[tuple[str, str, str]]:
         _log.warning("%s refused: %s", kind, client_reason)
         await ws.close(code=4408, reason=_ws_close_reason(client_reason))
         return None
+    if kind not in _MEMBER_SOCKET_KINDS:
+        from hermes_cli.web_sharing_gate import ws_member
+        if ws_member(ws) is not None:
+            # A terminal or console runs as the host: a shared-chat member never gets one.
+            _log.info("%s refused: shared-chat member peer=%s", kind, peer)
+            await ws.close(code=4403, reason="only this agent's owners can open this")
+            return None
     return peer, mode, cred
+
+
+# Sockets a shared-chat member may open; each checks the chat itself (web_sharing.may_join_room).
+_MEMBER_SOCKET_KINDS = frozenset({"presence", "apps"})
 
 
 async def _pty_fail(ws: WebSocket, exc: BaseException, *, surface: str = "Chat") -> None:

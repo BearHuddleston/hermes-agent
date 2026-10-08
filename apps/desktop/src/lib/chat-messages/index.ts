@@ -1,5 +1,5 @@
 export { sameAttachmentTurn } from './attachment-turn'
-export { toChatMessages } from './hydration'
+export { messageSender, toChatMessages } from './hydration'
 export {
   appendAssistantTextPart,
   appendReasoningPart,
@@ -18,6 +18,7 @@ export {
   textPart
 } from './parts'
 export type { UnspokenTurnSpeech } from './parts'
+export { type PeerPromptEcho, withPeerPrompt } from './peer-prompt'
 export {
   branchGroupForUser,
   preserveLocalAssistantErrors,
@@ -36,4 +37,4 @@ export {
   withUniqueToolCallIdsWithinMessage
 } from './tool-parts'
 export type { PendingClarifyProjection, SettledClarifyProjection } from './tool-parts'
-export type { ChatMessage, ChatMessagePart, GatewayEventPayload, TimelinePartMetadata } from './types'
+export type { ChatMessage, ChatMessagePart, GatewayEventPayload, MessageSender, TimelinePartMetadata } from './types'

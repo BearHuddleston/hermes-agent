@@ -244,6 +244,9 @@ const COMPARED_FIELDS = [
   'interim',
   'interrupted',
   'reactions',
+  // Shared chats: the sender label above a user bubble is visible, so a row that
+  // gains or changes its sender (hydration after a peer's echo) must repaint.
+  'sender',
   'timestamp',
   'completedAt',
   // Turn wall-clock duration — stamps the visible "⏱ 38s" badge, so a change
@@ -379,7 +382,10 @@ export function chatMessagesEquivalent(a: ChatMessage, b: ChatMessage): boolean 
     // Interim gates the action footer, so flipping it must repaint (e.g. a
     // previewed final settling onto a sealed interim bubble restores the bar).
     (a.interim ?? false) !== (b.interim ?? false) ||
-    !chatReactionsEquivalent(a.reactions, b.reactions)
+    !chatReactionsEquivalent(a.reactions, b.reactions) ||
+    a.sender?.id !== b.sender?.id ||
+    a.sender?.name !== b.sender?.name ||
+    a.sender?.color !== b.sender?.color
   ) {
     return false
   }

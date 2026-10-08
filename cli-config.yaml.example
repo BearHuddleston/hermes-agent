@@ -1085,6 +1085,17 @@ group_sessions_per_user: true
 # dashboard:
 #   startup_orphan_sweep: true
 
+# Chats several signed-in people share in the Webapp (Nous or self-hosted OIDC sign-in).
+# "sender": whoever sent a turn answers its approval/sudo/secret/clarify prompts and alone may
+# stop or redirect it (the chat's creator may once that person has left); other people's messages
+# queue behind it. "anyone": every attached window may act on every turn.
+# owners: account ids with full access. Empty (default): everyone signed in sees every chat.
+# Once set, anyone else sees only the chats an owner shares with them, as viewer or participant.
+# dashboard:
+#   shared_chats:
+#     turn_control: sender
+#     owners: ["nous:usr_1a2b3c"]
+
 # ─────────────────────────────────────────────────────────────────────────────
 # API Server — per-client model routing
 # ─────────────────────────────────────────────────────────────────────────────

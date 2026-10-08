@@ -60,6 +60,19 @@ class McpServerStatus(OpenModel):
     error: str | None = None
 
 
+class SenderCard(Result):
+    """A signed-in person as shown in a shared chat (``shared_turns._sender_card``). Display only."""
+
+    id: str
+    name: str
+    color: str
+
+
+class TurnControl(WireEnum):
+    sender = "sender"  # the turn's sender (or the chat's creator once the sender left) answers and stops it
+    anyone = "anyone"  # every attached window may (SECURITY.md §2 rule 4)
+
+
 class SessionLiveInfo(OpenModel):
     """``tui_gateway/server.py::_session_info`` — the ``session.info`` event and the ``info`` field of
     ``session.create`` / ``session.resume`` / ``session.activate`` results."""
@@ -83,6 +96,11 @@ class SessionLiveInfo(OpenModel):
     personality: str = ""
     running: bool = False
     turn_started_at: float | None = None
+    # Shared chats (Webapp, several sign-ins): who sent the running turn, who created the chat, and the
+    # policy deciding who may answer its prompts / stop / redirect it (``tui_gateway/shared_turns.py``).
+    turn_owner: SenderCard | None = None
+    chat_owner: str | None = None
+    turn_control: TurnControl | None = None
     title: str = ""
     stored_session_id: str = ""
     desktop_contract: int | str | None = None

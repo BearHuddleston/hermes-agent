@@ -616,6 +616,10 @@ async def speak_stream_ws(ws: "WebSocket") -> None:
     if not _ws_request_is_allowed(ws):
         await ws.close(code=4403)
         return
+    from hermes_cli.web_sharing_gate import ws_member
+    if ws_member(ws) is not None:
+        await ws.close(code=4403)  # speech spends the host's provider credentials
+        return
     await ws.accept()
 
     # Profile via query param, like /api/pty and /api/console: the provider

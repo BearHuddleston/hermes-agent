@@ -24,6 +24,7 @@ import { sanitizeComposerInput } from '@/lib/composer-input-sanitize'
 import { DATA_IMAGE_URL_RE } from '@/lib/embedded-images'
 import { triggerHaptic } from '@/lib/haptics'
 import { isMacPlatform } from '@/lib/platform'
+import { presenceRoom } from '@/lib/presence-client'
 import { useStoreSelector, useStoresSelector } from '@/lib/use-session-slice'
 import { cn } from '@/lib/utils'
 import { sessionCompacting } from '@/store/compaction'
@@ -37,10 +38,14 @@ import { sessionBlockingPrompt } from '@/store/prompts'
 import { toggleReview } from '@/store/review'
 import { $gatewayState } from '@/store/session'
 import { $botChatSessionIds, $sessionStates, $sessionTiles, isBotChatSession } from '@/store/session-states'
+import { sessionTurnHolder } from '@/store/shared-turns'
+import { chatLock } from '@/store/sharing'
 import { useForcedTextDirection } from '@/store/text-direction'
 import { $threadScrolledUpBySession } from '@/store/thread-scroll'
 import { $autoSpeakReplies } from '@/store/voice-prefs'
 import { useTheme } from '@/themes'
+
+import { useTurnHolder } from '../presence/turn-holder'
 
 import { AttachmentList } from './attachments'
 import {
@@ -131,7 +136,7 @@ function controlRowGridClass(singleColumn: boolean, stacked: boolean): string {
 export function ChatBar({
   busy,
   cwd,
-  disabled,
+  disabled: disabledProp,
   focusKey,
   freshDraftKey,
   gateway,
@@ -187,6 +192,17 @@ export function ChatBar({
   // prompt owns its own dismissal (Skip, Reject, dialog close).
   const awaitingInput = useStore(scope.$awaitingInput)
   const blockingPrompt = useStore(useMemo(() => sessionBlockingPrompt(sessionId ?? null), [sessionId]))
+  // A shared chat's turn sent by someone else: queue behind it, never steer or stop it.
+  const turnHolder = useTurnHolder(sessionId)
+
+  // A viewer of a shared chat follows it but cannot send, and neither can someone whose access was just
+  // removed (hermes_cli/web_sharing.py enforces both).
+  const lock = useStore(
+    useMemo(() => chatLock(presenceRoom(profile, queueSessionKey || sessionId)), [profile, queueSessionKey, sessionId])
+  )
+
+  const viewOnly = lock !== null
+  const disabled = disabledProp || viewOnly
   const activeQueueSessionKey = queueSessionKey || sessionId || freshDraftKey || null
   const { collapsed: statusDrawerCollapsed, toggle: toggleStatusDrawer } = useStatusDrawer(activeQueueSessionKey)
   const statusDrawerId = useId()
@@ -382,10 +398,14 @@ export function ChatBar({
   // busy) call the raw onCancel and keep draining on settle. Parked entries
   // stay in the panel until resumed, sent, edited, or deleted.
   const haltRun = useCallback(() => {
+    if (sessionTurnHolder(sessionId)) {
+      return
+    }
+
     parkQueuedPrompts(activeQueueSessionKeyRef.current)
 
     return onCancel()
-  }, [activeQueueSessionKeyRef, onCancel])
+  }, [activeQueueSessionKeyRef, onCancel, sessionId])
 
   const { compactPill, foldVoice, minimal, stacked, singleColumn } = useComposerMetrics({
     composerDockRef,
@@ -403,7 +423,7 @@ export function ChatBar({
   // A blocking prompt (approval/sudo/secret) also rules it out: the tool batch
   // is parked on the user, so a steer can't reach the model — text queues.
   // Compaction does not: the gateway holds the correction until it finishes.
-  const canSteer = busy && !blockingPrompt && !!onSteer && attachments.length === 0 && isSteerableText
+  const canSteer = busy && !blockingPrompt && !turnHolder && !!onSteer && attachments.length === 0 && isSteerableText
 
   // While busy: text redirects the live turn (Cursor-style stop-and-correct),
   // attachments queue for the next turn, an empty composer stops.
@@ -446,7 +466,15 @@ export function ChatBar({
 
   // Resting / reconnecting / starting placeholder text, re-rolled only on a real
   // conversation change.
-  const placeholder = useComposerPlaceholder({ disabled, reconnecting, sessionId })
+  const restingPlaceholder = useComposerPlaceholder({ disabled, reconnecting, sessionId })
+
+  const placeholder = lock
+    ? lock === 'removed'
+      ? t.sharing.accessRemoved
+      : t.sharing.viewerComposer
+    : turnHolder && busy
+      ? t.presence.turnRunning(turnHolder.name || t.presence.chatCreator)
+      : restingPlaceholder
 
   // Trigger / completion engine: @// detection, the adapter-driven item list,
   // popover selection, and chip insertion. The keydown nav block below consumes
@@ -1122,7 +1150,7 @@ export function ChatBar({
       autoSpeak={autoSpeak}
       busy={busy}
       busyAction={busyAction}
-      canSubmit={canSubmit}
+      canSubmit={canSubmit && !(turnHolder && busy && !hasComposerPayload)}
       compactModelPill={poppedOut || compactPill}
       conversation={{
         active: voiceConversationActive,

@@ -3,6 +3,7 @@
 import { useStore } from '@nanostores/react'
 import { type FormEvent, useCallback, useEffect, useMemo, useState } from 'react'
 
+import { useTurnHolder } from '@/app/chat/presence/turn-holder'
 import { Button } from '@/components/ui/button'
 import {
   Dialog,
@@ -579,6 +580,14 @@ function VaultCodeDialog({ sessionId }: { sessionId: string | null }) {
  *  and each tile with its own session id, so a background/tiled session's
  *  blocking prompt renders instead of silently stalling. */
 export function PromptOverlays({ sessionId }: { sessionId: string | null }) {
+  // A shared chat's turn sent by someone else: its password / secret / vault prompts are theirs.
+  // A modal here would block this window on input it cannot give; the composer names who holds it.
+  const holder = useTurnHolder(sessionId)
+
+  if (holder) {
+    return null
+  }
+
   return (
     <>
       <SudoDialog sessionId={sessionId} />

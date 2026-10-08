@@ -715,6 +715,7 @@ class _Resume:
             self.target, cols=self.cols, cwd=cwd, history=history, lease=None, source=source,
             close_on_disconnect=_flag(self.params, "close_on_disconnect"), profile_home=self.profile_home,
             profile_incarnation=self.profile_incarnation, explicit_cwd=bool(self.profile_resume_cwd), **extra)
+        record["auth_user_id"] = _chat_creator(self.found)
         if follows_profile:
             record.update(
                 follow_profile_config=True,
@@ -864,6 +865,14 @@ def _resume_materialize_minted(ctx: _Resume) -> None:
         )
     except Exception:
         logger.warning("failed to materialize session row for %s", ctx.target, exc_info=True)
+
+
+def _chat_creator(found: dict | None) -> str | None:
+    """Who created a stored chat (its row's ``user_id``); the resuming login only for a chat without one.
+    Someone reopening another person's chat must not become its creator: the creator answers a turn whose
+    sender left (shared_turns.py) and owns the chat (hermes_cli/web_sharing.py)."""
+    stored = (found or {}).get("user_id")
+    return stored if isinstance(stored, str) and stored else _transport_auth_user_id(current_transport())
 
 
 def _resume_locate(ctx: _Resume) -> dict | None:
@@ -1070,7 +1079,7 @@ def _resume_eager(ctx: _Resume) -> dict:
                 sid, ctx.target, session_db=ctx.db, platform_override=source,
                 cwd_override=ctx.profile_resume_cwd or None,
                 context_cwd_is_launch_artifact=(source in _LAUNCH_CWD_NOT_A_WORKSPACE and not ctx.profile_resume_cwd),
-                auth_user_id=_transport_auth_user_id(current_transport()), **stored_runtime_overrides)
+                auth_user_id=_chat_creator(ctx.found), **stored_runtime_overrides)
         except Exception as e:
             return _err(ctx.rid, 5000, resume_failed_message(e))
     with _session_resume_lock:
@@ -1103,7 +1112,8 @@ def _resume_eager(ctx: _Resume) -> dict:
                 # Each turn re-binds HERMES_HOME (mid-turn memory/skills reads); lease claimed lazily on turn 1.
                 if ctx.profile_home is not None:
                     session["profile_home"] = str(ctx.profile_home)
-                session.update(display_history_prefix=display_history_prefix, active_session_lease=None)
+                session.update(display_history_prefix=display_history_prefix, active_session_lease=None,
+                               auth_user_id=_chat_creator(ctx.found))
         except Exception as e:
             # _init_session registers _sessions[sid] BEFORE its first db read; left in place the fast path
             # would serve that dead session forever.

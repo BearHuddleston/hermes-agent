@@ -230,9 +230,16 @@ def send_async(method: str, sid: str, params: dict, on_result: Callable[[dict | 
     return settle
 
 
-def _is_not_shown(frame: dict) -> bool:
+def is_not_shown(frame: dict) -> bool:
     error = frame.get("error")
     return isinstance(error, dict) and error.get("code") == NOT_SHOWN_CODE
+
+
+def request_route(request_id: str) -> tuple[str, str, dict] | None:
+    """``(session id, method, request frame)`` of an open request, or None when it already settled."""
+    with _lock:
+        req = _open.get(request_id)
+        return (req.sid, req.method, {"jsonrpc": "2.0", **req.snapshot()}) if req is not None else None
 
 
 def _decline(rid: str, transport: Any) -> bool:
@@ -269,7 +276,7 @@ def resolve_response(frame: dict, transport: Any = None) -> bool:
     rid = frame.get("id")
     if not isinstance(rid, str):
         return False
-    if _is_not_shown(frame):
+    if is_not_shown(frame):
         return _decline(rid, transport)
     with _lock:
         req = _open.get(rid)

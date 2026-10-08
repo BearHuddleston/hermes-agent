@@ -24,7 +24,7 @@ import {
   toolPartFromStoredCall,
   withUniqueToolCallIds
 } from './tool-parts'
-import type { ChatMessage, ChatMessagePart } from './types'
+import type { ChatMessage, ChatMessagePart, MessageSender } from './types'
 
 const ATTACHED_CONTEXT_MARKER_RE = /(?:^|\n)--- Attached Context ---\s*\n/
 // A background-process heartbeat wake persisted by a backend older than the
@@ -221,6 +221,16 @@ function timelineDisplayText(metadata: SessionMessage['display_metadata']): stri
 
 function messageInterrupted(metadata: SessionMessage['display_metadata']): boolean {
   return parseDisplayMetadata(metadata)?.interrupted === true
+}
+
+/** The sender card a shared chat stamps on a user row (display only). */
+export function messageSender(metadata: unknown): MessageSender | undefined {
+  const sender = parseDisplayMetadata(metadata as SessionMessage['display_metadata'])?.sender as
+    Partial<MessageSender> | undefined
+
+  return sender && typeof sender.id === 'string' && typeof sender.name === 'string' && typeof sender.color === 'string'
+    ? { color: sender.color, id: sender.id, name: sender.name }
+    : undefined
 }
 
 function messageReactions(metadata: SessionMessage['display_metadata']): MessageReaction[] {
@@ -598,6 +608,7 @@ export function toChatMessages(messages: SessionMessage[]): ChatMessage[] {
     }
 
     const reactions = messageReactions(message.display_metadata)
+    const sender = displayRole === 'user' ? messageSender(message.display_metadata) : undefined
     // Gateway resume names the durable row id `row_id`; the REST transcript
     // prefetch ships the same messages.id as a numeric `id`. Either one lets
     // reactions address this exact row later.
@@ -615,6 +626,7 @@ export function toChatMessages(messages: SessionMessage[]): ChatMessage[] {
       ...(rowId !== undefined ? { rowId } : {}),
       ...(pendingAbsorbedRows > 0 ? { serverRowSpan: pendingAbsorbedRows + 1 } : {}),
       ...(reactions.length ? { reactions } : {}),
+      ...(sender ? { sender } : {}),
       ...(message.role === 'assistant' && messageInterrupted(message.display_metadata) ? { interrupted: true } : {}),
       ...(extractedAttachmentRefs ? { attachmentRefs: extractedAttachmentRefs } : {})
     })

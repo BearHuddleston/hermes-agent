@@ -3,7 +3,7 @@ import type { BillingBlock } from '@hermes/shared'
 import { burstVibeHearts } from '@/components/chat/vibe-hearts'
 import { $chatOnboardingThreadIds } from '@/components/onboarding-chat/assembly'
 import { translateNow } from '@/i18n'
-import type { GatewayEventPayload } from '@/lib/chat-messages'
+import { finalizeInterruptedMessages, type GatewayEventPayload, withPeerPrompt } from '@/lib/chat-messages'
 import { coerceGatewayText, coerceThinkingText } from '@/lib/chat-runtime'
 import { playCompletionSound } from '@/lib/completion-sound'
 import { parseErrorSurface } from '@/lib/error-surface'
@@ -20,6 +20,7 @@ import { providerWaitText, setSessionProviderWait } from '@/store/provider-wait'
 import { setCurrentUsage, setTurnStartedAt } from '@/store/session'
 import { refreshSupportedSessionControlAfterTurn } from '@/store/session-control'
 import { storedSessionIdForRuntimeId } from '@/store/session-states'
+import { noteSharedTurn } from '@/store/shared-turns'
 import { pruneFinishedSessionSubagents } from '@/store/subagents'
 import { clearActiveSessionTodos } from '@/store/todos'
 
@@ -190,6 +191,14 @@ export function handleMessageStreamEvent(ctx: GatewayEventContext): boolean {
       console.debug('[turn-accept-latency]', { sessionId, ms: Date.now() - seededAt })
     }
 
+    // Shared chats: who holds this turn, and the prompt it answers when another
+    // window sent it, placed before the reply instead of after a refresh.
+    if (payload && 'owner' in payload) {
+      noteSharedTurn(sessionId, { owner: payload.owner ?? null })
+    }
+
+    const peerPrompt = payload?.user
+
     updateSessionState(sessionId, state => {
       // If the user clicked Stop (cancelRun set interrupted=true), don't
       // let a stale message.start from a chained turn (goal follow-up,
@@ -202,8 +211,17 @@ export function handleMessageStreamEvent(ctx: GatewayEventContext): boolean {
         return state
       }
 
+      // awaitingResponse before the turn is live = this window's own submit, already on screen.
+      const ownSubmit = state.awaitingResponse && !state.turnLive
+
+      const messages =
+        peerPrompt && !ownSubmit
+          ? withPeerPrompt(finalizeInterruptedMessages(state.messages, state.streamId), peerPrompt)
+          : state.messages
+
       return {
         ...state,
+        ...(messages !== state.messages ? { messages, streamId: null } : {}),
         busy: true,
         awaitingResponse: true,
         sawAssistantPayload: false,
