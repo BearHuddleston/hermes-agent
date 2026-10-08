@@ -9,6 +9,7 @@ import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 
 import { toChatMessages } from '@/lib/chat-messages'
 import { toRuntimeMessage } from '@/lib/chat-runtime'
+import { $touchPointer } from '@/lib/touch-interaction'
 import type { SessionMessage } from '@/types/hermes'
 
 import { stubThreadEnvironment, ThreadRuntime } from '../test-utils'
@@ -18,6 +19,7 @@ import { Thread } from '.'
 beforeEach(stubThreadEnvironment)
 afterEach(() => {
   cleanup()
+  $touchPointer.set(false)
   vi.unstubAllGlobals()
 })
 
@@ -50,6 +52,7 @@ function renderThread() {
 it.each(['desktop', 'touch'])(
   'default %s Copy reads only the tail reply, not the whole response group',
   async surface => {
+    $touchPointer.set(surface === 'touch')
     const { clipboard, container } = renderThread()
 
     await waitFor(() => expect(container.textContent).toContain('The deployment is verified.'))
@@ -76,6 +79,8 @@ it('Copy full response reads every assistant text segment in the group', async (
 it.each(['desktop', 'touch'])(
   'a solo reply copies its own text through %s actions and offers no full-response button',
   async surface => {
+    $touchPointer.set(surface === 'touch')
+
     const storedSolo: SessionMessage[] = [
       { role: 'user', content: 'Hi', timestamp: 1 },
       { role: 'assistant', content: 'Hello there.', timestamp: 2 }

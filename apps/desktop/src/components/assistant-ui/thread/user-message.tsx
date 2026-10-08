@@ -1,4 +1,5 @@
 import { ActionBarPrimitive, BranchPickerPrimitive, MessagePrimitive, useAuiState } from '@assistant-ui/react'
+import { useStore } from '@nanostores/react'
 import { type FC, type ReactNode, useCallback, useEffect, useRef, useState } from 'react'
 
 import { DirectiveContent } from '@/components/assistant-ui/directive-text'
@@ -20,13 +21,12 @@ import { UserMessageText } from '@/components/assistant-ui/thread/user-message-t
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
 import { Tip } from '@/components/ui/tooltip'
-import { useMediaQuery } from '@/hooks/use-media-query'
 import { useResizeObserver } from '@/hooks/use-resize-observer'
 import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
 import { StopFilled } from '@/lib/icons'
 import { LruCache } from '@/lib/lru-cache'
-import { TOUCH_POINTER_QUERY } from '@/lib/touch-interaction'
+import { $touchPointer } from '@/lib/touch-interaction'
 import { cn } from '@/lib/utils'
 import { $gateway } from '@/store/gateway'
 import { notifyThreadEditOpen } from '@/store/thread-scroll'
@@ -37,17 +37,6 @@ export function hasTextSelection(): boolean {
   const selection = window.getSelection()
 
   return Boolean(selection && !selection.isCollapsed && selection.toString().length > 0)
-}
-
-/** Keep the platform's long-press menu on touch surfaces. Desktop right-click
- * remains the intentional reaction-picker gesture, while iOS/Android own
- * selection handles, Copy, and text actions after a long press. */
-function preservesNativeTouchContextMenu(): boolean {
-  return Boolean(
-    typeof window !== 'undefined' &&
-    typeof window.matchMedia === 'function' &&
-    window.matchMedia('(hover: none), (pointer: coarse)').matches
-  )
 }
 
 export function StickyHumanMessageContainer({
@@ -438,7 +427,7 @@ export const UserMessage: FC<{
 }> = ({ onCancel, onRequestRestoreConfirm }) => {
   const { t } = useI18n()
   const copy = t.assistant.thread
-  const touch = useMediaQuery(TOUCH_POINTER_QUERY)
+  const touch = useStore($touchPointer)
   const messageId = useAuiState(s => s.message.id)
   const content = useAuiState(s => s.message.content)
   const fullText = messageContentText(content)
@@ -592,7 +581,7 @@ export const UserMessage: FC<{
                   readOnly || !reactionsEnabled
                     ? undefined
                     : event => {
-                        if (hasTextSelection() || preservesNativeTouchContextMenu()) {
+                        if (hasTextSelection() || touch) {
                           return
                         }
 

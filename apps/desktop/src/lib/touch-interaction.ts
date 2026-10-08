@@ -1,7 +1,19 @@
+import { atom } from 'nanostores'
+
 import { matchesQuery } from '@/hooks/use-media-query'
 import { isBrowserHostedDesktop } from '@/lib/platform'
 
 export const TOUCH_POINTER_QUERY = '(hover: none), (pointer: coarse)'
+
+// One listener shared by every transcript bubble instead of a media-query hook
+// per bubble. Guarded like `$narrowViewport`: jsdom and node test envs have no
+// `matchMedia`.
+const touchPointerQuery = typeof window !== 'undefined' ? window.matchMedia?.(TOUCH_POINTER_QUERY) : undefined
+
+/** Coarse-pointer / no-hover surface, the same query the touch CSS keys on. */
+export const $touchPointer = atom(Boolean(touchPointerQuery?.matches))
+
+touchPointerQuery?.addEventListener('change', event => $touchPointer.set(event.matches))
 
 const BROWSER_OWNED_TOUCH_TARGET =
   '[data-slot="aui_user-message-root"], [data-slot="aui_assistant-message-content"], [data-slot="aui_system-message-root"], [data-selectable-text="true"], input, textarea, [contenteditable]:not([contenteditable="false"]), a[href], img, video, audio'

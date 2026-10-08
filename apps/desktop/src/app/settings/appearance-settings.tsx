@@ -12,7 +12,6 @@ import { saveHermesConfig } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
 import { Check, Download, Loader2, Palette, Trash2 } from '@/lib/icons'
-import { isBrowserHostedDesktop } from '@/lib/platform'
 import { selectableCardClass } from '@/lib/selectable-card'
 import { normalize } from '@/lib/text'
 import { cn } from '@/lib/utils'
@@ -407,12 +406,6 @@ function GlassRow({ children, label }: GlassRowProps) {
   )
 }
 
-// TRANSLUCENCY_SUPPORTED is fixed when its module loads, which can precede the
-// browser bridge marking the host, so the row re-checks the host at render.
-function windowTranslucencyAvailable(): boolean {
-  return TRANSLUCENCY_SUPPORTED && !isBrowserHostedDesktop()
-}
-
 interface AppearanceSettingsProps {
   subpage?: string
 }
@@ -799,7 +792,7 @@ export function AppearanceSettings({ subpage }: AppearanceSettingsProps = {}) {
 
           {/* Linux has neither half of this setting (see TRANSLUCENCY_SUPPORTED),
               so the row is absent there rather than offering a dead lever. */}
-          {show('window-layout') && windowTranslucencyAvailable() && (
+          {show('window-layout') && TRANSLUCENCY_SUPPORTED && (
             <ListRow
               action={
                 <div

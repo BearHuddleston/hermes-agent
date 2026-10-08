@@ -1,11 +1,8 @@
-import { TITLEBAR_HEIGHT } from '@/app/shell/titlebar'
+import { TITLEBAR_HEIGHT, TOUCH_TITLEBAR_HEIGHT } from '@/app/shell/titlebar'
 import { useTouchTitlebar } from '@/app/shell/use-touch-titlebar'
 
 import { isSessionStripPane } from '../store'
 
-/** Browser touch chrome: the titlebar band and the compact tab row are both
- *  44px touch targets, not Electron's compact bands. */
-const TOUCH_ROW_HEIGHT = 44
 /** The desktop tab strip's row (`h-7`). */
 const TAB_STRIP_HEIGHT = 28
 
@@ -48,9 +45,10 @@ export function useZoneHeaderLayout({
 
   return {
     compactTabs,
-    tabStripHeight: compactTabs ? TOUCH_ROW_HEIGHT : TAB_STRIP_HEIGHT,
+    // The compact tab row is a touch target the same height as the touch band.
+    tabStripHeight: compactTabs ? TOUCH_TITLEBAR_HEIGHT : TAB_STRIP_HEIGHT,
     tabsBelowControls,
     tabsInTitlebar: topEdge && !tabsBelowControls,
-    titlebarHeight: touchTitlebar ? TOUCH_ROW_HEIGHT : TITLEBAR_HEIGHT
+    titlebarHeight: touchTitlebar ? TOUCH_TITLEBAR_HEIGHT : TITLEBAR_HEIGHT
   }
 }

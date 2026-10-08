@@ -11,6 +11,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { en } from '@/i18n/en'
 import type { ErrorCardCopy } from '@/i18n/types'
+import { $touchPointer } from '@/lib/touch-interaction'
 import { $displayTimestamps } from '@/store/display-timestamps'
 
 import { stubThreadEnvironment } from '../test-utils'
@@ -55,6 +56,7 @@ afterEach(() => {
   startManualProviderOAuth.mockClear()
   requestModelMenuToggle.mockReset().mockReturnValue(true)
   $displayTimestamps.set(true)
+  $touchPointer.set(false)
   vi.unstubAllGlobals()
 })
 
@@ -226,15 +228,17 @@ describe('merged hover timestamps and touch actions', () => {
     expect(container.querySelector('[data-slot="timeline-timestamp"]')).toBeTruthy()
   })
 
+  it('mounts the touch More menu only while the pointer is coarse', async () => {
+    render(<Harness />)
+    await screen.findByText('done')
+    expect(screen.queryByRole('button', { name: 'More actions' })).toBeNull()
+
+    act(() => $touchPointer.set(true))
+    expect(screen.getByRole('button', { name: 'More actions' })).toBeTruthy()
+  })
+
   it.each([true, false])('keeps the touch Stop/Restore action correct while running=%s', async isRunning => {
-    vi.stubGlobal(
-      'matchMedia',
-      vi.fn((query: string) => ({
-        matches: query.includes('pointer'),
-        addEventListener: vi.fn(),
-        removeEventListener: vi.fn()
-      }))
-    )
+    $touchPointer.set(true)
     $displayTimestamps.set(false)
     const onCancel = vi.fn()
     const onRestoreToMessage = vi.fn()
@@ -261,6 +265,7 @@ describe('merged hover timestamps and touch actions', () => {
 
 describe('AssistantMessage branch button visibility (bug #2 fix)', () => {
   it('reloads once from either desktop or touch Refresh', async () => {
+    $touchPointer.set(true)
     const onReload = vi.fn(async () => {})
     render(<Harness onReload={onReload} />)
     fireEvent.click(await screen.findByRole('button', { name: 'Refresh' }))
@@ -272,6 +277,7 @@ describe('AssistantMessage branch button visibility (bug #2 fix)', () => {
   })
 
   it.each([{ isRunning: true }, { isDisabled: true }])('guards both Refresh surfaces with %j', async state => {
+    $touchPointer.set(true)
     const onReload = vi.fn(async () => {})
     render(<Harness onReload={onReload} {...state} />)
     expect((await screen.findByRole('button', { name: 'Refresh' })).hasAttribute('disabled')).toBe(true)
@@ -299,6 +305,7 @@ describe('AssistantMessage branch button visibility (bug #2 fix)', () => {
   })
 
   it('reaches Branch in new chat from the touch More menu', async () => {
+    $touchPointer.set(true)
     render(<Harness onBranchInNewChat={() => undefined} />)
 
     await screen.findByText('done')

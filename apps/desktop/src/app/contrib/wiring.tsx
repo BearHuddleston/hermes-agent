@@ -146,7 +146,8 @@ import {
   titlebarControlsPosition,
   titlebarControlsYNudge,
   titlebarToolsRightCss,
-  titlebarToolsWidthCss
+  titlebarToolsWidthCss,
+  TOUCH_TITLEBAR_HEIGHT
 } from '../shell/titlebar'
 import { TitlebarControls } from '../shell/titlebar-controls'
 import { useTouchTitlebar } from '../shell/use-touch-titlebar'
@@ -301,7 +302,12 @@ function useTitlebarControlsVars(controlsPos: { left: number; top: number }): CS
   return {
     '--titlebar-controls-left': `${controlsPos.left}px`,
     '--titlebar-controls-top': `${touchTitlebar ? 0 : controlsPos.top}px`,
-    ...(touchTitlebar ? { '--titlebar-control-size': '44px', '--titlebar-control-height': '44px' } : {})
+    ...(touchTitlebar
+      ? {
+          '--titlebar-control-size': `${TOUCH_TITLEBAR_HEIGHT}px`,
+          '--titlebar-control-height': `${TOUCH_TITLEBAR_HEIGHT}px`
+        }
+      : {})
   } as CSSProperties
 }
 

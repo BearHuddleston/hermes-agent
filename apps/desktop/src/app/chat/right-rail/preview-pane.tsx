@@ -87,6 +87,8 @@ type PreviewWebview = HTMLElement &
     copy?: () => void
     cut?: () => void
     executeJavaScript?: (code: string) => Promise<unknown>
+    getTitle?: () => string
+    getURL?: () => string
     getWebContentsId?: () => number
     goBack?: () => void
     goForward?: () => void
@@ -104,10 +106,7 @@ type PreviewWebview = HTMLElement &
 /** Electron throws if getURL/getTitle run before attach + dom-ready, or after
  *  the guest has been removed. Optional chaining does not help — the method
  *  exists, it just refuses. */
-function guestPage(
-  webview: PreviewNavigationSurface | null | undefined,
-  fallbackUrl = ''
-): { title: string; url: string } {
+function guestPage(webview: PreviewWebview | null | undefined, fallbackUrl = ''): { title: string; url: string } {
   try {
     return {
       title: webview?.getTitle?.() ?? '',

@@ -9,8 +9,7 @@
 import { useStore } from '@nanostores/react'
 import { type MouseEventHandler, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
-import { TITLEBAR_HEIGHT } from '@/app/shell/titlebar'
-import { useTouchTitlebar } from '@/app/shell/use-touch-titlebar'
+import { useTitlebarHeight } from '@/app/shell/use-touch-titlebar'
 import { PaneTab, PaneTabLabel, PaneTabStrip } from '@/components/ui/pane-tab'
 import { ContribBoundary, ContribRender } from '@/contrib/react/boundary'
 import { useContributions } from '@/contrib/react/use-contributions'
@@ -50,7 +49,7 @@ export function narrowOverlayWidth(ctx: TrackContext, tree: LayoutNode | null, r
 }
 
 export function NarrowOverlays() {
-  const touchTitlebar = useTouchTitlebar()
+  const titlebarHeight = useTitlebarHeight()
   const narrow = useStore($narrowViewport)
   const solo = useStore($chatOnboardingSolo)
   const tree = useStore($layoutTree)
@@ -141,6 +140,7 @@ export function NarrowOverlays() {
         if (mode === 'close') {
           const currentTree = $layoutTree.get()
           const targetZone = currentTree ? findGroupOfPane(currentTree, match.id) : null
+
           return current && (current.id === match.id || targetZone?.panes.includes(current.id)) ? null : current
         }
 
@@ -209,7 +209,9 @@ export function NarrowOverlays() {
           aria-hidden="true"
           className="absolute inset-0 z-30"
           data-narrow-overlay-backdrop=""
-          onPointerCancel={() => { outsidePress.current = null }}
+          onPointerCancel={() => {
+            outsidePress.current = null
+          }}
           onPointerDown={event => {
             if (event.button === 0 && isTopEscapeLayer(ESCAPE_PRIORITY.narrowOverlay)) {
               // Dismissal must not focus the transcript or input underneath.
@@ -217,7 +219,9 @@ export function NarrowOverlays() {
               outsidePress.current = { id: event.pointerId, x: event.clientX, y: event.clientY }
             }
           }}
-          onPointerLeave={() => { outsidePress.current = null }}
+          onPointerLeave={() => {
+            outsidePress.current = null
+          }}
           onPointerMove={event => {
             const press = outsidePress.current
 
@@ -273,9 +277,7 @@ export function NarrowOverlays() {
           // draggable, mirroring TreeGroup's reservation.
           style={{
             paddingTop: isBrowserHostedDesktop()
-              ? touchTitlebar
-                ? 44
-                : TITLEBAR_HEIGHT
+              ? titlebarHeight
               : wcOverlap
                 ? wcOverlap.y + wcOverlap.height
                 : undefined,
