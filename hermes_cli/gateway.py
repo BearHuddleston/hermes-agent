@@ -19,7 +19,7 @@ import textwrap
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from hermes_cli import setup_platforms
+from hermes_cli import gateway_service_owner, setup_platforms
 
 # UV's bundled Python ships a minimal PATH; ensure launchctl/systemctl are discoverable.
 if os.name == "posix":
@@ -3398,40 +3398,6 @@ def systemd_unit_is_current(system: bool = False) -> bool:
     return norm(installed) == norm(expected)
 
 
-def _temp_home_in_service_definition(definition: str) -> str | None:
-    """Temp-dir HERMES_HOME baked into a systemd unit / launchd plist, or None. A temp home means a
-    test/E2E harness generated it; installing it leaves the gateway "running" but deaf to every platform."""
-    import re
-    import tempfile
-    candidates = re.findall(r'HERMES_HOME=([^"\n]+)', definition)
-    candidates += re.findall(r"<key>HERMES_HOME</key>\s*<string>(.*?)</string>", definition, flags=re.DOTALL)
-    temp_roots = {
-        Path(tempfile.gettempdir()).resolve(),
-        Path("/tmp"), Path("/var/tmp"), Path("/private/tmp"), Path("/private/var/tmp"),  # no-tmp: ok — detects a temp HERMES_HOME in service definitions
-    }
-    for raw in candidates:
-        try:
-            resolved = Path(raw.strip().strip('"')).resolve()
-        except (OSError, ValueError):
-            continue
-        if any(resolved == root or root in resolved.parents for root in temp_roots):
-            return raw.strip()
-    return None
-
-
-def _refuse_temp_home_service_write(definition: str, kind: str) -> bool:
-    """Refuse (with guidance) when a service definition carries a temp HERMES_HOME."""
-    temp_home = _temp_home_in_service_definition(definition)
-    if temp_home is None:
-        return False
-    print(f"✗ Refusing to write the gateway {kind}: HERMES_HOME resolves to a temporary directory ({temp_home}).")
-    print(
-        "  This usually means a test/E2E environment exported HERMES_HOME. "
-        "Unset it (or run from a clean shell) and retry."
-    )
-    return True
-
-
 def _retire_hermes_replace_dropin(system: bool = False) -> bool:
     """Remove only the legacy ``--replace`` drop-in written by Hermes."""
     unit_path = get_systemd_unit_path(system=system)
@@ -3452,6 +3418,11 @@ def refresh_systemd_unit_if_needed(system: bool = False) -> bool:
     if not unit_path.exists():
         return False
 
+    # Every boot/start/restart lands here: never rewrite a unit pinning another home (checked before
+    # systemd_unit_is_current adopts the unit's home into os.environ).
+    from hermes_cli.gateway_service_owner import unit_belongs_to_caller
+    if not unit_belongs_to_caller(unit_path, system, "rewrite"):
+        return False
     # systemd_unit_is_current is the HERMES_HOME-sync chokepoint; its env mutation persists for the regenerate below.
     current = systemd_unit_is_current(system=system)
     if _retire_hermes_replace_dropin(system=system):
@@ -3471,7 +3442,7 @@ def refresh_systemd_unit_if_needed(system: bool = False) -> bool:
         return False
 
     # Structural variant: refuse ANY temp-dir HERMES_HOME (manual E2E homes lack the pytest markers).
-    if _refuse_temp_home_service_write(new_unit, "systemd unit"):
+    if gateway_service_owner.refuse_temp_home_service_write(new_unit, "systemd unit"):
         return False
 
     _prepare_service_launcher(system=system, run_as_user=expected_user)
@@ -3640,9 +3611,16 @@ def systemd_install(
     run_as_user: str | None = None,
     enable_on_startup: bool = True,
     non_interactive: bool = False,
+    force_unit_path: bool = False,
 ):
     if system:
         _require_root_for_system_service("install")
+
+    # A unit pinning another home is another install's gateway, --force included; --force-unit-path repoints.
+    unit_path = get_systemd_unit_path(system=system)
+    from hermes_cli.gateway_service_owner import unit_belongs_to_caller
+    if not force_unit_path and not unit_belongs_to_caller(unit_path, system, "overwrite", run_as_user):
+        sys.exit(1)
 
     # Offer to remove legacy units first: alongside the new unit they flap-fight for the bot token.
     if has_legacy_hermes_units():
@@ -3653,15 +3631,15 @@ def systemd_install(
             remove_legacy_hermes_units(interactive=False)
             print()
 
-    unit_path = get_systemd_unit_path(system=system)
     scope_label = _service_scope_label(system)
     sudo, scope_flag, user_flag = _systemd_cli_bits(system)
 
-    # Existing system units already pin HERMES_HOME; adopt it before any regenerate.
-    if unit_path.exists():
+    # Existing system units already pin HERMES_HOME; adopt it before any regenerate. A repoint keeps the
+    # caller's home (adopting the old one would regenerate the unit unchanged).
+    if unit_path.exists() and not force_unit_path:
         _sync_hermes_home_from_systemd_unit(system=system)
 
-    if unit_path.exists() and not force:
+    if unit_path.exists() and not (force or force_unit_path):
         if not systemd_unit_is_current(system=system):
             print(f"↻ Repairing outdated {scope_label} systemd service at: {unit_path}")
             refresh_systemd_unit_if_needed(system=system)
@@ -3691,7 +3669,7 @@ def systemd_install(
 
     unit_path.parent.mkdir(parents=True, exist_ok=True)
     new_unit = generate_systemd_unit(system=system, run_as_user=run_as_user)
-    if _refuse_temp_home_service_write(new_unit, "systemd unit"):
+    if gateway_service_owner.refuse_temp_home_service_write(new_unit, "systemd unit"):
         return
     print(f"Installing {scope_label} systemd service to: {unit_path}")
     _prepare_service_launcher(system=system, run_as_user=run_as_user)
@@ -5246,6 +5224,7 @@ def _install_systemd_from_cli(args, *, force: bool, system: bool, run_as_user) -
     systemd_install(
         force=force, system=system, run_as_user=run_as_user,
         enable_on_startup=start_on_login, non_interactive=non_interactive,
+        force_unit_path=getattr(args, "force_unit_path", False),
     )
     if start_now:
         systemd_start(system=system)
@@ -5271,7 +5250,8 @@ def _cmd_install(args):
             sys.exit(1)
         _install_systemd_from_cli(args, force=force, system=system, run_as_user=run_as_user)
     elif backend == "launchd":
-        launchd_install(force, start_now=getattr(args, "start_now", None) is not False)
+        launchd_install(force, start_now=getattr(args, "start_now", None) is not False,
+                        force_unit_path=getattr(args, "force_unit_path", False))
     elif backend == "windows":
         _gw_windows().install(
             force=force,
