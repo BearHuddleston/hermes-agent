@@ -331,7 +331,7 @@ class RegistryFull(Exception):
         super().__init__(message)
 
 
-async def run_reaper(registry: "PtySessionRegistry", *, interval: float = 60.0) -> None:
+async def run_reaper(registry: PtySessionRegistry, *, interval: float = 60.0) -> None:
     """Periodically reap idle/dead keep-alive sessions. Cancelled on shutdown."""
     while True:
         await asyncio.sleep(interval)
@@ -528,7 +528,7 @@ class PtySessionRegistry:
         self._sessions.pop(oldest.key, None)
         self._close_in_background(oldest)
 
-    def _close_in_background(self, session: "PtySession") -> asyncio.Task:
+    def _close_in_background(self, session: PtySession) -> asyncio.Task:
         task = asyncio.create_task(session.close())
         self._background_closes.add(task)
         task.add_done_callback(self._background_closes.discard)

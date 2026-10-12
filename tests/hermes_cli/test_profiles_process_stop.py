@@ -197,7 +197,7 @@ class TestProfileBackendStop:
         )
         monkeypatch.setitem(sys.modules, "psutil", fake_psutil)
 
-        monkeypatch.setattr("hermes_cli.process_identity.ledger_entries", lambda: [])
+        monkeypatch.setattr("hermes_cli.process_identity.ledger_entries", list)
         pids = process_stop._profile_bound_backend_pids("coder", profile_dir)
         assert pids == []
 

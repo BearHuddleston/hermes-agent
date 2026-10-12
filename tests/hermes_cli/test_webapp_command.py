@@ -374,7 +374,7 @@ def test_webapp_process_identity_uses_the_existing_web_server_lifecycle(monkeypa
 def test_webapp_process_table_fallback_uses_structured_command_identity(monkeypatch):
     from hermes_cli import dashboard_procs
 
-    monkeypatch.setattr(dashboard_procs, "_ledger_web_server_processes", lambda: {})
+    monkeypatch.setattr(dashboard_procs, "_ledger_web_server_processes", dict)
     monkeypatch.setattr(
         dashboard_procs,
         "_iter_process_table",
@@ -403,7 +403,7 @@ def test_scan_spares_lifecycle_probes_from_an_apostrophe_install_path(monkeypatc
         # A shell carrying a probe as one quoted token is not a Hermes process at all.
         (4246, "/bin/sh -c \"/Users/O'Brien/.venv/bin/hermes webapp --stop\""),
     ]
-    monkeypatch.setattr(dashboard_procs, "_ledger_web_server_processes", lambda: {})
+    monkeypatch.setattr(dashboard_procs, "_ledger_web_server_processes", dict)
     monkeypatch.setattr(dashboard_procs, "_iter_process_table", lambda: servers + probes)
 
     assert dashboard_procs._scan_dashboard_processes() == servers

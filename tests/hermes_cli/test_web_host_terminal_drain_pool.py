@@ -25,7 +25,6 @@ class QuietShell:
     def read(self, timeout):
         self._readers.append(threading.current_thread())
         self.closed.wait()
-        return None
 
     def close(self):
         self.closed.set()

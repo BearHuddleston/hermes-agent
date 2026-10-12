@@ -7,7 +7,7 @@ import pytest
 
 from hermes_cli import profile_lifecycle
 from hermes_cli.profile_incarnation import ensure_profile_incarnation, write_fresh_profile_incarnation
-import tui_gateway.server as server
+from tui_gateway import server
 
 
 @pytest.fixture

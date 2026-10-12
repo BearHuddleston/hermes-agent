@@ -93,7 +93,7 @@ def test_ledger_live_webapp_with_live_spawner_owns_lifecycle(monkeypatch):
         lambda **_k: [_live_serve_ledger_entry(purpose="webapp")],
     )
     monkeypatch.setattr(process_identity, "spawner_is_dead", lambda _e: False)
-    monkeypatch.setattr(cli_main, "_detect_venv_python_processes", lambda: [])
+    monkeypatch.setattr(cli_main, "_detect_venv_python_processes", list)
 
     assert update_cmd._desktop_owns_gateway_lifecycle() is True
 

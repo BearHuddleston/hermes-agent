@@ -291,7 +291,7 @@ _RESERVED_NAMES = frozenset({"hermes", "default", "test", "tmp", "root", "sudo"}
 _HERMES_SUBCOMMANDS = frozenset({
     "chat", "model", "gateway", "setup", "whatsapp", "login", "logout",
     "status", "cron", "doctor", "dump", "config", "pairing", "skills", "tools",
-    "mcp", "sessions", "insights", "version", "update", "uninstall", "profile", "plugins", "honcho", "acp",
+    "mcp", "connectors", "sessions", "insights", "version", "update", "uninstall", "profile", "plugins", "honcho", "acp",
 }) | WEB_SERVER_PURPOSES
 
 
@@ -467,7 +467,7 @@ def profile_exists(name: str) -> bool:
     return named_profile_is_live(profile_dir)
 
 
-def profile_matches_home(name: str, home: "Path | None" = None) -> bool:
+def profile_matches_home(name: str, home: Path | None = None) -> bool:
     """True when *name* refers to the profile served from *home* (default: current home).
 
     Lets single-profile gateways decide whether a ``/p/<profile>/`` URL prefix is
@@ -531,6 +531,7 @@ def check_alias_collision(name: str) -> Optional[str]:
         result = subprocess.run(
             ["where" if sys.platform == "win32" else "which", canon],
             capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=5,
+            check=False,
         )
         if result.returncode == 0:
             existing_path = result.stdout.strip().splitlines()[0]
@@ -1269,7 +1270,7 @@ def _junction_target(path: str) -> Optional[str]:
     # readlink hands back the substitute name; CreateJunction rejects the ``\\?\`` spelling.
     if target.startswith("\\\\?\\UNC\\"):
         return "\\" + target[7:]
-    return target[4:] if target.startswith("\\\\?\\") else target
+    return target.removeprefix("\\\\?\\")
 
 
 def _copytree_keep_junctions(src: Path, dst: Path, ignore, dirs_exist_ok: bool = False) -> None:
@@ -1595,6 +1596,7 @@ def seed_profile_skills(profile_dir: Path, quiet: bool = False) -> Optional[dict
             env={**os.environ, "HERMES_HOME": str(profile_dir)},
             cwd=str(project_root),
             capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=60,
+            check=False,
         )
         if result.returncode == 0 and result.stdout.strip():
             return json.loads(result.stdout.strip())

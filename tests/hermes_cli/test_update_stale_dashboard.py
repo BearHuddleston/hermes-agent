@@ -167,7 +167,7 @@ def test_process_scan_reads_live_argv_only_for_rows_that_can_be_hermes(monkeypat
             return self._argv
 
     monkeypatch.setattr(update_cmd_windows, "_psutil", lambda: SimpleNamespace(Process=_Process))
-    monkeypatch.setattr(dashboard_procs, "_ledger_web_server_processes", lambda: {})
+    monkeypatch.setattr(dashboard_procs, "_ledger_web_server_processes", dict)
     ps_out = "\n".join(_ps_line(pid, " ".join(argv)) for pid, argv in table.items()) + "\n"
     with patch("subprocess.run", side_effect=_ps_runner(ps_out)):
         found = dict(dashboard_procs._scan_dashboard_processes())

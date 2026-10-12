@@ -130,7 +130,7 @@ def test_webapp_stop_spares_argument_tail_and_stale_identity_but_stops_real_serv
 
             # A live ledger still provides purpose if the process table is unavailable.
             with monkeypatch.context() as patch:
-                patch.setattr(dashboard_procs, "_iter_process_table", lambda: [])
+                patch.setattr(dashboard_procs, "_iter_process_table", list)
                 ledger_scan = dict(dashboard_procs._scan_dashboard_processes())
             for surface in ("webapp", "serve"):
                 runtime = main_dashboard._parse_dashboard_runtime(ledger_scan[children[surface].pid])

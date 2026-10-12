@@ -93,8 +93,8 @@ def _profile_bound_backend_pids(canon: str, profile_dir: Path) -> list[tuple[int
 
 
 def _wait_then_force_kill(
-    pids: List[int], *, alive: Callable[[int], bool],
-    start_times: Optional[Dict[int, Optional[float]]] = None, wait: float = 10.0,
+    pids: list[int], *, alive: Callable[[int], bool],
+    start_times: Optional[dict[int, Optional[float]]] = None, wait: float = 10.0,
 ) -> bool:
     """After a graceful ``terminate_pid``, poll ``alive(pid)`` (the caller's identity check, so a
     recycled PID never reads as a straggler) every 0.5s for up to *wait* seconds, then force-kill

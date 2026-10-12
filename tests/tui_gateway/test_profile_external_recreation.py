@@ -43,9 +43,9 @@ def _create_session(server, name):
 
 @pytest.mark.parametrize("external", [True, False], ids=["external", "local-control"])
 def test_registered_rpc_admits_new_generation_and_fences_old(tmp_path, monkeypatch, external):
-    import agent.secret_scope as secret_scope
+    from agent import secret_scope
     import tui_gateway.launch_profile_policy as launch_policy
-    import tui_gateway.server as server
+    from tui_gateway import server
 
     root = tmp_path / "isolated-hermes"
     root.mkdir()

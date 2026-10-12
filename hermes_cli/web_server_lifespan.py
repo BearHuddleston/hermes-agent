@@ -188,8 +188,8 @@ async def _lifespan(app: "FastAPI"):
     hosted_room_start_thread.start()
 
     # Gateway lifecycle ownership remains exclusive to Electron-spawned backends.
-    cron_stop: "threading.Event | None" = None
-    cron_thread: "threading.Thread | None" = None
+    cron_stop: threading.Event | None = None
+    cron_thread: threading.Thread | None = None
     desktop_owned = is_desktop_owned_backend()
     if desktop_owned:
         # Reap an orphaned gateway from an abnormal previous exit (reparented to

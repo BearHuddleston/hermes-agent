@@ -37,7 +37,7 @@ def server(tmp_path):
         import importlib
 
         mod = importlib.import_module("tui_gateway.server")
-    setattr(mod, "_hermes_home", launch_home)
+    mod._hermes_home = launch_home
 
     yield mod
     mod._sessions.clear()

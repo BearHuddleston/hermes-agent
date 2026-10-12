@@ -143,9 +143,7 @@ export const BROWSER_BRIDGE_STUBS = {
   updates: {
     apply: async () => ({ command: 'hermes update', manual: true, message: 'Run `hermes update` on the server host', ok: false }),
     check: async () => ({ message: 'Use `hermes update` on the server host', reason: 'browser-hosted', supported: false }),
-    getBranch: async () => ({ branch: '' }),
-    onProgress: noopUnsubscribe,
-    setBranch: async (branch: string) => ({ branch })
+    onProgress: noopUnsubscribe
   },
   watchPreviewFile: async (url: string) => ({ id: `browser:${url}`, path: url })
 } satisfies Partial<Window['hermesDesktop']>

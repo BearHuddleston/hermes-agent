@@ -76,7 +76,7 @@ from hermes_cli.web_server_lifecycle import (
     _write_dashboard_ready_file,
     _write_machine_sentinel_line,
 )
-from hermes_cli.web_server_lifespan import _lifespan  # noqa: E402
+from hermes_cli.web_server_lifespan import _lifespan
 
 
 # Desktop `serve` only (start_server(start_mcp_discovery_after_bind=True)):
@@ -98,11 +98,11 @@ def _app_state_default(app: "FastAPI", name: str, factory):
         return value
 
 
-def _get_chat_argv_lock(app: "FastAPI") -> asyncio.Lock:
+def _get_chat_argv_lock(app: FastAPI) -> asyncio.Lock:
     return _app_state_default(app, "chat_argv_lock", asyncio.Lock)
 
 
-def _get_pty_active_session_files(app: "FastAPI") -> dict[str, Path]:
+def _get_pty_active_session_files(app: FastAPI) -> dict[str, Path]:
     return _app_state_default(app, "pty_active_session_files", dict)
 
 
@@ -192,7 +192,7 @@ _DASHBOARD_EMBEDDED_CHAT_ENABLED = True
 _DESKTOP_ATTACHMENT_WS_MAX_BYTES = 384 * 1024 * 1024
 
 
-from hermes_cli.web_upload_limit import ChatFileUploadLimitMiddleware  # noqa: E402
+from hermes_cli.web_upload_limit import ChatFileUploadLimitMiddleware
 
 # Inside every auth/Host middleware: those checks run before body ingestion,
 # and the receive limit runs before FastAPI can spool a multipart attachment.
@@ -499,7 +499,7 @@ class DashboardHealth:
 
     def __init__(self, window_seconds: float = _DASHBOARD_HEALTH_WINDOW_SECONDS) -> None:
         self.window_seconds = window_seconds
-        self._error_times: "deque[float]" = deque(maxlen=256)
+        self._error_times: deque[float] = deque(maxlen=256)
         self.last_error_type: Optional[str] = None
         self.last_error_path: Optional[str] = None  # internal-only, never serialized
         self.last_error_at: Optional[float] = None

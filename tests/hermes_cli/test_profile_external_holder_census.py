@@ -29,7 +29,7 @@ class _Denied(Exception):
     pass
 
 
-def _fake_psutil(procs: list["_Proc"], me: str) -> types.ModuleType:
+def _fake_psutil(procs: list[_Proc], me: str) -> types.ModuleType:
     module = types.ModuleType("psutil")
     module.NoSuchProcess = module.ZombieProcess = module.AccessDenied = _Denied
 

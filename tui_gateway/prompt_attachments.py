@@ -186,7 +186,7 @@ def _write_attachment_temp(root: Path, payload: bytes) -> Path:
     """Exclusive, owner-only staging; never expose a partially written attachment."""
     import io
     temp = root / f".attachment-{uuid.uuid4().hex}.tmp"
-    handle = io.open(temp, "xb", opener=lambda path, flags: os.open(path, flags, 0o600))
+    handle = open(temp, "xb", opener=lambda path, flags: os.open(path, flags, 0o600))
     try:
         with handle:
             handle.write(payload)

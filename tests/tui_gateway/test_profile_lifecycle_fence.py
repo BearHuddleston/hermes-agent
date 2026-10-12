@@ -21,7 +21,7 @@ from tui_gateway.profile_lifecycle import ProfileLifecycleFence
 
 @pytest.fixture
 def server(tmp_path, monkeypatch):
-    import tui_gateway.server as server
+    from tui_gateway import server
 
     root = tmp_path / ".hermes"
     root.mkdir()

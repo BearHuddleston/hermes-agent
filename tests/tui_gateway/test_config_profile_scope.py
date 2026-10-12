@@ -206,7 +206,7 @@ def test_skin_changed_names_the_profile_whose_config_moved(tmp_path, monkeypatch
     """``skin.changed`` fans out to every transport of a process serving several profiles, and Desktop
     persists an applied skin into that client's profile. Each change is announced once, naming whose
     ``display.skin`` moved, so a client on another profile leaves its appearance alone."""
-    import hermes_cli.skin_engine as skin_engine
+    from hermes_cli import skin_engine
 
     launch, worker = _homes(tmp_path)
     _bind_homes(monkeypatch, launch, worker)

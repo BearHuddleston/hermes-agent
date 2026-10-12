@@ -596,8 +596,7 @@ def foreign_state_db_holders(db_path: Path) -> list[tuple[int, str]]:
         )
 
     try:
-        for holder in _descriptor_holders(db_path, watched.__contains__, matches):
-            holders.append(holder)
+        holders.extend(_descriptor_holders(db_path, watched.__contains__, matches))
     except Exception as exc:
         logger.warning(
             "Could not prove state.db has no foreign holders; "

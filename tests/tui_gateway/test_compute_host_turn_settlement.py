@@ -157,7 +157,7 @@ def test_fast_completion_does_not_replace_next_dispatch_receipt(monkeypatch):
     sent = []
     monkeypatch.setattr(server, "_get_compute_host_supervisor", lambda _cfg=None: supervisor)
     monkeypatch.setattr(server, "_compute_host_turn_frame", lambda *a, **k: {"sid": "s"})
-    monkeypatch.setattr(server, "_load_dashboard_process_isolation_config", lambda: {})
+    monkeypatch.setattr(server, "_load_dashboard_process_isolation_config", dict)
 
     def done(*_args):
         server._submit_prompt_to_compute_host("second", "s", session, "next")
@@ -189,7 +189,7 @@ def test_old_completion_cannot_release_newer_deferred_turn(monkeypatch, tmp_path
     monkeypatch.setattr(server, "_deferred_active_session_settlements", {})
     monkeypatch.setattr(server, "_TURN_SETTLE_BEFORE_CLOSE_SECONDS", 0)
     monkeypatch.setattr(server, "_session_uses_compute_host", lambda _s: True)
-    monkeypatch.setattr(server, "_load_dashboard_process_isolation_config", lambda: {})
+    monkeypatch.setattr(server, "_load_dashboard_process_isolation_config", dict)
     supervisor = _supervisor(monkeypatch, SimpleNamespace(poll=lambda: None))
     monkeypatch.setattr(server, "_get_compute_host_supervisor", lambda _cfg=None: supervisor)
     monkeypatch.setattr(server, "_compute_host_turn_frame", lambda *a, **k: {"sid": "s"})
