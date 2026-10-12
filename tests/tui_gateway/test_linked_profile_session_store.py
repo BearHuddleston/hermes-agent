@@ -91,3 +91,19 @@ def test_linked_profile_token_bound_writer_rpc_succeeds(server):
     with SessionDB(db_path=home / "state.db") as db:
         assert db.get_session("doomed") is None
 
+
+def test_message_to_a_retired_linked_profile_names_the_profile(server):
+    from hermes_cli.profile_lifecycle import mark_profile_deleting, profile_lifecycle_lease
+
+    created = _rpc(server, "session.create", {"profile": "linked", "source": "desktop"})
+    sid = created["result"]["session_id"]
+    record = server._sessions[sid]
+    home = Path(record["profile_home"])
+    with profile_lifecycle_lease(home):
+        mark_profile_deleting(home, record["profile_incarnation"])
+
+    sent = _rpc(server, "prompt.submit", {"session_id": sid, "text": "hello"})
+
+    assert sent["error"]["code"] == 4041, sent
+    assert "profile was deleted or recreated" in sent["error"]["message"]
+    assert "doctor" not in sent["error"]["message"]

@@ -47,7 +47,7 @@ from tui_gateway.contracts import registry as _contracts
 # User-facing copy shared with the split method modules (they close over this namespace).
 from tui_gateway.user_messages import (
     AGENT_BUILD_ABANDONED, AGENT_MISSING_FOR_TURN, AGENT_STILL_STARTING, agent_init_failed_message, busy_message,
-    resume_failed_message, turn_error_text)
+    PROFILE_RETIRED_FOR_SESSION, profile_retired_error, resume_failed_message, turn_error_text)
 from tui_gateway.transport import (FanoutTransport, StdioTransport, Transport, bind_transport,
                                    current_transport, reset_transport)
 
@@ -1276,7 +1276,7 @@ def _sess_nowait(params, rid):
         if _session_profile_rejected(s):
             return (
                 None,
-                _err(rid, 4041, "profile incarnation is stale or home is unavailable"),
+                _err(rid, 4041, PROFILE_RETIRED_FOR_SESSION),
             )
         return (s, None)
     # Stale runtime id (reaped/evicted/TTL): the client should session.resume the STORED id. Logged so

@@ -562,6 +562,9 @@ def _persist_session_row_for_submit(rid, session, text=None, display_kind=None):
     from hermes_state_user_copy import describe_storage_failure
     try:
         if _ensure_session_db_row(session) is False:
+            if session.get("profile_home") and _session_profile_rejected(session):
+                # The profile store refused a retired generation; storage itself is fine.
+                return _err(rid, 4041, PROFILE_RETIRED_FOR_SESSION)
             failure = describe_storage_failure(_db_error)
             error = _err(
                 rid, 5072,
@@ -855,7 +858,7 @@ def _(rid, params: dict) -> dict:
             return _err(
                 rid,
                 4041,
-                "profile incarnation is stale or home is missing or being deleted",
+                PROFILE_RETIRED_FOR_SESSION,
             )
 
     # Native clipboard helpers can wait on several subprocesses. Keep both
@@ -882,7 +885,7 @@ def _(rid, params: dict) -> dict:
     except LookupError:
         return _err(rid, 4001, "session not found")
     except FileNotFoundError:
-        return _err(rid, 4041, "profile incarnation changed during clipboard paste")
+        return _err(rid, 4041, PROFILE_RETIRED_FOR_SESSION)
 
     return _ok(rid, _attached_image_result(session, img_path))
 
@@ -1004,7 +1007,7 @@ def _(rid, params: dict) -> dict:
             except LookupError:
                 return _err(rid, 4001, "session not found")
             except FileNotFoundError as exc:
-                return _err(rid, 4041, str(exc))
+                return _err(rid, 4041, PROFILE_RETIRED_FOR_SESSION if profile_retired_error(exc) else str(exc))
             except ValueError as exc:
                 return _err(rid, 4018, str(exc))
             attached_pages.append({"path": str(dst), "page": page_int, **_image_meta(dst)})
