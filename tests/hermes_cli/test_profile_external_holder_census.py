@@ -189,7 +189,9 @@ def test_holder_through_a_symlinked_profile_path_is_found(tmp_path, census_throu
     True,
     # Every desktop or SSH login keeps such processes alive (``sshd: <user>``, ``gpg-agent``,
     # Chromium's sandbox); counting them would make deletion impossible. Root reads them all.
-    pytest.param(False, marks=pytest.mark.skipif(os.geteuid() == 0, reason="root reads every fd table")),
+    # Evaluated at collection on every host; the test itself is Linux-only.
+    pytest.param(False, marks=pytest.mark.skipif(
+        hasattr(os, "geteuid") and os.geteuid() == 0, reason="root reads every fd table")),
 ], ids=["hermes", "not-hermes"])
 def test_uninspectable_process_counts_only_when_it_is_hermes(tmp_path, hermes):
     """A same-user process whose descriptors cannot be read may hold any file in the profile."""
