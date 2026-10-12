@@ -5,6 +5,7 @@ import time
 import pytest
 
 from hermes_cli.pty_session import RingBuffer
+from tests.waiting import async_wait_until
 
 
 def test_ringbuffer_keeps_everything_under_capacity():
@@ -162,9 +163,7 @@ async def test_viewer_that_stops_reading_live_output_is_told_to_reconnect(monkey
     stalled = FailingWS(hold=True)  # stopped reading: its send never completes
     assert await session.attach(stalled)  # empty history: no replay frame to send
     bridge._chunks.append(b"live output")
-    async with asyncio.timeout(15):
-        while stalled.close_code is None:
-            await asyncio.sleep(0.05)
+    await async_wait_until(lambda: stalled.close_code is not None, timeout=15)
     assert stalled.close_code == 1001
     assert session.alive and not session.attached
     again, created = await registry.attach_or_spawn("k", spawn=lambda: FakeBridge([]))

@@ -1,16 +1,17 @@
 """Ownership, replay ordering, and spawn reservation contracts for PTY sessions."""
 import asyncio
 import threading
-import time
 
 import pytest
 
 from hermes_cli.pty_session import PtySession, PtySessionRegistry, RegistryFull
+from tests.waiting import async_wait_until
 
 
 class Bridge:
     def __init__(self):
         self.closed = False
+        self._closing = threading.Event()
         self.written = []
         self.resized = []
         self.output = []
@@ -18,7 +19,7 @@ class Bridge:
     def read(self, timeout):
         if self.output:
             return self.output.pop(0)
-        time.sleep(0.001)
+        self._closing.wait(timeout)
         return b""
 
     async def write(self, data):
@@ -30,6 +31,7 @@ class Bridge:
 
     def close(self):
         self.closed = True
+        self._closing.set()
 
     def is_alive(self):
         return not self.closed
@@ -69,17 +71,11 @@ async def test_metadata_replay_live_order_and_superseded_input_fence():
     bridge.output.append(b"live")
     await session.start()
     # Eventual drain observation, not a timing assertion.
-    async def buffered():
-        while session.buffer.snapshot() != b"replaylive":
-            await asyncio.sleep(0.001)
-    await asyncio.wait_for(buffered(), 2)
+    await async_wait_until(lambda: session.buffer.snapshot() == b"replaylive", timeout=2)
     assert old.frames == []
     release.set()
     assert await attaching
-    async def sent():
-        while len(old.frames) != 3:
-            await asyncio.sleep(0.001)
-    await asyncio.wait_for(sent(), 2)
+    await async_wait_until(lambda: len(old.frames) == 3, timeout=2)
     assert old.frames == ["meta", b"replay", b"live"]
     replacement = Socket()
     assert await session.attach(replacement, initial_text="resume")

@@ -10,6 +10,7 @@ from starlette.websockets import WebSocketDisconnect
 
 from hermes_cli import web_host_terminal, web_server, web_server_chat
 from hermes_cli.web_routers.webapp import router
+from tests.waiting import async_wait_until
 
 
 @pytest.fixture
@@ -647,9 +648,7 @@ def test_retirement_between_check_and_write_never_reaches_the_shell(tmp_path, mo
             return await self.inbound.get()
 
     async def until(condition):
-        async with asyncio.timeout(10):
-            while not condition():
-                await asyncio.sleep(0.01)
+        await async_wait_until(condition, timeout=10)
 
     async def scenario():
         ws = Socket()

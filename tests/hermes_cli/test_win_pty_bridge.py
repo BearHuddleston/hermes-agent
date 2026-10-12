@@ -29,6 +29,7 @@ import pytest
 # must never raise, otherwise the web_server import branch becomes a trap.
 from hermes_cli import win_pty_bridge
 from hermes_cli.win_pty_bridge import PtyUnavailableError, WinPtyBridge
+from tests.waiting import async_wait_until
 
 # ``pytest.mark.platforms("windows")`` rather than a local ``skipif`` alias: the
 # dedicated Windows CI job selects its files by grepping for the marker name
@@ -210,8 +211,10 @@ class TestWinPtyBridgeUnavailable:
 
             def __init__(self):
                 self.output, self.console = socket.socketpair()
+                self.polled = threading.Event()
 
             def fileno(self):
+                self.polled.set()  # the bridge's bounded select asks for it on every poll
                 return self.output.fileno()
 
             def read(self, size):
@@ -234,12 +237,12 @@ class TestWinPtyBridgeUnavailable:
         try:
             for session in sessions:
                 await session.start()
-            await asyncio.sleep(0.2)
+            # Every idle shell's reader has polled it; unbounded reads on the two-worker
+            # default pool would hold both workers and leave two shells never polled.
+            await async_wait_until(lambda: all(shell.polled.is_set() for shell in shells), timeout=3)
             assert await asyncio.wait_for(asyncio.to_thread(lambda: "ran"), 3) == "ran"
             shells[1].console.sendall("héllo".encode())
-            async with asyncio.timeout(3):
-                while sessions[1].buffer.snapshot() != "héllo".encode():
-                    await asyncio.sleep(0.01)
+            await async_wait_until(lambda: sessions[1].buffer.snapshot() == "héllo".encode(), timeout=3)
         finally:
             for shell in shells:
                 shell.terminate()

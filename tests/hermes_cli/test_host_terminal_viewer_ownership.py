@@ -8,6 +8,7 @@ import pytest
 
 from hermes_cli.pty_session import PtySession, WS_CLOSE_SUPERSEDED
 from hermes_cli.web_host_terminal_sessions import HostOwner, HostTerminalRegistry
+from tests.waiting import async_wait_until
 
 
 class Socket:
@@ -113,9 +114,7 @@ async def test_host_reaper_releases_dead_shell_before_drain_observes_eof(tmp_pat
                 await asyncio.sleep(0)
         assert await session.attach(viewer)
         os.kill(bridge.pid, signal.SIGKILL)
-        async with asyncio.timeout(5):
-            while bridge.is_alive():
-                await asyncio.sleep(0.01)
+        await async_wait_until(lambda: not bridge.is_alive(), timeout=5)
         # The drain has not observed EOF. A helper can delay it indefinitely
         # on Linux; macOS can report EOF as soon as the leader exits.
         assert session.alive and session.attached

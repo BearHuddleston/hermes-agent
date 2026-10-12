@@ -12,6 +12,7 @@ import threading
 import pytest
 
 from hermes_cli.web_host_terminal_sessions import HostTerminalRegistry
+from tests.waiting import async_wait_until
 
 
 class QuietShell:
@@ -46,8 +47,7 @@ async def test_idle_host_shells_leave_the_default_executor_free():
             # A full registry: every retained shell reads at once.
             for _ in range(registry._max):
                 await registry.attach_or_spawn(secrets.token_urlsafe(32), spawn=spawn)
-            while len(readers) < registry._max:
-                await asyncio.sleep(0.01)
+            await async_wait_until(lambda: len(readers) >= registry._max, timeout=5)
             assert await asyncio.to_thread(lambda: "ran") == "ran"
     finally:
         # Release reads first so a starved default executor can still run teardown.
@@ -55,6 +55,4 @@ async def test_idle_host_shells_leave_the_default_executor_free():
             shell.close()
         await registry.close_all()
     # Closing the registry releases its reader threads; a restarted lifespan gets new ones.
-    async with asyncio.timeout(5):
-        while any(thread.is_alive() for thread in readers):
-            await asyncio.sleep(0.01)
+    await async_wait_until(lambda: not any(thread.is_alive() for thread in readers), timeout=5)
