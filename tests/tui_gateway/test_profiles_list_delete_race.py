@@ -9,6 +9,7 @@ import subprocess
 import sys
 import threading
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -785,13 +786,23 @@ def test_rename_tombstones_old_home_and_publishes_new_home(
 
     agent = Agent()
     released_memory_homes: list[Path] = []
-    from plugins.memory.holographic.store import MemoryStore
+    import plugins.memory as memory_plugins
 
-    monkeypatch.setattr(
-        MemoryStore,
-        "release_all_under",
-        lambda path: released_memory_homes.append(Path(path)) or 1,
-    )
+    real_provider_module = memory_plugins.import_provider_module
+
+    class MemoryStore:
+        @staticmethod
+        def release_all_under(path):
+            released_memory_homes.append(Path(path))
+            return 1
+
+    # Holographic ships from the plugin catalog; stand in for whichever copy is installed.
+    def provider_module(name, submodule=None):
+        if (name, submodule) == ("holographic", "store"):
+            return SimpleNamespace(MemoryStore=MemoryStore)
+        return real_provider_module(name, submodule)
+
+    monkeypatch.setattr(memory_plugins, "import_provider_module", provider_module)
     with srv._sessions_lock:
         srv._sessions["rename-live"] = {
             "agent": agent,
