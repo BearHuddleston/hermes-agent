@@ -1,5 +1,6 @@
-import { type SyntheticEvent, useCallback, useEffect, useRef, useState } from 'react'
+import { type SyntheticEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
+import { useComposerScope } from '@/app/chat/composer/scope'
 import { mediaKind, resolveMediaPlaybackSrc } from '@/lib/media'
 
 type PlaybackEvent = SyntheticEvent<HTMLAudioElement | HTMLVideoElement>
@@ -19,6 +20,14 @@ interface ResumePoint {
  * resolves to the same URL again, is a real failure. */
 export function useMediaPlaybackSrc(path: string) {
   const kind = mediaKind(path)
+  const scope = useComposerScope()
+
+  // A transcript in a background tile streams through the tile's owner, not the foreground.
+  const owner = useMemo(
+    () => (scope.connectionId || scope.profile ? { connectionId: scope.connectionId, profile: scope.profile } : undefined),
+    [scope.connectionId, scope.profile]
+  )
+
   const [media, setMedia] = useState({ failed: false, path, src: '' })
   const loadedSrc = useRef('')
   const resume = useRef<null | ResumePoint>(null)
@@ -33,7 +42,7 @@ export function useMediaPlaybackSrc(path: string) {
       return
     }
 
-    void resolveMediaPlaybackSrc(path)
+    void resolveMediaPlaybackSrc(path, owner)
       .then(value => {
         if (value.startsWith('blob:')) {
           objectUrl = value
@@ -58,7 +67,7 @@ export function useMediaPlaybackSrc(path: string) {
         URL.revokeObjectURL(objectUrl)
       }
     }
-  }, [kind, path])
+  }, [kind, owner, path])
 
   const onLoadedMetadata = useCallback((event: PlaybackEvent) => {
     const element = event.currentTarget
@@ -97,7 +106,7 @@ export function useMediaPlaybackSrc(path: string) {
 
       const point = { paused: element.paused, time: element.currentTime }
 
-      void resolveMediaPlaybackSrc(path)
+      void resolveMediaPlaybackSrc(path, owner)
         .then(fresh => {
           if (fresh === failing || fresh.startsWith('blob:')) {
             if (fresh !== failing) {
@@ -114,7 +123,7 @@ export function useMediaPlaybackSrc(path: string) {
         })
         .catch(fail)
     },
-    [path]
+    [owner, path]
   )
 
   // Never paint the previous path's source while the new one resolves.

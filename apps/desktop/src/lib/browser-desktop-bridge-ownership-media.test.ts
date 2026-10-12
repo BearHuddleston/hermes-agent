@@ -5,7 +5,7 @@ import { setApiRequestConnection, setApiRequestProfile } from '@/api/client'
 import { $connection } from '@/store/session'
 
 import { installBrowserDesktopBridge } from './browser-desktop-bridge'
-import { resolveMediaDisplaySrc } from './media'
+import { resolveMediaDisplaySrc, resolveMediaPlaybackSrc } from './media'
 
 const win = window as Window & { __HERMES_SESSION_TOKEN__?: string }
 
@@ -59,4 +59,33 @@ it.each([
   const [requestUrl] = fetchMock.mock.calls.at(-1) as [URL, RequestInit]
   expect(requestUrl.pathname).toBe('/api/fs/read-data-url')
   expect(requestUrl.searchParams.get('profile')).toBe(owner)
+})
+
+it.each(['clip.mp3', 'clip.mp4'])('streams background-tile %s through the owning browser profile', async file => {
+  win.__HERMES_SESSION_TOKEN__ = 'served-token'
+
+  const ticketProfiles: unknown[] = []
+  const fetchMock = vi.fn(async (input: URL, init?: RequestInit) => {
+    if (input.pathname === '/api/files/ticket') {
+      ticketProfiles.push(JSON.parse(String(init?.body ?? '{}')).profile)
+
+      return new Response(JSON.stringify({ ticket: 'owner-ticket' }), { status: 200 })
+    }
+
+    return new Response('{}', { status: 404 })
+  })
+
+  vi.stubGlobal('fetch', fetchMock)
+  expect(installBrowserDesktopBridge()).toBe(true)
+  setApiRequestConnection(LOCAL_CONNECTION_ID)
+  setApiRequestProfile('foreground')
+  $connection.set({ connectionId: LOCAL_CONNECTION_ID, mode: 'remote', profile: 'foreground' } as never)
+
+  const src = await resolveMediaPlaybackSrc(`/srv/tile-owner/${file}`, {
+    connectionId: LOCAL_CONNECTION_ID,
+    profile: 'tile-owner'
+  })
+
+  expect(ticketProfiles).toEqual(['tile-owner'])
+  expect(new URL(src).searchParams.get('profile')).toBe('tile-owner')
 })
