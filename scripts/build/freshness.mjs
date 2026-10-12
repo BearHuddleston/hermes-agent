@@ -176,7 +176,7 @@ export function buildInputs(source, product, prepared = {}, env = process.env) {
     prepared: Object.entries(prepared).sort().map(([name, path]) => ({
       name, path: resolve(path), hash: name === 'stamp' ? stampContentHash(resolve(path)) : treeHash(resolve(path), ['.'], () => false),
     })),
-    ...(product === 'desktop' ? { env: rendererEnv(env) } : {}),
+    ...(product === 'desktop' || product === 'webapp' ? { env: rendererEnv(env) } : {}),
   }
 }
 
