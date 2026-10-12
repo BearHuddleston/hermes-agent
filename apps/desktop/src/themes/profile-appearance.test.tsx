@@ -1,6 +1,7 @@
 import { act, cleanup, render, renderHook } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { setApiRequestConnection } from '@/api/client'
 import { useHermesConfig } from '@/app/session/hooks/use-hermes-config'
 import type { HermesApiRequest, HermesConnection } from '@/global'
 import { setApiRequestProfile } from '@/hermes'
@@ -108,6 +109,7 @@ describe('profile appearance ↔ config.yaml', () => {
   afterEach(() => {
     cleanup()
     Reflect.deleteProperty(window, 'hermesDesktop')
+    setApiRequestConnection(null)
     $connection.set(null)
     $activeGatewayProfile.set('default')
   })
@@ -199,6 +201,31 @@ describe('profile appearance ↔ config.yaml', () => {
       ['/api/config', 'default', { config: { desktop: { theme: 'ember', theme_mode: 'dark' } } }]
     ])
     expect([ctx.themeName, skinPref.stored('lab')]).toEqual(['everforest', 'everforest'])
+  })
+
+  it('checks each gateway serving a profile once, and seeds every one that has it unset', async () => {
+    skinPref.assign('atlas', 'catppuccin')
+    configs = { atlas: appearance('', '') }
+
+    act(() => setApiRequestConnection('gateway-a'))
+    onProfile('atlas')
+    const { refresh } = mountApp()
+    await refresh()
+    await refresh()
+
+    act(() => setApiRequestConnection('gateway-b'))
+    await refresh()
+    await refresh()
+
+    expect(
+      api.mock.calls
+        .map(([request]) => request)
+        .filter(request => request.method === 'PUT')
+        .map(request => [request.connectionId, request.profile, request.body])
+    ).toEqual([
+      ['gateway-a', 'atlas', { config: { desktop: { theme: 'catppuccin' } } }],
+      ['gateway-b', 'atlas', { config: { desktop: { theme: 'catppuccin' } } }]
+    ])
   })
 })
 

@@ -49,6 +49,8 @@ class WinPtyBridge:
     def __init__(self, proc: PtyProcess) -> None:  # type: ignore[name-defined]
         self._proc = proc
         self._closed = False
+        # Deadline guards for writes whose caller left while they waited on a fence.
+        self._late_writes: set[asyncio.Task] = set()
 
     @classmethod
     def is_available(cls) -> bool:
@@ -121,8 +123,11 @@ class WinPtyBridge:
     async def write(self, data: bytes, *, timeout: Optional[float] = _WRITE_TIMEOUT, fence=None) -> bool:
         """Write off-loop and tear down ConPTY when its input pipe wedges.
 
-        ``fence`` (see ``PtyBridge.write``) wraps the whole blocking write, which
-        the deadline below bounds. ConPTY takes input whether or not the child
+        ``fence`` (see ``PtyBridge.write``) wraps the whole blocking write, and
+        whatever it raises propagates. Waiting to enter the fence is not a stall:
+        its profile lease can be held by other work (a cold SessionDB open, an
+        attachment write) for longer than the deadline, so the deadline starts
+        when the bytes reach ConPTY. ConPTY takes input whether or not the child
         reads it (conhost buffers it), so a write that misses the deadline means
         ConPTY itself is wedged: ``timeout=None``, which on POSIX waits for the
         child to read, still gets that deadline here and never holds the fence
@@ -136,16 +141,37 @@ class WinPtyBridge:
         Cancellation (the owning socket went away mid-write) is not evidence
         of a wedged child: the PTY outlives its socket by design, so give the
         in-flight write the grace window and only terminate if it never lands.
+        A write cancelled while it still waits for its fence keeps waiting off
+        the loop and gets the deadline once it reaches ConPTY.
         """
         if self._closed:
             return False
         if not data:
             return True
         loop = asyncio.get_running_loop()
-        write = self._write_blocking if fence is None else (
-            lambda chunk: fence(lambda: self._write_blocking(chunk)))
+        entered = asyncio.Event()
+
+        def enter_conpty(chunk: bytes) -> bool:
+            loop.call_soon_threadsafe(entered.set)
+            return self._write_blocking(chunk)
+
+        if fence is None:
+            entered.set()
+            write = self._write_blocking
+        else:
+            def write(chunk: bytes):
+                return fence(lambda: enter_conpty(chunk))
         write_future = loop.run_in_executor(None, write, data)
         deadline = _WRITE_TIMEOUT if timeout is None else max(0.0, timeout)
+        try:
+            if not await self._entered_conpty(entered, write_future):
+                return await write_future  # the fence refused: its result, or what it raised
+        except asyncio.CancelledError:
+            if entered.is_set():
+                await asyncio.shield(self._settle_or_stop_write(write_future))
+            else:
+                self._bound_late_write(entered, write_future, deadline)
+            raise
         try:
             return await asyncio.wait_for(asyncio.shield(write_future), timeout=deadline)
         except TimeoutError:
@@ -154,6 +180,34 @@ class WinPtyBridge:
         except asyncio.CancelledError:
             await asyncio.shield(self._settle_or_stop_write(write_future))
             raise
+
+    @staticmethod
+    async def _entered_conpty(entered: asyncio.Event, write_future: asyncio.Future) -> bool:
+        """Wait, with no deadline, until the write reaches ConPTY or the fence returns without it."""
+        if entered.is_set():
+            return True
+        entering = asyncio.ensure_future(entered.wait())
+        try:
+            await asyncio.wait({entering, write_future}, return_when=asyncio.FIRST_COMPLETED)
+        finally:
+            entering.cancel()
+        return entered.is_set()
+
+    def _bound_late_write(self, entered: asyncio.Event, write_future: asyncio.Future, deadline: float) -> None:
+        """Hold a write cancelled before its fence admitted it to the deadline once it reaches ConPTY."""
+        async def bound() -> None:
+            if await self._entered_conpty(entered, write_future):
+                done, _ = await asyncio.wait({write_future}, timeout=deadline)
+                if not done:
+                    await self._stop_stalled_write(write_future)
+                    return
+            # Nobody awaits this write any more, so report what it raised here.
+            if not write_future.cancelled() and (error := write_future.exception()) is not None:
+                _log.debug("Host terminal write failed after its caller left", exc_info=error)
+
+        task = asyncio.get_running_loop().create_task(bound())
+        self._late_writes.add(task)
+        task.add_done_callback(self._late_writes.discard)
 
     async def _settle_or_stop_write(self, write_future: asyncio.Future) -> None:
         """Let a cancelled write finish within the grace window; terminate only if it stalls."""

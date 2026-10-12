@@ -6,6 +6,7 @@ import { mediaKind, resolveMediaPlaybackSrc } from '@/lib/media'
 type PlaybackEvent = SyntheticEvent<HTMLAudioElement | HTMLVideoElement>
 
 interface ResumePoint {
+  element: HTMLAudioElement | HTMLVideoElement
   paused: boolean
   src: string
   time: number
@@ -15,9 +16,11 @@ interface ResumePoint {
  *
  * Webapp sources are stream-ticket URLs that expire, and the element needs a
  * valid one for every later range request (a seek, or play after a long
- * pause). So a source that has loaded is re-resolved on its next error and
- * playback resumes where it stopped. A source that never loaded, or that
- * resolves to the same URL again, is a real failure. */
+ * pause). A video fetches nothing until it is played, so its first ticket can
+ * expire unused. So a source that has loaded, or that waited unfetched, is
+ * re-resolved on its next error and playback resumes where it stopped. Any
+ * other source that fails before it loads, or one that resolves to the same
+ * URL again, is a real failure. */
 export function useMediaPlaybackSrc(path: string) {
   const kind = mediaKind(path)
   const scope = useComposerScope()
@@ -30,6 +33,8 @@ export function useMediaPlaybackSrc(path: string) {
 
   const [media, setMedia] = useState({ failed: false, path, src: '' })
   const loadedSrc = useRef('')
+  // Minted for a source that failed before it ever loaded; it gets no retry of its own.
+  const retriedSrc = useRef('')
   const resume = useRef<null | ResumePoint>(null)
 
   useEffect(() => {
@@ -97,14 +102,18 @@ export function useMediaPlaybackSrc(path: string) {
       const fail = () =>
         setMedia(current => (current.src === failing ? { ...current, failed: true } : current))
 
-      // Only a source that has loaded can have expired; blob sources never do.
-      if (loadedSrc.current !== failing || failing.startsWith('blob:')) {
+      const neverLoaded = loadedSrc.current !== failing
+      // A source that never loaded can only have expired if its element waited to fetch it
+      // (preload="none" until played); it gets one fresh ticket. Blob sources never expire.
+      const realFailure = neverLoaded && (element.preload !== 'none' || retriedSrc.current === failing)
+
+      if (failing.startsWith('blob:') || realFailure) {
         fail()
 
         return
       }
 
-      const point = { paused: element.paused, time: element.currentTime }
+      const point = { element, paused: element.paused, time: element.currentTime }
 
       void resolveMediaPlaybackSrc(path, owner)
         .then(fresh => {
@@ -118,6 +127,10 @@ export function useMediaPlaybackSrc(path: string) {
             return
           }
 
+          if (neverLoaded) {
+            retriedSrc.current = fresh
+          }
+
           resume.current = { ...point, src: fresh }
           setMedia(current => (current.src === failing ? { ...current, src: fresh } : current))
         })
@@ -125,6 +138,20 @@ export function useMediaPlaybackSrc(path: string) {
     },
     [owner, path]
   )
+
+  // An element with preload="none" fetches nothing for a new source until asked, so one
+  // that was playing is asked again; onLoadedMetadata then restores the position.
+  useEffect(() => {
+    const point = resume.current
+
+    if (!point || point.paused || point.src !== media.src || point.element.preload !== 'none') {
+      return
+    }
+
+    void point.element.play().catch(() => {
+      // Without the user's gesture still active the browser can refuse; Play works again.
+    })
+  }, [media.src])
 
   // Never paint the previous path's source while the new one resolves.
   const current = media.path === path

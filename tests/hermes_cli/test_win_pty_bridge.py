@@ -55,6 +55,22 @@ def _read_until(bridge: WinPtyBridge, needle: bytes, timeout: float = 10.0) -> b
     return bytes(buf)
 
 
+class _HealthyProc:
+    """A ConPTY whose input never wedges."""
+
+    pid = 1
+
+    def __init__(self):
+        self.written = []
+        self.terminated = threading.Event()
+
+    def write(self, text):
+        self.written.append(text)
+
+    def terminate(self, force=False):
+        self.terminated.set()
+
+
 # ---------------------------------------------------------------------------
 # Cross-platform fallback semantics
 # ---------------------------------------------------------------------------
@@ -193,6 +209,101 @@ class TestWinPtyBridgeUnavailable:
             assert await bridge.write(b"x", timeout=0.01) is False
         proc.release_write.set()
         assert any("thread leaked" in r.getMessage() for r in caplog.records)
+
+    @pytest.mark.asyncio
+    async def test_waiting_for_the_fence_does_not_count_against_the_write_deadline(self):
+        """Other work holding the fence's profile lease is not a wedged ConPTY: a write that
+        waits longer than the deadline to enter the fence still lands, and the shell survives."""
+        proc = _HealthyProc()
+        bridge = WinPtyBridge(proc)
+        lease_free = threading.Event()
+        waiting = threading.Event()
+
+        def fence(write):
+            waiting.set()
+            lease_free.wait(timeout=5.0)
+            return write()
+
+        task = asyncio.create_task(bridge.write(b"keys", timeout=0.05, fence=fence))
+        await async_wait_until(waiting.is_set)
+        done, _ = await asyncio.wait({task}, timeout=0.3)
+        assert not done
+        lease_free.set()
+        assert await task is True
+        assert proc.written == ["keys"]
+        assert not proc.terminated.is_set()
+
+    @pytest.mark.asyncio
+    async def test_a_fence_that_raises_propagates_and_keeps_conpty(self):
+        """A lease that gives up is the fence refusing, not ConPTY wedging: what it raises
+        reaches the caller, as on POSIX, and the shell stays up."""
+        proc = _HealthyProc()
+        bridge = WinPtyBridge(proc)
+
+        def fence(_write):
+            raise TimeoutError("profile lease busy")
+
+        with pytest.raises(TimeoutError, match="profile lease busy"):
+            await bridge.write(b"keys", fence=fence)
+        assert proc.written == []
+        assert not proc.terminated.is_set()
+        assert bridge._closed is False
+
+    @pytest.mark.asyncio
+    async def test_a_write_wedged_inside_the_fence_terminates_conpty_and_frees_the_fence(self):
+        """The deadline still bounds how long a wedged ConPTY can hold the fence."""
+        class _WedgedProc:
+            pid = 1
+
+            def __init__(self):
+                self.release_write = threading.Event()
+                self.terminated = threading.Event()
+
+            def write(self, _text):
+                self.release_write.wait(timeout=5.0)
+
+            def terminate(self, force=False):
+                self.terminated.set()
+                self.release_write.set()
+
+        proc = _WedgedProc()
+        bridge = WinPtyBridge(proc)
+        lease = threading.Lock()
+
+        def fence(write):
+            with lease:
+                return write()
+
+        assert await bridge.write(b"x", timeout=0.05, fence=fence) is False
+        assert proc.terminated.is_set()
+        assert bridge._closed is True
+        assert not lease.locked()
+
+    @pytest.mark.asyncio
+    async def test_a_write_cancelled_while_waiting_for_the_fence_lands_and_keeps_conpty(self):
+        """A socket leaving while the lease is busy is not a stall: the keystrokes land once
+        the lease frees, and the shell survives."""
+        proc = _HealthyProc()
+        bridge = WinPtyBridge(proc)
+        lease_free = threading.Event()
+        waiting = threading.Event()
+
+        def fence(write):
+            waiting.set()
+            lease_free.wait(timeout=5.0)
+            return write()
+
+        with patch.object(win_pty_bridge, "_WRITE_SHUTDOWN_GRACE", 0.05):
+            task = asyncio.create_task(bridge.write(b"keys", timeout=0.05, fence=fence))
+            await async_wait_until(waiting.is_set)
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+            assert not proc.terminated.is_set()
+            lease_free.set()
+            await async_wait_until(lambda: proc.written == ["keys"] and not bridge._late_writes)
+        assert not proc.terminated.is_set()
+        assert bridge._closed is False
 
     @pytest.mark.asyncio
     async def test_idle_terminals_leave_the_default_executor_free(self):

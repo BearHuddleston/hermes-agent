@@ -276,24 +276,24 @@ function commitPick(profile: string, field: AppearanceField, value: string, repa
     })
 }
 
-// Profiles whose config was already checked for a local pick to upload.
-const seededProfiles = new Set<string>()
+// Owners, (connection, profile), whose config was already checked for a local pick to upload.
+const seededOwners = new Set<string>()
 
 /**
  * Existing installs kept their picks only in this origin's localStorage. The
  * first config load that finds the profile's appearance unset uploads the
  * profile's OWN pick once, so the Webapp and other clients inherit it. The
  * global value an unassigned named profile inherits was never chosen for it,
- * so it stays local.
+ * so it stays local. Each gateway serving the profile is checked once.
  */
-function seedFromLocalPick(appearance: { profile: string; theme: string; mode: string }): void {
-  const { profile } = appearance
+function seedFromLocalPick(appearance: { mode: string; owner: string; profile: string; theme: string }): void {
+  const { owner, profile } = appearance
 
-  if (seededProfiles.has(profile)) {
+  if (seededOwners.has(owner)) {
     return
   }
 
-  seededProfiles.add(profile)
+  seededOwners.add(owner)
 
   const skin = appearance.theme ? null : skinPref.own(profile)
   const mode = appearance.mode ? null : modePref.own(profile)
