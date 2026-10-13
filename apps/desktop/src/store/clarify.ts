@@ -250,6 +250,8 @@ export function clearClarifyRequest(requestId?: string, sessionId?: string | nul
 }
 
 interface SetupChooseStage {
+  /** Persist a confirmed look; clearing or skipping the card only reverts its preview. */
+  commit?: (picked: string[]) => void
   draft: string
   /**
    * The name each row of the card shows, by id: a typed answer still names the rows staged with it, and
@@ -304,10 +306,16 @@ export function stageSetupChoose(requestId: string, patch: Partial<SetupChooseSt
   $setupChooseStages.set({ ...$setupChooseStages.get(), [requestId]: { ...current, ...patch } })
 }
 
-export function commitSetupChoose(requestId: string): void {
+function clearSetupChoose(requestId: string): void {
   const next = { ...$setupChooseStages.get() }
   delete next[requestId]
   $setupChooseStages.set(next)
+}
+
+export function commitSetupChoose(requestId: string): void {
+  const stage = setupChooseStage(requestId)
+  clearSetupChoose(requestId)
+  stage.commit?.(stage.picked)
 }
 
 $clarifyRequests.listen(requests => {
@@ -315,7 +323,7 @@ $clarifyRequests.listen(requests => {
 
   for (const [requestId, stage] of Object.entries($setupChooseStages.get())) {
     if (!live.has(requestId)) {
-      commitSetupChoose(requestId)
+      clearSetupChoose(requestId)
       stage.revert?.()
     }
   }
