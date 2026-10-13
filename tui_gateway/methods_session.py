@@ -716,16 +716,15 @@ class _Resume:
             close_on_disconnect=_flag(self.params, "close_on_disconnect"), profile_home=self.profile_home,
             profile_incarnation=self.profile_incarnation, explicit_cwd=bool(self.profile_resume_cwd), **extra)
         if follows_profile:
-            record.update(
-                follow_profile_config=True,
-                composer_override_profile=(model_config.get("composer_override_profile")
-                                           if overrides and overrides.get("model_override") else None),
-            )
+            record.update(follow_profile_config=True, composer_override_profile=(
+                model_config.get("composer_override_profile") if overrides and overrides.get("model_override") else None))
         return record
 
     def claim(self, sid: str, record: dict) -> dict | None:
-        """Register ``record`` live under the resume lock, or reuse a concurrent winner's session."""
-        live = _claim_or_reuse_live(sid, self.target, record, None)
+        """Register ``record`` live under the resume lock, or reuse a concurrent winner's session; then repair a
+        named profile's ROW like the eager build's ``_init_session`` (#87584) — listings and later resumes read it."""
+        if (live := _claim_or_reuse_live(sid, self.target, record, None)) is None and self.profile_home and not self.lazy:
+            _hydrate_session_cwd(sid, self.target, self.db, self.profile_home, self.profile_incarnation)
         return None if live is None else _resume_reuse_live(self, *live)
 
     def restore(self):
@@ -1134,7 +1133,7 @@ def _(rid, params: dict) -> dict:
         if (resp := _resume_guard(ctx)) is not None:
             return resp
         ctx.profile_resume_cwd = (_resumable_stored_cwd(_str_param(ctx.found, "cwd"), ctx.profile_home)
-                                  or _profile_workspace_cwd(ctx.profile_home))
+                                  or _profile_default_cwd(ctx.profile_home))
         with _session_resume_lock:  # fast path: reuse a session live IN THIS PROFILE, never another's
             live = _find_live_session_by_key(ctx.target, ctx.profile_home, ctx.profile_incarnation)
         if live is not None:

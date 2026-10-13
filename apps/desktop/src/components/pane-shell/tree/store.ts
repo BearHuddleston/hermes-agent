@@ -20,6 +20,7 @@ import { isBrowserWindow, isSecondaryWindow } from '@/store/windows'
 
 import {
   allPaneIds,
+  anchorsFirst,
   type DropPosition,
   findGroup,
   findGroupOfPane,
@@ -1540,7 +1541,6 @@ export function adoptContributedPanes(): void {
   const placementOf = (paneId: string) => dataOf(paneId)?.placement
   const mainId = panes.find(c => placementOf(c.id) === 'main')?.id
   const inTree = new Set(allPaneIds(tree))
-
   const dismissed = $dismissedPanes.get()
 
   // Enforced dock invariants run FIRST: they re-home panes that are ALREADY
@@ -1566,7 +1566,7 @@ export function adoptContributedPanes(): void {
 
   let next = healed
 
-  for (const pane of missing) {
+  for (const pane of anchorsFirst(missing, id => dataOf(id)?.dock?.pane)) {
     const dock = dataOf(pane.id)?.dock
     const placement = placementOf(pane.id) ?? 'right'
 

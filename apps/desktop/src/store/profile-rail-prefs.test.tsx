@@ -73,6 +73,7 @@ function renderDoors({ $layoutTree, ChatSidebar, group, SidebarProvider, useStat
     () =>
       useStatusbarItems({
         agentsOpen: false,
+        changeSessionCwd: noopAsync,
         chatOpen: true,
         commandCenterOpen: false,
         extraLeftItems: [],
