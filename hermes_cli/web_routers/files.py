@@ -482,14 +482,19 @@ async def upload_chat_image(payload: ChatImageUpload, profile: Optional[str] = N
     def _run():
         data, mime_type, ext = _decode_chat_image_upload(payload)
         home, expected_incarnation = resolve_upload_generation(profile)
+        # Canonical admission accepts only the owner's image staging dir
+        # (gateway.platforms.base.get_image_cache_dir), so stage there.
+        from hermes_constants import apply_secure_dir_policy, get_hermes_dir
+        image_subdir = get_hermes_dir("cache/images", "image_cache", home=home).relative_to(home)
 
         with leased_profile_dir(
             home,
             expected_incarnation,
-            "images",
+            str(image_subdir),
             denied="Image directory is not writable",
             failed="Could not create image directory",
         ) as img_dir:
+            apply_secure_dir_policy(img_dir, home=home)
             stem = Path(_sanitize_chat_image_filename(payload.filename)).stem or "pasted-image"
             stem = re.sub(r"[^A-Za-z0-9_.-]+", "_", stem).strip("._-") or "pasted-image"
             ts = datetime.now().strftime("%Y%m%d_%H%M%S")

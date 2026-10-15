@@ -12,7 +12,6 @@ import {
   disposeSecondariesForConnection,
   liveSecondaryConnectionIds,
   openGatewayForAgent,
-  parkSecondariesForRetiredBackend,
   pruneSecondaryGateways,
   SECONDARY_MIN_LIFETIME_MS,
   setPrimaryGateway,
@@ -189,9 +188,15 @@ it.each(['close', 'remove', 'prune'] as const)('%s fully disposes a parked route
   await vi.advanceTimersByTimeAsync(10)
   await submitted
   const socket = sockets.find(socket => socket.url === remoteUrl)!
-  const close = vi.spyOn(HermesGateway.prototype, 'close')
   expect(socket.readyState).toBe(NetworkSocket.OPEN)
-  expect(parkSecondariesForRetiredBackend(localOwner.profile)).toHaveLength(1)
+  // Park the route the way a live install does: its redial meets a permanent ensure refusal,
+  // which clears wantOpen but keeps the entry (and its turn lease) for an explicit re-arm.
+  vi.mocked(window.hermesDesktop.getConnectionFor!).mockRejectedValue(new Error('Invalid local gateway endpoint'))
+  socket.networkDrop()
+  await vi.advanceTimersByTimeAsync(16_000)
+  await vi.dynamicImportSettled()
+  expect(sockets.filter(candidate => candidate.url === remoteUrl)).toEqual([socket])
+  const close = vi.spyOn(HermesGateway.prototype, 'close')
 
   if (cleanup === 'close') {
     closeSecondaryGateways()

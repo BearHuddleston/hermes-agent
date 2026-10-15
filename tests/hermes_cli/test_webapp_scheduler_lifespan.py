@@ -22,7 +22,7 @@ def test_lifespan_owns_scheduler_without_adopting_native_gateway(
     monkeypatch, tmp_path, surface, desktop, owns_scheduler
 ):
     from cron import scheduler_provider
-    from hermes_cli import gateway, web_server, web_server_lifespan
+    from hermes_cli import gateway, web_server, web_server_app, web_server_chat
     from hermes_cli.local_runtime import bootstrap
     from tui_gateway import methods_groups
 
@@ -55,12 +55,12 @@ def test_lifespan_owns_scheduler_without_adopting_native_gateway(
     monkeypatch.setattr(methods_groups, "stop_hosted_room_service", lambda **kw: None)
     monkeypatch.setattr(bootstrap, "ensure_local_runtime", lambda config: None)
     monkeypatch.setattr(bootstrap, "shutdown_local_runtime", lambda: None)
-    monkeypatch.setattr(web_server, "PTY_REGISTRY", SimpleNamespace(close_all=AsyncMock()))
+    monkeypatch.setattr(web_server_chat, "PTY_REGISTRY", SimpleNamespace(close_all=AsyncMock()))
 
     async def idle(*args):
         await asyncio.Event().wait()
 
-    monkeypatch.setattr(web_server, "run_reaper", idle)
+    monkeypatch.setattr(web_server_app, "run_reaper", idle)
     monkeypatch.setattr(web_server, "_dashboard_selftest_loop", idle)
     monkeypatch.setattr(web_server, "_auto_archive_ticker_loop", idle)
     reap = Mock()
@@ -70,7 +70,7 @@ def test_lifespan_owns_scheduler_without_adopting_native_gateway(
     app = SimpleNamespace(state=SimpleNamespace(ui_surface=surface))
 
     async def exercise():
-        async with web_server_lifespan._lifespan(app):
+        async with web_server_app.app_lifespan(app):
             if owns_scheduler:
                 assert started.wait(2), "standalone surface never started its scheduler"
                 assert len(starts) == 1

@@ -28,6 +28,20 @@ def _close_quietly(conn: Optional[sqlite3.Connection]) -> None:
             conn.close()
 
 
+def _query_ro_sqlite(path: Path, fn):
+    """Run ``fn(conn)`` on a read-only connection to *path*; return ``(value, None)`` or ``(None, exc)``."""
+    from hermes_cli.sqlite_safe_read import connect_tracked
+    from hermes_state_holders import read_only_db_uri
+    conn = None
+    try:
+        conn = connect_tracked(read_only_db_uri(path), uri=True, timeout=1.0)
+        return fn(conn), None
+    except Exception as exc:
+        return None, exc
+    finally:
+        _close_quietly(conn)
+
+
 def _safe_copy_db(src: Path, dst: Path, *, timeout_seconds: float = 10.0) -> bool:
     """Copy a SQLite database with the backup() API (WAL-safe consistent snapshot).
 

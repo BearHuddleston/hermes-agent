@@ -36,6 +36,7 @@ from hermes_cli.profile_lifecycle import (
 from hermes_cli.home_data_layout import PM_RUNTIME_ROOT_DIRS
 from hermes_cli.process_identity import WEB_SERVER_PURPOSES
 from hermes_cli.profiles_process_stop import _stop_bot_desktop, _stop_gateway_process, _stop_profile_backends
+from hermes_cli.profiles_remove import _rmtree_make_writable, _rmtree_with_retry, wait_profile_unowned
 from hermes_constants import (
     LOCAL_RUNTIME_ROOT_DIRS, PROFILE_ID_RE, named_profile_has_identity,
     named_profile_home_is_unavailable, named_profile_is_deleted, named_profile_is_live,
@@ -108,7 +109,6 @@ _CLONE_ALL_HISTORY_EXCLUDE_ROOT: frozenset[str] = frozenset({
 # seed_profile_skills() callers (fresh-create, `hermes update` all-profile sync, the
 # dashboard) skip bundled-skill seeding. Delete the file to opt back in.
 NO_BUNDLED_SKILLS_MARKER = ".no-bundled-skills"
-SETUP_PROFILE_MARKER = ".setup-profile.json"
 
 # Header seeded into a profile's empty .env so it owns a credentials file from day one.
 _PLACEHOLDER_ENV = (
@@ -792,22 +792,6 @@ def _read_config_model(profile_dir: Path) -> tuple:
     return _cached_profile_read(config_path, "config-model", _read)
 
 
-def launch_model_seed(source_cfg: dict) -> dict:
-    """The config a fresh profile needs to run the launch profile's model: its ``model`` block plus,
-    when that block points at a custom ``providers:`` gateway (self-hosted / local endpoint), that
-    provider's definition — ``model.provider: my-gateway`` alone is "Unknown provider" on the first
-    turn. ``{}`` when the launch profile has no model."""
-    model_cfg = source_cfg.get("model")
-    if not model_cfg:
-        return {}
-    seed = {"model": model_cfg}
-    providers = source_cfg.get("providers")
-    name = model_cfg.get("provider") if isinstance(model_cfg, dict) else None
-    if isinstance(providers, dict) and name in providers:
-        seed["providers"] = {name: providers[name]}
-    return seed
-
-
 def _seed_model_config(profile_dir: Path) -> None:
     """Copy (not link) the active profile's model block into a fresh profile so it is usable;
     profiles stay independent islands afterwards."""
@@ -817,6 +801,7 @@ def _seed_model_config(profile_dir: Path) -> None:
     with contextlib.suppress(Exception):  # creation must not fail over this; `hermes model` sets it later
         from hermes_constants import get_hermes_home
         from hermes_cli.config import atomic_config_write, read_user_config_raw
+        from hermes_cli.profile_model_seed import launch_model_seed
         source = get_hermes_home() / "config.yaml"
         seed = launch_model_seed(read_user_config_raw(source)) if source.is_file() else {}
         if seed:
@@ -1325,6 +1310,26 @@ def _clone_all_into(source_dir: Path, profile_dir: Path, canon: str) -> None:
         )
 
 
+def _strip_multiplex_flag(config_path: Path) -> None:
+    """Multiplexing belongs to the default profile; a clone that keeps the flag would start its
+    own multiplexer (or be refused at boot) the first time it runs a gateway."""
+    if not config_path.is_file():
+        return
+    with contextlib.suppress(Exception):  # creation must not fail over an unreadable copy
+        from hermes_cli.config import atomic_config_replace, read_user_config_raw
+        cfg = read_user_config_raw(config_path)
+        gateway = cfg.get("gateway") if isinstance(cfg.get("gateway"), dict) else {}
+        if "multiplex_profiles" not in cfg and "multiplex_profiles" not in gateway:
+            return
+        cfg.pop("multiplex_profiles", None)
+        gateway.pop("multiplex_profiles", None)
+        if not gateway and "gateway" in cfg:
+            cfg.pop("gateway")
+        # Deleting the flag is deliberate, so use the replace writer (the plain writer refuses
+        # omissions); the clone's comments still survive the round-trip.
+        atomic_config_replace(config_path, cfg)
+
+
 def _clone_plugins_ignore(plugins_root: Path):
     """copytree ignore for a cloned ``plugins/``: :func:`_non_exportable_entries` everywhere, plus
     the installer's in-flight ``.install-*`` / ``.update-*`` staging dirs at the root."""
@@ -1382,6 +1387,7 @@ def _bootstrap_profile_dir(profile_dir: Path, source_dir: Optional[Path],
         return
     for relpath in _CLONE_CONFIG_FILES:
         _clone_file(source_dir, profile_dir, relpath)
+    _strip_multiplex_flag(profile_dir / "config.yaml")
     source_skills = source_dir / "skills"
     if source_skills.is_dir():
         _copytree_keep_junctions(source_skills, profile_dir / "skills", _non_exportable_entries, dirs_exist_ok=True)
@@ -1400,7 +1406,10 @@ def _prepare_profile_creation_target(canon: str, profile_dir: Path) -> None:
     """Remove a tombstoned shell or reject an existing profile target."""
     if profile_dir.exists() and not named_profile_has_identity(profile_dir):
         if named_profile_is_deleted(profile_dir):
-            # Empty shell left by a post-delete mkdir: invisible to ``profile list``, safe to replace.
+            # Empty shell left by a post-delete mkdir: invisible to ``profile list``, safe to replace
+            # unless a gateway still tearing the deleted profile down holds its gateway.lock in it.
+            if not wait_profile_unowned(profile_dir, timeout=0):
+                raise FileExistsError(f"Cannot create profile '{canon}': a running gateway still owns {profile_dir}")
             shutil.rmtree(profile_dir)
         else:
             # An unrecognized live directory may still hold user files; never remove it.
@@ -1414,58 +1423,22 @@ def _prepare_profile_creation_target(canon: str, profile_dir: Path) -> None:
 
 def _initialize_profile(
     canon: str, profile_dir: Path, source_dir: Optional[Path], *, clone_all: bool, no_skills: bool,
-    description: Optional[str], clone_channels: bool, sync_imports: bool,
+    description: Optional[str], clone_channels: bool, sync_imports: bool, soul: Optional[str] = None,
 ) -> None:
     """Initialize a staged profile directory before publication (flags already validated)."""
     if clone_all and source_dir:
         _clone_all_into(source_dir, profile_dir, canon)
     else:
         _bootstrap_profile_dir(profile_dir, source_dir, sync_imports=sync_imports)
-    if source_dir is not None:
-        from hermes_cli.setup_profile import release_setup_copy, setup_marker_state
-        release_setup_copy(profile_dir, setup_state=setup_marker_state(source_dir))
     if source_dir is not None and not clone_channels:
         from hermes_cli.profile_channels import strip_channel_settings
         stripped = strip_channel_settings(profile_dir, include_state=clone_all, source_dir=source_dir)
         if stripped:
             logger.info("profile %s: cloned without messaging channels %s", canon, stripped)
-    _finish_profile_layout(profile_dir, no_skills=no_skills, clone_all=clone_all, description=description)
+    from hermes_cli.profiles_initialization import finish_profile_layout
+    finish_profile_layout(profile_dir, no_skills=no_skills, clone_all=clone_all, description=description, soul=soul)
     # A clone is a new lifecycle object, never a copy of the source generation's authority.
     write_fresh_profile_incarnation(profile_dir)
-
-
-def _finish_profile_layout(profile_dir: Path, *, no_skills: bool, clone_all: bool,
-                           description: Optional[str]) -> None:
-    """Seed files a fresh profile owns from day one; runs on the staging tree before publish."""
-    # Seed an empty .env so the profile owns a credentials file from day one. Without it,
-    # profile-scoped env writes (dashboard Channels/Keys pages, `hermes -p <name> auth add`)
-    # had no file until first write and the profile silently inherited shell API keys —
-    # read by users as "the new profile reads the root .env". Skipped when a clone copied one.
-    _seed_file_if_missing(profile_dir / ".env", _PLACEHOLDER_ENV, 0o600)
-
-    # Default SOUL.md to customize immediately (skipped when a clone already provided one).
-    with contextlib.suppress(Exception):  # best-effort — don't fail profile creation over this
-        from hermes_cli.default_soul import DEFAULT_SOUL_MD
-        _seed_file_if_missing(profile_dir / "SOUL.md", DEFAULT_SOUL_MD)
-
-    # Opt-out marker read by seed_profile_skills() and `hermes update`'s all-profile sync
-    # (the feature still works via the empty skills/ dir if this fails).
-    if no_skills:
-        _seed_file_if_missing(
-            profile_dir / NO_BUNDLED_SKILLS_MARKER,
-            "This profile opted out of bundled-skill seeding (`hermes profile create --no-skills`).\n"
-            "Delete this file to re-enable sync on the next `hermes update`.\n",
-        )
-
-    # Migrate config-only clones now so desktop/status don't warn that a just-created
-    # profile is v0/outdated; --clone-all snapshots stay byte-for-byte apart from the
-    # explicit runtime/history stripping above.
-    if not clone_all:
-        _migrate_profile_config_if_outdated(profile_dir)
-
-    # Description last, so a partial-create failure doesn't strand a description file.
-    if description and description.strip():
-        write_profile_meta(profile_dir, description=description.strip(), description_auto=False)
 
 
 def _assert_clone_source_unchanged(source_dir: Path, incarnation: str) -> None:
@@ -1495,6 +1468,7 @@ def create_profile(
     description: Optional[str] = None,
     clone_channels: bool = False,
     sync_imports: bool = False,
+    soul: Optional[str] = None,
 ) -> Path:
     """Build a named profile behind a tombstone, then publish it atomically; return its path.
 
@@ -1544,6 +1518,7 @@ def create_profile(
                 _initialize_profile(
                     canon, staging_dir, source_dir, clone_all=clone_all, no_skills=no_skills,
                     description=description, clone_channels=clone_channels, sync_imports=sync_imports,
+                    soul=soul,
                 )
             finally:
                 # Also on failure: a copy racing the source's rmtree fails with one
@@ -1645,42 +1620,6 @@ def backfill_profile_envs(quiet: bool = False) -> list[str]:
     return backfilled
 
 
-def _rmtree_make_writable(func, path, exc):
-    """onexc/onerror handler: add +w on PermissionError so rmtree can proceed. Covers NixOS-
-    style read-only copies where the path itself (0444) or its parent (0555) isn't writable."""
-    # onexc(func, path, exc_instance) on 3.12+; onerror(func, path, exc_info_tuple) on 3.11.
-    if isinstance(exc, tuple):
-        exc = exc[1]
-    if not isinstance(exc, PermissionError):
-        raise
-    for target in (path, os.path.dirname(path)):  # parent needed for unlink/rmdir
-        if target:
-            with contextlib.suppress(OSError):
-                os.chmod(target, os.stat(target).st_mode | stat.S_IWUSR)
-    func(path)
-
-
-def _rmtree_with_retry(profile_dir: Path, onexc_handler) -> None:
-    """``shutil.rmtree`` with a short retry loop: a just-terminated process can leave in-flight
-    writes (SQLite -wal/-shm checkpoints, sandbox temp files) landing after rmtree walked
-    past a directory — ENOTEMPTY on POSIX, transient PermissionError on Windows."""
-    attempts = 3
-    last_exc: OSError | None = None
-    for attempt in range(attempts):
-        try:
-            try:
-                shutil.rmtree(profile_dir, onexc=onexc_handler)
-            except TypeError:  # ``onexc`` is 3.12+; 3.11 has ``onerror``
-                shutil.rmtree(profile_dir, onerror=onexc_handler)
-            return
-        except OSError as e:
-            last_exc = e
-            if not profile_dir.exists():
-                return
-            if attempt < attempts - 1:
-                time.sleep(0.3 * (attempt + 1))
-    if last_exc is not None:
-        raise last_exc
 
 
 def _print_delete_summary(canon: str, profile_dir: Path, gw_running: bool, wrapper_path: Optional[Path]) -> None:
@@ -1862,6 +1801,11 @@ def _delete_profile_confirmed(
         _notify_multiplexer(canon)
 
         _release_process_profile_handles(profile_dir)
+        # A multiplexer still tearing the profile down holds its gateway.lock: never remove a home
+        # a live runtime owns (its writers would recreate the tree under the tombstone). Waited out
+        # before the holder census, which allows only seconds.
+        if not wait_profile_unowned(profile_dir):
+            raise RuntimeError("a running gateway still owns this profile; retry the delete once it settles")
         verify_profile_resources_released(profile_dir, subject=f"Profile '{canon}'", retry_action="deletion")
     except BaseException:
         # The one rollback owner from a settled retirement until removal begins: a holder
@@ -2295,8 +2239,6 @@ def _import_profile_into_home(
                         shutil.rmtree(child)
                     else:
                         child.unlink()
-            from hermes_cli.setup_profile import release_setup_copy, setup_marker_state
-            release_setup_copy(final_source, setup_state=setup_marker_state(final_source))
             incarnation = write_fresh_profile_incarnation(final_source)
             shutil.move(str(final_source), str(profile_dir))
             return incarnation
@@ -2333,58 +2275,10 @@ def import_profile(archive_path: str, name: Optional[str] = None) -> Path:
 
 # Rename
 
-def _atomic_write_json(path: Path, data: dict) -> bool:
-    """Atomic rewrite of a third-party JSON config; False on OSError (nothing partially written)."""
-    from utils import atomic_json_write
-    try:
-        atomic_json_write(path, data)
-        return True
-    except OSError:
-        return False
-
-
-def _migrate_honcho_profile_host(old_name: str, new_name: str, new_dir: Path) -> None:
-    """Rename Honcho host blocks for a renamed profile without changing peers."""
-    old_host = f"hermes_{old_name}"
-    legacy_old_host = f"hermes.{old_name}"
-    new_host = f"hermes_{new_name}"
-    candidates = [
-        new_dir / "honcho.json", _get_default_hermes_home() / "honcho.json", Path.home() / ".honcho" / "config.json"
-    ]
-    seen: set[Path] = set()
-    for path in candidates:
-        try:
-            resolved = path.resolve()
-        except OSError:
-            resolved = path
-        if resolved in seen or not path.is_file():
-            continue
-        seen.add(resolved)
-        with profile_shared_file_lease(resolved):
-            try:
-                raw = json.loads(path.read_text(encoding="utf-8-sig"))
-            except (OSError, json.JSONDecodeError):
-                continue
-            hosts = raw.get("hosts")
-            if not isinstance(hosts, dict):
-                continue
-            source_host = old_host if old_host in hosts else legacy_old_host
-            if source_host not in hosts:
-                continue
-            if new_host in hosts:
-                print(f"⚠ Honcho host block not migrated: {new_host} already exists in {path}")
-                continue
-            block = hosts[source_host]
-            if isinstance(block, dict) and "aiPeer" not in block:
-                block["aiPeer"] = old_name  # source_host is ``hermes_<old>`` or legacy ``hermes.<old>``
-            hosts[new_host] = hosts.pop(source_host)
-            if _atomic_write_json(path, raw):
-                print(f"✓ Honcho host updated: {source_host} → {new_host}")
-
-
 def _finish_profile_rename(old_canon: str, new_canon: str, old_dir: Path, new_dir: Path) -> None:
     print(f"✓ Renamed {old_dir.name} → {new_dir.name}")
-    _migrate_honcho_profile_host(old_canon, new_canon, new_dir)
+    from hermes_cli.profiles_honcho import migrate_honcho_profile_host
+    migrate_honcho_profile_host(old_canon, new_canon, new_dir)
     remove_wrapper_script(old_canon)
     collision = check_alias_collision(new_canon)
     if not collision:
@@ -2441,6 +2335,10 @@ def rename_profile(old_name: str, new_name: str) -> Path:
                 _notify_multiplexer(old_canon)
 
             _release_process_profile_handles(old_dir)
+            # A multiplexer still tearing the old name down holds its gateway.lock; give it the same
+            # owner wait as delete before the holder census (which waits only seconds).
+            if live_mux and not wait_profile_unowned(old_dir):
+                raise RuntimeError("a running gateway still owns this profile; retry the rename once it settles")
             verify_profile_resources_released(old_dir, subject=f"Profile '{old_canon}'", retry_action="rename")
             move_profile_generation(
                 old_dir,

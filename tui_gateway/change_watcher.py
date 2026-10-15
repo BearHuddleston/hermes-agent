@@ -12,9 +12,15 @@ _registry = HandlerRegistry()
 
 
 def resolve_skin() -> dict:
+    return skin_payload(_load_cfg())
+
+
+def skin_payload(config: dict) -> dict:
+    """The ``skin.changed`` / ``gateway.ready`` skin for ``config``'s ``display.skin`` (``{}`` when the
+    skin engine fails). Pure of server state: the shared owner calls it under the profile's scope."""
     try:
         from hermes_cli.skin_engine import init_skin_from_config, get_active_skin
-        init_skin_from_config(_load_cfg())
+        init_skin_from_config(config)
         skin = get_active_skin()
         # light/dark are paired palettes: the TUI prefers the block matching terminal polarity.
         return {
@@ -25,7 +31,7 @@ def resolve_skin() -> dict:
             "help_header": (skin.branding or {}).get("help_header", ""),
             # Raw user CSS for the desktop GUI's <style> tag (32 KiB cap in the skin engine).
             "customCSS": skin.custom_css}
-    except Exception:
+    except Exception:  # health: allow BLE001 -- moved unchanged from resolve_skin (main keeps the same handler): a broken skin file boots the default theme
         return {}
 
 
@@ -76,28 +82,74 @@ def _skin_sig() -> tuple[str, float | None]:
         return name, None
 
 
-def _note_skin_broadcast() -> None:
-    """Sync the baseline after the /skin RPC emits so the watcher doesn't re-broadcast it. The baseline is
-    the home the watcher thread polls (the launch home): a /skin scoped to another profile this process
-    serves must leave it alone, or the next tick re-announces the launch profile's unchanged skin as a
-    change — which a client on the launch profile applies over its own pick."""
-    global _last_skin_sig
-    if _watcher_home() != Path(_hermes_home):
-        return
+# A multiplexed gateway serves other profiles' TUIs from this one watcher thread (no profile
+# override): their baselines live here, keyed by home, and their repaints go to their own peers only
+# (main ran one gateway per profile, so a work TUI never saw the launch home's skin).
+_skin_sig_by_home: dict[str, tuple[str, float | None]] = {}
+
+
+def _skin_home_for(profile_id) -> str | None:
+    """The profile home a peer's skin follows, or None for the launch home (the ambient scope)."""
     with contextlib.suppress(Exception):
-        _last_skin_sig = _skin_sig()
+        home = Path(str(profile_id))
+        if home.is_absolute() and home.is_dir() and home.resolve() != Path(_hermes_home).resolve():
+            return str(home)
+    return None
+
+
+def _under_home(home: str, fn):
+    token = set_hermes_home_override(home)
+    try:
+        return fn()
+    finally:
+        reset_hermes_home_override(token)
+
+
+def _note_skin_broadcast() -> None:
+    """Sync the baseline after the /skin RPC emits so the watcher doesn't re-broadcast it. A /skin scoped to
+    another profile this process serves records that home's baseline, never the launch home's: otherwise the
+    next tick re-announces the launch profile's unchanged skin as a change, which a client on the launch
+    profile applies over its own pick."""
+    global _last_skin_sig
+    with contextlib.suppress(Exception):
+        if home := _skin_home_for(get_hermes_home_override()):
+            _skin_sig_by_home[home] = _skin_sig()
+        else:
+            _last_skin_sig = _skin_sig()
+
+
+def _skin_peers_by_home() -> dict[str, list]:
+    with _live_transports_lock:
+        targets = list(_live_transports)
+    peers: dict[str, list] = {}
+    for transport in targets:
+        if home := getattr(transport, "skin_home", None):
+            peers.setdefault(home, []).append(transport)
+    return peers
 
 
 def _broadcast_skin_if_changed() -> None:
     """Emit ``skin.changed`` when the active skin moved, via the SAME live path as
-    ``/skin`` so every surface repaints. The check is a dict lookup + one stat."""
+    ``/skin`` so every surface repaints. The check is a dict lookup + one stat per home."""
     global _last_skin_sig
+    by_home = _skin_peers_by_home()
     with contextlib.suppress(Exception):
         sig = _skin_sig()
-        if sig == _last_skin_sig:
-            return
-        _last_skin_sig = sig
-        _broadcast_global_event("skin.changed", _skin_changed_payload())
+        if sig != _last_skin_sig:
+            _last_skin_sig = sig
+            _broadcast_global_event("skin.changed", _skin_changed_payload(),
+                                    skip={peer for peers in by_home.values() for peer in peers})
+    for home, peers in by_home.items():
+        with contextlib.suppress(Exception):
+            sig = _under_home(home, _skin_sig)
+            seen = _skin_sig_by_home.get(home)
+            _skin_sig_by_home[home] = sig
+            if seen is None or sig == seen:
+                continue  # first sight seeds: the attach's runtime.describe already carried this skin
+            frame = _event_frame("skin.changed", "", _under_home(home, _skin_changed_payload))
+            for peer in peers:
+                with contextlib.suppress(Exception):
+                    peer.write(frame)
 
 
 def _active_pet():

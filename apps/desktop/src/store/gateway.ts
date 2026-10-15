@@ -10,6 +10,7 @@ import {
 } from '@hermes/shared'
 import { atom } from 'nanostores'
 
+import { canonicalOwnerProfile } from '@/api/canonical-protocol'
 import type { HermesConnection } from '@/global'
 import { HermesGateway, setApiRequestConnection } from '@/hermes'
 import { translateNow } from '@/i18n'
@@ -20,6 +21,7 @@ import {
 } from '@/lib/gateway-liveness-policy'
 import { isMissingRpcMethod } from '@/lib/gateway-rpc'
 import { traceIdentityChange } from '@/lib/identity-trace'
+import { isPermanentLocalGatewayEnsureError } from '@/lib/local-gateway-ensure-failure'
 import { RECONNECT_ATTEMPT_TIMEOUT_MS, SOURCE_SWITCH_DIAL_TIMEOUT_MS, withTimeout } from '@/lib/with-timeout'
 import { isMissingConnectionError, isMissingProfileError, isStalledDialError } from '@/store/gateway-dial-errors'
 import { notifyError, RECOVERY_ACTIONS } from '@/store/notifications'
@@ -39,25 +41,12 @@ import { stampSecondaryProfileOwner } from '@/store/session-event-provenance'
 
 const normKey = (profile: string | null | undefined): string => (profile ?? '').trim() || 'default'
 
-// Spawn-slot priority handed to Electron main with every backend dial. A
-// user-initiated open is 'foreground' and may take the pool's reserved slot;
-// roster hydration, hover prewarm and untagged dials are 'background' — main's
-// default, so background dials keep the pre-priority IPC payload shape.
+// Dial intent callers attach to a user-initiated open. The canonical
+// `hermes gateway ensure` path has no local slot pool, so the hint changes
+// nothing about the dial itself; it survives as the option shape the SDK,
+// Settings scopes and session creation pass so an explicit user gesture stays
+// distinguishable from ambient hydration at the call site.
 export type SpawnPriority = 'foreground' | 'background'
-
-function dialPriority(spawnPriority: SpawnPriority): { priority: 'foreground' } | Record<never, never> {
-  return spawnPriority === 'foreground' ? { priority: 'foreground' } : {}
-}
-
-function dialProfile(
-  desktop: NonNullable<typeof window.hermesDesktop>,
-  profile: string,
-  spawnPriority: SpawnPriority
-): Promise<HermesConnection> {
-  return spawnPriority === 'foreground'
-    ? desktop.getConnection(profile, { priority: 'foreground' })
-    : desktop.getConnection(profile)
-}
 
 // Read connection state through a call so TS control-flow analysis doesn't
 // narrow the getter to a constant across guards (it genuinely changes).
@@ -78,7 +67,7 @@ interface RegistryConfig {
   /**
    * Fires whenever applyActive() moves the active route to a (possibly
    * different) profile — including registry-internal eviction fallbacks
-   * (idle reap, connection removal, profile delete) that no renderer call
+   * (connection removal, profile delete) that no renderer call
    * initiated. Consumers mirror this into $activeGatewayProfile so the
    * published profile can never diverge from the socket actually selected
    * (#89206: the stale-profile split-brain that stranded bot wake-ups).
@@ -180,14 +169,6 @@ interface Secondary {
   wantOpen: boolean
   /** Explicit teardown is separate from parking, which also clears wantOpen. */
   disposed: boolean
-  /**
-   * Main retired this scope's pooled backend for a foreground open elsewhere
-   * (electron/pool-retire.ts). A parked-by-stall entry re-arms on the
-   * wake/focus nudge; a retired one must not — that nudge would redial into
-   * the very slot the retirement freed. Only an explicit open of the scope
-   * clears it (rearmSecondary).
-   */
-  retiredByPool: boolean
   /**
    * Epoch-ms deadline while an activation (prepare/ensure) is mid-dial. The
    * live-work pruner must not dispose an entry the user is switching to: a
@@ -370,7 +351,7 @@ function dispatchServerRequest(request: ServerRequest, profile: string, connecti
     return false
   }
 
-  g.config.onServerRequest({ ...request, ...(connectionId ? { connectionId } : {}), profile })
+  g.config.onServerRequest({ ...request, ...(connectionId ? { connectionId } : {}), profile: canonicalOwnerProfile(request) ?? profile })
 
   return true
 }
@@ -473,18 +454,9 @@ function isPrimaryRegistryRoute(connectionId: null | string, profile: string): b
  *  the chat's transport fan-out and the renderer receives every event twice
  *  (garbled streaming text + a duplicate interim bubble, #120005). Isolated
  *  SSH/pooled backends (neither flag) still get their own secondary. */
-async function ridesPrimaryBackend(
-  connectionId: null | string,
-  profile: string,
-  spawnPriority: SpawnPriority = 'background'
-): Promise<boolean> {
+async function ridesPrimaryBackend(connectionId: null | string, profile: string): Promise<boolean> {
   const id = String(connectionId ?? '').trim()
   const key = normKey(profile)
-  const parked = g.secondaries.get(registryBackendScopeKey(connectionId, key))
-
-  if (parked?.retiredByPool) {
-    rearmSecondary(parked, spawnPriority)
-  }
 
   if (!id || !g.primaryConnectionId || id !== g.primaryConnectionId) {
     return false
@@ -506,7 +478,7 @@ async function ridesPrimaryBackend(
   // same dial `openSecondary` makes next, coalesced by main's claim key.
   try {
     const conn = await withTimeout(
-      desktop.getConnectionFor({ connectionId: id, profile: key, ...dialPriority(spawnPriority) }),
+      desktop.getConnectionFor({ connectionId: id, profile: key }),
       RECONNECT_ATTEMPT_TIMEOUT_MS,
       `Timed out resolving the backend route for "${key}"`
     )
@@ -572,11 +544,11 @@ export function activeGateway(): HermesGateway | null {
 /** Passive ordering barrier for a runtime's transcript reads. Inspect only
  * existing sockets: waiting must never dial, activate, or retain a backend.
  * Each client names its own replaying runtime IDs; no ambient route is used
- * to decide which session's events are safe to paint over. A pruned or
- * pool-retired secondary keeps its closed socket's watermarks but will never
- * reopen to replay them, so it must not veto reads forever. */
+ * to decide which session's events are safe to paint over. A pruned
+ * secondary keeps its closed socket's watermarks but will never reopen to
+ * replay them, so it must not veto reads forever. */
 export function pendingSessionReplay(runtimeId: string): Promise<boolean> | undefined {
-  const reconnectable = [...g.secondaries.values()].filter(entry => entry.wantOpen && !entry.retiredByPool)
+  const reconnectable = [...g.secondaries.values()].filter(entry => entry.wantOpen)
   const clients = new Set([g.primaryGateway, ...reconnectable.map(entry => entry.gateway)])
 
   // A closed socket's false means only that IT cannot replay yet. When another
@@ -715,7 +687,7 @@ function clearTimer(entry: Secondary): void {
   }
 }
 
-async function openSecondary(entry: Secondary, spawnPriority: SpawnPriority = 'background'): Promise<void> {
+async function openSecondary(entry: Secondary): Promise<void> {
   const desktop = window.hermesDesktop
 
   const reauthError = g.reauthFailures.get(entry.scope)?.error
@@ -729,20 +701,6 @@ async function openSecondary(entry: Secondary, spawnPriority: SpawnPriority = 'b
   }
 
   if (entry.connectPromise) {
-    if (spawnPriority === 'foreground') {
-      // Hydration may already own this dial as a background slot wait. Kick a
-      // foreground IPC so main can promote it onto the reserved slot.
-      void (
-        entry.connectionId && desktop.getConnectionFor
-          ? desktop.getConnectionFor({
-              connectionId: entry.connectionId,
-              profile: entry.profile,
-              priority: 'foreground'
-            })
-          : desktop.getConnection(entry.profile, { priority: 'foreground' })
-      ).catch(() => undefined)
-    }
-
     await entry.connectPromise
 
     return
@@ -804,16 +762,12 @@ async function openSecondary(entry: Secondary, spawnPriority: SpawnPriority = 'b
     const conn =
       entry.connectionId && desktop.getConnectionFor
         ? await withTimeout(
-            desktop.getConnectionFor({
-              connectionId: entry.connectionId,
-              profile: entry.profile,
-              ...dialPriority(spawnPriority)
-            }),
+            desktop.getConnectionFor({ connectionId: entry.connectionId, profile: entry.profile }),
             SOURCE_SWITCH_DIAL_TIMEOUT_MS,
             `Timed out connecting to profile "${entry.profile}"`
           )
         : await withTimeout(
-            dialProfile(desktop, entry.profile, spawnPriority),
+            desktop.getConnection(entry.profile),
             RECONNECT_ATTEMPT_TIMEOUT_MS,
             `Timed out connecting to profile "${entry.profile}"`
           )
@@ -869,8 +823,6 @@ async function openSecondary(entry: Secondary, spawnPriority: SpawnPriority = 'b
     if (g.activeKey === entry.scope) {
       publishActiveConnection(conn)
     }
-
-    void desktop.touchBackend?.(entry.scope).catch(() => undefined)
   })()
 
   entry.connectPromise = pending
@@ -919,13 +871,8 @@ function rearmSecondary(entry: Secondary, priority: SpawnPriority = 'foreground'
     g.dialFailures.delete(entry.scope)
   }
 
-  if (entry.retiredByPool && priority !== 'foreground') {
-    throw new Error(`Backend for "${entry.profile}" was retired; open it explicitly to reconnect.`)
-  }
-
   entry.wantOpen = true
   entry.stalledDials = 0
-  entry.retiredByPool = false
 }
 
 function recordDialFailure(entry: Secondary, error?: unknown): void {
@@ -971,7 +918,7 @@ async function openSecondaryForRequest(entry: Secondary, spawnPriority: SpawnPri
   }
 
   try {
-    await openSecondary(entry, spawnPriority)
+    await openSecondary(entry)
   } catch (error) {
     recordDialFailure(entry, error)
     throw error
@@ -1032,10 +979,18 @@ async function reconnectSecondary(entry: Secondary): Promise<void> {
       return
     }
 
-    // Only a successful open resets the stall budget (the 'open' state
-    // listener): a treadmill that alternates slot-wait timeouts with a
-    // spawned-but-unresponsive socket must still run out of budget.
-    if (isStalledDialError(error)) {
+    // An ensure refusal no redial can fix (incompatible runtime, no ensure protocol, an invalid
+    // endpoint, an unsafe control path): each automatic redial would spawn another
+    // `hermes gateway ensure` against the same install forever. Park at once, keeping the entry:
+    // an explicit open, focus/wake nudge or Reconnect re-arms it after the user's repair.
+    if (isPermanentLocalGatewayEnsureError(error)) {
+      console.warn(`[gateway] parking scope="${entry.scope}": local gateway ensure refused permanently`, error)
+      entry.wantOpen = false
+      entry.stalledDials = 0
+    } else if (isStalledDialError(error)) {
+      // Only a successful open resets the stall budget (the 'open' state
+      // listener): a treadmill that alternates slot-wait timeouts with a
+      // spawned-but-unresponsive socket must still run out of budget.
       entry.stalledDials += 1
 
       if (entry.stalledDials >= SECONDARY_STALLED_DIAL_BUDGET) {
@@ -1084,16 +1039,14 @@ function createSecondary(profile: string, connectionId: null | string = null): S
     relayRetainCount: 0,
     wantOpen: true,
     disposed: false,
-    retiredByPool: false,
     activationLeaseUntil: 0
   }
 
-  // Events keep carrying the bare profile — session routing is profile-keyed
-  // everywhere. A pool secondary with no registry connection has no exact
-  // connection id, so stamp this closure-owned profile before registry fan-in;
-  // the recorder must not promote an arbitrary wire `profile` field instead.
+  // Canonical adapters prove the owner from their attachment; legacy pooled
+  // sockets prove it through this closure. Stamp before registry fan-in,
+  // never promote an arbitrary wire `profile` field into ownership.
   entry.offEvent = gateway.onEvent(event => {
-    const scopedEvent = stampSecondaryProfileOwner({ ...event, ...(connectionId ? { connectionId } : {}) }, profile)
+    const scopedEvent = stampSecondaryProfileOwner({ ...event, ...(connectionId ? { connectionId } : {}) }, canonicalOwnerProfile(event) ?? profile)
 
     g.config?.onEvent(scopedEvent)
     releaseTerminalTurnLease(entry.scope, event)
@@ -1141,7 +1094,7 @@ function createSecondary(profile: string, connectionId: null | string = null): S
 // the second dial fails (tunnel/token are per-backend) and the closed socket
 // poisons the active gateway with "not connected" even though the primary is
 // open right next to it.
-async function sharedPrimaryRoute(profile: string, spawnPriority: SpawnPriority = 'background'): Promise<boolean> {
+async function sharedPrimaryRoute(profile: string): Promise<boolean> {
   const desktop = window.hermesDesktop
 
   if (!desktop) {
@@ -1153,11 +1106,8 @@ async function sharedPrimaryRoute(profile: string, spawnPriority: SpawnPriority 
     // like any other failure, not hang the route decision forever, since
     // every caller (gatewayForProfile → requestGatewayForProfile/Agent) awaits
     // this before it can fall back to dialing a secondary.
-    // This is the FIRST dial main sees for a user open, so it must already
-    // carry the foreground priority — otherwise the spawn it starts queues as
-    // background and the click waits out this probe before being promoted.
     const conn = await withTimeout(
-      dialProfile(desktop, profile, spawnPriority),
+      desktop.getConnection(profile),
       RECONNECT_ATTEMPT_TIMEOUT_MS,
       `Timed out resolving the shared-primary route for profile "${profile}"`
     )
@@ -1178,11 +1128,6 @@ async function gatewayForProfile(
 ): Promise<{ gateway: HermesGateway | null; key: string; release: () => void; scopeProfile: boolean }> {
   const key = normKey(profile)
   const noRelease = () => undefined
-  const parked = g.secondaries.get(key)
-
-  if (parked?.retiredByPool) {
-    rearmSecondary(parked, spawnPriority)
-  }
 
   if (key === g.primaryProfile) {
     return { gateway: g.primaryGateway, key, release: noRelease, scopeProfile: false }
@@ -1196,7 +1141,7 @@ async function gatewayForProfile(
     throw new Error(`Backend for "${key}" is reconnecting; retry after it settles.`)
   }
 
-  if (await sharedPrimaryRoute(key, spawnPriority)) {
+  if (await sharedPrimaryRoute(key)) {
     return { gateway: g.primaryGateway, key, release: noRelease, scopeProfile: true }
   }
 
@@ -1267,9 +1212,6 @@ export async function requestGatewayForProfile<T>(
   signal?: AbortSignal,
   { spawnPriority = 'background' }: { spawnPriority?: SpawnPriority } = {}
 ): Promise<T> {
-  // A user-initiated Settings-scoped RPC (the Vault tab's "Applies to" pick)
-  // dials `foreground` so a cold profile spawn is not queued behind background
-  // work (#111651); ambient callers keep the background default.
   const route = await gatewayForProfile(profile, true, spawnPriority)
 
   try {
@@ -1302,11 +1244,10 @@ export async function requestGatewayForProfile<T>(
  * sources from sharing a socket. Only null/empty ids retain the v1 profile
  * resolver; explicit `local` is a registry source and must use getConnectionFor.
  *
- * `spawnPriority` defaults to 'background' like every other dial in this file.
- * A user gesture that reaches the pool through this RPC path (first send on a
- * fresh chat, "New session", an explicit Bot Chat open) passes 'foreground' so
- * its cold spawn takes the pool's reserved interactive slot instead of queuing
- * behind roster hydration (#102281 primitive; #105104 symptom).
+ * `spawnPriority` marks a user gesture that reaches this RPC path (first send on
+ * a fresh chat, "New session", an explicit Bot Chat open) as 'foreground'
+ * (#102281 primitive; #105104 symptom). The canonical ensure dial has no slot
+ * to reserve, so the tag is carried, not acted on.
  */
 export async function requestGatewayForAgent<T>(
   connectionId: null | string,
@@ -1338,7 +1279,7 @@ export async function requestGatewayForAgent<T>(
     return requestGatewayForProfile<T>(key, method, params, timeoutMs, signal, { spawnPriority })
   }
 
-  if (await ridesPrimaryBackend(connectionId, key, spawnPriority)) {
+  if (await ridesPrimaryBackend(connectionId, key)) {
     traceAgentRoute(scope, 'primary-shared')
 
     return requestOnPrimaryGateway<T>(method, { ...params, profile: key }, timeoutMs, signal)
@@ -1478,10 +1419,9 @@ function reopenAfterRedial(entry: Secondary, wasActive: boolean): void {
 /**
  * Pin the pooled socket for one relay route open across drain ticks. Returns
  * a once-only release. Local routes (null/empty or explicit `local` source)
- * are deliberately EXEMPT and get a no-op release: their Electron-spawned
- * backend answers to the idle reaper, and a relay pin would keep the
- * touch-loop pinging it forever, resurrecting backends the reaper is meant to
- * reclaim (see the retireLocalProfileGateways note). Local relay traffic is
+ * are deliberately EXEMPT and get a no-op release: a relay pin would keep a
+ * local socket open past the point where retireLocalProfileGateways means to
+ * drop it (see that note). Local relay traffic is
  * either the primary socket (no churn) or a short-lived local dial — never
  * the remote reconnect flood this retention exists to stop.
  */
@@ -1543,8 +1483,7 @@ export function retainGatewayForRelay(connectionId: null | string, profile: stri
  * for the whole sequence. Primary/shared-primary routes return a no-op release.
  *
  * `spawnPriority` follows requestGatewayForAgent: the retain is the FIRST dial
- * of a session-create gesture, so a user click passes 'foreground' here or the
- * cold spawn still queues behind background hydration before the create RPC.
+ * of a session-create gesture, so a user click passes 'foreground' here.
  */
 export async function retainGatewayForAgent(
   connectionId: null | string,
@@ -1562,7 +1501,7 @@ export async function retainGatewayForAgent(
     return route.release
   }
 
-  if (isPrimaryRegistryRoute(connectionId, key) || (await ridesPrimaryBackend(connectionId, key, spawnPriority))) {
+  if (isPrimaryRegistryRoute(connectionId, key) || (await ridesPrimaryBackend(connectionId, key))) {
     // Primary socket stays open for the window lifetime — no secondary to hold.
     return () => undefined
   }
@@ -1618,7 +1557,7 @@ export async function retainGatewayForAgent(
 
   try {
     if (!isOpen(entry.gateway)) {
-      await openSecondary(entry, spawnPriority)
+      await openSecondary(entry)
     }
   } catch (error) {
     release()
@@ -1628,8 +1567,11 @@ export async function retainGatewayForAgent(
   return release
 }
 
+import { acceptExecutionEvent } from '@/lib/execution-authority'
+
 const turnLeaseKey = (scope: string, sessionId: string): string => `${scope}\u0000${sessionId}`
 const TURN_LEASE_SETTLE_DELAY_MS = 500
+const turnExecutionAuthorities = new Map()
 
 function cancelTurnLeaseRelease(key: string): void {
   const timer = g.turnLeaseReleaseTimers.get(key)
@@ -1731,35 +1673,12 @@ export async function retainGatewayForSessionTurn(
     }
 
     cancelTurnLeaseRelease(key)
-    // Another session on the same scope may still hold a lease; report the
-    // scope's state, not this lease's.
-    publishTurnLease(scope, scopeHasTurnLease(scope))
     releaseRoute()
   }
 
   g.turnLeases.set(key, release)
-  publishTurnLease(scope, true)
 
   return release
-}
-
-function scopeHasTurnLease(scope: string): boolean {
-  const prefix = `${scope}\u0000`
-
-  for (const key of g.turnLeases.keys()) {
-    if (key.startsWith(prefix)) {
-      return true
-    }
-  }
-
-  return false
-}
-
-// Tell main whether a prompt turn leases this scope's pooled backend. An early
-// skip for cooperative retirement (electron/pool-retire.ts), never the proof:
-// main asks the backend itself before stopping anything. From #104871.
-function publishTurnLease(scope: string, activeTurn: boolean): void {
-  void window.hermesDesktop?.touchBackend?.(scope, { activeTurn }).catch(() => undefined)
 }
 
 function releaseTerminalTurnLease(scope: string, event: GatewayEvent): void {
@@ -1771,7 +1690,9 @@ function releaseTerminalTurnLease(scope: string, event: GatewayEvent): void {
 
   const key = turnLeaseKey(scope, sessionId)
 
-  if (event.type === 'message.start') {
+  if (!acceptExecutionEvent(turnExecutionAuthorities, key, event.type, event)) {return}
+
+  if (event.type === 'message.start' || (event.type === 'session.info' && (event.payload as Record<string, unknown>)?.running === true)) {
     // The gateway emits settled session.info before immediately chaining a
     // queued/goal follow-up. Keep the same route alive for that next turn.
     cancelTurnLeaseRelease(key)
@@ -1842,7 +1763,7 @@ export async function openGatewayForAgent(
     return openGatewayForProfile(profile, { spawnPriority })
   }
 
-  if (await ridesPrimaryBackend(connectionId, profile, spawnPriority)) {
+  if (await ridesPrimaryBackend(connectionId, profile)) {
     if (!isOpen(g.primaryGateway)) {
       throw new Error('Hermes gateway unavailable')
     }
@@ -1869,7 +1790,7 @@ export async function openGatewayForAgent(
   }
 
   try {
-    await openSecondary(entry, spawnPriority)
+    await openSecondary(entry)
   } catch (error) {
     if (activationLease) {
       entry.activationLeaseUntil = 0
@@ -1898,7 +1819,7 @@ export async function ensureGatewayForAgent(
 
   const activationEpoch = beginGatewayActivation()
 
-  if (await ridesPrimaryBackend(connectionId, profile, 'foreground')) {
+  if (await ridesPrimaryBackend(connectionId, profile)) {
     // A retained primary can be open while the foreground still points at a
     // different source. Reusing its socket must also move the active route.
     return Boolean(isOpen(g.primaryGateway) && !signal?.aborted && applyActive(g.primaryProfile, activationEpoch))
@@ -1927,7 +1848,7 @@ export async function ensureGatewayForAgent(
     entry.reconnectAttempt = 0
 
     try {
-      await openSecondary(entry, 'foreground')
+      await openSecondary(entry)
     } catch {
       scheduleReconnect(entry)
     }
@@ -1980,7 +1901,7 @@ export async function ensureGatewayForProfile(profile: string): Promise<void> {
   // primary instead of dialing a doomed duplicate socket at the same
   // descriptor — $activeGatewayProfile still moves to `key`, so request
   // scoping and profile-aware surfaces behave identically.
-  if (await sharedPrimaryRoute(key, 'foreground')) {
+  if (await sharedPrimaryRoute(key)) {
     applyActive(g.primaryProfile, activationEpoch)
 
     return
@@ -2004,7 +1925,7 @@ export async function ensureGatewayForProfile(profile: string): Promise<void> {
       entry.reconnectAttempt = 0
 
       try {
-        await openSecondary(entry, 'foreground')
+        await openSecondary(entry)
       } catch (error) {
         // #81094: a failed secondary dial must NOT fall through to setActive()
         // with a closed socket — that silently routes the user's messages to the
@@ -2184,7 +2105,7 @@ export function reconnectSecondaryGateways({ forceOpenSockets = false }: { force
     // A backend main retired for a foreground open stays parked: redialing it
     // from a focus/wake nudge would queue a background spawn for the slot the
     // retirement just freed. Its tile still shows; the next click re-arms it.
-    if (entry.retiredByPool || g.reauthFailures.has(entry.scope)) {
+    if (g.reauthFailures.has(entry.scope)) {
       continue
     }
 
@@ -2238,67 +2159,6 @@ export function openSecondaryCount(): number {
   }
 
   return count
-}
-
-// Keep the idle reaper from killing a backend we still need: ping every live
-// secondary. The active one is pinged separately (touchActiveGatewayBackend).
-// "Live" means the socket is OPEN: a wantOpen entry stuck in its reconnect
-// backoff has no consumer on that backend, and pinging it anyway kept a
-// tile-pinned backend keepalive-fresh forever, so LRU eviction and the idle
-// reaper never freed its pool slot (#103375). Each ping also carries whether a
-// prompt turn leases the scope, so a foreground dial that must retire a
-// resident can skip leased ones early (the backend probe stays the proof).
-export function touchSecondaryGateways(): void {
-  const desktop = window.hermesDesktop
-
-  for (const entry of g.secondaries.values()) {
-    if (entry.wantOpen && isOpen(entry.gateway)) {
-      void desktop?.touchBackend?.(entry.scope, { activeTurn: scopeHasTurnLease(entry.scope) }).catch(() => undefined)
-    }
-  }
-}
-
-// A local child is pooled under the bare profile (legacy route) or
-// `conn:local::<profile>`; both renderer scopes ride the same child, so a
-// retirement of either key parks both.
-function secondaryRidesPoolKey(entry: Secondary, poolKey: string): boolean {
-  if (entry.scope === poolKey) {
-    return true
-  }
-
-  const local = !entry.connectionId || entry.connectionId === 'local'
-  const profile = normKey(entry.profile)
-
-  return local && (profile === poolKey || `conn:local::${profile}` === poolKey)
-}
-
-// Main is retiring the pooled backend under `poolKey` for a foreground open
-// (electron/pool-retire.ts). Park every scope riding it BEFORE the socket
-// drops: the 'closed' state must not scheduleReconnect, and the focus/wake
-// nudge must not re-arm it either — both would queue a background redial for
-// the slot the retirement freed. The entry stays (bot tiles keep their card);
-// the next explicit open of the scope re-arms it. Returns the parked scopes.
-export function parkSecondariesForRetiredBackend(poolKey: string): string[] {
-  const key = String(poolKey || '').trim()
-  const parked: string[] = []
-
-  if (!key) {
-    return parked
-  }
-
-  for (const entry of g.secondaries.values()) {
-    if (!secondaryRidesPoolKey(entry, key)) {
-      continue
-    }
-
-    entry.wantOpen = false
-    entry.retiredByPool = true
-    entry.stalledDials = 0
-    clearTimer(entry)
-    parked.push(entry.scope)
-  }
-
-  return parked
 }
 
 // Tear a secondary down: stop its reconnect loop, detach listeners, close the

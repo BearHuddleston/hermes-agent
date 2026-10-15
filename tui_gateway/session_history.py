@@ -317,9 +317,7 @@ def _history_to_messages(history: list[dict], *, profile_home=None, image_urls: 
         if _is_display_hidden_marker(role, content_text):
             continue
         if role == "user":
-            # A setup handoff's first message carries the first-task skill after what the user sees.
-            from agent.first_task_prompt import visible_text
-            content_text = visible_text(_DISCORD_TRIGGERING_NOTE_RE.sub(r"\1", content_text))
+            content_text = _DISCORD_TRIGGERING_NOTE_RE.sub(r"\1", content_text)
         if role == "assistant" and m.get("tool_calls"):
             _remember_tool_call_args(m["tool_calls"], tool_call_args)
         if role == "user" and m.get("display_kind") == STEER_DISPLAY_KIND:

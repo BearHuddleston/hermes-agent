@@ -8,7 +8,7 @@ import threading
 import pytest
 import hermes_yaml as yaml
 
-from hermes_cli import profile_lifecycle, profiles
+from hermes_cli import profile_lifecycle, profiles, profiles_honcho
 
 
 @pytest.fixture
@@ -39,7 +39,7 @@ def test_disjoint_mutations_preserve_shared_file_updates(root, monkeypatch, oper
         target.write_text(json.dumps({"hosts": {
             "hermes_alpha": {"aiPeer": "alpha"}, "hermes_beta": {"aiPeer": "beta"},
         }}), encoding="utf-8")
-        writer_module, writer_name = profiles, "_atomic_write_json"
+        writer_module, writer_name = profiles_honcho, "_atomic_write_json"
         first_call = lambda: profiles.rename_profile("alpha", "gamma")
         second_call = lambda: profiles.rename_profile("beta", "delta")
 

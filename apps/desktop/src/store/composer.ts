@@ -73,6 +73,8 @@ export interface ComposerAttachment {
   path?: string
   /** Ownership of browser-staged bytes; survives failed uploads and draft clones. */
   stagedUpload?: HermesStagedUpload
+  /** Validated MIME returned by canonical owner staging. */
+  mime?: string
   /** Bounded source text from a Hermes-generated large paste, sent only to the title path. */
   titlePreview?: string
   attachedSessionId?: string

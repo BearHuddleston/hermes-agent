@@ -57,14 +57,6 @@ export const BROWSER_BRIDGE_STUBS = {
   continueBootstrapLocal: async () => ({ ok: true }),
   getBootProgress: async () => readyBootProgress(),
   getBootstrapState: async () => readyBootstrapState(),
-  // Electron owns the pool; a browser host must not report a successful native
-  // settings write.
-  getPoolLimits: async () => {
-    throw browserUnsupported('Desktop backend pool sizing')
-  },
-  setPoolLimits: async () => {
-    throw browserUnsupported('Desktop backend pool sizing')
-  },
   getRecentLogs: async () => ({ lines: [], path: '' }),
   // Venv/plugin receipts live on the server host; a browser tab has none of its own.
   getSyncStatus: async () => null,
@@ -115,7 +107,6 @@ export const BROWSER_BRIDGE_STUBS = {
     fetchMarketplace: async (id: string) => ({ displayName: id, extensionId: id, themes: [] }),
     searchMarketplace: async () => []
   },
-  touchBackend: async () => ({ ok: true }),
   uninstall: {
     openAppsSettings: async () => undefined,
     run: async () => ({ error: 'Run `hermes uninstall` on the server host', ok: false }),

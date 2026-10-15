@@ -398,7 +398,7 @@ def test_browser_file_upload_cannot_publish_into_recreated_profile(
 def test_browser_image_upload_cleanup_failure_does_not_mask_write_status(
     tmp_path: Path, monkeypatch, write_error, expected_status
 ):
-    image_dir = tmp_path / "hermes-home" / "images"
+    image_dir = tmp_path / "hermes-home" / "cache" / "images"
     real_write_bytes = Path.write_bytes
     real_unlink = Path.unlink
 
@@ -486,7 +486,7 @@ def test_browser_image_upload_cannot_publish_into_recreated_profile(
 
         stale_response = stale_request.result(timeout=_BARRIER_TIMEOUT_SECONDS)
         assert stale_response.status_code == 404
-        assert not (recreated_home / "images").exists()
+        assert not (recreated_home / "cache" / "images").exists()
 
         current_response = client.post(
             "/api/chat/image-upload?profile=worker",
@@ -496,7 +496,7 @@ def test_browser_image_upload_cannot_publish_into_recreated_profile(
 
     assert current_response.status_code == 200
     current_path = Path(current_response.json()["path"])
-    assert current_path.parent == recreated_home / "images"
+    assert current_path.parent == recreated_home / "cache" / "images"
     assert current_path.read_bytes() == b"\x89PNG\r\n\x1a\n"
 
 
@@ -542,7 +542,7 @@ def test_browser_uploads_to_a_profile_do_not_queue_behind_the_skills_lock(
     assert file_response.status_code == 200, file_response.text
     assert Path(file_response.json()["path"]).parent == profile_home / "uploads"
     assert image_response.status_code == 200, image_response.text
-    assert Path(image_response.json()["path"]).parent == profile_home / "images"
+    assert Path(image_response.json()["path"]).parent == profile_home / "cache" / "images"
 
 
 def test_browser_image_upload_never_creates_a_missing_profile_home(
@@ -593,7 +593,7 @@ def test_browser_uploads_reject_tombstone_before_profile_directory_removal(
     assert image_response.status_code == 404
     assert profile_home.is_dir()
     assert not (profile_home / "uploads").exists()
-    assert not (profile_home / "images").exists()
+    assert not (profile_home / "cache" / "images").exists()
 
 
 def test_browser_file_upload_does_not_report_a_path_after_tombstone_wins(
@@ -630,7 +630,7 @@ def test_browser_image_upload_holds_the_retirement_lease_through_its_write(
     land between the bytes and the path the response reports."""
     profile_home = tmp_path / "hermes-home" / "profiles" / "worker"
     profile_home.mkdir(parents=True)
-    image_dir = profile_home / "images"
+    image_dir = profile_home / "cache" / "images"
     attempts: list[str] = []
 
     def try_retire() -> str:

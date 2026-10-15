@@ -137,7 +137,8 @@ def mount_spa(application: FastAPI):
             # gate is off: on a gated serve the token must never be readable without auth.
             # See #94227, #95575.
             gated = bool(getattr(application.state, "auth_required", False))
-            if full_path == "" and not gated:
+            withheld = gated or bool(getattr(_server().app.state, "withhold_session_token", False))
+            if full_path == "" and not withheld:
                 return HTMLResponse(
                     "<!doctype html><html><head><script>"
                     f"window.__HERMES_SESSION_TOKEN__={json.dumps(_server()._SESSION_TOKEN)};"
@@ -176,11 +177,12 @@ def mount_spa(application: FastAPI):
         gated = bool(getattr(application.state, "auth_required", False))
         surface = getattr(application.state, "ui_surface", "dashboard")
         # Webapp grants host files and shell.exec as well as PTYs: its existing
-        # session token must come from the operator, never anonymous HTML.
-        token_js = (
-            f'window.__HERMES_SESSION_TOKEN__="{_server()._SESSION_TOKEN}";'
-            if policy(application.state).html_token and not gated else ""
-        )
+        # session token must come from the operator, never anonymous HTML. The
+        # gateway-hosted listener (gateway/run_api.py) never publishes it either:
+        # local clients use tickets.
+        withheld = (gated or bool(getattr(_server().app.state, "withhold_session_token", False))
+                    or not policy(application.state).html_token)
+        token_js = "" if withheld else f'window.__HERMES_SESSION_TOKEN__="{_server()._SESSION_TOKEN}";'
         # Launcher-preselected profile (``--open-profile``): the SPA's fallback scope when the URL
         # omits ``?profile=`` (#73085). ``</`` escaped so a hostile name cannot close the script tag.
         initial_profile_js = json.dumps(str(getattr(application.state, "initial_profile", "") or "")).replace("</", "<\\/")

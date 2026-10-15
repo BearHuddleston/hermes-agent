@@ -164,7 +164,8 @@ async def gated_auth_middleware(
         return await call_next(request)
     # Already authenticated by the token-auth seam (service caller on a registered token
     # route): not a cookie session, must not bounce to /login.
-    if getattr(request.state, "token_authenticated", False):
+    if (getattr(request.state, "token_authenticated", False)
+            or getattr(request.state, "native_http_principal", None)):
         return await call_next(request)
     # Login/callback routes have their own credentials/state checks. Logout
     # is public so an expired session can leave, but still consumes cookies.

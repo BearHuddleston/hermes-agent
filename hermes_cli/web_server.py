@@ -76,7 +76,100 @@ from hermes_cli.web_server_lifecycle import (
     _write_dashboard_ready_file,
     _write_machine_sentinel_line,
 )
-from hermes_cli.web_server_lifespan import _lifespan
+
+
+def _gateway_owns_cron(name: str, home) -> bool:
+    """A gateway already ticks this profile's store with live adapters: its OWN process, or the
+    live default multiplexer (a served satellite has no gateway.pid of its own). Winning the
+    tick-lock race here would deliver through the standalone path (#52202, #100489, #107485)."""
+    from hermes_cli.profiles import _check_gateway_running, _served_by_running_multiplexer
+
+    return _check_gateway_running(Path(home)) or (
+        name != "default" and _served_by_running_multiplexer(name))
+
+
+def _start_desktop_cron_ticker(stop_event: threading.Event, interval: int = 60) -> None:
+    """Tick the cron scheduler from inside the desktop dashboard backend.
+
+    The desktop spawns a ``hermes dashboard`` backend, not a gateway, so without
+    this a cron created in the app would never fire (no live adapters; delivery
+    falls back to the per-platform send path). The primary backend outlives the
+    per-profile pool (reaped after ~10 idle minutes), so it ticks EVERY local
+    profile's store like a multiplex gateway; external providers keep the
+    single-store behavior (registries are not profile-scoped). Cross-process
+    safe: the built-in tick takes the per-store ``cron/.tick.lock``.
+
+    Every local profile's store is ticked, not just this backend's own (#69377's desktop sibling): the
+    desktop pools per-profile backends and reaps them after ~10 idle minutes, so a secondary profile's
+    ticker dies with its backend and that profile's jobs silently stop firing until the user next opens it
+    ("tasks on the sleeping profile could be idle" — community report, Aug 2026).
+    """
+    from cron.scheduler_provider import InProcessCronScheduler, resolve_cron_scheduler
+    from hermes_constants import get_hermes_home, profile_name_for_home
+
+    provider = resolve_cron_scheduler()
+    own_home = Path(get_hermes_home())
+    own_name = profile_name_for_home(own_home) or "default"
+    # Ownership is re-checked every tick, not once at startup, so Desktop takes over when the
+    # gateway stops (#126822).
+    profile_gate = lambda name, home: not _gateway_owns_cron(name, home)
+
+    start_kwargs: dict = {"interval": interval}
+    if isinstance(provider, InProcessCronScheduler):
+        try:
+            from hermes_cli.profiles import profiles_to_serve
+
+            # Same served set as the multiplexer: default + every live profile under profiles/.
+            # The ticker re-enumerates this callable every cycle. Passing a
+            # startup snapshot leaves deleted profiles in the scheduler until
+            # restart, which both writes their removed stores and keeps stale
+            # profiles alive in Desktop's background work.
+            profile_homes = lambda: list(profiles_to_serve(multiplex=True))
+            initial_profile_homes = profile_homes()
+            if initial_profile_homes:
+                # Even one profile needs the per-tick gateway gate; otherwise
+                # Desktop races its dedicated gateway for the same cron store.
+                start_kwargs["profile_homes"] = profile_homes
+                start_kwargs["profile_gate"] = profile_gate
+                from hermes_logging import enable_profile_log_routing
+
+                enable_profile_log_routing(initial_profile_homes)
+                _log.info(
+                    "Desktop cron scheduler will tick %d profile(s): %s",
+                    len(initial_profile_homes),
+                    [name for name, _home in initial_profile_homes],
+                )
+        except Exception:
+            # Fail open to the single-store ticker so the active profile keeps firing.
+            _log.exception("Desktop cron: profile enumeration failed; ticking active profile only")
+        if "profile_homes" not in start_kwargs:
+            # Fail open to this backend's own store behind the same gate. A gated-out profile is
+            # neither ticked nor heartbeated, so Desktop never marks the gateway's store healthy.
+            start_kwargs["profile_homes"] = lambda: [(own_name, own_home)]
+            start_kwargs["profile_gate"] = profile_gate
+    else:
+        # External providers take no per-tick gate: defer their start until the gateway is gone.
+        def _owned() -> bool:
+            try:
+                return _gateway_owns_cron(own_name, own_home)
+            except Exception:
+                # Start the ticker rather than silently stand down.
+                _log.warning("Desktop cron: gateway-ownership probe failed; starting the ticker", exc_info=True)
+                return False
+
+        if _owned():
+            _log.info(
+                "Desktop cron scheduler waiting: live gateway owns cron on this HERMES_HOME; "
+                "the gateway ticks with live adapters (re-probing every %ds)", interval,
+            )
+            while True:
+                if stop_event.wait(interval):
+                    return
+                if not _owned():
+                    break
+
+    _log.info("Desktop cron scheduler started (provider=%s, interval=%ds)", provider.name, interval)
+    provider.start(stop_event, **start_kwargs)
 
 
 # Desktop `serve` only (start_server(start_mcp_discovery_after_bind=True)):
@@ -84,7 +177,23 @@ from hermes_cli.web_server_lifespan import _lifespan
 _DESKTOP_MCP_DISCOVERY_DELAY_S = 1.0
 
 
-def _app_state_default(app: "FastAPI", name: str, factory):
+def _probe_install_before_state_db() -> None:
+    from hermes_cli.anon_auth import on_local_desktop_backend
+
+    if not on_local_desktop_backend():
+        return
+    try:
+        from hermes_cli.install_state import probe
+
+        probe()
+    except (OSError, ValueError):  # what the probe's own guards leave; onboarding.state probes again
+        _log.warning("first-install check at boot failed", exc_info=True)
+
+
+from hermes_cli.web_server_app import app_lifespan
+
+
+def _app_state_default(app: FastAPI, name: str, factory):
     """Return ``app.state.<name>``, lazily creating it for non-``with`` TestClient usages.
 
     The lifespan normally initialises these on the running event loop (an
@@ -106,7 +215,7 @@ def _get_pty_active_session_files(app: FastAPI) -> dict[str, Path]:
     return _app_state_default(app, "pty_active_session_files", dict)
 
 
-app = FastAPI(title="Hermes Agent", version=get_version_info().base_version, lifespan=_lifespan)
+app = FastAPI(title="Hermes Agent", version=get_version_info().base_version, lifespan=app_lifespan)
 
 from hermes_cli.dashboard_auth.body_limit import AuthBodyLimitMiddleware
 
@@ -187,11 +296,6 @@ def _ssh_runtime_intact() -> bool:
 # share one testable seam.
 _DASHBOARD_EMBEDDED_CHAT_ENABLED = True
 
-# Desktop file.attach sends a whole base64 data URL in one JSON-RPC frame;
-# uvicorn's 16 MiB default rejects files under the 256 MiB raw attach cap.
-_DESKTOP_ATTACHMENT_WS_MAX_BYTES = 384 * 1024 * 1024
-
-
 from hermes_cli.web_upload_limit import ChatFileUploadLimitMiddleware
 
 # Inside every auth/Host middleware: those checks run before body ingestion,
@@ -243,7 +347,12 @@ def _require_token(request: Request) -> None:
     ``gated_auth_middleware`` already 401'd anything without a verified
     ``request.state.session`` — requiring the absent token here would make every
     ``_require_token`` endpoint unreachable behind the gate, so defer to it.
+    A verified native owner (``authenticate_native_http``) is the same-user
+    principal the outer seams already accepted; local Desktop runs with no
+    static token, so that principal must satisfy route-local policy too.
     """
+    if getattr(request.state, "native_http_principal", None):
+        return
     if getattr(request.app.state, "auth_required", False):
         ok = getattr(request.state, "session", None) is not None
     else:
@@ -252,36 +361,16 @@ def _require_token(request: Request) -> None:
         raise HTTPException(status_code=401, detail="Unauthorized")
 
 
-# Accepted Host values for loopback binds. DNS rebinding TTL-flips an attacker
-# hostname to 127.0.0.1 so the browser treats it as same-origin; validating Host
-# at the app layer rejects it. See GHSA-ppp5-vxwm-4cf7.
-_LOOPBACK_HOST_VALUES: frozenset = frozenset({"localhost", "127.0.0.1", "::1"})
-
-
-def _dashboard_public_hosts() -> frozenset[str]:
-    """Return the exact hostname declared by ``dashboard.public_url``.
-
-    One source of truth for OAuth redirects, Host and WS Origin validation.
-    Malformed or unset values fail closed as an empty set.
-    """
-    from hermes_cli.dashboard_auth.prefix import resolve_public_url
-
-    public_url = resolve_public_url()
-    try:
-        hostname = urllib.parse.urlparse(public_url).hostname if public_url else None
-    except ValueError:
-        hostname = None
-    return frozenset({hostname.lower()}) if hostname else frozenset()
-
-
-def should_require_auth(host: str, allow_public: bool = False) -> bool:
-    """True iff the auth gate must be active: any non-loopback bind.
-
-    RFC1918 / CGNAT / link-local are deliberately PUBLIC — a hostile LAN device
-    is the threat model. ``allow_public`` (legacy ``--insecure``) is accepted for
-    old launch scripts but IGNORED since the June 2026 hermes-0day campaign.
-    """
-    return host not in _LOOPBACK_HOST_VALUES
+from hermes_cli.web_server_boundary import (  # re-exported: web_server.<name> stays the public seam
+    _DESKTOP_ATTACHMENT_WS_MAX_BYTES,
+    _LOOPBACK_HOST_VALUES,
+    _dashboard_public_hosts,
+    _desktop_loopback_auth_exempt,
+    _host_header_hostname,
+    _is_accepted_host,
+    public_hosts_engage_gate,
+    should_require_auth,
+)
 
 
 def should_require_dashboard_auth(
@@ -295,90 +384,7 @@ def should_require_dashboard_auth(
     """
     if trusted_public_hosts is None:
         trusted_public_hosts = _dashboard_public_hosts()
-    return should_require_auth(host) or any(h not in _LOOPBACK_HOST_VALUES for h in trusted_public_hosts)
-
-
-def _desktop_loopback_auth_exempt(
-    host: str,
-    ssh_session_token: Optional[str] = None,
-    ssh_owner_nonce: Optional[str] = None,
-) -> bool:
-    """True for a Desktop-owned loopback backend (#96490).
-
-    A non-loopback ``dashboard.public_url`` would otherwise engage the
-    ticket-only gate for the private loopback backends Desktop spawns, whose
-    per-spawn session token the gate's WS path refuses — Desktop could not boot.
-    The public dashboard is a separate non-loopback process that stays gated, so
-    this never opens the public surface. Requires ALL of: loopback bind,
-    ``HERMES_DESKTOP=1``, and an operator-minted credential (env token, SSH
-    session token, or owner nonce).
-    """
-    return (
-        host in _LOOPBACK_HOST_VALUES
-        and os.environ.get("HERMES_DESKTOP") == "1"
-        and bool(os.environ.get("HERMES_DASHBOARD_SESSION_TOKEN") or ssh_session_token or ssh_owner_nonce)
-    )
-
-
-def _host_header_hostname(host_header: str) -> str:
-    """Return a normalized hostname from a valid HTTP Host authority.
-
-    Host headers are authorities, not full URLs. Reject ambiguous ports,
-    malformed IPv6 brackets, and URL syntax so validation always fails closed.
-    """
-    value = (host_header or "").strip()
-    if not value or "://" in value or any(c in value for c in '"\'<> \n\r\t/?#@'):
-        return ""
-
-    if value.startswith("["):
-        close = value.find("]")
-        if close == -1:
-            return ""
-        hostname = value[1:close]
-        # Bracket notation is reserved for IPv6 literals.
-        if ":" not in hostname:
-            return ""
-        suffix = value[close + 1:]
-        if suffix and not re.fullmatch(r":\d+", suffix):
-            return ""
-        return hostname.lower()
-
-    # Unbracketed IPv6 authorities are ambiguous with a port separator.
-    if value.count(":") > 1:
-        return ""
-    if ":" in value:
-        hostname, port = value.rsplit(":", 1)
-        if not hostname or not port.isdigit():
-            return ""
-        return hostname.lower()
-    return value.lower()
-
-
-def _is_accepted_host(
-    host_header: str,
-    bound_host: str,
-    trusted_public_hosts: frozenset[str] = frozenset(),
-) -> bool:
-    """True if the Host header targets the interface we bound to.
-
-    Accepts:
-    - Exact bound host (with or without port suffix)
-    - Loopback aliases when bound to loopback
-    - Exact operator-declared public hosts (with or without port suffix)
-    - Any host when bound to 0.0.0.0 (explicit opt-in to non-loopback,
-      no protection possible at this layer)
-    """
-    host_only = _host_header_hostname(host_header)
-    if not host_only:
-        return False
-    # All-interfaces bind: no Host-layer defence is possible; rely on operator
-    # network controls.
-    if host_only in trusted_public_hosts or bound_host in {"0.0.0.0", "::"}:
-        return True
-    bound_lc = bound_host.lower()
-    if bound_lc in _LOOPBACK_HOST_VALUES:
-        return host_only in _LOOPBACK_HOST_VALUES
-    return host_only == bound_lc
+    return should_require_auth(host) or public_hosts_engage_gate(trusted_public_hosts)
 
 
 @app.middleware("http")
@@ -464,6 +470,7 @@ async def auth_middleware(request: Request, call_next):
     path = request.url.path
     if (
         not getattr(request.state, "token_authenticated", False)
+        and not getattr(request.state, "native_http_principal", None)
         and not getattr(request.app.state, "auth_required", False)
         and path.startswith("/api/")
         and path not in _PUBLIC_API_PATHS
@@ -483,8 +490,13 @@ async def _token_auth_seam(request: Request, call_next):
     + ``token_authenticated`` so downstream gates skip enforcement. Non-token
     routes pass through untouched.
     """
+    from hermes_cli.dashboard_auth.native_http import authenticate_native_http, native_profile_scope
     from hermes_cli.dashboard_auth.token_auth import token_auth_middleware
-    return await token_auth_middleware(request, call_next)
+    rejection = await authenticate_native_http(request)
+    if rejection is not None:
+        return rejection
+    with native_profile_scope(request):
+        return await token_auth_middleware(request, call_next)
 
 
 _DASHBOARD_HEALTH_WINDOW_SECONDS = 300.0

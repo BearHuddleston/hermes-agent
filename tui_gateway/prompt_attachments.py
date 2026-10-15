@@ -6,6 +6,7 @@ method_ctx.bind_module), so they reference server.py globals bare.
 
 from __future__ import annotations
 
+import os
 import re as _re
 
 from .method_ctx import HandlerRegistry, bind_module
@@ -74,6 +75,7 @@ def _decode_attach_payload(
 
 def _sniff_image_ext(img_bytes: bytes, filename: str = "") -> str:
     """Extension from the filename hint, else magic bytes (WebP: RIFF container), else ``.png``."""
+    from pathlib import Path
     if filename and (suffix := Path(filename).suffix.lower()):
         return suffix
     head = img_bytes[:16]
@@ -143,6 +145,26 @@ def _session_attachments_workspace(session: dict) -> Path | None:
 
 def _session_images_dir(session: dict) -> Path:
     return _session_home_dir(session, "images")
+
+
+def stage_image_bytes(directory, img_bytes: bytes, ext: str, *, prefix: str):
+    """Private, collision-free staging shared by local and canonical byte uploads."""
+    import os
+    from pathlib import Path
+    import tempfile
+    directory = Path(directory)
+    directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+    fd, name = tempfile.mkstemp(dir=directory, prefix=prefix + "_", suffix=ext)
+    path = Path(name)
+    try:
+        with os.fdopen(fd, "wb") as output:
+            output.write(img_bytes)
+            output.flush()
+            os.fsync(output.fileno())
+    except BaseException:
+        path.unlink(missing_ok=True)
+        raise
+    return path
 
 
 def _attachment_owner(session: dict, sid: str) -> tuple:
@@ -227,6 +249,11 @@ def _publish_attachment(
                 duplicate = 2
                 while True:
                     try:
+                        # Windows CREATE_NEW (the no-hard-link fallback) follows a dangling symlink
+                        # and creates its target outside root; an existing link of any kind is an
+                        # occupied name on every platform.
+                        if os.path.lexists(target):
+                            raise FileExistsError(target)
                         # No-clobber publication also fences other processes in
                         # the launch home, whose lifecycle lease is a no-op.
                         publish_no_clobber(temp, target)

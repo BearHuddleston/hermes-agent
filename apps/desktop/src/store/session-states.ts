@@ -22,7 +22,7 @@ import { atom, computed } from 'nanostores'
 import { ambientOwnerConnectionId, setSessionOwnerResolver } from '@/api/client'
 import { routeSessionId } from '@/app/routes'
 import type { ClientSessionState } from '@/app/types'
-import { findGroupOfPane, type LayoutNode } from '@/components/pane-shell/tree/model'
+import { findGroupOfPane } from '@/components/pane-shell/tree/model'
 import {
   $layoutTree,
   focusedSessionTabAnchor,
@@ -94,6 +94,7 @@ import {
   type SessionOwnerScope,
   type SessionProfileRoute
 } from './session-request-router'
+import { orderTilesByTree } from './session-tile-order'
 import { ackStoredSessionId, markSessionUnreadFinished } from './session-unread'
 import { migrateTranscriptTailsForProfile } from './transcript-tail-cache'
 import { isBrowserWindow, isSecondaryWindow } from './windows'
@@ -2200,8 +2201,12 @@ export interface SessionTileDelegate {
    *  the main view). Returns the runtime id, or throws.
    *  `refreshTranscript` forces a REST merge even when a warm cached
    *  transcript already exists — reopen-after-idle must not paint the
-   *  snapshot that was current when the panel last had a socket. */
-  resumeTile(storedSessionId: string, options?: { refreshTranscript?: boolean }): Promise<string>
+   *  snapshot that was current when the panel last had a socket.
+   *  `authoritativeSnapshot` forces a message-bearing gateway resume. */
+  resumeTile(
+    storedSessionId: string,
+    options?: { authoritativeSnapshot?: boolean; refreshTranscript?: boolean }
+  ): Promise<string>
   /** Retire one runtime's busy/awaiting claim through the wiring cache
    *  (updateSessionState), so cache, focused view, busyRef, and tile mirrors
    *  settle together. Returns false when the cache holds no busy state for
@@ -2242,48 +2247,6 @@ export function setSessionTileDelegate(next: SessionTileDelegate) {
 
 export function sessionTileDelegate(): SessionTileDelegate | null {
   return delegate
-}
-
-/** Reorder tiles to match layout-tree encounter order (stored ids in the order
- *  their `session-tile:` panes are walked). Restore replays the array through
- *  sequential adoption (each center tile APPENDS after the ones before it), so
- *  array order IS strip order — no `before` stamping needed; a stale `before`
- *  naming an absent pane falls back to append anyway (see insertAtGroup). Tiles
- *  not yet adopted sort after placed ones, stably. Returns `null` when nothing
- *  moves so callers can skip a needless persist. */
-export function orderTilesByTree<T extends { storedSessionId: string }>(
-  tree: LayoutNode | null,
-  tiles: readonly T[]
-): null | T[] {
-  if (!tree || tiles.length < 2) {
-    return null
-  }
-
-  const order: string[] = []
-
-  const walk = (node: LayoutNode) => {
-    if (node.type === 'group') {
-      for (const id of node.panes) {
-        if (id.startsWith(TILE_PANE_PREFIX)) {
-          order.push(id.slice(TILE_PANE_PREFIX.length))
-        }
-      }
-
-      return
-    }
-
-    node.children.forEach(walk)
-  }
-
-  walk(tree)
-
-  const rank = new Map(order.map((id, i) => [id, i]))
-
-  const next = [...tiles].sort(
-    (a, b) => (rank.get(a.storedSessionId) ?? Infinity) - (rank.get(b.storedSessionId) ?? Infinity)
-  )
-
-  return next.some((t, i) => t !== tiles[i]) ? next : null
 }
 
 function syncTileStripOrder() {
