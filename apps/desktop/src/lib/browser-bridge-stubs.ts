@@ -94,11 +94,6 @@ export const BROWSER_BRIDGE_STUBS = {
     throw browserUnsupported('Gateway reconfiguration')
   },
   sanitizeWorkspaceCwd: async (cwd?: null | string) => ({ cwd: cwd || '', sanitized: false }),
-  settings: {
-    getDefaultProjectDir: async () => ({ defaultLabel: 'Server workspace', dir: null, resolvedCwd: '' }),
-    pickDefaultProjectDir: async () => ({ canceled: true, dir: null }),
-    setDefaultProjectDir: async (dir: null | string) => ({ dir })
-  },
   sshConfigHosts: async () => ({ hosts: [] }),
   sshResolveHost: async () => ({ hostname: null, identityFile: null, port: null, user: null }),
   stopFindInPage: async () => undefined,

@@ -7,6 +7,7 @@ import { createBrowserConnectionBridge } from '@/lib/browser-connection'
 import { createBrowserFilesBridge } from '@/lib/browser-files'
 import { watchWebappLaunchLink } from '@/lib/browser-launch-session'
 import { createBrowserProfileBridge } from '@/lib/browser-profile'
+import { createBrowserSettings } from '@/lib/browser-settings'
 import { createBrowserTerminal } from '@/lib/browser-terminal'
 import { authenticatedWebsocketUrl, browserApi, browserBootstrap } from '@/lib/browser-transport'
 import { createBrowserUploadsBridge } from '@/lib/browser-uploads'
@@ -117,6 +118,7 @@ export function installBrowserDesktopBridge(): boolean {
 
       return target ? openWindow(target) : { error: 'invalid_session_id', ok: false }
     },
+    settings: createBrowserSettings({ basePath: bootstrap.basePath, currentProfile }),
     requestMicrophoneAccess: async () => {
       if (!navigator.mediaDevices?.getUserMedia) {return false}
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
