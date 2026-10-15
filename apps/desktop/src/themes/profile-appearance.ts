@@ -57,6 +57,8 @@ interface OwnerAppearance {
   /** This window's writes for the owner, chained in pick order. */
   writes: Promise<unknown>
   answers: Partial<Record<AppearanceField, Answer>>
+  /** Whether this config was already checked for a local pick to upload. */
+  seeded: boolean
 }
 
 /** The foreground owner's appearance, republished when a config load changes it. */
@@ -86,7 +88,7 @@ function ownerAppearance(owner: string): OwnerAppearance {
   let state = owners.get(owner)
 
   if (!state) {
-    state = { answers: {}, generation: 0, writes: Promise.resolve() }
+    state = { answers: {}, generation: 0, seeded: false, writes: Promise.resolve() }
     owners.set(owner, state)
   }
 
@@ -195,8 +197,22 @@ export async function saveProfileAppearance(profile: string, patch: ProfileAppea
   }
 }
 
-/** A deleted or renamed profile's answers are not its successor's, whose
- *  config.yaml may carry an older revision. Writes in flight settle unseen. */
+/** True once per owner: the first caller checks its config for a local pick to
+ *  upload. Owned with the answers, so a deleted profile's successor is checked again. */
+export function claimAppearanceSeed(owner: string): boolean {
+  const state = ownerAppearance(owner)
+
+  if (state.seeded) {
+    return false
+  }
+
+  state.seeded = true
+
+  return true
+}
+
+/** A deleted or renamed profile's answers and seed check are not its successor's,
+ *  whose config.yaml may carry an older revision. Writes in flight settle unseen. */
 export function forgetProfileAppearance(owner: string): void {
   owners.delete(owner)
 }

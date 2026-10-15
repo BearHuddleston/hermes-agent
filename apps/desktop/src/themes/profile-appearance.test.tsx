@@ -8,6 +8,7 @@ import { setApiRequestProfile } from '@/hermes'
 import { installBrowserDesktopBridge } from '@/lib/browser-desktop-bridge'
 import { $activeGatewayProfile } from '@/store/profile'
 import { $connection } from '@/store/session'
+import { dropTilesForProfile } from '@/store/session-states'
 
 import { deferred } from '../test/deferred'
 
@@ -226,6 +227,26 @@ describe('profile appearance ↔ config.yaml', () => {
       ['gateway-a', 'atlas', { config: { desktop: { theme: 'catppuccin' } } }],
       ['gateway-b', 'atlas', { config: { desktop: { theme: 'catppuccin' } } }]
     ])
+  })
+
+  it('checks a profile deleted and recreated under the same name again', async () => {
+    skinPref.assign('phoenix', 'catppuccin')
+    configs = { elsewhere: appearance('ember', 'light'), phoenix: appearance('', '') }
+
+    onProfile('phoenix')
+    const { refresh } = mountApp()
+    await refresh()
+    await refresh()
+
+    // The successor's config.yaml is unset again; this renderer still holds the local pick.
+    act(() => dropTilesForProfile('phoenix'))
+    onProfile('elsewhere')
+    await refresh()
+    onProfile('phoenix')
+    await refresh()
+
+    const seed = ['/api/config', 'phoenix', { config: { desktop: { theme: 'catppuccin' } } }]
+    expect(writes()).toEqual([seed, seed])
   })
 })
 

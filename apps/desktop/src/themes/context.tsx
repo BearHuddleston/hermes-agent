@@ -38,6 +38,7 @@ import {
   $profileAppearance,
   adoptedAppearance,
   type AppearanceField,
+  claimAppearanceSeed,
   isThemeMode,
   profileAppearanceOwner,
   type ProfileAppearancePatch,
@@ -281,9 +282,6 @@ function commitPick(profile: string, field: AppearanceField, value: string, repa
     })
 }
 
-// Owners, (connection, profile), whose config was already checked for a local pick to upload.
-const seededOwners = new Set<string>()
-
 /**
  * Existing installs kept their picks only in this origin's localStorage. The
  * first config load that finds the profile's appearance unset uploads the
@@ -294,11 +292,9 @@ const seededOwners = new Set<string>()
 function seedFromLocalPick(appearance: { mode: string; owner: string; profile: string; theme: string }): void {
   const { owner, profile } = appearance
 
-  if (seededOwners.has(owner)) {
+  if (!claimAppearanceSeed(owner)) {
     return
   }
-
-  seededOwners.add(owner)
 
   const skin = appearance.theme ? null : skinPref.own(profile)
   const mode = appearance.mode ? null : modePref.own(profile)
