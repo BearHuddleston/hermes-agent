@@ -24,7 +24,7 @@ vi.mock('@/hermes', () => ({
   setApiRequestProfile: vi.fn()
 }))
 vi.mock('@/lib/query-client', () => ({ invalidateProfileScopedQueries: vi.fn() }))
-vi.mock('@/store/starmap', () => ({ resetStarmapGraph: vi.fn() }))
+vi.mock('@/store/starmap', () => ({ reloadOpenStarmapGraph: vi.fn(), resetStarmapGraph: vi.fn() }))
 
 const { $activeGatewayProfile, selectProfile } = await import('./profile')
 const { installBrowserDesktopBridge } = await import('@/lib/browser-desktop-bridge')

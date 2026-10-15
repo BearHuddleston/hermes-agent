@@ -31,6 +31,7 @@ from pathlib import Path
 from typing import Any, Callable, Optional
 
 from hermes_cli.profile_incarnation import PROFILE_INCARNATION_FILENAME
+from utils import mtime_is_racy
 
 # Each keyed by resolved profile path. One entry per profile the roster has painted; a removed
 # profile leaves one stale entry, so a memo is dropped whole once it grows past any plausible fleet.
@@ -67,7 +68,8 @@ def _cached(cache: dict, key: str, signature: Optional[tuple], compute: Callable
 def store_signature(profile_path: str | Path) -> Optional[tuple]:
     """File identities plus profile generation, or None when the profile has no store.
 
-    The pair the change watcher already trusts for ``sessions.changed``.
+    The pair the change watcher already trusts for ``sessions.changed``. None too while a file's
+    mtime is fresh enough that a same-tick, same-size WAL rewrite could still hide behind it.
     """
     base = Path(profile_path)
     if not (base / "state.db").is_file():
@@ -75,7 +77,10 @@ def store_signature(profile_path: str | Path) -> Optional[tuple]:
     parts = [p for p in (_file_parts(base / name, with_inode=True) for name in _STORE_FILES) if p is not None]
     # Our own read-only open creates an EMPTY -wal sidecar on a store that never had one; it
     # carries no frames, so it must not read as "the store moved" on the very next poll.
-    return tuple(p for p in parts if not (p[0].endswith("-wal") and p[2] == 0)) or None
+    parts = [p for p in parts if not (p[0].endswith("-wal") and p[2] == 0)]
+    if any(mtime_is_racy(p[1]) for p in parts):
+        return None
+    return tuple(parts) or None
 
 
 def profile_yaml_signature(profile_dir: str | Path) -> Optional[tuple]:

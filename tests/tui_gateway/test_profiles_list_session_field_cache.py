@@ -7,6 +7,9 @@ roster silently paints a stale preview.
 """
 from __future__ import annotations
 
+import os
+import time
+
 import pytest
 
 import tui_gateway.server as srv
@@ -77,7 +80,6 @@ def test_a_profile_without_a_store_is_not_memoised_and_picks_one_up(home):
 
 
 def test_cached_session_fields_never_outlive_profile_retirement_or_recreation(home):
-    import os
     import shutil
 
     from hermes_cli import profile_lifecycle
@@ -100,9 +102,13 @@ def test_cached_session_fields_never_outlive_profile_retirement_or_recreation(ho
     # Same pathname, size and timestamps must not preserve the old generation's
     # memo. Keep a backup alive so an allocator cannot reuse its file identities.
     srv._profile_session_fields({}, bob)
+    settled = time.time_ns() - 60 * 1_000_000_000  # past the racy-mtime window, so it memoises
+    for path in bob.iterdir():
+        os.utime(path, ns=(settled, settled))
     old = home / "old-bob"
     shutil.copytree(bob, old)
     signature = cache.store_signature(bob)
+    assert signature is not None
     with profile_lifecycle.profile_lifecycle_lease(bob):
         write_fresh_profile_incarnation(bob)
     for path in old.iterdir():
@@ -111,3 +117,35 @@ def test_cached_session_fields_never_outlive_profile_retirement_or_recreation(ho
             stat = path.stat()
             os.utime(target, ns=(stat.st_atime_ns, stat.st_mtime_ns))
     assert cache.store_signature(bob) != signature
+
+def _store_files(profile_dir, mtime_ns: int) -> None:
+    for name in ("state.db", "state.db-wal"):
+        (profile_dir / name).write_bytes(b"\0" * 4096)
+        os.utime(profile_dir / name, ns=(mtime_ns, mtime_ns))
+
+def test_a_same_tick_same_size_wal_rewrite_is_not_masked(tmp_path):
+    """A commit in the mtime tick the memo was filled in, rewriting the WAL in place at the same
+    size (after a restart checkpoint), leaves every ``(mtime_ns, size)`` unchanged: a store that
+    fresh must not be memoised."""
+    now = time.time_ns()
+    _store_files(tmp_path, now)
+    assert cache.cached_session_fields(tmp_path, lambda: {"session_count": 1}) == {"session_count": 1}
+
+    (tmp_path / "state.db-wal").write_bytes(b"\1" * 4096)
+    os.utime(tmp_path / "state.db-wal", ns=(now, now))
+
+    assert cache.cached_session_fields(tmp_path, lambda: {"session_count": 2}) == {"session_count": 2}
+
+def test_a_settled_store_is_served_from_the_memo(tmp_path):
+    _store_files(tmp_path, time.time_ns() - 60 * 1_000_000_000)
+    calls = []
+
+    def compute():
+        calls.append(1)
+        return {"session_count": len(calls)}
+
+    first = cache.cached_session_fields(tmp_path, compute)
+    second = cache.cached_session_fields(tmp_path, compute)
+
+    assert second == first
+    assert len(calls) == 1
