@@ -281,6 +281,35 @@ def _fs_backend(profile: Optional[str] = None):
     return get_ssh_workspace_fs(profile_key, terminal)
 
 
+def _chat_image_dir(home: Path) -> Path:
+    """Where browser image pastes land: the profile's canonical image staging dir on this host
+    (``gateway.platforms.base.get_image_cache_dir``), the only one attachment admission accepts."""
+    from hermes_constants import get_hermes_dir
+
+    return get_hermes_dir("cache/images", "image_cache", home=home)
+
+
+def _is_host_image(path: str, profile: Optional[str]) -> bool:
+    """Whether *path* is in the profile's image cache, which lives on this host even when the
+    workspace is an SSH machine: a browser paste is saved there, then read back to be sent."""
+    try:
+        target = Path(path).resolve(strict=True)
+    except (OSError, RuntimeError):
+        return False  # not on this host: the workspace's to answer
+    with _profile_scope(profile):
+        cache = _chat_image_dir(get_hermes_home())
+    try:
+        return target.parent == cache.resolve(strict=True)
+    except (OSError, RuntimeError):
+        return False
+
+
+def _remote_fs_backend(path: str, profile: Optional[str]):
+    """The SSH workspace reader for *path*, or None when this host owns it."""
+    backend = _fs_backend(profile)
+    return None if backend is None or _is_host_image(path, profile) else backend
+
+
 def _raise_fs_backend_error(exc: Exception) -> None:
     from hermes_cli.ssh_workspace_fs import SshWorkspaceFsError
 
@@ -482,10 +511,8 @@ async def upload_chat_image(payload: ChatImageUpload, profile: Optional[str] = N
     def _run():
         data, mime_type, ext = _decode_chat_image_upload(payload)
         home, expected_incarnation = resolve_upload_generation(profile)
-        # Canonical admission accepts only the owner's image staging dir
-        # (gateway.platforms.base.get_image_cache_dir), so stage there.
-        from hermes_constants import apply_secure_dir_policy, get_hermes_dir
-        image_subdir = get_hermes_dir("cache/images", "image_cache", home=home).relative_to(home)
+        from hermes_constants import apply_secure_dir_policy
+        image_subdir = _chat_image_dir(home).relative_to(home)
 
         with leased_profile_dir(
             home,
@@ -1019,7 +1046,7 @@ async def fs_read_data_url(
     path: str, request: Request, profile: Optional[str] = None, session_id: Optional[str] = None,
 ):
     from hermes_cli.web_server import _FS_DATA_URL_MAX_BYTES
-    backend = await asyncio.to_thread(_fs_backend, profile)
+    backend = await asyncio.to_thread(_remote_fs_backend, path, profile)
     if backend is not None:
         try:
             data, _size, target = await asyncio.to_thread(
@@ -1044,7 +1071,7 @@ async def fs_read_data_url(
 async def fs_download(
     path: str, request: Request = None, profile: Optional[str] = None, session_id: Optional[str] = None,
 ):
-    backend = await asyncio.to_thread(_fs_backend, profile)
+    backend = await asyncio.to_thread(_remote_fs_backend, path, profile)
     if backend is not None:
         try:
             target, _size = await asyncio.to_thread(backend.inspect_file, path)
