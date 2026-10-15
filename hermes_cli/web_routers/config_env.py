@@ -17,7 +17,7 @@ from hermes_cli.web_routers._common import (
 )
 from hermes_cli.web_deps import LateState, late
 from hermes_cli.web_server_config import (
-    _advance_config_revision, _apply_main_model_assignment, _config_revision, _denormalize_config_from_web,
+    _apply_main_model_assignment, _config_revision, _denormalize_config_from_web,
     _normalize_config_for_web, _schema_with_dynamic_provider_options, _validated_main_model_selection,
 )
 from hermes_cli.web_server_profiles import (
@@ -131,7 +131,6 @@ async def update_config(
             # in the PUT body, so deep-merge incoming over disk rather than
             # full-replace — the frontend can only overwrite what it sends.
             with _CONFIG_MUTATION_LOCK:
-                before = _config_revision()
                 # Strict read: the merge below builds a new dict, so a swallowed read error here
                 # would save the PUT body alone over the whole file.
                 existing = require_readable_config_before_write()
@@ -147,11 +146,12 @@ async def update_config(
                 # Explicit English must survive default stripping: an absent
                 # language lets the desktop follow the OS on its next launch.
                 # Ordinary settings saves include merged defaults, not a choice.
-                save_config(
+                published = save_config(
                     merged, preserve_keys={("display", "language")} if preserve_language else None
                 )
-                # Lets a client order this save against racing reads and other saves.
-                revision = _advance_config_revision(before)
+                # Lets a client order this save against racing reads and other saves. The writer's
+                # receipt names these bytes; re-reading the path could name a later writer's.
+                revision = published // 1000 if published else _config_revision()
         # REST saves bypass the config.set RPC (which re-emits itself), so
         # refresh live sessions' cached approval/YOLO indicators after a mode
         # change. Own-profile saves only: a profile-scoped save targets a

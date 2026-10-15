@@ -552,7 +552,9 @@ def _config_revision() -> int:
 
     The file is the one thing every writer shares (this server, another backend on the same
     profile, the CLI, a hand edit), so its mtime orders their writes across processes and restarts
-    with no counter of its own to keep. Microseconds keep it an exact JavaScript number (the
+    with no counter of its own to keep; the config writer stamps every save past the file it
+    replaces and a PUT answers with that receipt (``save_config``'s return), so saves never tie or
+    go backwards. Microseconds keep it an exact JavaScript number (the
     nanosecond value overflows 2**53). Take it BEFORE reading the config: a write landing in
     between leaves the body newer than its revision, never older, so a client can only under-trust
     an answer, never let a stale one win.
@@ -561,28 +563,6 @@ def _config_revision() -> int:
         return get_config_path().stat().st_mtime_ns // 1000
     except FileNotFoundError:
         return 0
-
-
-def _advance_config_revision(before: int) -> int:
-    """After a save, under the config mutation lock: the new revision, after ``before``.
-
-    Two saves inside one filesystem timestamp tick (milliseconds to seconds, by filesystem), or a
-    save while the clock is behind the file's mtime (an NTP step, a copy stamped ahead), would tie
-    or go backwards and a client could not order them, so the mtime is nudged 1 µs past ``before``.
-    A filesystem too coarse to keep that, or another process saving within the same tick, can
-    still tie; clients then keep the last answer.
-    """
-    revision = _config_revision()
-    if revision > before or not revision:
-        return revision
-    path = get_config_path()
-    try:
-        os.utime(path, ns=(path.stat().st_atime_ns, (before + 1) * 1000))
-    except OSError:
-        # A file this process may write but not re-stamp (another owner, some network mounts):
-        # the save stands, its revision just ties the previous one.
-        return revision
-    return _config_revision()
 
 
 # ---------------------------------------------------------------------------

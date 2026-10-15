@@ -9,6 +9,7 @@ present on PUT, per profile, and strictly increasing across this server's saves.
 from __future__ import annotations
 
 import os
+from pathlib import Path
 
 import pytest
 
@@ -134,3 +135,33 @@ def test_the_first_save_of_a_missing_config_has_a_revision(client, homes):
     saved = _save(client, "mono")
     config, revision = _read(client)
     assert saved > 0 and (config["desktop"]["theme"], revision) == ("mono", saved)
+
+
+def test_a_save_answers_the_revision_of_its_own_bytes_when_another_writer_lands_next(
+    client, homes, monkeypatch,
+):
+    """Another process's save can land between this PUT's publication and its answer. Reading the
+    path again then hands the PUT the newer file's revision, so two different values share one
+    revision and the client keeps the stale one. The answer is the receipt of what this PUT wrote."""
+    import utils
+
+    root, _ = homes
+    path = root / "config.yaml"
+    real_replace = utils.atomic_replace
+    landed = {}
+
+    def replace_then_external_save(tmp, target):
+        published = real_replace(tmp, target)
+        if Path(target).name == "config.yaml" and not landed:
+            landed["own"] = os.stat(path).st_mtime_ns // 1000
+            path.write_text("desktop:\n  theme: nous\n", encoding="utf-8")
+            later = (landed["own"] + 1_000_000) * 1000  # a second later, whatever this host's tick
+            os.utime(path, ns=(later, later))
+        return published
+
+    monkeypatch.setattr(utils, "atomic_replace", replace_then_external_save)
+    saved = _save(client, "mono")
+
+    config, revision = _read(client)
+    assert config["desktop"]["theme"] == "nous"
+    assert saved == landed["own"] < revision
