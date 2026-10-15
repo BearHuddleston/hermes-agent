@@ -187,9 +187,11 @@ def _attachment_session(params: dict, rid) -> tuple:
 
 
 def _check_attachment_owner(session: dict, owner: tuple) -> None:
-    """Called under the sessions lock; a detached/rebound record cannot publish."""
+    """Called under the sessions lock; a detached/rebound record cannot publish. A ``None`` sid is
+    a session-authority call (gateway/session_ancillary.py): no sidecar slot exists, the caller
+    authorized the session, and only the profile generation is checked."""
     sid, home, incarnation = owner
-    if not _session_slot_current(sid, session) or session.get("_finalized"):
+    if sid is not None and (not _session_slot_current(sid, session) or session.get("_finalized")):
         raise LookupError("session not found")
     if not _session_profile_identity_matches(session, home, incarnation):
         raise FileNotFoundError("profile incarnation changed during attachment")
