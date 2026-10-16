@@ -1528,10 +1528,10 @@ def create_profile(
 
         create_profile_generation(canon, profile_dir, _get_profiles_root(), initialize)
         _maybe_register_gateway_service(canon)
-        # A running multiplexer enumerates profiles/ at boot: ask it to serve this one now (it also
-        # rescans periodically, so a missed signal only delays serving).
-        _notify_multiplexer(canon)
-        return profile_dir
+    # Ask a running multiplexer to serve it now (it also rescans periodically). Outside the lease:
+    # serving opens the new state.db on the gateway's event loop, and that open waits for the lease.
+    _notify_multiplexer(canon)
+    return profile_dir
 
 
 def _notify_multiplexer(canon: str) -> None:
@@ -1708,7 +1708,11 @@ def delete_profile(name: str, yes: bool = False) -> Path:
             print("Cancelled.")
             return profile_dir
 
-    return _delete_profile_confirmed(canon, profile_dir, confirmed_identity)
+    try:
+        return _delete_profile_confirmed(canon, profile_dir, confirmed_identity)
+    finally:  # A refused delete restored the profile under the lease: re-serve it now, after it.
+        if profile_dir.is_dir() and not named_profile_is_deleted(profile_dir):
+            _notify_multiplexer(canon)
 
 
 def _release_process_profile_handles(profile_dir: Path) -> None:
@@ -1814,9 +1818,7 @@ def _delete_profile_confirmed(
         # refuses every retry but delete. A fence from an earlier attempt stays; so does this
         # one once rmtree may have run.
         if not had_tombstone:
-            rollback_profile_retirement(profile_dir, profile_incarnation)
-            # Re-serve it now rather than at the multiplexer's next periodic rescan.
-            _notify_multiplexer(canon)
+            rollback_profile_retirement(profile_dir, profile_incarnation)  # delete_profile re-serves it
         raise
 
     # 3. Remove wrapper script
@@ -2304,7 +2306,9 @@ def rename_profile(old_name: str, new_name: str) -> Path:
         raise ValueError("Cannot rename to 'default' — it is reserved.")
     old_dir = get_profile_dir(old_canon)
     new_dir = get_profile_dir(new_canon)
-    with profile_lifecycle_lease(old_dir, new_dir):
+    # after_lease runs its callbacks once the lease is released: the gateway work they ask for opens
+    # the profile's state.db, which waits for this lease (LIFO, so register in reverse order).
+    with contextlib.ExitStack() as after_lease, profile_lifecycle_lease(old_dir, new_dir):
         if not old_dir.is_dir():
             raise _unknown_profile_error(old_canon)
         if named_profile_is_deleted(old_dir):
@@ -2362,17 +2366,17 @@ def rename_profile(old_name: str, new_name: str) -> Path:
                 # after publication, including when post-move alias updates failed.
                 _record_profile_rename(new_dir, old_canon)
                 _retarget_active_profile(old_canon, new_canon, f"✓ Active profile updated: {new_canon}")
-                # Migrate identity after the new generation admits DB access, before hot-serving it.
-                _migrate_profile_identity(old_canon, new_canon, live_mux)
+                # LIFO: identity migrates once the new generation admits DB access, then it is served.
                 if live_mux:
-                    _notify_multiplexer(new_canon)
+                    after_lease.callback(_notify_multiplexer, new_canon)
+                after_lease.callback(_migrate_profile_identity, old_canon, new_canon, live_mux)
                 _maybe_register_gateway_service(new_canon)
                 if service_removed:
                     print(f"⚠ The gateway service was removed. Reinstall it with: hermes -p {new_canon} gateway install")
             else:
                 if live_mux and not named_profile_is_deleted(old_dir):
                     # A failed move or drain restored the old generation's admission.
-                    _notify_multiplexer(old_canon)
+                    after_lease.callback(_notify_multiplexer, old_canon)
                 if old_dir.is_dir():
                     # The profile stayed under its old name: restore its s6 slot and say how to
                     # reinstall the unit removed above.
