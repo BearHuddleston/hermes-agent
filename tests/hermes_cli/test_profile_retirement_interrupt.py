@@ -116,6 +116,25 @@ def test_interrupted_delete_restores_the_profile(profile_env, monkeypatch, inter
     assert profiles.rename_profile("coder", "dev") == profiles.get_profile_dir("dev")
 
 
+def test_a_refused_delete_restores_the_service_slot_and_says_how_to_reinstall_the_unit(
+        profile_env, monkeypatch, capsys):
+    # Teardown removes the service before the holder census; a refusal restores the profile, so
+    # it must not come back with its bot offline and nothing saying so.
+    profiles.create_profile("coder", no_alias=True, no_skills=True)
+    slots = {"coder"}
+    monkeypatch.setattr(profiles, "_maybe_unregister_gateway_service", slots.discard)
+    monkeypatch.setattr(profiles, "_maybe_register_gateway_service", slots.add)
+    monkeypatch.setattr(profiles, "_cleanup_gateway_service", lambda *_: True)  # a host unit was installed
+    _holder_wait_interrupted_once(monkeypatch, RuntimeError)
+    capsys.readouterr()
+
+    with pytest.raises(RuntimeError):
+        profiles.delete_profile("coder", yes=True)
+
+    assert profiles.profile_exists("coder") and slots == {"coder"}
+    assert "Reinstall it with: hermes -p coder gateway install" in capsys.readouterr().out
+
+
 def test_delete_interrupted_once_removal_began_keeps_the_fence(profile_env, monkeypatch):
     profile_dir = profiles.create_profile("coder", no_alias=True, no_skills=True)
 

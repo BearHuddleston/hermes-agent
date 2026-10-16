@@ -1780,9 +1780,10 @@ def _delete_profile_confirmed(
     if retired:
         print(f"✓ Retired {retired} in-process profile resource(s)")
 
+    service_removed = False
     try:
         # 1. Disable service (prevents auto-restart)
-        _cleanup_gateway_service(canon, profile_dir)
+        service_removed = _cleanup_gateway_service(canon, profile_dir)
         # 1b. Phase 4: unregister the s6 service slot (container path).
         # On host this is a no-op; on container it removes
         # /run/service/gateway-<profile>/ so s6-supervise drops it.
@@ -1819,6 +1820,7 @@ def _delete_profile_confirmed(
         # one once rmtree may have run.
         if not had_tombstone:
             rollback_profile_retirement(profile_dir, profile_incarnation)  # delete_profile re-serves it
+            _restore_gateway_service(canon, service_removed)
         raise
 
     # 3. Remove wrapper script
@@ -1885,6 +1887,14 @@ def _maybe_register_gateway_service(profile_name: str) -> None:
         pass  # already registered (e.g. the container-boot reconciler brought up a stale slot)
     except Exception as exc:
         print(f"⚠ Could not register s6 gateway service: {exc}")
+
+
+def _restore_gateway_service(profile_name: str, unit_removed: bool) -> None:
+    """The profile is live under *profile_name* after a rename attempt or a refused delete: register
+    the s6 slot torn down with its service and say how to reinstall the unit removed with it."""
+    _maybe_register_gateway_service(profile_name)
+    if unit_removed:
+        print(f"⚠ The gateway service was removed. Reinstall it with: hermes -p {profile_name} gateway install")
 
 
 def _maybe_unregister_gateway_service(profile_name: str) -> None:
@@ -2370,19 +2380,13 @@ def rename_profile(old_name: str, new_name: str) -> Path:
                 if live_mux:
                     after_lease.callback(_notify_multiplexer, new_canon)
                 after_lease.callback(_migrate_profile_identity, old_canon, new_canon, live_mux)
-                _maybe_register_gateway_service(new_canon)
-                if service_removed:
-                    print(f"⚠ The gateway service was removed. Reinstall it with: hermes -p {new_canon} gateway install")
+                _restore_gateway_service(new_canon, service_removed)
             else:
                 if live_mux and not named_profile_is_deleted(old_dir):
                     # A failed move or drain restored the old generation's admission.
                     after_lease.callback(_notify_multiplexer, old_canon)
-                if old_dir.is_dir():
-                    # The profile stayed under its old name: restore its s6 slot and say how to
-                    # reinstall the unit removed above.
-                    _maybe_register_gateway_service(old_canon)
-                    if service_removed:
-                        print(f"⚠ The gateway service was removed. Reinstall it with: hermes -p {old_canon} gateway install")
+                if old_dir.is_dir():  # the profile stayed under its old name
+                    _restore_gateway_service(old_canon, service_removed)
         return new_dir
 
 
