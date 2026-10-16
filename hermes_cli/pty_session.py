@@ -25,8 +25,12 @@ WS_CLOSE_SUPERSEDED = 4409
 # the chat tab reads 1011 as a failed start and offers a new session instead.
 WS_CLOSE_VIEWER_STALLED = 1001
 WS_CLOSE_VIEWER_STALLED_REASON = "Terminal viewer stopped reading; reconnect"
-# How long one frame (live output or replay) may wait on the viewer before it counts as stalled.
+# How long one frame may wait on the viewer before it counts as stalled.
 _VIEWER_SEND_TIMEOUT_SECONDS = 5.0
+# A reattach replay is a single frame of up to the 1 MiB buffer (host-terminal clients take exactly
+# the next binary frame as the replay, so it is not chunked). It gets the stall limit plus the time
+# to cross a link this slow (about 256 kbit/s; 37 s for 1 MiB), else a weak connection redials forever.
+_REPLAY_MIN_BYTES_PER_SECOND = 32 * 1024
 # A viewer send that fails because the browser is gone: Starlette raises WebSocketDisconnect for a
 # dead transport and RuntimeError for a socket already closed; OSError covers the TimeoutError of
 # a viewer that stopped reading.
@@ -237,7 +241,8 @@ class PtySession:
                 # frame as replay. Send an empty snapshot too, so the first live
                 # frame never loses terminal-query replies on an empty history.
                 if snap or initial_text is not None:
-                    await asyncio.wait_for(ws.send_bytes(snap), timeout=_VIEWER_SEND_TIMEOUT_SECONDS)
+                    replay_timeout = _VIEWER_SEND_TIMEOUT_SECONDS + len(snap) / _REPLAY_MIN_BYTES_PER_SECOND
+                    await asyncio.wait_for(ws.send_bytes(snap), timeout=replay_timeout)
         except _VIEWER_SEND_ERRORS:
             self.detach(ws)
             return False

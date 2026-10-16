@@ -174,6 +174,46 @@ async def test_viewer_that_stops_reading_live_output_is_told_to_reconnect(monkey
     await registry.close_all()
 
 
+class SlowLinkWS(FakeWS):
+    """Carries every frame in ``seconds``: a viewer still reading, over a slow link."""
+
+    def __init__(self, seconds):
+        super().__init__()
+        self._seconds = seconds
+
+    async def send_bytes(self, data):
+        await asyncio.sleep(self._seconds)  # health: allow HX013 -- the link's transfer time is the behaviour under test
+        await super().send_bytes(data)
+
+
+@pytest.mark.asyncio
+async def test_a_full_replay_over_a_slow_link_is_not_a_stalled_viewer(monkeypatch):
+    """The stall limit covers one live frame. A reattach replay of up to the 1 MiB buffer gets time
+    to cross a slow link too, or every redial replays, times out and redials again."""
+    from hermes_cli import pty_session
+    from hermes_cli.pty_session import PtySession
+
+    monkeypatch.setattr(pty_session, "_VIEWER_SEND_TIMEOUT_SECONDS", 0.05)
+    history = b"x" * (1024 * 1024)
+    session = PtySession("k", FakeBridge([]), buffer_cap=len(history), read_timeout=0.01)
+    session.buffer.append(history)
+    viewer = SlowLinkWS(0.5)  # ten stall limits, far inside a full replay's budget
+
+    assert await session.attach(viewer)
+    assert viewer.sent == [("bytes", history)] and viewer.close_code is None
+    assert session._ws is viewer
+
+    # A viewer that stopped reading still gets dropped, within the limit plus its replay's share.
+    small = PtySession("k2", FakeBridge([]), buffer_cap=1024, read_timeout=0.01)
+    small.buffer.append(b"tail")
+    stalled = FailingWS(hold=True)  # the replay never completes
+    try:
+        assert await small.attach(stalled) is False
+        assert small._ws is None
+    finally:
+        stalled.release.set()
+
+
 @pytest.mark.asyncio
 async def test_reattach_can_force_complete_tui_redraw_after_replay():
     """A fresh terminal cannot reconstruct a differential ANSI tail alone."""
