@@ -198,11 +198,16 @@ export async function saveProfileAppearance(profile: string, patch: ProfileAppea
 }
 
 /** True once per owner: the first caller checks its config for a local pick to
- *  upload. Owned with the answers, so a deleted profile's successor is checked again. */
+ *  upload. Owned with the answers, so a deleted profile's successor is checked again.
+ *  Never for a backend that predates config revisions: those include every agent
+ *  from before PUT /api/config deep-merged, which replaces config.yaml with the
+ *  body, so an automatic sparse seed would erase the profile's model, providers
+ *  and MCP servers. */
 export function claimAppearanceSeed(owner: string): boolean {
   const state = ownerAppearance(owner)
+  const revisioned = Object.values(state.answers).some(answer => answer?.revision !== undefined)
 
-  if (state.seeded) {
+  if (state.seeded || !revisioned) {
     return false
   }
 

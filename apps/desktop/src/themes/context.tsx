@@ -287,7 +287,8 @@ function commitPick(profile: string, field: AppearanceField, value: string, repa
  * first config load that finds the profile's appearance unset uploads the
  * profile's OWN pick once, so the Webapp and other clients inherit it. The
  * global value an unassigned named profile inherits was never chosen for it,
- * so it stays local. Each gateway serving the profile is checked once.
+ * so it stays local. Each gateway serving the profile is checked once, and only
+ * one whose config reads carry a revision (`claimAppearanceSeed`).
  */
 function seedFromLocalPick(appearance: { mode: string; owner: string; profile: string; theme: string }): void {
   const { owner, profile } = appearance

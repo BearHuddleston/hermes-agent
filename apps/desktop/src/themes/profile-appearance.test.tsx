@@ -64,7 +64,9 @@ const appearance = (theme: string, theme_mode: string) => ({ desktop: { theme, t
 describe('profile appearance ↔ config.yaml', () => {
   // Each profile's config.yaml as a backend that predates config revisions serves
   // it (bare GET, `{ ok }` PUT): the fallback ordering. PUTs are recorded, not applied.
+  // `revisioned` serves the same files as a backend that answers `with_revision`.
   let configs: Record<string, unknown> = {}
+  let revisioned = false
   let heldRead: null | ReturnType<typeof deferred<unknown>> = null
   // When set, every PUT stays in flight until the test settles it.
   let heldWrites: null | { request: HermesApiRequest; settle: ReturnType<typeof deferred<unknown>> }[] = null
@@ -88,7 +90,13 @@ describe('profile appearance ↔ config.yaml', () => {
     const held = heldRead
     heldRead = null
 
-    return held ? held.promise : configs[request.profile ?? 'default']
+    if (held) {
+      return held.promise
+    }
+
+    const config = configs[request.profile ?? 'default']
+
+    return revisioned && request.path.includes('with_revision=true') ? { config, revision: 1 } : config
   })
 
   const writes = () =>
@@ -102,6 +110,7 @@ describe('profile appearance ↔ config.yaml', () => {
     __resetBackendSkinSync()
     $profileAppearance.set(null)
     configs = {}
+    revisioned = false
     heldWrites = null
     api.mockClear()
     Object.defineProperty(window, 'hermesDesktop', { configurable: true, value: { api } })
@@ -180,6 +189,7 @@ describe('profile appearance ↔ config.yaml', () => {
     modePref.assign('default', 'dark')
     skinPref.assign('studio', 'catppuccin')
     skinPref.assign('lab', 'mono')
+    revisioned = true
     configs = {
       default: appearance('', ''),
       lab: appearance('everforest', ''),
@@ -206,6 +216,7 @@ describe('profile appearance ↔ config.yaml', () => {
 
   it('checks each gateway serving a profile once, and seeds every one that has it unset', async () => {
     skinPref.assign('atlas', 'catppuccin')
+    revisioned = true
     configs = { atlas: appearance('', '') }
 
     act(() => setApiRequestConnection('gateway-a'))
@@ -231,6 +242,7 @@ describe('profile appearance ↔ config.yaml', () => {
 
   it('checks a profile deleted and recreated under the same name again', async () => {
     skinPref.assign('phoenix', 'catppuccin')
+    revisioned = true
     configs = { elsewhere: appearance('ember', 'light'), phoenix: appearance('', '') }
 
     onProfile('phoenix')
@@ -247,6 +259,21 @@ describe('profile appearance ↔ config.yaml', () => {
 
     const seed = ['/api/config', 'phoenix', { config: { desktop: { theme: 'catppuccin' } } }]
     expect(writes()).toEqual([seed, seed])
+  })
+
+  it('never seeds a backend that predates config revisions, whose PUT replaces config.yaml with the body', async () => {
+    skinPref.assign('legacy', 'catppuccin')
+    modePref.assign('legacy', 'dark')
+    configs = { legacy: { model: { default: 'kept' }, desktop: {} } }
+
+    onProfile('legacy')
+    const { refresh } = mountApp()
+    await refresh()
+    await refresh()
+
+    expect(writes()).toEqual([])
+    // The local pick still paints, as it did before config sync.
+    expect([ctx.themeName, ctx.mode]).toEqual(['catppuccin', 'dark'])
   })
 })
 
