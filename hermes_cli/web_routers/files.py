@@ -31,7 +31,8 @@ from hermes_cli.sqlite_safe_read import LiveConnectionError, offline_file_access
 from hermes_cli.staged_uploads import leased_profile_dir, removed_on_failure, resolve_upload_generation
 from hermes_cli.web_deps import late
 from hermes_cli.web_server_files import (
-    _fs_path, _hosted_fs_read_guard, _managed_file_entry, _managed_response_meta, _resolve_managed_path,
+    SANDBOX_NOT_FOUND, _agent_fs_path, _fs_path, _hosted_fs_read_guard, _is_unmapped_container_path,
+    _managed_file_entry, _managed_response_meta, _resolve_managed_path,
 )
 from hermes_cli.web_models import (
     ChatImageUpload, FileTicketRequest, FsWriteText, ManagedDirectoryCreate, ManagedFileDelete,
@@ -162,12 +163,18 @@ def _io_errors(denied: str, failed: str):
         raise HTTPException(status_code=500, detail=f"{failed}: {exc}")
 
 
-def _fs_regular_file(path: Path) -> tuple[Path, os.stat_result]:
+def _fs_sandbox_not_found_detail(path: Path, profile_home: Optional[Path] = None) -> str:
+    """Distinguish an untranslated agent-sandbox path from a plain missing file."""
+    unmapped = _is_unmapped_container_path(path.as_posix(), profile_home=profile_home)
+    return SANDBOX_NOT_FOUND if unmapped else "File not found"
+
+
+def _fs_regular_file(path: Path, profile_home: Optional[Path] = None) -> tuple[Path, os.stat_result]:
     target = _fs_path(str(path))
     try:
         st = target.stat()
     except (FileNotFoundError, NotADirectoryError):
-        raise HTTPException(status_code=404, detail="File not found")
+        raise HTTPException(status_code=404, detail=_fs_sandbox_not_found_detail(target, profile_home))
     except PermissionError:
         raise HTTPException(status_code=403, detail="File is not readable")
     except OSError as exc:
@@ -577,7 +584,9 @@ def _managed_readable_file(
     mime_type). Callers own the live-SQLite 409 (held through the read for
     /api/files/read, point-in-time for streamed responses)."""
     from hermes_cli.web_server import _MANAGED_FILE_MAX_BYTES
-    policy, target, display_path = _resolve_managed_path(path, request, create_root=create_root)
+    policy, target, display_path = _resolve_managed_path(
+        path, request, create_root=create_root, for_agent_read=True,
+    )
     if not target.exists():
         raise HTTPException(status_code=404, detail="File not found")
     if not target.is_file():
@@ -904,7 +913,7 @@ async def fs_list(path: str, request: Request, profile: Optional[str] = None):
             return await asyncio.to_thread(backend.list_dir, path, _FS_READDIR_HIDDEN)
         except Exception as exc:
             _raise_fs_backend_error(exc)
-    target = _fs_path(path)
+    target = _agent_fs_path(path, profile_home=_fs_profile_home(profile))
     _hosted_fs_read_guard(target, request)
     try:
         entries = []
@@ -949,9 +958,10 @@ async def fs_read_text(path: str, request: Request = None, profile: Optional[str
             "text": data.decode("utf-8", errors="replace"),
             "truncated": size > _FS_TEXT_PREVIEW_MAX_BYTES,
         }
-    target = _fs_path(path)
+    profile_home = _fs_profile_home(profile)
+    target = _agent_fs_path(path, profile_home=profile_home)
     _hosted_fs_read_guard(target, request)
-    target, st = _fs_regular_file(target)
+    target, st = _fs_regular_file(target, profile_home)
     if st.st_size > _FS_TEXT_SOURCE_MAX_BYTES:
         raise HTTPException(status_code=413, detail="File too large")
     data = await asyncio.to_thread(
@@ -1026,6 +1036,8 @@ async def fs_write_text(payload: FsWriteText, profile: Optional[str] = None):
 
 
 async def _fs_download_path(path: str, profile: Optional[str], session_id: Optional[str]) -> Path:
+    # Resolve container paths in the requested profile's sandbox, not the active one's.
+    profile_home = _fs_profile_home(profile)
     if session_id is not None:
         from hermes_cli.web_routers.sessions import get_session_detail
 
@@ -1033,12 +1045,20 @@ async def _fs_download_path(path: str, profile: Optional[str], session_id: Optio
             raise HTTPException(status_code=404, detail="Session not found")
         session = await get_session_detail(session_id, profile)
         # Validate ownership even for absolute paths; never trust a client cwd.
-        return _fs_path(path, cwd=session.get("cwd") or "")
-    if profile is not None:
-        from hermes_cli.web_server_cron import _cron_profile_home
+        return _agent_fs_path(path, cwd=session.get("cwd") or "", profile_home=profile_home)
+    return _agent_fs_path(path, profile_home=profile_home)
 
-        _cron_profile_home(profile)
-    return _fs_path(path)
+
+def _fs_profile_home(profile: Optional[str]) -> Optional[Path]:
+    """HERMES_HOME of a requested profile (404/400 on an unknown one), None for the request's
+    own profile (omitted, ``""`` or ``current``, as ``_is_current_profile`` reads them)."""
+    from hermes_cli.web_server_cron import _cron_profile_home
+    from hermes_cli.web_server_profiles import _is_current_profile
+
+    if _is_current_profile(profile):
+        return None
+
+    return _cron_profile_home(profile)[1]
 
 
 @router.get("/api/fs/read-data-url")
@@ -1058,7 +1078,7 @@ async def fs_read_data_url(
         return {"dataUrl": f"data:{_fs_mime_type(Path(target))};base64,{encoded}"}
     target = await _fs_download_path(path, profile, session_id)
     _hosted_fs_read_guard(target, request)
-    target, st = _fs_regular_file(target)
+    target, st = _fs_regular_file(target, _fs_profile_home(profile))
     if st.st_size > _FS_DATA_URL_MAX_BYTES:
         raise HTTPException(status_code=413, detail="File too large")
     encoded = await asyncio.to_thread(
@@ -1088,7 +1108,7 @@ async def fs_download(
         )
     target = await _fs_download_path(path, profile, session_id)
     _hosted_fs_read_guard(target, request)
-    target, _st = _fs_regular_file(target)
+    target, _st = _fs_regular_file(target, _fs_profile_home(profile))
     await asyncio.to_thread(_refuse_live_database, target)
     return FileResponse(
         path=str(target),
