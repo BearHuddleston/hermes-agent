@@ -435,7 +435,10 @@ async def _pump_keepalive_input(ws: WebSocket, session: Any) -> None:
             session.resize(ws, cols=int(match.group(1)), rows=int(match.group(2)))
             continue
         if not await session.write(ws, raw):
-            await _close_stalled_pty_input(ws, path="keepalive")
+            # Only a stalled or exited child marks the session dead; a takeover just cancelled
+            # this write, and the new viewer closes this socket as superseded.
+            if not session.alive:
+                await _close_stalled_pty_input(ws, path="keepalive")
             break
 
 

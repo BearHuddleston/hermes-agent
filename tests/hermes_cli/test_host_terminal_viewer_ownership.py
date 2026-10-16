@@ -96,6 +96,89 @@ async def test_takeover_revokes_waiting_workers_and_waits_for_an_admitted_write(
         os.close(slave)
 
 
+class InputSocket(Socket):
+    """A viewer that sends ``frames`` and then reads until it is closed."""
+
+    def __init__(self, *frames):
+        super().__init__()
+        self.inbound = asyncio.Queue()
+        for frame in frames:
+            self.inbound.put_nowait({"type": "websocket.receive", "bytes": frame})
+
+    async def receive(self):
+        return await self.inbound.get()
+
+    async def close(self, code, reason=None):
+        await super().close(code, reason)
+        self.inbound.put_nowait({"type": "websocket.disconnect"})
+
+
+@pytest.mark.platforms("posix")
+@pytest.mark.asyncio
+async def test_takeover_during_an_admitted_input_write_keeps_the_shell(tmp_path, monkeypatch):
+    """The cancelled write returns False while the old socket is still the viewer (the takeover
+    waits for the sink); the pump must neither close the shell nor let the old tab reconnect."""
+    from types import SimpleNamespace
+    from hermes_cli import pty_bridge
+    from hermes_cli.profile_incarnation import ensure_profile_incarnation
+    from hermes_cli.web_host_terminal_sessions import _pump_input
+
+    home = tmp_path / ".hermes"
+    profile = home / "profiles" / "worker"
+    profile.mkdir(parents=True)
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    owner = HostOwner(("loopback", "test"), profile, ensure_profile_incarnation(profile), "sh", str(tmp_path))
+    import pty
+    import tty
+    master, slave = pty.openpty()
+    tty.setraw(slave)
+    os.set_blocking(master, False)
+    bridge = pty_bridge.PtyBridge.__new__(pty_bridge.PtyBridge)
+    bridge._fd, bridge._closed, bridge._fd_lock = master, False, threading.Lock()
+    session = PtySession("terminal", bridge, buffer_cap=32, read_timeout=0.01)
+    entered, release = threading.Event(), threading.Event()
+    real_write = os.write
+
+    def sink(fd, data):
+        if fd == master and bytes(data) == b"OLD\n":
+            entered.set()
+            assert release.wait(5), "write barrier was not released"
+        return real_write(fd, data)
+
+    monkeypatch.setattr(pty_bridge.os, "write", sink)
+    removed = []
+
+    async def remove(token):
+        removed.append(token)
+
+    old, new = InputSocket(b"OLD\n"), Socket()
+    pump = takeover = None
+    try:
+        assert await session.attach(old)
+        pump = asyncio.create_task(_pump_input(old, SimpleNamespace(remove=remove), "terminal", session, owner))
+        assert await asyncio.to_thread(entered.wait, 3)
+        takeover = asyncio.create_task(session.attach(new))
+        # The takeover cancelled the write and waits for the sink; the old socket is still the viewer.
+        await async_wait_until(lambda: session._input_task is None, timeout=3)
+        assert session._ws is old
+        release.set()
+        assert await asyncio.wait_for(takeover, 3)
+        async with asyncio.timeout(3):
+            await pump
+        assert removed == [] and session.alive and not bridge._closed
+        assert old.closed == [WS_CLOSE_SUPERSEDED]
+        assert await session.write(new, b"NEW\n", fence=owner.admit)
+    finally:
+        release.set()
+        for task in (pump, takeover):
+            if task is not None:
+                task.cancel()
+                await asyncio.gather(task, return_exceptions=True)
+        os.close(master)
+        os.close(slave)
+
+
 @pytest.mark.platforms("posix")
 @pytest.mark.asyncio
 async def test_host_reaper_releases_dead_shell_before_drain_observes_eof(tmp_path):

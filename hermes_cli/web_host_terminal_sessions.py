@@ -337,9 +337,13 @@ async def _pump_input(ws: WebSocket, registry: HostTerminalRegistry, token: str,
                     await registry.remove(token)
                     return
                 if not delivered:
-                    if session._ws is ws:
+                    # A closed bridge marked the session dead. A takeover only cancelled this
+                    # write: drop the rest of the batch and leave this socket for the new viewer
+                    # to supersede, so this tab does not reconnect and take the shell back.
+                    if not session.alive:
                         await registry.remove(token)
-                    return
+                        return
+                    break
             if len(frames) < len(batch):
                 if isinstance(batch[-1], Exception):
                     raise batch[-1]
