@@ -287,7 +287,7 @@ class HostSupervisor:
         handling or :meth:`_fail_pending_turns`, all under ``self._lock``.
         """
         with self._lock:
-            return any(s == sid for s, _cb in self._pending_turns.values())
+            return any(s == sid for s, _cb, _settlement in self._pending_turns.values())
 
     def _await_reply(self, frame: dict[str, Any], request_id: str, timeout: float) -> dict:
         """Send ``frame`` and block for the host reply carrying ``request_id``."""
