@@ -314,15 +314,15 @@ DEFAULT_CONFIG = {
         # Seconds between SIGTERM and escalated SIGKILL for host process trees (browser daemons). 0
         # = SIGTERM only.
         "daemon_term_grace_seconds": 2.0,
-        # Max seconds a one-shot CLI run (-q/-Q/-z) lingers for tracked notify_on_complete
-        # background processes to finish. The dying parent owns their stdout pipes, so exiting
-        # immediately kills the delivery (e.g. Bot Mode handoff replies via message_agent /
-        # bot_relay). Plain background processes without notify_on_complete are never waited on.
-        # 0 disables. See #90879.
+        # Max seconds a one-shot CLI run (-q/-Q/-z) lingers for tracked notify_on_complete background
+        # processes to finish. The dying parent owns their stdout pipes, so exiting immediately kills
+        # the delivery (e.g. Bot Mode handoff replies via message_agent / bot_relay). Plain background
+        # processes without notify_on_complete are never waited on. 0 disables. See #90879.
         "oneshot_completion_wait_seconds": 600.0,
-        # Env vars passed into sandboxed terminal/execute_code (skill-declared
-        # required_environment_variables pass through automatically).
+        "process_wait_auto_notify": True,  # 2 unchanged wait/poll -> notify_on_complete + stop; False = old polling
+        # Env vars passed into sandboxed terminal/execute_code (plus skill-declared required_environment_variables).
         "env_passthrough": [],
+        "client_env_passthrough": [],  # Extra non-secret toolchain names a CLI/TUI client sends for its tools
         # Remote-backend sync-back refuses to extract a downloaded state archive larger than this
         # (bytes); raise it for a ~/.hermes tree that legitimately exceeds 2 GiB.
         "sync_back_max_bytes": 2 * 1024 * 1024 * 1024,
@@ -1243,8 +1243,7 @@ DEFAULT_CONFIG = {
         # instead of going to the agent. [] disables.
         "stop_phrases": ["stop"],
     },
-    # Native vision embeds (vision_analyze / browser screenshots on vision-capable main models) ride
-    # conversation history and are re-sent on every later API call.
+    # Native images (vision_analyze, browser screenshots, replayed user images) are re-sent on every later call.
     "vision": {
         # Byte budget for one embedded image (clamped 64 KiB..4 MiB). Raise it for dense phone
         # screenshots of tables the model calls "unreadable" at 256 KB.
@@ -1253,6 +1252,7 @@ DEFAULT_CONFIG = {
         # null = 3 inside delegated subagents (they run unattended), unlimited for the main agent;
         # an explicit number applies everywhere; 0 = unlimited.
         "max_calls_per_image": None,
+        "replay_recent_images": 3,  # newest user images re-sent on turns rebuilt from state.db; 0 = off
     },
     # "Hey Hermes" hands-free wake word: always-on, on-device hotword detection that starts a fresh
     # voice session. Off by default; toggle with /wake.
@@ -2260,18 +2260,14 @@ DEFAULT_CONFIG = {
     # inserts, /resume listing, and insights queries.
     "sessions": {
         # Prune ENDED sessions inactive for retention_days (activity = freshest of live activity /
-        # latest message / creation) about once per min_interval_hours at startup. Open, pinned, or mid-turn sessions
-        # are never deleted; stale automation sessions whose process died are *closed*, then get a
-        # full retention window before removal.
-        "auto_prune": True,
+        # latest message / creation) about once per min_interval_hours at CLI/gateway/cron startup.
+        # Open, pinned, or mid-turn sessions are never deleted; stale automation sessions whose
+        # process died are *closed*, then get a full retention window before removal.
+        # Off by default (deleting history is opt-in). While the user's config.yaml has no
+        # auto_prune key, every surface asks once the disk holding state.db runs low
+        # (hermes_cli/prune_advisor.py); either answer writes the key and ends the question.
+        "auto_prune": False,
         # Inactive days of ended-session history to keep (= `hermes sessions prune`).
-        # When true, prune ENDED sessions inactive for retention_days once per (roughly) min_interval_hours
-        # at CLI/gateway/cron startup. Activity is the freshest of live activity (last_activity_at) / latest
-        # message timestamp / creation time. Sessions that are still open, pinned, or mid-turn are never deleted — the
-        # only open rows the sweep touches are stale automation sessions (cron/kanban/subagent/one-shot CLI)
-        # whose process died without closing them; those are *closed*, not deleted, and get a further full
-        # retention window before removal. Default true since #54189: without it state.db grows without
-        # bound (multi-GB installs reported within weeks).
         "retention_days": 90,
         # Auto-archive (soft-hide, never delete) sessions with no activity for auto_archive_days,
         # once per min_interval_hours. Pinned sessions are exempt.
@@ -2617,8 +2613,7 @@ DEFAULT_CONFIG = {
         # of the active theme's own sans stack so missing glyphs still fall through. Empty = the
         # theme's face. The terminal pane is terminal.font_family.
         "font_family": "",
-        # The profile's Desktop/Webapp appearance, so a pick follows the profile to every client.
-        # Empty = never picked: each client keeps its own local choice.
+        # The profile's Desktop/Webapp look, followed by every client; empty = each client keeps its own.
         "theme": "",  # a Desktop theme name (not a CLI skin — that is display.skin)
         "theme_mode": "",  # light | dark | system (system follows each device's OS setting)
         # Git repo discovery for the Projects sidebar. Empty roots are a safe
