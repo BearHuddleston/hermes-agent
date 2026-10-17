@@ -14,6 +14,7 @@ import json
 import pytest
 
 from hermes_cli import web_apps
+from tests.waiting import async_wait_until
 
 
 @pytest.mark.parametrize("old,new", [
@@ -59,8 +60,17 @@ async def _people(hub, *names):
         conns[name] = hub.connect(principal=f"nous:{name}", user_key=f"nous:{name}", send=send, close=close)
         asyncio.get_running_loop().create_task(conns[name].run_sender())
         await hub.handle(conns[name], {"type": "open", "handle": "h", "session_id": "s1", "file": "board.html"})
-    await asyncio.sleep(0.05)
+    await async_wait_until(lambda: all(_frames(box, "snapshot") for box in inbox.values()),
+                           what="every window's snapshot")
     return conns, inbox
+
+
+def _frames(box, kind):
+    return [frame for frame in box if frame["type"] == kind]
+
+
+def _text_client_ids(box):
+    return [update["clientID"] for frame in _frames(box, "text.updates") for update in frame["updates"]]
 
 
 def test_values_are_last_writer_wins_and_viewers_only_watch(app_file):
@@ -70,7 +80,8 @@ def test_values_are_last_writer_wins_and_viewers_only_watch(app_file):
         await hub.handle(conns["alice"], {"type": "set", "handle": "h", "key": "count", "value": 1})
         await hub.handle(conns["bob"], {"type": "set", "handle": "h", "key": "count", "value": 2})
         refused = await hub.handle(conns["vic"], {"type": "set", "handle": "h", "key": "count", "value": 9})
-        await asyncio.sleep(0.1)
+        await async_wait_until(lambda: all(len(_frames(box, "set")) >= 2 for box in inbox.values()),
+                               what="both sets reaching every window")
         for conn in conns.values():
             await hub.disconnect(conn)
         return refused, inbox
@@ -93,12 +104,12 @@ def test_two_people_typing_at_once_converge_on_one_text(app_file):
                                           "updates": [{"clientID": "ca", "changes": [[0, "hello"]]}]})
         await hub.handle(conns["bob"], {"type": "text.push", "handle": "h", "key": "notes", "version": 0,
                                         "updates": [{"clientID": "cb", "changes": [[0, "world"]]}]})
-        await asyncio.sleep(0.05)
-        missed = [f for f in inbox["bob"] if f["type"] == "text.updates"]
+        missed = await async_wait_until(lambda: [f for f in _frames(inbox["bob"], "text.updates") if f.get("reply")],
+                                        what="bob's stale push answered")
         # Bob rebased "world" over "hello" (insert at the end) and pushes against version 1.
         await hub.handle(conns["bob"], {"type": "text.push", "handle": "h", "key": "notes", "version": 1,
                                         "updates": [{"clientID": "cb", "changes": [5, [0, " world"]]}]})
-        await asyncio.sleep(0.1)
+        await async_wait_until(lambda: "cb" in _text_client_ids(inbox["alice"]), what="bob's update reaching alice")
         doc = hub.apps["default:s1|" + str(app_file)].texts["notes"].doc
         for conn in conns.values():
             await hub.disconnect(conn)
@@ -107,8 +118,7 @@ def test_two_people_typing_at_once_converge_on_one_text(app_file):
     missed, doc, inbox = asyncio.run(scenario())
     assert missed[0]["version"] == 0 and missed[0]["updates"][0]["clientID"] == "ca"
     assert doc == "hello world"
-    alice_seen = [u["clientID"] for f in inbox["alice"] if f["type"] == "text.updates" for u in f["updates"]]
-    assert alice_seen == ["ca", "cb"], "accepted updates reach every window in version order"
+    assert _text_client_ids(inbox["alice"]) == ["ca", "cb"], "accepted updates reach every window in version order"
     assert json.loads(web_apps.state_path(app_file).read_text())["texts"] == {"notes": "hello world"}
 
 
@@ -119,7 +129,7 @@ def test_the_text_an_app_starts_with_is_seeded_once(app_file):
         conns, inbox = await _people(hub, "alice", "bob")
         for name in ("alice", "bob"):
             await hub.handle(conns[name], {"type": "text.seed", "handle": "h", "key": "notes", "text": "Agenda\n- "})
-        await asyncio.sleep(0.1)
+        await async_wait_until(lambda: _frames(inbox["bob"], "text.updates"), what="the seeded text reaching bob")
         doc = hub.apps["default:s1|" + str(app_file)].texts["notes"]
         for conn in conns.values():
             await hub.disconnect(conn)
@@ -127,7 +137,7 @@ def test_the_text_an_app_starts_with_is_seeded_once(app_file):
 
     (text, version), inbox = asyncio.run(scenario())
     assert (text, version) == ("Agenda\n- ", 1)
-    assert [f["version"] for f in inbox["bob"] if f["type"] == "text.updates"] == [0]
+    assert [f["version"] for f in _frames(inbox["bob"], "text.updates")] == [0]
 
 
 def test_a_state_file_saved_with_a_byte_order_mark_still_loads(app_file):
@@ -138,12 +148,18 @@ def test_a_state_file_saved_with_a_byte_order_mark_still_loads(app_file):
     assert (values, texts) == ({"votes": 3}, {"notes": "hi"})
 
 
+CLOSED = {"type": "closed", "handle": "h", "reason": "access"}
+
+
 def test_a_person_removed_from_the_chat_is_sent_out_of_its_apps(app_file):
     async def scenario():
         hub = web_apps.AppsHub()
         conns, inbox = await _people(hub, "alice", "bob")
         hub.access_changed("nous:bob", "default:s1", removed=True)
-        await asyncio.sleep(0.05)
+        # Leaving runs as a task; the others hear "gone" once it has.
+        await async_wait_until(
+            lambda: CLOSED in inbox["bob"] and any(f.get("gone") for f in _frames(inbox["alice"], "peer")),
+            what="bob sent out and alice told")
         refused = await hub.handle(conns["bob"], {"type": "set", "handle": "h", "key": "count", "value": 1})
         app = hub.apps["default:s1|" + str(app_file)]
         left = {m.conn.principal for m in app.members.values()}
@@ -152,10 +168,14 @@ def test_a_person_removed_from_the_chat_is_sent_out_of_its_apps(app_file):
         return refused, left, inbox
 
     refused, left, inbox = asyncio.run(scenario())
-    assert {"type": "closed", "handle": "h", "reason": "access"} in inbox["bob"]
+    assert CLOSED in inbox["bob"]
     assert left == {"nous:alice"}
     assert refused is not None, "a removed window can no longer write"
-    assert any(f["type"] == "peer" and f.get("gone") for f in inbox["alice"]), "the others hear they left"
+    assert any(f.get("gone") for f in _frames(inbox["alice"], "peer")), "the others hear they left"
+
+
+def _by_agent(box):
+    return [frame for frame in box if (frame.get("by") or {}).get("name") == "Hermes"]
 
 
 def test_an_edit_the_agent_writes_to_the_state_file_reaches_open_windows(app_file):
@@ -164,15 +184,18 @@ def test_an_edit_the_agent_writes_to_the_state_file_reaches_open_windows(app_fil
         conns, inbox = await _people(hub, "bob")
         await hub.handle(conns["bob"], {"type": "text.push", "handle": "h", "key": "notes", "version": 0,
                                         "updates": [{"clientID": "cb", "changes": [[0, "draft"]]}]})
-        await asyncio.sleep(0.1)
+        app = hub.apps["default:s1|" + str(app_file)]
+        # The window's own save must land first, or the watcher would take the agent's file for it.
+        await async_wait_until(lambda: app.save_task is not None and app.save_task.done() and not app.dirty,
+                               what="the draft saved")
         web_apps.state_path(app_file).write_text(
             json.dumps({"values": {"status": "reviewed"}, "texts": {"notes": "draft, checked by Hermes"}}))
-        await asyncio.sleep(0.3)
+        by_agent = await async_wait_until(lambda: len(_by_agent(inbox["bob"])) >= 2 and _by_agent(inbox["bob"]),
+                                          what="the agent's edit reaching bob")
         await hub.disconnect(conns["bob"])
-        return inbox["bob"]
+        return by_agent
 
-    frames = asyncio.run(scenario())
-    by_agent = [f for f in frames if (f.get("by") or {}).get("name") == "Hermes"]
+    by_agent = asyncio.run(scenario())
     assert [f["type"] for f in by_agent] == ["set", "text.updates"]
     assert by_agent[0]["value"] == "reviewed"
     assert web_apps.apply_change_set("draft", by_agent[1]["updates"][0]["changes"]) == "draft, checked by Hermes"

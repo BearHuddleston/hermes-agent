@@ -15,6 +15,7 @@ import pytest
 
 from hermes_cli import web_presence
 from hermes_cli.web_presence import PresenceHub, principal_key
+from tests.waiting import async_wait_until
 
 
 class _Clock:
@@ -230,13 +231,15 @@ def test_the_sender_loop_flushes_coalesced_frames_to_the_socket():
         task = asyncio.create_task(hub.run_sender(alice))
         hub.handle(alice, {"type": "join", "room": "default:s1"})
         hub.handle(bob, {"type": "typing", "typing": True})
-        await asyncio.sleep(web_presence.FLUSH_INTERVAL_S * 4)
+        await async_wait_until(lambda: True in _typing_states(sent), what="bob's typing flushed to alice's socket")
         task.cancel()
         return sent
 
     frames = asyncio.run(scenario())
     kinds = [f["type"] for f in frames]
     assert kinds[0] == "self" and "room" in kinds
-    typing_states = [u["typing"] for f in frames if f["type"] in {"room", "peers"}
-                     for u in (f.get("peers") or f.get("updates"))]
-    assert typing_states[-1] is True
+    assert _typing_states(frames)[-1] is True
+
+
+def _typing_states(frames: list[dict]) -> list:
+    return [u["typing"] for f in frames if f["type"] in {"room", "peers"} for u in (f.get("peers") or f.get("updates"))]
