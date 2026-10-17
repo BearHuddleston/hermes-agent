@@ -64,59 +64,67 @@ function textUpdates(raw: unknown): null | TextUpdate[] {
   return updates
 }
 
+type FrameMessage = Record<string, unknown>
+type OpParser = (message: FrameMessage, key: null | string) => AppOp | null
+
+/** Parsers for the operations that address one shared value or text by `key`. */
+const keyed =
+  (parse: (message: FrameMessage, key: string) => AppOp | null): OpParser =>
+  (message, key) =>
+    key ? parse(message, key) : null
+
+function cursorOp(raw: unknown): AppOp | null {
+  if (raw === null) {
+    return { cursor: null, op: 'cursor' }
+  }
+
+  const cursor = raw as Record<string, unknown> | undefined
+
+  return cursor && isUnit(cursor.x) && isUnit(cursor.y)
+    ? { cursor: { x: Math.min(1, Math.max(0, cursor.x)), y: Math.min(1, Math.max(0, cursor.y)) }, op: 'cursor' }
+    : null
+}
+
+function textPushOp(message: FrameMessage, key: string): AppOp | null {
+  const updates = textUpdates(message.updates)
+
+  return updates && isVersion(message.version) ? { key, op: 'text.push', updates, version: message.version } : null
+}
+
+const OP_PARSERS: Readonly<Record<string, OpParser>> = {
+  cursor: message => cursorOp(message.cursor),
+  hello: () => ({ op: 'hello' }),
+  set: keyed((message, key) => ('value' in message ? { key, op: 'set', value: message.value } : null)),
+  'text.pull': keyed((message, key) =>
+    isVersion(message.version) ? { key, op: 'text.pull', version: message.version } : null
+  ),
+  'text.push': keyed(textPushOp),
+  'text.seed': keyed((message, key) =>
+    typeof message.text === 'string' && message.text.length <= MAX_SEED_LENGTH
+      ? { key, op: 'text.seed', text: message.text }
+      : null
+  )
+}
+
 /** A frame→parent message as an operation, or null unless it is ours, carries
  *  this mount's token and is well formed. Anything inside the frame can post,
- *  so nothing is relayed unchecked. */
+ *  so nothing is relayed unchecked (an `op` naming an Object prototype member
+ *  included). */
 export function appOpFromMessage(data: unknown, token: string): AppOp | null {
   if (typeof data !== 'object' || data === null) {
     return null
   }
 
-  const message = data as Record<string, unknown>
+  const message = data as FrameMessage
 
   if (message.type !== APP_MESSAGE_TYPE || message.token !== token || typeof message.op !== 'string') {
     return null
   }
 
+  const parse = Object.hasOwn(OP_PARSERS, message.op) ? OP_PARSERS[message.op] : null
   const key = typeof message.key === 'string' && APP_KEY_RE.test(message.key) ? message.key : null
 
-  switch (message.op) {
-    case 'hello':
-      return { op: 'hello' }
-
-    case 'set':
-      return key && 'value' in message ? { key, op: 'set', value: message.value } : null
-
-    case 'text.pull':
-      return key && isVersion(message.version) ? { key, op: 'text.pull', version: message.version } : null
-
-    case 'text.seed':
-      return key && typeof message.text === 'string' && message.text.length <= MAX_SEED_LENGTH
-        ? { key, op: 'text.seed', text: message.text }
-        : null
-    case 'text.push': {
-      const updates = textUpdates(message.updates)
-
-      return key && updates && isVersion(message.version)
-        ? { key, op: 'text.push', updates, version: message.version }
-        : null
-    }
-
-    case 'cursor': {
-      const cursor = message.cursor as null | Record<string, unknown>
-
-      if (cursor === null) {
-        return { cursor: null, op: 'cursor' }
-      }
-
-      return cursor && isUnit(cursor.x) && isUnit(cursor.y)
-        ? { cursor: { x: Math.min(1, Math.max(0, cursor.x)), y: Math.min(1, Math.max(0, cursor.y)) }, op: 'cursor' }
-        : null
-    }
-
-    default:
-      return null
-  }
+  return parse ? parse(message, key) : null
 }
 
 /** The `/api/apps` frame for an operation from the app mounted as `handle`. */

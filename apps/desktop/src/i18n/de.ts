@@ -5,6 +5,7 @@ import { deBoot } from './de_boot'
 import { deClarify } from './de_clarify'
 import { deConnectorAccounts } from './de_connector_accounts'
 import { deConnectorCard } from './de_connector_card'
+import { deErrors } from './de_errors'
 import { deFirstRun } from './de_first_run'
 import { deGatewayHost } from './de_gateway_host'
 import { deLocalModels } from './de_local_models'
@@ -13,6 +14,7 @@ import { deNotices } from './de_notices'
 import { deOnboarding } from './de_onboarding'
 import { dePreviewWeb } from './de_preview_web'
 import { deProjects } from './de_projects'
+import { deSharedChats } from './de_shared_chats'
 import { deSharedMetrics } from './de_shared_metrics'
 import { deThemePicker } from './de_theme_picker'
 import { deUpdateChannel } from './de_update_channel'
@@ -5607,62 +5609,8 @@ export const deOverrides = {
       }
     }
   },
-  errors: {
-    genericFailure: 'Etwas ist schiefgelaufen',
-    boundaryTitle: 'Etwas ist in der Oberfläche kaputtgegangen',
-    boundaryDesc:
-      'In dieser Ansicht ist ein unerwarteter Fehler aufgetreten. Ihre Chats und Einstellungen sind sicher.',
-    boundaryDetails: 'Details',
-    sendDiagnostics: 'Diagnosedaten senden',
-    reloadWindow: 'Fenster neu laden',
-    openLogs: 'Logs öffnen'
-  },
-  presence: {
-    you: 'du',
-    typingOne: name => `${name} schreibt`,
-    typingTwo: (first, second) => `${first} und ${second} schreiben`,
-    typingMany: count => `${count} Personen schreiben`,
-    windows: count => `${count} Fenster`,
-    renameTitle: 'Dein Name in diesem Chat',
-    renamePlaceholder: 'Name, den andere sehen',
-    renameHint:
-      'Erscheint neben deinem Zeiger und an deinem Avatar. Wer du bist, bestimmt deine Anmeldung; dies ist nur die Beschriftung.',
-    renameSave: 'Speichern',
-    turnRunning: name => `${name} ist dran · deine Nachrichten warten`,
-    waitingFor: name => `Warte auf die Antwort von ${name}`,
-    chatCreator: 'die Person, die den Chat erstellt hat',
-    viewingHere: name => `${name} liest hier`
-  },
-  sharing: {
-    share: 'Teilen',
-    title: 'Diesen Chat teilen',
-    description:
-      'Hinzugefügte Personen sehen diesen Chat und seine Apps live. Lesende schauen zu; Teilnehmende können auch Nachrichten senden.',
-    claimTitle: 'Mach diesen Agenten zuerst zu deinem',
-    claimBody:
-      'Wen dein Portal anmelden lässt, sieht derzeit jeden Chat hier. Beanspruche den Agenten, dann sehen alle anderen nur die Chats, die du mit ihnen teilst.',
-    claim: 'Agenten beanspruchen',
-    claimFailed: 'Agent konnte nicht beansprucht werden',
-    yourId: 'Deine Konto-ID',
-    yourIdHint: 'Schick sie der Person, der ein Chat gehört, damit sie dich hinzufügen kann.',
-    copy: 'Kopieren',
-    copied: 'Kopiert',
-    addPerson: 'Person hinzufügen',
-    addPlaceholder: 'Konto-ID, z. B. nous:usr_1a2b',
-    add: 'Hinzufügen',
-    signedInRecently: 'Bei diesem Agenten angemeldet',
-    nobodyYet: 'Noch hat sich niemand sonst angemeldet. Sobald jemand das tut, erscheint die Person hier.',
-    sharedWith: 'Geteilt mit',
-    notShared: 'Nur du siehst diesen Chat.',
-    roleViewer: 'Lesend',
-    roleParticipant: 'Teilnehmend',
-    roleOwner: 'Besitzer',
-    remove: 'Entfernen',
-    changeFailed: 'Freigabe dieses Chats konnte nicht geändert werden',
-    viewerComposer: 'Nur Ansicht. Frag nach Teilnahme.',
-    viewerNote: 'Nur ansehen',
-    accessRemoved: 'Nicht mehr mit dir geteilt.'
-  },
+  errors: deErrors.errors,
+  ...deSharedChats,
   ui: {
     search: {
       clear: 'Suche löschen'

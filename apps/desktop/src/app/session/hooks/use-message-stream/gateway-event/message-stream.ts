@@ -17,7 +17,7 @@ import { clearAllPrompts } from '@/store/prompts'
 import { providerWaitText, setSessionProviderWait } from '@/store/provider-wait'
 import { setCurrentUsage, setTurnStartedAt } from '@/store/session'
 import { refreshSupportedSessionControlAfterTurn } from '@/store/session-control'
-import { noteSharedTurn } from '@/store/shared-turns'
+import { noteTurnStart } from '@/store/shared-turns'
 import { pruneFinishedSessionSubagents } from '@/store/subagents'
 import { clearActiveSessionTodos } from '@/store/todos'
 
@@ -173,10 +173,7 @@ export function handleMessageStreamEvent(ctx: GatewayEventContext): boolean {
 
     // Shared chats: who holds this turn, and the prompt it answers when another
     // window sent it, placed before the reply instead of after a refresh.
-    if (payload && 'owner' in payload) {
-      noteSharedTurn(sessionId, { owner: payload.owner ?? null })
-    }
-
+    noteTurnStart(sessionId, payload)
     const peerPrompt = payload?.user
 
     updateSessionState(sessionId, state => {

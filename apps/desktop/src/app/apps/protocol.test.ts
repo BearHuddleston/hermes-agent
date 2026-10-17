@@ -13,6 +13,8 @@ describe('appOpFromMessage', () => {
     expect(appOpFromMessage({ ...msg({ key: 'votes', op: 'set', value: 3 }), type: 'nope' }, 'tok')).toBeNull()
     expect(appOpFromMessage(msg({ key: '../etc', op: 'set', value: 1 }), 'tok')).toBeNull()
     expect(appOpFromMessage(msg({ key: 'votes', op: 'open', session_id: 'someone-elses-chat' }), 'tok')).toBeNull()
+    expect(appOpFromMessage(msg({ key: 'votes', op: 'constructor' }), 'tok')).toBeNull()
+    expect(appOpFromMessage(msg({ key: 'votes', op: '__proto__' }), 'tok')).toBeNull()
     expect(appOpFromMessage(msg({ key: 'n', op: 'text.push', updates: [], version: 0 }), 'tok')).toBeNull()
     expect(appOpFromMessage(msg({ key: 'n', op: 'text.push', updates: [{ changes: [[0, 'x']], clientID: 'a b' }], version: 0 }), 'tok')).toBeNull()
 

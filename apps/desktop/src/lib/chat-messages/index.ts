@@ -1,5 +1,5 @@
 export { sameAttachmentTurn } from './attachment-turn'
-export { messageSender, toChatMessages } from './hydration'
+export { senderFields, toChatMessages } from './hydration'
 export {
   appendAssistantTextPart,
   appendReasoningPart,

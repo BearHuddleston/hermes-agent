@@ -434,7 +434,7 @@ export const UserMessage: FC<{
   const messageId = useAuiState(s => s.message.id)
   const content = useAuiState(s => s.message.content)
   const messageText = messageContentText(content)
-  const threadRunning = useAuiState(s => s.thread.isRunning)
+  const ownTurnRunning = useOwnTurnRunning()
 
   const latestUserId = useAuiState(s => {
     for (let i = s.thread.messages.length - 1; i >= 0; i--) {
@@ -455,11 +455,6 @@ export const UserMessage: FC<{
 
     return messageAttachmentRefs(custom.attachmentRefs)
   })
-
-  // Shared chats: who sent this message (display only) and who holds the running turn.
-  const sender = useAuiState(s => (s.message.metadata?.custom as { sender?: MessageSender } | undefined)?.sender)
-  const selfUser = useStore($presenceSelf)?.user
-  const turnHolder = useTurnHolder(useStore(useSessionView().$runtimeId))
 
   const [pickerOpen, setPickerOpen] = useState(false)
   const { enabled: reactionsEnabled, react, reactions: shownReactions } = useMessageReactions(messageId, 'user')
@@ -508,7 +503,7 @@ export const UserMessage: FC<{
   const hasBody = messageText.trim().length > 0
   const chipOnlyTurn = isChipOnlyTurn(hasBody, attachmentRefs)
   const isLatestUser = messageId === latestUserId
-  const showStop = !readOnly && !turnHolder && isLatestUser && threadRunning && Boolean(onCancel)
+  const showStop = !readOnly && isLatestUser && ownTurnRunning && Boolean(onCancel)
   // Restore (re-run this exact prompt) is available everywhere the Stop button
   // isn't — including mid-stream on older prompts, since the action interrupts
   // the live turn before rewinding.
@@ -565,7 +560,7 @@ export const UserMessage: FC<{
       >
         <ActionBarPrimitive.Root className="relative w-full max-w-full" data-slot="aui_user-bubble-actions">
           <div className="human-message-with-todos-wrapper flex w-full flex-col gap-0">
-            {sender && sender.id !== selfUser && <MessageSenderLabel sender={sender} />}
+            <PeerSenderLabel />
             <ReactionPicker
               onOpenChange={setPickerOpen}
               onSelect={pickEmoji}
@@ -706,6 +701,22 @@ export const UserMessage: FC<{
       </StickyHumanMessageContainer>
     </MessagePrimitive.Root>
   )
+}
+
+/** Is this window's turn running? A shared chat's turn someone else sent is theirs to stop. */
+function useOwnTurnRunning(): boolean {
+  const running = useAuiState(s => s.thread.isRunning)
+  const turnHolder = useTurnHolder(useStore(useSessionView().$runtimeId))
+
+  return running && !turnHolder
+}
+
+/** In a chat several signed-in people share, who sent this message, unless it was this window's person. */
+function PeerSenderLabel() {
+  const sender = useAuiState(s => (s.message.metadata?.custom as { sender?: MessageSender } | undefined)?.sender)
+  const selfUser = useStore($presenceSelf)?.user
+
+  return sender && sender.id !== selfUser ? <MessageSenderLabel sender={sender} /> : null
 }
 
 /**

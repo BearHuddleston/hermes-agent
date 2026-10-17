@@ -2,10 +2,14 @@ import { useStore } from '@nanostores/react'
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 
 import { useI18n } from '@/i18n'
+import { isBrowserHostedDesktop } from '@/lib/platform'
 import { cursorAtPoint, pointForCursor, viewAnchor } from '@/lib/presence-anchor'
-import { presenceJoin, presenceNoteInput, presenceSetCursor } from '@/lib/presence-client'
+import { presenceJoin, presenceNoteInput, presenceRoom, presenceSetCursor } from '@/lib/presence-client'
 import { $presencePeers, PEER_TYPING_TTL_MS, type PresencePeer, presenceUsers } from '@/store/presence'
+import { $activeGatewayProfile } from '@/store/profile'
 import { refreshChatAccess, refreshSharingMe } from '@/store/sharing'
+
+import { useComposerSurfaceId } from '../composer/scope'
 
 import { PresenceAvatars } from './presence-avatars'
 import { ShareButton } from './share-dialog'
@@ -17,6 +21,36 @@ interface PresenceLayerProps {
   profile: null | string
   /** `presenceRoom(profile, lineageRootSessionId)`; null leaves the room. */
   room: null | string
+}
+
+// Several people can only share a window's backend when it is served over the
+// web; an Electron window's backend is its own machine's.
+const PRESENCE_ENABLED = isBrowserHostedDesktop()
+
+/**
+ * The presence layer of a chat surface, when it has one: browser-hosted windows
+ * only, and only the primary surface (`enabled`). `profile` is the surface's
+ * owner profile when it has its own; the active gateway profile otherwise.
+ */
+export function ChatPresence({
+  enabled,
+  profile,
+  sessionKey
+}: {
+  enabled: boolean
+  profile?: null | string
+  sessionKey: null | string | undefined
+}) {
+  const activeProfile = useStore($activeGatewayProfile)
+  const composerOwner = useComposerSurfaceId() ?? ''
+
+  if (!enabled || !PRESENCE_ENABLED) {
+    return null
+  }
+
+  const owner = profile || activeProfile
+
+  return <PresenceLayer composerOwner={composerOwner} profile={owner} room={presenceRoom(owner, sessionKey)} />
 }
 
 /**

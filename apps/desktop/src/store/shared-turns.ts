@@ -1,6 +1,6 @@
 import { atom, computed } from 'nanostores'
 
-import type { MessageSender } from '@/lib/chat-messages'
+import type { GatewayEventPayload, MessageSender } from '@/lib/chat-messages'
 
 import { $presencePeers, $presenceSelf, LOCAL_PRESENCE_USER, type PresencePeer } from './presence'
 
@@ -37,6 +37,26 @@ export function noteSharedTurn(sessionId: string, patch: Partial<SharedTurn>): v
   if (!unchanged) {
     $sharedTurns.set({ ...current, [sessionId]: next })
   }
+}
+
+/** `message.start`: who holds the turn that just started, when the frame names one (shared chats only). */
+export function noteTurnStart(sessionId: string, payload: GatewayEventPayload | undefined): void {
+  if (payload && 'owner' in payload) {
+    noteSharedTurn(sessionId, { owner: payload.owner ?? null })
+  }
+}
+
+/** `session.info`: the running turn's owner, the chat's creator and the policy, when the gateway shares them. */
+export function noteSessionInfoTurn(sessionId: null | string | undefined, payload: GatewayEventPayload | undefined): void {
+  if (!sessionId || !payload || !('turn_control' in payload)) {
+    return
+  }
+
+  noteSharedTurn(sessionId, {
+    chatOwner: payload.chat_owner ?? null,
+    control: payload.turn_control === 'anyone' ? 'anyone' : 'sender',
+    owner: payload.turn_owner ?? null
+  })
 }
 
 /** The signed-in principal of this window; null for the loopback operator, which the gateway never gates. */

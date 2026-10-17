@@ -25,14 +25,12 @@ import { sanitizeComposerInput } from '@/lib/composer-input-sanitize'
 import { DATA_IMAGE_URL_RE } from '@/lib/embedded-images'
 import { triggerHaptic } from '@/lib/haptics'
 import { isMacPlatform } from '@/lib/platform'
-import { presenceRoom } from '@/lib/presence-client'
 import { useStoreSelector, useStoresSelector } from '@/lib/use-session-slice'
 import { cn } from '@/lib/utils'
 import { sessionCompacting } from '@/store/compaction'
 import { draftRetry } from '@/store/composer-draft-retry'
 import { browseBackward, browseForward, deriveUserHistory, isBrowsingHistory } from '@/store/composer-input-history'
 import { POPOUT_WIDTH_REM } from '@/store/composer-popout'
-import { parkQueuedPrompts } from '@/store/composer-queue'
 import { $hudMode } from '@/store/hud'
 import { $showsAdvancedChrome } from '@/store/interface-mode'
 import { $chatOnboardingSolo } from '@/store/onboarding-intro'
@@ -40,14 +38,10 @@ import { sessionBlockingPrompt } from '@/store/prompts'
 import { toggleReview } from '@/store/review'
 import { $gatewayState } from '@/store/session'
 import { $botChatSessionIds, $sessionStates, $sessionTiles, isBotChatSession } from '@/store/session-states'
-import { sessionTurnHolder } from '@/store/shared-turns'
-import { chatLock } from '@/store/sharing'
 import { useForcedTextDirection } from '@/store/text-direction'
 import { $threadScrolledUpBySession } from '@/store/thread-scroll'
 import { $autoSpeakReplies } from '@/store/voice-prefs'
 import { useTheme } from '@/themes'
-
-import { useTurnHolder } from '../presence/turn-holder'
 
 import { AttachmentList } from './attachments'
 import { deriveBusySubmitState } from './busy-submit-state'
@@ -86,8 +80,10 @@ import { useComposerUndo } from './hooks/use-composer-undo'
 import { useComposerUrlDialog } from './hooks/use-composer-url-dialog'
 import { useComposerVoice } from './hooks/use-composer-voice'
 import { useEmojiCompletions } from './hooks/use-emoji-completions'
+import { useHaltRun } from './hooks/use-halt-run'
 import { useComposerMicroActions } from './hooks/use-micro-actions'
 import { useMiddlewareSubmit } from './hooks/use-middleware-submit'
+import { useSharedChatComposer, useSharedChatPlaceholder } from './hooks/use-shared-chat-composer'
 import { useSlashCompletions } from './hooks/use-slash-completions'
 import { useStatusDrawer } from './hooks/use-status-drawer'
 import { useSessionStatusPresence } from './hooks/use-status-presence'
@@ -197,17 +193,8 @@ export function ChatBar({
   // prompt owns its own dismissal (Skip, Reject, dialog close).
   const awaitingInput = useStore(scope.$awaitingInput)
   const blockingPrompt = useStore(useMemo(() => sessionBlockingPrompt(sessionId ?? null), [sessionId]))
-  // A shared chat's turn sent by someone else: queue behind it, never steer or stop it.
-  const turnHolder = useTurnHolder(sessionId)
-
-  // A viewer of a shared chat follows it but cannot send, and neither can someone whose access was just
-  // removed (hermes_cli/web_sharing.py enforces both).
-  const lock = useStore(
-    useMemo(() => chatLock(presenceRoom(profile, queueSessionKey || sessionId)), [profile, queueSessionKey, sessionId])
-  )
-
-  const viewOnly = lock !== null
-  const disabled = disabledProp || viewOnly
+  // Shared chats: a viewer or removed person cannot send; someone else's turn is queued behind, never steered.
+  const { disabled, lock, turnHolder } = useSharedChatComposer(disabledProp, profile, queueSessionKey, sessionId)
   const activeQueueSessionKey = useComposerQueueScopeKey(queueSessionKey, sessionId, freshDraftKey)
   const { collapsed: statusDrawerCollapsed, toggle: toggleStatusDrawer } = useStatusDrawer(activeQueueSessionKey)
   const statusDrawerId = useId()
@@ -406,23 +393,8 @@ export function ChatBar({
 
   const statusStackVisible = queuedPrompts.length > 0 || statusPresent
 
-  // Halt vs. reach-the-queue: every interrupt lands on onCancel, but only the
-  // gestures that MEAN "stop working" (Stop button, Esc) go through this
-  // wrapper, which parks the queue first — an explicit halt must not roll
-  // straight into the next queued prompt (that read as Stop not working; the
-  // queued text also seemed to vanish, since the collapsed panel row was its
-  // only trace). Interrupts that exist to advance the queue (send-now-while-
-  // busy) call the raw onCancel and keep draining on settle. Parked entries
-  // stay in the panel until resumed, sent, edited, or deleted.
-  const haltRun = useCallback(() => {
-    if (sessionTurnHolder(sessionId)) {
-      return
-    }
-
-    parkQueuedPrompts(activeQueueSessionKeyRef.current)
-
-    return onCancel()
-  }, [activeQueueSessionKeyRef, onCancel, sessionId])
+  // Stop / Esc: park the queue, then interrupt (see useHaltRun).
+  const haltRun = useHaltRun(activeQueueSessionKeyRef, onCancel, sessionId)
 
   const { compactPill, foldVoice, minimal, stacked, singleColumn } = useComposerMetrics({
     composerDockRef,
@@ -484,14 +456,7 @@ export function ChatBar({
   // Resting / reconnecting / starting placeholder text, re-rolled only on a real
   // conversation change.
   const restingPlaceholder = useComposerPlaceholder({ disabled, reconnecting, sessionId })
-
-  const placeholder = lock
-    ? lock === 'removed'
-      ? t.sharing.accessRemoved
-      : t.sharing.viewerComposer
-    : turnHolder && busy
-      ? t.presence.turnRunning(turnHolder.name || t.presence.chatCreator)
-      : restingPlaceholder
+  const placeholder = useSharedChatPlaceholder(restingPlaceholder, lock, turnHolder, busy)
 
   // Trigger / completion engine: @// detection, the adapter-driven item list,
   // popover selection, and chip insertion. The keydown nav block below consumes

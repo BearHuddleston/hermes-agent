@@ -30,7 +30,7 @@ import {
   setWorkspaceCwdOwner,
   setYoloActive
 } from '@/store/session'
-import { noteSharedTurn } from '@/store/shared-turns'
+import { noteSessionInfoTurn } from '@/store/shared-turns'
 import { reportInstallMethodWarning } from '@/store/updates'
 
 import {
@@ -175,13 +175,7 @@ export function handleSessionInfoEvent(ctx: GatewayEventContext): boolean {
     reconcileSessionInfoPendingSubmissions(ctx)
 
     // Shared chats: who may answer / stop the running turn (tui_gateway/shared_turns.py).
-    if (sessionId && payload && 'turn_control' in payload) {
-      noteSharedTurn(sessionId, {
-        chatOwner: payload.chat_owner ?? null,
-        control: payload.turn_control === 'anyone' ? 'anyone' : 'sender',
-        owner: payload.turn_owner ?? null
-      })
-    }
+    noteSessionInfoTurn(sessionId, payload)
 
     // Apply session-scoped fields when the event targets the active
     // session, OR when it's a global broadcast and we have no session.

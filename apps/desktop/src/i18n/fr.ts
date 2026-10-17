@@ -6,6 +6,7 @@ import { frBoot } from './fr_boot'
 import { frClarify } from './fr_clarify'
 import { frConnectorAccounts } from './fr_connector_accounts'
 import { frConnectorCard } from './fr_connector_card'
+import { frErrors } from './fr_errors'
 import { frFirstRun } from './fr_first_run'
 import { frGatewayHost } from './fr_gateway_host'
 import { frLocalModels } from './fr_local_models'
@@ -14,6 +15,7 @@ import { frNotices } from './fr_notices'
 import { frOnboarding } from './fr_onboarding'
 import { frPreviewWeb } from './fr_preview_web'
 import { frProjects } from './fr_projects'
+import { frSharedChats } from './fr_shared_chats'
 import { frSharedMetrics } from './fr_shared_metrics'
 import { frThemePicker } from './fr_theme_picker'
 import { frUpdateChannel } from './fr_update_channel'
@@ -5615,61 +5617,8 @@ export const frOverrides = {
       }
     }
   },
-  errors: {
-    genericFailure: "Une erreur s'est produite",
-    boundaryTitle: "Un problème est survenu dans l'interface",
-    boundaryDesc: 'La vue a rencontré une erreur inattendue. Vos conversations et vos paramètres sont en sécurité.',
-    boundaryDetails: 'Détails',
-    sendDiagnostics: 'Envoyer les diagnostics',
-    reloadWindow: 'Recharger la fenêtre',
-    openLogs: 'Ouvrir les journaux'
-  },
-  presence: {
-    you: 'vous',
-    typingOne: name => `${name} écrit`,
-    typingTwo: (first, second) => `${first} et ${second} écrivent`,
-    typingMany: count => `${count} personnes écrivent`,
-    windows: count => `${count} fenêtres`,
-    renameTitle: 'Votre nom dans cette discussion',
-    renamePlaceholder: 'Nom visible par les autres',
-    renameHint:
-      'Affiché à côté de votre pointeur et sur votre avatar. Votre connexion détermine qui vous êtes ; ceci n’est qu’une étiquette.',
-    renameSave: 'Enregistrer',
-    turnRunning: name => `Tour de ${name} · vos messages attendent`,
-    waitingFor: name => `En attente de la réponse de ${name}`,
-    chatCreator: 'la personne qui a créé la discussion',
-    viewingHere: name => `${name} lit ici`
-  },
-  sharing: {
-    share: 'Partager',
-    title: 'Partager cette discussion',
-    description:
-      'Les personnes ajoutées voient cette discussion et ses apps en direct. Les lecteurs suivent ; les participants peuvent aussi envoyer des messages.',
-    claimTitle: 'Faites d’abord de cet agent le vôtre',
-    claimBody:
-      'Toute personne que votre Portal laisse se connecter voit actuellement chaque discussion. Revendiquez l’agent : les autres ne verront plus que les discussions que vous partagez avec eux.',
-    claim: 'Revendiquer cet agent',
-    claimFailed: 'Impossible de revendiquer cet agent',
-    yourId: 'Votre identifiant de compte',
-    yourIdHint: 'Envoyez-le à la personne propriétaire d’une discussion pour qu’elle vous ajoute.',
-    copy: 'Copier',
-    copied: 'Copié',
-    addPerson: 'Ajouter une personne',
-    addPlaceholder: 'Identifiant de compte, p. ex. nous:usr_1a2b',
-    add: 'Ajouter',
-    signedInRecently: 'Connectés à cet agent',
-    nobodyYet: 'Personne d’autre ne s’est encore connecté. Dès que quelqu’un le fera, il apparaîtra ici.',
-    sharedWith: 'Partagée avec',
-    notShared: 'Vous seul voyez cette discussion.',
-    roleViewer: 'Lecteur',
-    roleParticipant: 'Participant',
-    roleOwner: 'Propriétaire',
-    remove: 'Retirer',
-    changeFailed: 'Impossible de modifier le partage de cette discussion',
-    viewerComposer: 'Lecture seule. Demandez l’accès.',
-    viewerNote: 'Lecture seule',
-    accessRemoved: 'N’est plus partagée avec vous.'
-  },
+  errors: frErrors.errors,
+  ...frSharedChats,
   ui: {
     search: {
       clear: 'Effacer la recherche'
