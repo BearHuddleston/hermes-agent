@@ -31,7 +31,6 @@ import { sessionCompacting } from '@/store/compaction'
 import { draftRetry } from '@/store/composer-draft-retry'
 import { browseBackward, browseForward, deriveUserHistory, isBrowsingHistory } from '@/store/composer-input-history'
 import { POPOUT_WIDTH_REM } from '@/store/composer-popout'
-import { parkQueuedPrompts } from '@/store/composer-queue'
 import { $hudMode } from '@/store/hud'
 import { $showsAdvancedChrome } from '@/store/interface-mode'
 import { $chatOnboardingSolo } from '@/store/onboarding-intro'
@@ -81,8 +80,10 @@ import { useComposerUndo } from './hooks/use-composer-undo'
 import { useComposerUrlDialog } from './hooks/use-composer-url-dialog'
 import { useComposerVoice } from './hooks/use-composer-voice'
 import { useEmojiCompletions } from './hooks/use-emoji-completions'
+import { useHaltRun } from './hooks/use-halt-run'
 import { useComposerMicroActions } from './hooks/use-micro-actions'
 import { useMiddlewareSubmit } from './hooks/use-middleware-submit'
+import { useSharedChatComposer, useSharedChatPlaceholder } from './hooks/use-shared-chat-composer'
 import { useSlashCompletions } from './hooks/use-slash-completions'
 import { useStatusDrawer } from './hooks/use-status-drawer'
 import { useSessionStatusPresence } from './hooks/use-status-presence'
@@ -136,7 +137,7 @@ function controlRowGridClass(singleColumn: boolean, stacked: boolean): string {
 export function ChatBar({
   busy,
   cwd,
-  disabled,
+  disabled: disabledProp,
   focusKey,
   freshDraftKey,
   gateway,
@@ -192,6 +193,8 @@ export function ChatBar({
   // prompt owns its own dismissal (Skip, Reject, dialog close).
   const awaitingInput = useStore(scope.$awaitingInput)
   const blockingPrompt = useStore(useMemo(() => sessionBlockingPrompt(sessionId ?? null), [sessionId]))
+  // Shared chats: a viewer or removed person cannot send; someone else's turn is queued behind, never steered.
+  const { disabled, lock, turnHolder } = useSharedChatComposer(disabledProp, profile, queueSessionKey, sessionId)
   const activeQueueSessionKey = useComposerQueueScopeKey(queueSessionKey, sessionId, freshDraftKey)
   const { collapsed: statusDrawerCollapsed, toggle: toggleStatusDrawer } = useStatusDrawer(activeQueueSessionKey)
   const statusDrawerId = useId()
@@ -390,19 +393,8 @@ export function ChatBar({
 
   const statusStackVisible = queuedPrompts.length > 0 || statusPresent
 
-  // Halt vs. reach-the-queue: every interrupt lands on onCancel, but only the
-  // gestures that MEAN "stop working" (Stop button, Esc) go through this
-  // wrapper, which parks the queue first — an explicit halt must not roll
-  // straight into the next queued prompt (that read as Stop not working; the
-  // queued text also seemed to vanish, since the collapsed panel row was its
-  // only trace). Interrupts that exist to advance the queue (send-now-while-
-  // busy) call the raw onCancel and keep draining on settle. Parked entries
-  // stay in the panel until resumed, sent, edited, or deleted.
-  const haltRun = useCallback(() => {
-    parkQueuedPrompts(activeQueueSessionKeyRef.current)
-
-    return onCancel()
-  }, [activeQueueSessionKeyRef, onCancel])
+  // Stop / Esc: park the queue, then interrupt (see useHaltRun).
+  const haltRun = useHaltRun(activeQueueSessionKeyRef, onCancel, sessionId)
 
   const { compactPill, foldVoice, minimal, stacked, singleColumn } = useComposerMetrics({
     composerDockRef,
@@ -423,7 +415,8 @@ export function ChatBar({
     compacting,
     hasComposerPayload,
     hasSteerHandler: !!onSteer,
-    isSteerableText
+    isSteerableText,
+    turnHeldByOther: !!turnHolder
   })
 
   // The submit engine — the orchestration seam where draft + queue meet. Owns
@@ -462,7 +455,8 @@ export function ChatBar({
 
   // Resting / reconnecting / starting placeholder text, re-rolled only on a real
   // conversation change.
-  const placeholder = useComposerPlaceholder({ disabled, reconnecting, sessionId })
+  const restingPlaceholder = useComposerPlaceholder({ disabled, reconnecting, sessionId })
+  const placeholder = useSharedChatPlaceholder(restingPlaceholder, lock, turnHolder, busy)
 
   // Trigger / completion engine: @// detection, the adapter-driven item list,
   // popover selection, and chip insertion. The keydown nav block below consumes

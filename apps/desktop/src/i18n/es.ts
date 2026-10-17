@@ -6,6 +6,7 @@ import { esBoot } from './es_boot'
 import { esClarify } from './es_clarify'
 import { esConnectorAccounts } from './es_connector_accounts'
 import { esConnectorCard } from './es_connector_card'
+import { esErrors } from './es_errors'
 import { esFirstRun } from './es_first_run'
 import { esGatewayHost } from './es_gateway_host'
 import { esLocalModels } from './es_local_models'
@@ -14,6 +15,7 @@ import { esNotices } from './es_notices'
 import { esOnboarding } from './es_onboarding'
 import { esPreviewWeb } from './es_preview_web'
 import { esProjects } from './es_projects'
+import { esSharedChats } from './es_shared_chats'
 import { esSharedMetrics } from './es_shared_metrics'
 import { esThemePicker } from './es_theme_picker'
 import { esUpdateChannel } from './es_update_channel'
@@ -5599,15 +5601,8 @@ export const esOverrides = {
       }
     }
   },
-  errors: {
-    genericFailure: 'Algo salió mal',
-    boundaryTitle: 'Algo se rompió en la interfaz',
-    boundaryDesc: 'La vista encontró un error inesperado. Tus chats y configuración están a salvo.',
-    boundaryDetails: 'Detalles',
-    sendDiagnostics: 'Enviar diagnóstico',
-    reloadWindow: 'Recargar ventana',
-    openLogs: 'Abrir registros'
-  },
+  errors: esErrors.errors,
+  ...esSharedChats,
   ui: {
     search: {
       clear: 'Limpiar búsqueda'

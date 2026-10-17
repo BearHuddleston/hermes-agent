@@ -15,12 +15,14 @@ import type { BootTranslations } from './types_boot'
 import type { CatalogInstallTranslations } from './types_catalog_install'
 import type { ClarifyCopy } from './types_clarify'
 import type { ConnectorAccountsTranslations, ConnectorCardTranslations } from './types_connectors'
+import type { ErrorsTranslations } from './types_errors'
 import type { FirstRunCopy } from './types_first_run'
 import type { GatewayHostTranslations } from './types_gateway_host'
 import type { ModelMenuTranslations } from './types_model_menu'
 import type { NoticeTranslations } from './types_notices'
 import type { OnboardingTranslations } from './types_onboarding'
 import type { SidebarProjectsTranslations } from './types_projects'
+import type { SharedChatTranslations } from './types_shared_chats'
 import type { SharedMetricsTranslations } from './types_shared_metrics'
 import type { ThemePickerCopy } from './types_theme_picker'
 import type { UninstallSectionTranslations } from './types_uninstall_section'
@@ -78,7 +80,7 @@ interface ModeOptionCopy {
   description: string
 }
 
-export interface Translations extends NoticeTranslations {
+export interface Translations extends NoticeTranslations, SharedChatTranslations {
   /** Shared-metrics consent: first-run dialog + Settings › Safety toggles. */
   sharedMetrics: SharedMetricsTranslations
   appTour: AppTourTranslations
@@ -4333,15 +4335,7 @@ export interface Translations extends NoticeTranslations {
     }
   }
 
-  errors: {
-    genericFailure: string
-    boundaryTitle: string
-    boundaryDesc: string
-    boundaryDetails: string
-    sendDiagnostics: string
-    reloadWindow: string
-    openLogs: string
-  }
+  errors: ErrorsTranslations
 
   ui: {
     search: {

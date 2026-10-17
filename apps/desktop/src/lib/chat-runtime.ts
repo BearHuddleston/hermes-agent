@@ -5,7 +5,7 @@ import { SLASH_COMMAND_RE } from '@hermes/shared'
 import type { QuickModelOption } from '@/app/chat/composer/types'
 import type { ClientSessionState } from '@/app/types'
 import { formatRefValue } from '@/components/assistant-ui/directive-text'
-import { type ChatMessage, type ChatMessagePart, chatMessageText, textPart } from '@/lib/chat-messages'
+import { type ChatMessage, type ChatMessagePart, chatMessageText, senderFields, textPart } from '@/lib/chat-messages'
 import { foldPersonalityName } from '@/lib/personalities'
 import type { ComposerAttachment } from '@/store/composer'
 import type { SessionInfo } from '@/types/hermes'
@@ -435,7 +435,8 @@ export function toRuntimeMessage(message: ChatMessage): ThreadMessage {
   // established channel for per-message extras (attachmentRefs below).
   const reactionMeta = {
     ...(message.rowId !== undefined ? { rowId: message.rowId } : {}),
-    ...(message.reactions?.length ? { reactions: message.reactions } : {})
+    ...(message.reactions?.length ? { reactions: message.reactions } : {}),
+    ...senderFields(message.sender)
   }
 
   const timelineMeta =

@@ -125,6 +125,76 @@ complete terminal-screen snapshot: older output may be missing, and full-screen
 programs may need their own redraw command after reconnect. Hermes does not
 inject a redraw keystroke into the running shell or foreground program.
 
+### Sharing a chat with other people
+
+When the Webapp uses an OAuth/OIDC sign-in (Nous or a self-hosted provider),
+several people can have the same chat open at once. Each window shows who else
+is there:
+
+- **Avatars** of the people in the chat, top right. Click your own to change the
+  name others see. The name is only a label: your sign-in decides who you are.
+- **Pointers** with each person's name. A pointer is placed relative to the
+  message or the composer it hovers, so it lands on the same text in windows of
+  different sizes. The name fades when the pointer rests so it does not cover
+  what you are reading. On a tablet or phone there is no pointer to share, so
+  others see a dot beside the message you are reading instead.
+- **"Alice is typing"** above the composer while someone drafts a message.
+- **Who sent each message**, above the messages other people wrote.
+
+None of this reaches the model. Pointers and typing are never stored; the sender
+of a message is saved with it for display and stripped from every copy sent to
+the model.
+
+**Who controls a running turn.** The person who sent a turn owns it: only they
+answer its approval, clarify, sudo, secret and vault prompts, and only they can
+stop or redirect it. Everyone else sees the prompt with "Waiting for Alice to
+answer", and a message they send while the turn runs waits in the queue and
+runs after it, instead of interrupting it. If the sender closes every window,
+the person who created the chat can take over, so a turn never stalls on someone
+who left. Windows that are not signed in (the loopback operator, the private
+launch link) and chats only one person uses behave as before.
+
+To let every signed-in person answer and stop every turn instead:
+
+```yaml
+dashboard:
+  shared_chats:
+    turn_control: anyone   # default: sender
+```
+
+This is a convenience for people who already share a Webapp, not a security
+boundary: every signed-in user can still run commands on the host as the
+account running Hermes (see the warning above). Give Webapp access only to
+people you would give that account to, or choose who sees what (below).
+
+**Choosing who sees which chat.** Until the agent has an owner, everyone who
+can sign in sees every chat. To restrict that:
+
+1. Sign in yourself, open a chat and choose **Share → Claim this agent**
+   before anyone else signs in. This records your account ID under
+   `dashboard.shared_chats.owners` in `config.yaml`; you can also write it there
+   yourself. Owners see every chat and use the whole app, as before.
+2. Give the other person access to sign in to this agent (for a Nous-hosted
+   agent, through the Nous Portal). When they sign in, they see no chats and
+   cannot start one, open settings, files or terminals.
+3. Open the chat, choose **Share**, and pick them from **Signed in recently**,
+   or paste the account ID shown in their own Share dialog. They join as a
+   **viewer**: they follow the chat live and their composer is locked.
+4. Change them to **participant** to let them send messages and answer the
+   prompts of their own turns. What a participant asks the agent to do runs
+   with the agent's tools and credentials, so promote only people you trust
+   with them. **Remove** takes effect immediately in their open windows.
+
+```yaml
+dashboard:
+  shared_chats:
+    owners: ["nous:usr_1a2b3c"]   # empty (default): everyone signed in sees everything
+```
+
+Access lists live in `shared_chats.json` beside `config.yaml` and follow a chat
+through compression. The loopback operator and the private launch link are
+never restricted.
+
 Useful build/lifecycle flags:
 
 - `--skip-build` reuses `apps/desktop/dist-webapp`.

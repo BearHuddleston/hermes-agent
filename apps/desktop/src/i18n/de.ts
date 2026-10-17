@@ -5,6 +5,7 @@ import { deBoot } from './de_boot'
 import { deClarify } from './de_clarify'
 import { deConnectorAccounts } from './de_connector_accounts'
 import { deConnectorCard } from './de_connector_card'
+import { deErrors } from './de_errors'
 import { deFirstRun } from './de_first_run'
 import { deGatewayHost } from './de_gateway_host'
 import { deLocalModels } from './de_local_models'
@@ -13,6 +14,7 @@ import { deNotices } from './de_notices'
 import { deOnboarding } from './de_onboarding'
 import { dePreviewWeb } from './de_preview_web'
 import { deProjects } from './de_projects'
+import { deSharedChats } from './de_shared_chats'
 import { deSharedMetrics } from './de_shared_metrics'
 import { deThemePicker } from './de_theme_picker'
 import { deUpdateChannel } from './de_update_channel'
@@ -5607,16 +5609,8 @@ export const deOverrides = {
       }
     }
   },
-  errors: {
-    genericFailure: 'Etwas ist schiefgelaufen',
-    boundaryTitle: 'Etwas ist in der Oberfläche kaputtgegangen',
-    boundaryDesc:
-      'In dieser Ansicht ist ein unerwarteter Fehler aufgetreten. Ihre Chats und Einstellungen sind sicher.',
-    boundaryDetails: 'Details',
-    sendDiagnostics: 'Diagnosedaten senden',
-    reloadWindow: 'Fenster neu laden',
-    openLogs: 'Logs öffnen'
-  },
+  errors: deErrors.errors,
+  ...deSharedChats,
   ui: {
     search: {
       clear: 'Suche löschen'

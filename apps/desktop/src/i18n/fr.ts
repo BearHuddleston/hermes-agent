@@ -6,6 +6,7 @@ import { frBoot } from './fr_boot'
 import { frClarify } from './fr_clarify'
 import { frConnectorAccounts } from './fr_connector_accounts'
 import { frConnectorCard } from './fr_connector_card'
+import { frErrors } from './fr_errors'
 import { frFirstRun } from './fr_first_run'
 import { frGatewayHost } from './fr_gateway_host'
 import { frLocalModels } from './fr_local_models'
@@ -14,6 +15,7 @@ import { frNotices } from './fr_notices'
 import { frOnboarding } from './fr_onboarding'
 import { frPreviewWeb } from './fr_preview_web'
 import { frProjects } from './fr_projects'
+import { frSharedChats } from './fr_shared_chats'
 import { frSharedMetrics } from './fr_shared_metrics'
 import { frThemePicker } from './fr_theme_picker'
 import { frUpdateChannel } from './fr_update_channel'
@@ -5615,15 +5617,8 @@ export const frOverrides = {
       }
     }
   },
-  errors: {
-    genericFailure: "Une erreur s'est produite",
-    boundaryTitle: "Un problème est survenu dans l'interface",
-    boundaryDesc: 'La vue a rencontré une erreur inattendue. Vos conversations et vos paramètres sont en sécurité.',
-    boundaryDetails: 'Détails',
-    sendDiagnostics: 'Envoyer les diagnostics',
-    reloadWindow: 'Recharger la fenêtre',
-    openLogs: 'Ouvrir les journaux'
-  },
+  errors: frErrors.errors,
+  ...frSharedChats,
   ui: {
     search: {
       clear: 'Effacer la recherche'

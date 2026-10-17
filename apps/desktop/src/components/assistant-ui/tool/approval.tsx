@@ -3,8 +3,9 @@
 import { useAuiState } from '@assistant-ui/react'
 import { useStore } from '@nanostores/react'
 import { AnimatePresence, motion, useReducedMotion } from 'motion/react'
-import { createContext, type FC, useCallback, useContext, useMemo, useRef, useState } from 'react'
+import { createContext, type FC, type ReactNode, useCallback, useContext, useMemo, useRef, useState } from 'react'
 
+import { TurnHolderNote, useTurnHolder } from '@/app/chat/presence/turn-holder'
 import { useSessionView } from '@/app/chat/session-view'
 import { SCAFFOLD_LABEL_CLASS, ScaffoldRow } from '@/components/chat/scaffold-row'
 import { Button } from '@/components/ui/button'
@@ -197,6 +198,7 @@ export function ApprovalQueue({
   floating?: boolean
 }) {
   const { t } = useI18n()
+  const holder = useTurnHolder(requests[0]?.sessionId)
 
   return (
     <CardStack
@@ -214,7 +216,7 @@ export function ApprovalQueue({
         'rounded-xl border bg-(--ui-chat-surface-background)',
         floating ? 'border-(--stroke-nous) shadow-nous' : 'border-(--ui-stroke-secondary)'
       )}
-      swipeDirections={['left']}
+      swipeDirections={holder ? [] : ['left']}
     >
       {(request, action) => (
         <ApprovalCard
@@ -233,6 +235,24 @@ interface ApprovalCardProps {
   total: number
   position: number
   stack: CardStackAction
+}
+
+/**
+ * The card's action row. In a shared chat whose turn someone else sent, their
+ * name stands in for the buttons: they answer it, this window watches.
+ */
+function ApprovalActions({ children, sessionId }: { children: ReactNode; sessionId: null | string | undefined }) {
+  const holder = useTurnHolder(sessionId)
+
+  return holder ? (
+    <div className="flex justify-end px-2.5 pb-2 pt-1" data-slot="tool-approval-actions">
+      <TurnHolderNote holder={holder} />
+    </div>
+  ) : (
+    <div className="flex items-center justify-end gap-1.5 px-2 pb-2 pt-1" data-slot="tool-approval-actions">
+      {children}
+    </div>
+  )
 }
 
 const ApprovalCard: FC<ApprovalCardProps> = ({ request, total, position, stack }) => {
@@ -348,7 +368,7 @@ const ApprovalCard: FC<ApprovalCardProps> = ({ request, total, position, stack }
           {details}
         </pre>
       )}
-      <div className="flex items-center justify-end gap-1.5 px-2 pb-2 pt-1" data-slot="tool-approval-actions">
+      <ApprovalActions sessionId={request.sessionId}>
         <Button data-approval-deny="" disabled={busy} onClick={() => void respond('deny')} size="sm" variant="text">
           {submitting === 'deny' ? <Loader2 className="size-3 animate-spin" /> : copy.reject}
         </Button>
@@ -386,7 +406,7 @@ const ApprovalCard: FC<ApprovalCardProps> = ({ request, total, position, stack }
           {submitting === 'once' ? <Loader2 className="size-3 animate-spin" /> : copy.run}
           <span className="opacity-60">↵</span>
         </Button>
-      </div>
+      </ApprovalActions>
 
       <Dialog onOpenChange={setConfirmAlways} open={confirmAlways}>
         <DialogContent className="max-w-md">

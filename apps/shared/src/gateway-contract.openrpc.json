@@ -23439,7 +23439,7 @@
       },
       "MessageStartPayload": {
         "additionalProperties": false,
-        "description": "``message.start``. Empty from the TUI gateway's emitters and for an ordinary admission;\n``gateway/session_authority._stamp_claim`` adds an automation admission's async-result card\n(``session_automation.admission_display``: a background-process completion) and its model\ntext, so a viewer that did not submit the turn paints the same header the submitter would.",
+        "description": "``message.start``. Empty for a single-user ordinary turn. In a shared chat the TUI gateway's\nemitters add ``owner`` (the signed-in person who sent the turn) and ``user`` (the human prompt it\nanswers; omitted for hidden / synthesized input). ``gateway/session_authority._stamp_claim`` adds an\nautomation admission's async-result card (``session_automation.admission_display``: a\nbackground-process completion) and its model text, so a viewer that did not submit the turn paints\nthe same header the submitter would.",
         "properties": {
           "display_kind": {
             "anyOf": [
@@ -23488,6 +23488,28 @@
             ],
             "default": null,
             "title": "Text"
+          },
+          "owner": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SenderCard"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "user": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TurnPromptEcho"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
           }
         },
         "title": "MessageStartPayload",
@@ -33810,6 +33832,31 @@
         "title": "SeedMessage",
         "type": "object"
       },
+      "SenderCard": {
+        "additionalProperties": false,
+        "description": "A signed-in person as shown in a shared chat (``shared_turns._sender_card``). Display only.",
+        "properties": {
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "color": {
+            "title": "Color",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "color"
+        ],
+        "title": "SenderCard",
+        "type": "object"
+      },
       "SessionActivateParams": {
         "additionalProperties": false,
         "properties": {
@@ -35745,6 +35792,40 @@
             "default": null,
             "title": "Turn Started At"
           },
+          "turn_owner": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SenderCard"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "chat_owner": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Chat Owner"
+          },
+          "turn_control": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TurnControl"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
           "title": {
             "default": "",
             "title": "Title",
@@ -36678,6 +36759,40 @@
             ],
             "default": null,
             "title": "Turn Started At"
+          },
+          "turn_owner": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SenderCard"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "chat_owner": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Chat Owner"
+          },
+          "turn_control": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TurnControl"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
           },
           "title": {
             "default": "",
@@ -43882,6 +43997,52 @@
         "title": "TranscriptMessage",
         "type": "object"
       },
+      "TurnControl": {
+        "enum": [
+          "sender",
+          "anyone"
+        ],
+        "title": "TurnControl",
+        "type": "string"
+      },
+      "TurnPromptEcho": {
+        "additionalProperties": false,
+        "description": "The typed prompt a turn answers, so a window that did not send it shows it before the reply.",
+        "properties": {
+          "text": {
+            "title": "Text",
+            "type": "string"
+          },
+          "row_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Row Id"
+          },
+          "sender": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SenderCard"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          }
+        },
+        "required": [
+          "text"
+        ],
+        "title": "TurnPromptEcho",
+        "type": "object"
+      },
       "TurnStatus": {
         "description": "``prompt_turn._result_status``.",
         "enum": [
@@ -47832,7 +47993,7 @@
     },
     {
       "name": "message.start",
-      "summary": "A turn began streaming; an automation turn carries its async-result card.",
+      "summary": "A turn began streaming; carries a shared turn's owner/prompt or an automation turn's async-result card.",
       "params": [
         {
           "name": "payload",

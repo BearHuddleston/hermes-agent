@@ -8,6 +8,7 @@ import { enCatalogInstall } from './en_catalog_install'
 import { enClarify } from './en_clarify'
 import { enConnectorAccounts } from './en_connector_accounts'
 import { enConnectorCard } from './en_connector_card'
+import { enErrors } from './en_errors'
 import { enFirstRun } from './en_first_run'
 import { enGatewayHost } from './en_gateway_host'
 import { enLocalModels } from './en_local_models'
@@ -16,6 +17,7 @@ import { enNotices } from './en_notices'
 import { enOnboarding } from './en_onboarding'
 import { enPreviewWeb } from './en_preview_web'
 import { enProjects } from './en_projects'
+import { enSharedChats } from './en_shared_chats'
 import { enSharedMetrics } from './en_shared_metrics'
 import { enThemePicker } from './en_theme_picker'
 import { enUninstallSection } from './en_uninstall_section'
@@ -5074,15 +5076,9 @@ export const en: Translations = {
     }
   },
 
-  errors: {
-    genericFailure: 'Something went wrong',
-    boundaryTitle: 'Something broke in the interface',
-    boundaryDesc: 'The view hit an unexpected error. Your chats and settings are safe.',
-    boundaryDetails: 'Details',
-    sendDiagnostics: 'Send diagnostics',
-    reloadWindow: 'Reload window',
-    openLogs: 'Open logs'
-  },
+  errors: enErrors.errors,
+
+  ...enSharedChats,
 
   ui: {
     search: {

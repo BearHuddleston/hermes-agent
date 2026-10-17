@@ -53,6 +53,7 @@ import { $focusedStoredSessionId } from '@/store/session-focus'
 import { $sessionStates, sessionTileDelegate } from '@/store/session-states'
 import { $transcriptTailBySessionId, transcriptTailState } from '@/store/transcript-tail'
 import { isAuxiliaryWindow, isMainWindow } from '@/store/windows'
+import type { SessionInfo } from '@/types/hermes'
 
 import { primaryRouteSelectedSessionId, routeSessionId } from '../routes'
 import { titlebarHeaderBaseClass, titlebarHeaderShadowClass, titlebarHeaderTitleClass } from '../shell/titlebar'
@@ -74,6 +75,7 @@ import { useHistoryWindow } from './history-window'
 import { type DroppedFile, partitionDroppedFiles } from './hooks/use-composer-actions'
 import { useFileDropZone } from './hooks/use-file-drop-zone'
 import { shouldShowIntro } from './intro-visibility'
+import { ChatPresence } from './presence/presence-layer'
 import { ProfileTag } from './profile-tag'
 import { ResumeExhaustedOverlay } from './resume-exhausted-overlay'
 import { isRouteSessionMismatch } from './route-session-state'
@@ -479,6 +481,29 @@ export const ChatView = memo(function ChatView(props: ChatViewProps) {
   )
 })
 
+/**
+ * Durable composer/queue scope (lineage root) so auto-compression tip rotation
+ * does not wipe an in-progress draft or orphan /queue entries. For the
+ * primary view, the route is authoritative over the store selection — the
+ * latter can be momentarily null/stale mid-switch, which used to leak into
+ * the composer's scope key (#59305). A tile has no route, so it always uses
+ * its own selection directly.
+ */
+function useDurableQueueSessionKey(
+  isPrimary: boolean,
+  pathname: string,
+  selectedSessionId: null | string,
+  sessions: readonly SessionInfo[]
+): null | string {
+  return useMemo(() => {
+    const effectiveSelectedSessionId = isPrimary
+      ? primaryRouteSelectedSessionId(pathname, selectedSessionId)
+      : selectedSessionId
+
+    return resolveComposerSessionKey(effectiveSelectedSessionId, sessions)
+  }, [isPrimary, pathname, selectedSessionId, sessions])
+}
+
 const ChatViewContent = memo(function ChatViewContent({
   className,
   gateway,
@@ -577,19 +602,7 @@ const ChatViewContent = memo(function ChatViewContent({
   const sessions = useStore($sessions)
   const resumeExhaustedSessionId = useStore($resumeExhaustedSessionId)
 
-  // Durable composer/queue scope (lineage root) so auto-compression tip rotation
-  // does not wipe an in-progress draft or orphan /queue entries. For the
-  // primary view, the route is authoritative over the store selection — the
-  // latter can be momentarily null/stale mid-switch, which used to leak into
-  // the composer's scope key (#59305). A tile has no route, so it always uses
-  // its own selection directly.
-  const queueSessionKey = useMemo(() => {
-    const effectiveSelectedSessionId = isPrimary
-      ? primaryRouteSelectedSessionId(location.pathname, selectedSessionId)
-      : selectedSessionId
-
-    return resolveComposerSessionKey(effectiveSelectedSessionId, sessions)
-  }, [isPrimary, location.pathname, selectedSessionId, sessions])
+  const queueSessionKey = useDurableQueueSessionKey(isPrimary, location.pathname, selectedSessionId, sessions)
 
   // When the tip row arrives after compression, migrate any tip-keyed stash onto
   // the durable lineage key before the composer remounts onto that key.
@@ -769,6 +782,7 @@ const ChatViewContent = memo(function ChatViewContent({
           selectedSessionId={selectedSessionId}
         />
       )}
+      <ChatPresence enabled={isPrimary} profile={modelOptionsProfile} sessionKey={queueSessionKey} />
 
       {/* Mounted for the primary AND every tile, each scoped to its own session
           so a tiled/background session's blocking prompt surfaces instead of

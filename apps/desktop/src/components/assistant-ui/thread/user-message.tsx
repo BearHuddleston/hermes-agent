@@ -2,6 +2,8 @@ import { ActionBarPrimitive, BranchPickerPrimitive, MessagePrimitive, useAuiStat
 import { useStore } from '@nanostores/react'
 import { type FC, type ReactNode, useCallback, useEffect, useRef, useState } from 'react'
 
+import { useTurnHolder } from '@/app/chat/presence/turn-holder'
+import { useSessionView } from '@/app/chat/session-view'
 import { DirectiveContent } from '@/components/assistant-ui/directive-text'
 import { isAttachmentRef } from '@/components/assistant-ui/reference-kinds'
 import {
@@ -22,12 +24,14 @@ import { Codicon } from '@/components/ui/codicon'
 import { Tip } from '@/components/ui/tooltip'
 import { useResizeObserver } from '@/hooks/use-resize-observer'
 import { useI18n } from '@/i18n'
+import type { MessageSender } from '@/lib/chat-messages'
 import { triggerHaptic } from '@/lib/haptics'
 import { StopFilled } from '@/lib/icons'
 import { LruCache } from '@/lib/lru-cache'
 import { $touchPointer } from '@/lib/touch-interaction'
 import { cn } from '@/lib/utils'
 import { $gateway } from '@/store/gateway'
+import { $presencePeers, $presenceSelf } from '@/store/presence'
 import { notifyThreadEditOpen } from '@/store/thread-scroll'
 import { isWatchWindow } from '@/store/windows'
 
@@ -430,7 +434,7 @@ export const UserMessage: FC<{
   const messageId = useAuiState(s => s.message.id)
   const content = useAuiState(s => s.message.content)
   const messageText = messageContentText(content)
-  const threadRunning = useAuiState(s => s.thread.isRunning)
+  const ownTurnRunning = useOwnTurnRunning()
 
   const latestUserId = useAuiState(s => {
     for (let i = s.thread.messages.length - 1; i >= 0; i--) {
@@ -499,7 +503,7 @@ export const UserMessage: FC<{
   const hasBody = messageText.trim().length > 0
   const chipOnlyTurn = isChipOnlyTurn(hasBody, attachmentRefs)
   const isLatestUser = messageId === latestUserId
-  const showStop = !readOnly && isLatestUser && threadRunning && Boolean(onCancel)
+  const showStop = !readOnly && isLatestUser && ownTurnRunning && Boolean(onCancel)
   // Restore (re-run this exact prompt) is available everywhere the Stop button
   // isn't — including mid-stream on older prompts, since the action interrupts
   // the live turn before rewinding.
@@ -556,6 +560,7 @@ export const UserMessage: FC<{
       >
         <ActionBarPrimitive.Root className="relative w-full max-w-full" data-slot="aui_user-bubble-actions">
           <div className="human-message-with-todos-wrapper flex w-full flex-col gap-0">
+            <PeerSenderLabel />
             <ReactionPicker
               onOpenChange={setPickerOpen}
               onSelect={pickEmoji}
@@ -695,5 +700,42 @@ export const UserMessage: FC<{
         </ActionBarPrimitive.Root>
       </StickyHumanMessageContainer>
     </MessagePrimitive.Root>
+  )
+}
+
+/** Is this window's turn running? A shared chat's turn someone else sent is theirs to stop. */
+function useOwnTurnRunning(): boolean {
+  const running = useAuiState(s => s.thread.isRunning)
+  const turnHolder = useTurnHolder(useStore(useSessionView().$runtimeId))
+
+  return running && !turnHolder
+}
+
+/** In a chat several signed-in people share, who sent this message, unless it was this window's person. */
+function PeerSenderLabel() {
+  const sender = useAuiState(s => (s.message.metadata?.custom as { sender?: MessageSender } | undefined)?.sender)
+  const selfUser = useStore($presenceSelf)?.user
+
+  return sender && sender.id !== selfUser ? <MessageSenderLabel sender={sender} /> : null
+}
+
+/**
+ * Who sent a message in a chat several signed-in people share. Display only; the model never sees it.
+ * The card is stamped at send time, so a person still in the room shows under the name they use now.
+ */
+function MessageSenderLabel({ sender }: { sender: MessageSender }) {
+  const live = useStore($presencePeers).find(peer => peer.user === sender.id)
+  const name = live?.name ?? sender.name
+  const color = live?.color ?? sender.color
+
+  return (
+    <span
+      className="mb-0.5 inline-flex max-w-full items-center gap-1.5 self-start px-1 text-[0.6875rem] font-medium text-(--ui-text-secondary)"
+      data-message-sender={sender.id}
+      data-slot="aui_user-sender"
+    >
+      <span aria-hidden className="size-2 shrink-0 rounded-full" style={{ backgroundColor: color }} />
+      <span className="truncate">{name}</span>
+    </span>
   )
 }

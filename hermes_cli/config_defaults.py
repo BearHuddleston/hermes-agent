@@ -4,6 +4,8 @@ Pure-data leaf module — must not import from hermes_cli.config. Comments are t
 docs of config.yaml.
 """
 
+from hermes_cli.config_defaults_aux import _aux
+
 
 #: Image every container terminal backend (docker/modal/daytona/singularity) uses unless the
 #: user pins one. LEGACY_SANDBOX_IMAGES are the plain defaults that preceded the desktop stack
@@ -15,19 +17,6 @@ LEGACY_SANDBOX_IMAGE = LEGACY_SANDBOX_IMAGES[0]
 # Vercel Sandbox managed image (Vercel deprecated its `runtime` presets in Aug 2026).
 DEFAULT_VERCEL_IMAGE = "vercel/sandbox/universal:latest"
 LEGACY_VERCEL_RUNTIME = "node24"  # the seeded pre-49 default, never a user choice
-
-
-def _aux(timeout, *, reasoning_effort=True, **extra):
-    """Standard auxiliary-task model block (see DEFAULT_CONFIG["auxiliary"]).
-
-    reasoning_effort=False omits that key (MoA blocks configure depth per slot);
-    ``extra`` keys are appended after the standard ones.
-    """
-    d = {"provider": "auto", "model": "", "base_url": "", "api_key": "", "timeout": timeout, "extra_body": {}}
-    if reasoning_effort:
-        d["reasoning_effort"] = ""
-    d.update(extra)
-    return d
 
 
 DEFAULT_CONFIG = {
@@ -1061,6 +1050,15 @@ DEFAULT_CONFIG = {
         # the OAuth path. Empty or malformed (no http(s):// + host, or quote/angle/whitespace chars)
         # = reconstruct from headers.
         "public_url": "",
+        # Chats several signed-in people share (Webapp + an OAuth provider). turn_control "sender": the
+        # person who sent a turn (or the chat's creator once they left) answers its approval / sudo /
+        # secret / clarify prompts and alone may stop or redirect it; anyone else's message queues behind
+        # it. "anyone": every attached window may, as SECURITY.md describes. Never applies to the loopback
+        # operator or a single user.
+        # owners: account ids (e.g. "nous:usr_1a2b3c") that see every chat and run the host. Empty =
+        # sharing off: every signed-in person has full access. With owners set, anyone else reaches
+        # only the chats an owner shares with them (hermes_cli/web_sharing.py).
+        "shared_chats": {"turn_control": "sender", "owners": []},
     },
 
     "privacy": {

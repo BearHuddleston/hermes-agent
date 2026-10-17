@@ -707,6 +707,7 @@ class _Resume:
             self.target, cols=self.cols, cwd=cwd, history=history, lease=None, source=source,
             close_on_disconnect=_flag(self.params, "close_on_disconnect"), profile_home=self.profile_home,
             profile_incarnation=self.profile_incarnation, explicit_cwd=bool(self.profile_resume_cwd), **extra)
+        record["auth_user_id"] = _chat_creator(self.found)
         if follows_profile:
             record.update(follow_profile_config=True, composer_override_profile=(
                 model_config.get("composer_override_profile") if overrides and overrides.get("model_override") else None))
@@ -760,14 +761,6 @@ class _Resume:
     def display_prefix(self) -> list:
         """Ancestor display rows (model-fed history drops a dangling tool-call tail — display keeps it)."""
         return [] if self.omit_messages else self.db.get_ancestor_display_prefix(self.target)
-
-
-def _find_live_unpersisted(needle: str, home, profile_incarnation) -> str:
-    """Runtime sid of a live, not-yet-persisted session matched by stored key or pending title."""
-    return next((
-        live_sid for live_sid, record in list(_sessions.items())
-        if isinstance(record, dict) and _session_profile_identity_matches(record, home, profile_incarnation)
-        and (str(record.get("session_key") or "") == needle or (record.get("pending_title") or "") == needle)), "")
 
 
 def _resume_live_unpersisted(ctx: _Resume, live_sid: str, live: dict) -> dict:
@@ -1061,7 +1054,7 @@ def _resume_eager(ctx: _Resume) -> dict:
                 sid, ctx.target, session_db=ctx.db, platform_override=source,
                 cwd_override=ctx.profile_resume_cwd or None,
                 context_cwd_is_launch_artifact=(source in _LAUNCH_CWD_NOT_A_WORKSPACE and not ctx.profile_resume_cwd),
-                auth_user_id=_transport_auth_user_id(current_transport()), **stored_runtime_overrides)
+                auth_user_id=_chat_creator(ctx.found), **stored_runtime_overrides)
         except Exception as e:
             return _err(ctx.rid, 5000, resume_failed_message(e))
     with _session_resume_lock:
@@ -1094,7 +1087,8 @@ def _resume_eager(ctx: _Resume) -> dict:
                 # Each turn re-binds HERMES_HOME (mid-turn memory/skills reads); lease claimed lazily on turn 1.
                 if ctx.profile_home is not None:
                     session["profile_home"] = str(ctx.profile_home)
-                session.update(display_history_prefix=display_history_prefix, active_session_lease=None)
+                session.update(display_history_prefix=display_history_prefix, active_session_lease=None,
+                               auth_user_id=_chat_creator(ctx.found))
         except Exception as e:
             # _init_session registers _sessions[sid] BEFORE its first db read; left in place the fast path
             # would serve that dead session forever.

@@ -1,10 +1,12 @@
 'use client'
 
 import { useStore } from '@nanostores/react'
-import { type FormEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { type ComponentProps, type FormEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
+import { TurnHolderNote, useTurnHolder } from '@/app/chat/presence/turn-holder'
 import { Loader } from '@/components/ui/loader'
 import { useI18n } from '@/i18n'
+import type { MessageSender } from '@/lib/chat-messages'
 import { triggerHaptic } from '@/lib/haptics'
 import { MessageQuestion } from '@/lib/icons'
 import {
@@ -282,7 +284,9 @@ export function ClarifyToolPending({
     questions
   })
 
-  const disabled = submitting || !ready
+  // A shared chat's turn sent by someone else: they answer its question, this window watches.
+  const holder = useTurnHolder(request?.sessionId)
+  const disabled = submitting || !ready || Boolean(holder)
 
   if (questions.length === 0) {
     return (
@@ -332,13 +336,30 @@ export function ClarifyToolPending({
       </ClarifyShell>
 
       {undelivered ? null : (
-        <ClarifyConfirmBar
+        <ClarifyFooter
           canConfirm={canConfirm}
           disabled={disabled}
+          holder={holder}
           onSkip={() => void cancelAll()}
           submitting={submitting}
         />
       )}
     </form>
   )
+}
+
+/** Skip / Confirm, or, in a shared chat whose turn someone else sent, who answers it instead. */
+function ClarifyFooter({
+  holder,
+  ...confirm
+}: ComponentProps<typeof ClarifyConfirmBar> & { holder: MessageSender | null }) {
+  if (holder) {
+    return (
+      <div className="flex justify-end">
+        <TurnHolderNote holder={holder} />
+      </div>
+    )
+  }
+
+  return <ClarifyConfirmBar {...confirm} />
 }

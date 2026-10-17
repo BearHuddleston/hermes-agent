@@ -30,6 +30,7 @@ import {
   setWorkspaceCwdOwner,
   setYoloActive
 } from '@/store/session'
+import { noteSessionInfoTurn } from '@/store/shared-turns'
 import { reportInstallMethodWarning } from '@/store/updates'
 
 import {
@@ -172,6 +173,9 @@ export function handleSessionInfoEvent(ctx: GatewayEventContext): boolean {
     const rebound = maybeRebindPaneToRebuiltRuntime(ctx)
 
     reconcileSessionInfoPendingSubmissions(ctx)
+
+    // Shared chats: who may answer / stop the running turn (tui_gateway/shared_turns.py).
+    noteSessionInfoTurn(sessionId, payload)
 
     // Apply session-scoped fields when the event targets the active
     // session, OR when it's a global broadcast and we have no session.

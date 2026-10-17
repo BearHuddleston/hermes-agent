@@ -61,6 +61,7 @@ import type { SessionCreateResponse, SessionInfo, SessionRuntimeInfo } from '@/t
 
 import type { ClientSessionState } from '../../../types'
 
+import { chatAnnotationsEquivalent } from './message-annotations'
 import {
   acknowledgedTranscriptBoundary,
   conflictingTranscriptIdentity,
@@ -247,6 +248,9 @@ const COMPARED_FIELDS = [
   'interim',
   'interrupted',
   'reactions',
+  // Shared chats: the sender label above a user bubble is visible, so a row that
+  // gains or changes its sender (hydration after a peer's echo) must repaint.
+  'sender',
   'timestamp',
   'completedAt',
   // Turn wall-clock duration — stamps the visible "⏱ 38s" badge, so a change
@@ -338,20 +342,6 @@ export function chatPartsEquivalent(aPart: ChatMessage['parts'][number], bPart: 
   return aKeys.every(k => aPrimitive[k] === bPrimitive[k])
 }
 
-export function chatReactionsEquivalent(a: ChatMessage['reactions'], b: ChatMessage['reactions']): boolean {
-  const aList = a ?? []
-  const bList = b ?? []
-
-  if (aList === bList) {
-    return true
-  }
-
-  return (
-    aList.length === bList.length &&
-    aList.every((reaction, index) => reaction.emoji === bList[index].emoji && reaction.author === bList[index].author)
-  )
-}
-
 // Structural compare — the descriptor arrives as a fresh object per
 // resume/replay, so identity comparison would repaint forever.
 function errorSurfacesEquivalent(a: ChatMessage['errorSurface'], b: ChatMessage['errorSurface']): boolean {
@@ -382,7 +372,7 @@ export function chatMessagesEquivalent(a: ChatMessage, b: ChatMessage): boolean 
     // Interim gates the action footer, so flipping it must repaint (e.g. a
     // previewed final settling onto a sealed interim bubble restores the bar).
     (a.interim ?? false) !== (b.interim ?? false) ||
-    !chatReactionsEquivalent(a.reactions, b.reactions)
+    !chatAnnotationsEquivalent(a, b)
   ) {
     return false
   }
