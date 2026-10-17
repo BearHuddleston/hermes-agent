@@ -54,6 +54,14 @@ def _turn_owner(session: dict) -> str | None:
     return owner if isinstance(owner, str) and owner else None
 
 
+def _chat_creator(found: dict | None) -> str | None:
+    """Who created a stored chat (its row's ``user_id``); the resuming login only for a chat without one.
+    Someone reopening another person's chat must not become its creator: the creator answers a turn whose
+    sender left (``_may_act_on_turn``) and owns the chat (hermes_cli/web_sharing.py)."""
+    stored = (found or {}).get("user_id")
+    return stored if isinstance(stored, str) and stored else _transport_auth_user_id(current_transport())
+
+
 def _attached_principals(session: dict) -> set[str]:
     return {p for t in _session_live_transports(session) if (p := _transport_auth_user_id(t))}
 

@@ -681,6 +681,14 @@ def _find_live_session_by_key(
     return None
 
 
+def _find_live_unpersisted(needle: str, home, profile_incarnation) -> str:
+    """Runtime sid of a live, not-yet-persisted session matched by stored key or pending title."""
+    return next((
+        live_sid for live_sid, record in list(_sessions.items())
+        if isinstance(record, dict) and _session_profile_identity_matches(record, home, profile_incarnation)
+        and (str(record.get("session_key") or "") == needle or (record.get("pending_title") or "") == needle)), "")
+
+
 def _fallback_session_info(session: dict) -> dict:
     agent = session.get("agent")
     if agent is not None:

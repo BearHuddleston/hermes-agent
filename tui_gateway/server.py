@@ -783,7 +783,7 @@ _server_requests.bind_sinks(lambda frame: write_json(frame), lambda event, sid, 
 
 
 # Live WS peer transports (maintained by tui_gateway.ws): the only route for session-less background
-# events, which write_json would otherwise drop on stdio (see _broadcast_global_event).
+# events, which write_json would otherwise drop on stdio (see session_transports._broadcast_global_event).
 _live_transports: set[Transport] = set()
 _live_transports_lock = threading.Lock()
 # True only when real stdout IS the JSON-RPC client channel (``tui_gateway.entry.main``, the stdio TUI).
@@ -805,27 +805,6 @@ def unregister_live_transport(transport: Transport | None) -> None:
     with _live_transports_lock:
         _live_transports.discard(transport)
     _server_requests.forget(transport)
-
-
-def _broadcast_global_event(event: str, payload: dict | None = None, *, skip=frozenset()) -> None:
-    """Fan a session-less, surface-global event (``skin.changed``) to every connected client — background
-    emitters bottom out at stdio in ``write_json``'s ladder. No registered transports → ``_emit`` when stdout is the
-    stdio TUI's JSON-RPC channel, else dropped (nobody is listening; stdout is a log sink)."""
-    with _live_transports_lock:
-        targets = [transport for transport in _live_transports if transport not in skip]
-    if not targets and not skip:
-        if _stdio_is_rpc_channel:
-            return _emit(event, "", payload)
-        logger.debug("global-event broadcast dropped (no connected client) type=%s", event)
-        return None
-    frame = _event_frame(event, "", payload)
-    for transport in targets:
-        if not _global_event_reaches(transport, event):
-            continue
-        try:
-            transport.write(frame)
-        except Exception:  # one wedged peer must not stall the rest; disconnect teardown unregisters it
-            logger.debug("global-event broadcast write failed type=%s", event, exc_info=True)
 
 
 def _approval_request_payload(data: dict | None) -> dict:

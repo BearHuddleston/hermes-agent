@@ -763,14 +763,6 @@ class _Resume:
         return [] if self.omit_messages else self.db.get_ancestor_display_prefix(self.target)
 
 
-def _find_live_unpersisted(needle: str, home, profile_incarnation) -> str:
-    """Runtime sid of a live, not-yet-persisted session matched by stored key or pending title."""
-    return next((
-        live_sid for live_sid, record in list(_sessions.items())
-        if isinstance(record, dict) and _session_profile_identity_matches(record, home, profile_incarnation)
-        and (str(record.get("session_key") or "") == needle or (record.get("pending_title") or "") == needle)), "")
-
-
 def _resume_live_unpersisted(ctx: _Resume, live_sid: str, live: dict) -> dict:
     """Reattach a LIVE lazy session with no state.db row yet (every fresh Bot Chat; a 404 here killed messaging
     for never-spoken bots). Attach the transport and cancel the armed orphan-reap Timer (a WS drop may have
@@ -856,14 +848,6 @@ def _resume_materialize_minted(ctx: _Resume) -> None:
         )
     except Exception:
         logger.warning("failed to materialize session row for %s", ctx.target, exc_info=True)
-
-
-def _chat_creator(found: dict | None) -> str | None:
-    """Who created a stored chat (its row's ``user_id``); the resuming login only for a chat without one.
-    Someone reopening another person's chat must not become its creator: the creator answers a turn whose
-    sender left (shared_turns.py) and owns the chat (hermes_cli/web_sharing.py)."""
-    stored = (found or {}).get("user_id")
-    return stored if isinstance(stored, str) and stored else _transport_auth_user_id(current_transport())
 
 
 def _resume_locate(ctx: _Resume) -> dict | None:
