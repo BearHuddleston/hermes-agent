@@ -67,7 +67,7 @@ def open_store(profile: Optional[str]):
     return _open_session_db_for_profile(None if not name or name == launch_profile() else name, read_only=True)
 
 
-def resolve_chat(profile: Optional[str], session_id: str) -> Optional["ChatRef"]:
+def resolve_chat(profile: Optional[str], session_id: str) -> Optional[ChatRef]:
     db = open_store(profile)
     try:
         return chat_of(db, profile, session_id)
@@ -231,7 +231,7 @@ def may_join_room(principal: str, room: str) -> bool:
 class ChatRef:
     """A chat as access control sees it: its key, who created it and its working directory."""
 
-    __slots__ = ("key", "creator", "cwd")
+    __slots__ = ("creator", "cwd", "key")
 
     def __init__(self, key: str, creator: Optional[str], cwd: str) -> None:
         self.key, self.creator, self.cwd = key, creator, cwd
@@ -399,7 +399,7 @@ class SharingStore:
 
     def _copy(self) -> dict:
         loaded = self._load()
-        return {"version": 1, "chats": {k: {"people": dict((v.get("people") or {}))} for k, v in loaded["chats"].items()},
+        return {"version": 1, "chats": {k: {"people": dict(v.get("people") or {})} for k, v in loaded["chats"].items()},
                 "people": {k: dict(v) for k, v in loaded["people"].items()}}
 
 

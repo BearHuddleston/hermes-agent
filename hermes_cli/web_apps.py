@@ -252,7 +252,7 @@ class AppsConnection:
                 return
             try:
                 text = await asyncio.wait_for(self.queue.get(), timeout=1.0)
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 continue
             await self.send(text)
 
@@ -271,7 +271,7 @@ class Member:
     id: str
     conn: AppsConnection
     handle: str
-    app: "App"
+    app: App
     role: str
     cursor: Optional[dict] = None
 
@@ -609,7 +609,7 @@ class AppsHub:
             self._apply_external(app, values, texts)
 
     def _apply_external(self, app: App, values: dict, texts: dict) -> None:
-        canon = lambda v: json.dumps(v, sort_keys=True, ensure_ascii=False)  # noqa: E731
+        canon = lambda v: json.dumps(v, sort_keys=True, ensure_ascii=False)
         for key, value in values.items():
             if key not in app.values and value is None:
                 continue

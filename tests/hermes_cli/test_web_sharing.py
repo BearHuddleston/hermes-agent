@@ -127,7 +127,7 @@ def test_sharing_or_taking_back_a_chat_refreshes_that_persons_chat_list(host, mo
 
     bobs, eves = Window("usr_bob"), Window("usr_eve")
     monkeypatch.setattr(server, "_live_transports", {bobs, eves})
-    refreshes = lambda window: [f["params"]["type"] for f in window.frames].count("sessions.changed")  # noqa: E731
+    refreshes = lambda window: [f["params"]["type"] for f in window.frames].count("sessions.changed")
     alice = _client("usr_alice")
     alice.post("/api/sharing/claim")
 
