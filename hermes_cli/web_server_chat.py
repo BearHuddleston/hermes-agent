@@ -391,11 +391,22 @@ def _ws_close_reason(text: str) -> str:
     return encoded[:120].decode("utf-8", "ignore") + "..."
 
 
+_NO_EMBEDDED_CHAT = "the Webapp has no embedded chat: its gateway runs sessions"
+
+
+def _hosts_no_embedded_chat(ws: WebSocket) -> bool:
+    """A gateway-attached Webapp relays /api/ws to the profile's gateway and closes the legacy socket a
+    PTY's TUI would dial (4426), so the dashboard's embedded chat (/api/pty, fed by /api/pub and
+    /api/events) cannot run here; those sockets are refused with 4404, as when chat is disabled."""
+    from hermes_cli.web_server_surface import policy
+    return policy(ws.app.state).gateway_attach
+
+
 async def _ws_gate(ws: WebSocket, kind: str) -> Optional[tuple[str, str, str]]:
     """Run the pre-accept gates for /api/console, /api/pty and /api/host-terminal.
 
     Each gate maps to a distinct close code so the log and the browser banner
-    agree on the cause: 4404 chat disabled, 4401 bad credential, 4403
+    agree on the cause: 4404 chat disabled (or a Webapp, which hosts none), 4401 bad credential, 4403
     host/origin mismatch, 4408 peer not allowed. Returns ``(peer, mode, cred)``
     once every gate passes, or None after closing the socket.
     """
@@ -404,6 +415,10 @@ async def _ws_gate(ws: WebSocket, kind: str) -> Optional[tuple[str, str, str]]:
     if not _DASHBOARD_EMBEDDED_CHAT_ENABLED:
         _log.info("%s refused: embedded chat disabled peer=%s", kind, peer)
         await ws.close(code=4404, reason="embedded chat disabled")
+        return None
+    if kind == "pty" and _hosts_no_embedded_chat(ws):
+        _log.info("pty refused: %s peer=%s", _NO_EMBEDDED_CHAT, peer)
+        await ws.close(code=4404, reason=_NO_EMBEDDED_CHAT)
         return None
 
     auth_reason, cred = _ws_auth_reason(ws)

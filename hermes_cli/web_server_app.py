@@ -1,6 +1,6 @@
 """HTTP lifespan composition; standalone backend services remain opt-in owners."""
 
-from contextlib import asynccontextmanager, nullcontext
+from contextlib import asynccontextmanager
 import asyncio
 import logging
 import os
@@ -33,7 +33,6 @@ async def standalone_lifespan(app: "FastAPI"):
         _auto_archive_ticker_loop, _terminate_desktop_managed_gateway, _probe_install_before_state_db,
     )
     from hermes_cli.web_server_chat import PTY_REGISTRY
-    from hermes_cli.web_server_surface import policy
 
     app.state.event_channels = {}  # dict[str, set]
     app.state.event_lock = asyncio.Lock()
@@ -104,7 +103,9 @@ async def standalone_lifespan(app: "FastAPI"):
     )
     hosted_room_start_thread.start()
 
-    # Gateway lifecycle ownership remains exclusive to Electron-spawned backends.
+    # Desktop-spawned backends fire cron jobs themselves, since the app has no
+    # gateway running the scheduler. Server `hermes dashboard` is unaffected —
+    # it relies on its own gateway.
     from hermes_cli.process_identity import is_desktop_owned_backend
     cron_stop: threading.Event | None = None
     cron_thread: threading.Thread | None = None
@@ -124,9 +125,6 @@ async def standalone_lifespan(app: "FastAPI"):
         except Exception:
             logger.exception("Desktop startup: orphan gateway reap failed")
 
-    # Desktop-spawned backends fire cron jobs themselves: no gateway runs their scheduler.
-    # Plain dashboard relies on its own gateway; the Webapp attaches to one (attach_lifespan).
-    if desktop_owned:
         cron_stop = threading.Event()
         cron_thread = threading.Thread(
             target=_start_desktop_cron_ticker,
@@ -140,10 +138,6 @@ async def standalone_lifespan(app: "FastAPI"):
     # close_all() refuses new spawns, so a re-entered lifespan reopens it first.
     PTY_REGISTRY._closed = False
     pty_reaper_task = asyncio.create_task(run_reaper(PTY_REGISTRY))
-    from hermes_cli.web_host_terminal_sessions import host_terminal_lifespan
-    # Host shells, and the reaper that retires them, exist only where the surface allows them.
-    host_terminals = host_terminal_lifespan(app) if policy(app.state).host_terminal else nullcontext()
-    await host_terminals.__aenter__()
     # Periodic authenticated self-test feeding the ``dashboard`` component on /api/status.
     selftest_task = asyncio.create_task(_dashboard_selftest_loop())
     # Live auto-archive timer, independent of list requests.
@@ -191,7 +185,6 @@ async def standalone_lifespan(app: "FastAPI"):
         auto_archive_task.cancel()
         eager_reconcile_thread.join()
         await PTY_REGISTRY.close_all()
-        await host_terminals.__aexit__(None, None, None)
 
         # PtySession.close() removes markers owned by live registry sessions.
         # This second pass cleans any channel markers left in app state,
@@ -240,20 +233,15 @@ async def http_lifespan(app: FastAPI):
 async def attach_lifespan(app: FastAPI):
     """A gateway-attached Webapp: the profile's gateway owns turns, rooms, cron, inference
     services and onboarding (``webapp_gateway_relay``). This server keeps only what is its own: its
-    read-only store probes, PTY reaper, host shells and self-test. It never reaps or stops a
-    gateway, whatever launched it: that gateway is the owner it attaches to."""
+    read-only store probes, host shells and self-test. It hosts no embedded dashboard chat (its PTY
+    sockets are refused), so it runs no PTY reaper. It never reaps or stops a gateway, whatever
+    launched it: that gateway is the owner it attaches to."""
     from gateway.code_skew import record_boot_fingerprint
     from hermes_cli.web_host_terminal_sessions import host_terminal_lifespan
     from hermes_cli.web_server import (
         _dashboard_selftest_loop, _eager_reconcile_own_session_db, _probe_install_before_state_db,
     )
-    from hermes_cli.web_server_chat import PTY_REGISTRY
-    from hermes_cli.web_server_surface import policy
 
-    app.state.event_channels = {}
-    app.state.event_lock = asyncio.Lock()
-    app.state.pty_active_session_files = {}
-    app.state.chat_argv_lock = asyncio.Lock()
     _probe_install_before_state_db()
     # Read-only first (#140315): the owner, not this view, upgrades a store it holds. Joined at exit.
     from agent.memory_provider import spawn_context_thread
@@ -261,21 +249,14 @@ async def attach_lifespan(app: FastAPI):
                                                   daemon=False)
     eager_reconcile_thread.start()
     record_boot_fingerprint()
-    PTY_REGISTRY._closed = False  # a prior lifespan's close_all() refuses spawns until reopened
-    tasks = [asyncio.create_task(run_reaper(PTY_REGISTRY), name="webapp-pty-reaper"),
-             asyncio.create_task(_dashboard_selftest_loop(), name="webapp-selftest")]
-    host_terminals = host_terminal_lifespan(app) if policy(app.state).host_terminal else nullcontext()
-    await host_terminals.__aenter__()
+    selftest = asyncio.create_task(_dashboard_selftest_loop(), name="webapp-selftest")
     try:
-        yield
+        async with host_terminal_lifespan(app):
+            yield
     finally:
-        for task in tasks:
-            task.cancel()
-        await asyncio.gather(*tasks, return_exceptions=True)
+        selftest.cancel()
+        await asyncio.gather(selftest, return_exceptions=True)
         eager_reconcile_thread.join()
-        await PTY_REGISTRY.close_all()
-        await host_terminals.__aexit__(None, None, None)
-        _unlink_pty_markers(app)
 
 
 @asynccontextmanager

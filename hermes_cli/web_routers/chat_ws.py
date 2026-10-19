@@ -20,8 +20,8 @@ from hermes_cli.active_sessions import ActiveSessionRegistryError, active_sessio
 from hermes_cli.pty_session import RegistryFull
 from hermes_cli.web_deps import LateState, late
 from hermes_cli.web_server_chat import (
-    _build_sidecar_url, _close_stalled_pty_input, _get_console_executor, _legacy_pump, _pty_fail, _ws_auth_ok,
-    _ws_close_reason, _ws_gate, _ws_request_is_allowed,
+    _NO_EMBEDDED_CHAT, _build_sidecar_url, _close_stalled_pty_input, _get_console_executor, _hosts_no_embedded_chat,
+    _legacy_pump, _pty_fail, _ws_auth_ok, _ws_close_reason, _ws_gate, _ws_request_is_allowed,
 )
 
 _log = logging.getLogger("hermes_cli.web_server")
@@ -678,6 +678,9 @@ async def gateway_ws(ws: WebSocket) -> None:
 
 async def _accept_channel_ws(ws: WebSocket, *, allow_internal: bool = False) -> Optional[str]:
     if not await _close_unless_sidecar_allowed(ws, allow_internal=allow_internal):
+        return None
+    if _hosts_no_embedded_chat(ws):
+        await ws.close(code=4404, reason=_NO_EMBEDDED_CHAT)
         return None
     channel = _channel_or_close_code(ws)
     if not channel:
