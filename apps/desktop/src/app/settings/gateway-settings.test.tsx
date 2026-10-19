@@ -5,6 +5,7 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vite
 import { installBrowserDesktopBridge } from '@/lib/browser-desktop-bridge'
 import { $notifications, notifyError } from '@/store/notifications'
 import { deferred } from '@/test/deferred'
+import { clearWebappSession, seedWebappSession } from '@/test/webapp-session'
 
 // Collect the component graph before the behavioral test deadline starts.
 import { GatewaySettings } from './gateway-settings'
@@ -432,9 +433,16 @@ describe('GatewaySettings', () => {
   // mode switch, Cloud sign-in or saved connection can act there. What applies
   // is which host this is and, behind the sign-in gate, signing out of it.
   describe('in the Webapp', () => {
-    const installWebapp = (credential: { __HERMES_AUTH_REQUIRED__: true } | { __HERMES_SESSION_TOKEN__: string }) => {
+    // A gated host signs its browser in with a cookie; an unauthenticated one through its private launch link.
+    const installWebapp = (credential: 'gated' | 'launch-link') => {
       Reflect.deleteProperty(window, 'hermesDesktop')
-      Object.assign(window, credential)
+
+      if (credential === 'gated') {
+        Object.assign(window, { __HERMES_AUTH_REQUIRED__: true })
+      } else {
+        seedWebappSession('served-token')
+      }
+
       const fetchMock = vi.fn().mockResolvedValue(new Response('', { status: 200 }))
       vi.stubGlobal('fetch', fetchMock)
       expect(installBrowserDesktopBridge()).toBe(true)
@@ -442,10 +450,13 @@ describe('GatewaySettings', () => {
       return fetchMock
     }
 
-    afterEach(() => Reflect.deleteProperty(window, '__HERMES_SESSION_TOKEN__'))
+    afterEach(() => {
+      Reflect.deleteProperty(window, '__HERMES_AUTH_REQUIRED__')
+      clearWebappSession()
+    })
 
     it.each([false, true])('offers the serving host and its sign-out only (embedded: %s)', async embedded => {
-      const fetchMock = installWebapp({ __HERMES_AUTH_REQUIRED__: true })
+      const fetchMock = installWebapp('gated')
       const toLogin = vi.fn((event: Event) => event.preventDefault())
       window.addEventListener('hermes:browser-reauth-required', toLogin, { once: true })
 
@@ -464,8 +475,8 @@ describe('GatewaySettings', () => {
       expect(init.method).toBe('POST')
     })
 
-    it('has nothing to sign out of on a token-launched host', async () => {
-      installWebapp({ __HERMES_SESSION_TOKEN__: 'served-token' })
+    it('has nothing to sign out of on a launch-link host', async () => {
+      installWebapp('launch-link')
 
       render(<GatewaySettings />)
 

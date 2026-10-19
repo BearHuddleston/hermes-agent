@@ -13,9 +13,14 @@ export function watchWebappLaunchLink(reload: () => void): void {
   window.addEventListener('beforeunload', () => window.removeEventListener('hashchange', onHash), { once: true })
 }
 
+/** Where this tab keeps its launch-link grant for the Webapp at ``basePath`` on this origin. */
+export function webappSessionKey(basePath: string): string {
+  return `hermes.webapp.session.v1:${JSON.stringify([window.location.origin, basePath])}`
+}
+
 /** HTTP never supplies this credential; reloads keep only this tab's grant. */
 export function consumeWebappSession(basePath: string): string {
-  const key = `hermes.webapp.session.v1:${JSON.stringify([window.location.origin, basePath])}`
+  const key = webappSessionKey(basePath)
 
   // HashRouter owns other fragments; don't parse/rewrite its route on reload.
   if (window.location.hash.startsWith(`#${FRAGMENT_KEY}=`)) {

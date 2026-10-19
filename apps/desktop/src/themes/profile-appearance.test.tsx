@@ -9,6 +9,7 @@ import { installBrowserDesktopBridge } from '@/lib/browser-desktop-bridge'
 import { $activeGatewayProfile } from '@/store/profile'
 import { $connection } from '@/store/session'
 import { dropTilesForProfile } from '@/store/session-states'
+import { clearWebappSession, seedWebappSession } from '@/test/webapp-session'
 
 import { deferred } from '../test/deferred'
 
@@ -18,8 +19,6 @@ import { $profileAppearance } from './profile-appearance'
 
 // Each test uses its own profile names: a profile's one-time local seed is
 // per renderer session, like the app's.
-
-type BridgeWindow = Window & { __HERMES_SESSION_TOKEN__?: string }
 
 let ctx: ReturnType<typeof useTheme>
 
@@ -290,13 +289,13 @@ describe('Webapp profile appearance', () => {
     window.localStorage.clear()
     __resetBackendSkinSync()
     $profileAppearance.set(null)
-    ;(window as BridgeWindow).__HERMES_SESSION_TOKEN__ = 'served-token'
+    seedWebappSession('served-token')
     vi.stubGlobal('fetch', fetchMock)
   })
 
   afterEach(() => {
     cleanup()
-    delete (window as BridgeWindow).__HERMES_SESSION_TOKEN__
+    clearWebappSession()
     Reflect.deleteProperty(window, 'hermesDesktop')
     vi.unstubAllGlobals()
     $connection.set(null)

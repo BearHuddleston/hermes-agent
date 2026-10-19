@@ -1,10 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { $connection } from '@/store/session'
+import { clearWebappSession, seedWebappSession } from '@/test/webapp-session'
 
 import { installBrowserDesktopBridge } from './browser-desktop-bridge'
 
-type BootstrapWindow = Window & { __HERMES_BASE_PATH__?: string; __HERMES_SESSION_TOKEN__?: string }
+type BootstrapWindow = Window & { __HERMES_BASE_PATH__?: string; }
 const win = window as unknown as BootstrapWindow
 
 /** A fresh page load: the bridge is rebuilt from scratch, only storage survives. */
@@ -21,14 +22,14 @@ function onProfile(profile: string) {
 }
 
 beforeEach(() => {
-  win.__HERMES_SESSION_TOKEN__ = 'served-token'
+  seedWebappSession('served-token')
   localStorage.clear()
 })
 
 afterEach(() => {
   Reflect.deleteProperty(win, 'hermesDesktop')
   delete win.__HERMES_BASE_PATH__
-  delete win.__HERMES_SESSION_TOKEN__
+  clearWebappSession()
   $connection.set(null)
   localStorage.clear()
   vi.restoreAllMocks()

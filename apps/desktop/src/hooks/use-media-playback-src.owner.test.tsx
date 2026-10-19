@@ -7,13 +7,14 @@ import { setApiRequestConnection, setApiRequestProfile } from '@/api/client'
 import { ComposerScopeProvider, MAIN_COMPOSER_SCOPE } from '@/app/chat/composer/scope'
 import { installBrowserDesktopBridge } from '@/lib/browser-desktop-bridge'
 import { $connection } from '@/store/session'
+import { clearWebappSession, seedWebappSession } from '@/test/webapp-session'
 
 import { useMediaPlaybackSrc } from './use-media-playback-src'
 
-const win = window as Window & { __HERMES_SESSION_TOKEN__?: string }
+const win = window
 
 afterEach(() => {
-  delete win.__HERMES_SESSION_TOKEN__
+  clearWebappSession()
   Reflect.deleteProperty(win, 'hermesDesktop')
   setApiRequestConnection(null)
   setApiRequestProfile(null)
@@ -31,7 +32,7 @@ it.each([
     scope: { ...MAIN_COMPOSER_SCOPE, connectionId: LOCAL_CONNECTION_ID, profile: 'tile-owner', target: 'tile:t' as const }
   }
 ])('a transcript video streams on its scope owner: $name', async ({ expected, scope }) => {
-  win.__HERMES_SESSION_TOKEN__ = 'served-token'
+  seedWebappSession('served-token')
 
   vi.stubGlobal(
     'fetch',

@@ -2,6 +2,7 @@ import { act, cleanup, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 
 import { installBrowserDesktopBridge } from '@/lib/browser-desktop-bridge'
+import { clearWebappSession, seedWebappSession } from '@/test/webapp-session'
 
 import { $terminals, closeAllTerminals, closeOtherTerminals, createTerminal, updateTerminalReviveBuffer } from './terminals'
 import { useTerminalSession } from './use-terminal-session'
@@ -139,7 +140,7 @@ afterEach(() => {
   cleanup()
   window.dispatchEvent(new Event('beforeunload'))
   Reflect.deleteProperty(window, 'hermesDesktop')
-  Reflect.deleteProperty(window, '__HERMES_SESSION_TOKEN__')
+  clearWebappSession()
   $terminals.set([])
   Socket.instances = []
   Socket.persistent = false
@@ -149,7 +150,7 @@ afterEach(() => {
 })
 
 it.each([1006, 1000])('retains the saved tab on transport loss (%s) and lets Enter recover in the same scrollback', async code => {
-  Object.assign(window, { __HERMES_SESSION_TOKEN__: 'test-token' })
+  seedWebappSession('test-token')
   vi.stubGlobal('WebSocket', Socket)
   installBrowserDesktopBridge()
   const id = createTerminal('/work')
@@ -176,7 +177,7 @@ it.each([1006, 1000])('retains the saved tab on transport loss (%s) and lets Ent
 })
 
 it.each(['attach', 'disconnect'])('cleans up the %s attempt before retry and ignores its late exit', async failure => {
-  Object.assign(window, { __HERMES_SESSION_TOKEN__: 'test-token' })
+  seedWebappSession('test-token')
   vi.stubGlobal('WebSocket', Socket)
   installBrowserDesktopBridge()
   const api = window.hermesDesktop!.terminal!
@@ -233,7 +234,7 @@ it.each(['attach', 'disconnect'])('cleans up the %s attempt before retry and ign
 })
 
 it('replays server history once, suppresses parser replies, and detaches on remount', async () => {
-  Object.assign(window, { __HERMES_SESSION_TOKEN__: 'test-token' })
+  seedWebappSession('test-token')
   Socket.persistent = true
   vi.stubGlobal('WebSocket', Socket)
   installBrowserDesktopBridge()
@@ -274,7 +275,7 @@ it('replays server history once, suppresses parser replies, and detaches on remo
 })
 
 it('close others and close all terminate mounted and unmounted persisted shells', async () => {
-  Object.assign(window, { __HERMES_SESSION_TOKEN__: 'test-token' })
+  seedWebappSession('test-token')
   Socket.persistent = true
   vi.stubGlobal('WebSocket', Socket)
   installBrowserDesktopBridge()
@@ -294,7 +295,7 @@ it('close others and close all terminate mounted and unmounted persisted shells'
 })
 
 it('preserves saved tabs when page unload closes the browser socket', async () => {
-  Object.assign(window, { __HERMES_SESSION_TOKEN__: 'test-token' })
+  seedWebappSession('test-token')
   vi.stubGlobal('WebSocket', Socket)
   installBrowserDesktopBridge()
   const id = createTerminal('/work')

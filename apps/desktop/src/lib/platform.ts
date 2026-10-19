@@ -25,24 +25,20 @@ export const isLinuxPlatform = (): boolean =>
 export interface BrowserHostGlobals {
   __HERMES_AUTH_REQUIRED__?: boolean
   __HERMES_BASE_PATH__?: string
-  __HERMES_SESSION_TOKEN__?: string
   __HERMES_UI_SURFACE__?: string
 }
 
 /**
  * The server served this page as the browser-hosted Desktop: a gated host
- * (cookie auth), the Webapp surface (its session arrives by launch link, not
- * an injected token), or a loopback host with an injected session token.
- * The browser bridge installs on exactly this predicate.
+ * (cookie auth) or the Webapp surface (its session arrives by launch link).
+ * The browser bridge installs on exactly this predicate. An injected session
+ * token alone is not one: nothing serves this renderer that way, and the only
+ * gateway route it could use is the Webapp's.
  */
 export function hasBrowserHostBootstrap(): boolean {
   const win = window as Window & BrowserHostGlobals
 
-  return (
-    win.__HERMES_AUTH_REQUIRED__ === true ||
-    win.__HERMES_UI_SURFACE__ === 'webapp' ||
-    Boolean(String(win.__HERMES_SESSION_TOKEN__ || '').trim())
-  )
+  return win.__HERMES_AUTH_REQUIRED__ === true || win.__HERMES_UI_SURFACE__ === 'webapp'
 }
 
 /** Renderer host, independent of the OS or the gateway's connection mode. */

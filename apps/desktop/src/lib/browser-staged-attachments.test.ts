@@ -9,6 +9,7 @@ import {
 } from '@/store/composer'
 import { $notifications, clearNotifications } from '@/store/notifications'
 import { $connection, $sessions } from '@/store/session'
+import { clearWebappSession, seedWebappSession } from '@/test/webapp-session'
 
 import { installBrowserDesktopBridge } from './browser-desktop-bridge'
 
@@ -32,7 +33,7 @@ const attached = () => ({ attached: true, ref_text: refText, uploaded: true })
 
 async function installBrowser(withProvenance = true) {
   Reflect.deleteProperty(window, 'hermesDesktop')
-  Object.assign(window, { __HERMES_SESSION_TOKEN__: 'test-token' })
+  seedWebappSession('test-token')
 
   const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = new URL(String(input), window.location.origin)
@@ -66,7 +67,7 @@ afterEach(() => {
   $sessions.set([])
   $connection.set(null)
   Reflect.deleteProperty(window, 'hermesDesktop')
-  Reflect.deleteProperty(window, '__HERMES_SESSION_TOKEN__')
+  clearWebappSession()
   document.documentElement.removeAttribute('data-hermes-desktop-host')
   vi.unstubAllGlobals()
   vi.restoreAllMocks()
@@ -271,7 +272,7 @@ describe('browser staged attachment transport', () => {
     { body: '<html><body><h1>502 Bad Gateway</h1></body></html>', message: /\(502\)/, status: 502 },
     { body: JSON.stringify({ detail: 'Upload request is too large' }), message: /^Upload request is too large$/, status: 413 }
   ])('reports a $status upload failure from its status or server detail', async ({ body, message, status }) => {
-    Object.assign(window, { __HERMES_SESSION_TOKEN__: 'test-token' })
+    seedWebappSession('test-token')
     vi.stubGlobal('fetch', vi.fn(async () => new Response(body, { status })))
     expect(installBrowserDesktopBridge()).toBe(true)
 
@@ -287,7 +288,7 @@ describe('browser staged attachment transport', () => {
   })
 
   it('names the staging failure in the drop warning instead of a bare "Could not attach"', async () => {
-    Object.assign(window, { __HERMES_SESSION_TOKEN__: 'test-token' })
+    seedWebappSession('test-token')
     const nginx413 = '<html><head><title>413 Request Entity Too Large</title></head><body>nginx</body></html>'
     vi.stubGlobal(
       'fetch',

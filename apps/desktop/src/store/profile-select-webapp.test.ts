@@ -1,6 +1,8 @@
 import { atom } from 'nanostores'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 
+import { clearWebappSession, seedWebappSession } from '@/test/webapp-session'
+
 // A live profile switch in a Webapp tab is recorded in THAT tab's URL, so a
 // reload lands on the profile the user is in, and a generic New session
 // follows it. It is not the origin's saved default (only "Set as default"
@@ -29,13 +31,13 @@ vi.mock('@/store/starmap', () => ({ reloadOpenStarmapGraph: vi.fn(), resetStarma
 const { $activeGatewayProfile, selectProfile } = await import('./profile')
 const { installBrowserDesktopBridge } = await import('@/lib/browser-desktop-bridge')
 
-const bootstrap = window as Window & { __HERMES_BASE_PATH__?: string; __HERMES_SESSION_TOKEN__?: string }
+const bootstrap = window as Window & { __HERMES_BASE_PATH__?: string; }
 const savedDefault = { connectionId: 'local', profile: 'research' }
 const urlProfile = () => new URLSearchParams(window.location.search).get('profile')
 
 beforeEach(async () => {
-  bootstrap.__HERMES_SESSION_TOKEN__ = 'served-token'
   bootstrap.__HERMES_BASE_PATH__ = '/hermes'
+  seedWebappSession('served-token')
   window.history.replaceState(null, '', '/hermes?profile=arrived#/')
   expect(installBrowserDesktopBridge()).toBe(true)
   await window.hermesDesktop.profile.setDefault(savedDefault)
@@ -45,7 +47,7 @@ beforeEach(async () => {
 afterEach(() => {
   Reflect.deleteProperty(window, 'hermesDesktop')
   delete bootstrap.__HERMES_BASE_PATH__
-  delete bootstrap.__HERMES_SESSION_TOKEN__
+  clearWebappSession()
   document.documentElement.removeAttribute('data-hermes-desktop-host')
   window.localStorage.clear()
   window.history.replaceState(null, '', '/#/')

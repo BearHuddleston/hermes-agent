@@ -3,13 +3,14 @@ import { afterEach, expect, it, vi } from 'vitest'
 import { setApiRequestConnection, setApiRequestProfile } from '@/api/client'
 import { $notifications, clearNotifications } from '@/store/notifications'
 import { $connection } from '@/store/session'
+import { clearWebappSession, seedWebappSession } from '@/test/webapp-session'
 
 import { installBrowserDesktopBridge } from './browser-desktop-bridge'
 import { BROWSER_IMAGE_DOWNLOAD_MAX_BYTES, BROWSER_IMAGE_DOWNLOAD_TIMEOUT_MS } from './browser-image-download'
 import { captureGatewayFileDownload } from './media'
 
 it('keeps a captured download on its owning browser profile after a foreground switch', async () => {
-  win.__HERMES_SESSION_TOKEN__ = 'served-token'
+  seedWebappSession('served-token')
 
   const fetchMock = vi.fn(async (input: URL, _init?: RequestInit) =>
     input.pathname === '/api/files/ticket'
@@ -50,7 +51,7 @@ it.each([
   { name: 'oversized with understated Content-Length', oversized: true, declaredLength: '1' }
 ])('bounds external image streams: $name', async ({ oversized, declaredLength }) => {
   vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
-  win.__HERMES_SESSION_TOKEN__ = 'served-token'
+  seedWebappSession('served-token')
   const limit = BROWSER_IMAGE_DOWNLOAD_MAX_BYTES
   const total = oversized ? 48 * 1024 * 1024 : limit
   let produced = 0
@@ -139,7 +140,7 @@ it.each([
 
 it.each(['headers', 'body'])('times out stalled image %s within one whole-download deadline', async phase => {
   vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
-  win.__HERMES_SESSION_TOKEN__ = 'served-token'
+  seedWebappSession('served-token')
   // Cancellation itself must not extend the deadline.
   const cancel = vi.fn(() => new Promise<void>(() => undefined))
 
@@ -180,7 +181,7 @@ it.each(['headers', 'body'])('times out stalled image %s within one whole-downlo
 })
 
 it('names a fetched cross-origin image after its URL, not the blob URL that carries it', async () => {
-  win.__HERMES_SESSION_TOKEN__ = 'served-token'
+  seedWebappSession('served-token')
   const response = new Response(new Uint8Array([7]), { headers: { 'content-type': 'image/webp' } })
   vi.stubGlobal('fetch', vi.fn().mockResolvedValue(response))
   vi.spyOn(URL, 'createObjectURL').mockReturnValue(`blob:${window.location.origin}/7f3e9c1a`)
@@ -199,7 +200,7 @@ it('names a fetched cross-origin image after its URL, not the blob URL that carr
 })
 
 it('surfaces CORS and HTTP download failures without clicking a navigation link', async () => {
-  win.__HERMES_SESSION_TOKEN__ = 'served-token'
+  seedWebappSession('served-token')
 
   const cancel = vi.fn()
   const deniedBody = new ReadableStream<Uint8Array>({ cancel })
@@ -227,10 +228,10 @@ it('surfaces CORS and HTTP download failures without clicking a navigation link'
   clearNotifications()
 })
 
-const win = window as Window & { __HERMES_SESSION_TOKEN__?: string }
+const win = window
 
 afterEach(() => {
-  delete win.__HERMES_SESSION_TOKEN__
+  clearWebappSession()
   Reflect.deleteProperty(win, 'hermesDesktop')
   document.documentElement.removeAttribute('data-hermes-desktop-host')
   window.history.replaceState(null, '', '/#/')
@@ -246,7 +247,7 @@ afterEach(() => {
 })
 
 it('reconnects the window owner rather than the active secondary profile', async () => {
-  win.__HERMES_SESSION_TOKEN__ = 'served-token'
+  seedWebappSession('served-token')
   window.history.replaceState(null, '', '/?profile=window-owner#/session')
   expect(installBrowserDesktopBridge()).toBe(true)
   const initial = await win.hermesDesktop.getConnection('window-owner')

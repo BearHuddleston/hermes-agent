@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { reconnectMovedCloudAgent } from '@/app/settings/cloud-team-change'
 import { $connection } from '@/store/session'
+import { clearWebappSession, seedWebappSession } from '@/test/webapp-session'
 
 import { installBrowserDesktopBridge } from './browser-desktop-bridge'
 import { desktopGit } from './desktop-git'
@@ -11,7 +12,6 @@ import { downloadGatewayMediaFile, resolveMediaPlaybackSrc } from './media'
 type MutableWindow = Window & {
   __HERMES_AUTH_REQUIRED__?: boolean
   __HERMES_BASE_PATH__?: string
-  __HERMES_SESSION_TOKEN__?: string
   hermesDesktop?: Window['hermesDesktop']
 }
 
@@ -21,7 +21,7 @@ afterEach(() => {
   const win = mutableWindow()
   delete win.__HERMES_AUTH_REQUIRED__
   delete win.__HERMES_BASE_PATH__
-  delete win.__HERMES_SESSION_TOKEN__
+  clearWebappSession()
   Reflect.deleteProperty(win, 'hermesDesktop')
   document.documentElement.removeAttribute('data-hermes-desktop-host')
   Reflect.deleteProperty(navigator, 'clipboard')
@@ -33,7 +33,7 @@ afterEach(() => {
 
 describe('browser-hosted Desktop bridge', () => {
   it('does not make network requests to resolve link titles', async () => {
-    mutableWindow().__HERMES_SESSION_TOKEN__ = 'served-token'
+    seedWebappSession('served-token')
     const fetchMock = vi.fn().mockResolvedValue(new Response('<title>Untrusted title</title>'))
     vi.stubGlobal('fetch', fetchMock)
     expect(installBrowserDesktopBridge()).toBe(true)
@@ -43,7 +43,7 @@ describe('browser-hosted Desktop bridge', () => {
   })
 
   it('refuses cloud-team reconnection without a native connection registry', async () => {
-    mutableWindow().__HERMES_SESSION_TOKEN__ = 'served-token'
+    seedWebappSession('served-token')
     const fetchMock = vi.fn()
     vi.stubGlobal('fetch', fetchMock)
     expect(installBrowserDesktopBridge()).toBe(true)
@@ -69,7 +69,7 @@ describe('browser-hosted Desktop bridge', () => {
   it('does not replace the Electron preload bridge', () => {
     const win = mutableWindow()
     const existing = { api: vi.fn() } as unknown as Window['hermesDesktop']
-    win.__HERMES_SESSION_TOKEN__ = 'served-token'
+    seedWebappSession('served-token')
     win.hermesDesktop = existing
 
     expect(installBrowserDesktopBridge()).toBe(false)
@@ -240,7 +240,7 @@ describe('browser-hosted Desktop bridge', () => {
 
   it('does not advertise Electron-only capabilities in browser-host mode', () => {
     const win = mutableWindow()
-    win.__HERMES_SESSION_TOKEN__ = 'served-token'
+    seedWebappSession('served-token')
 
     expect(installBrowserDesktopBridge()).toBe(true)
     expect(win.hermesDesktop?.openBrowserWindow).toBeUndefined()
@@ -256,7 +256,7 @@ describe('browser-hosted Desktop bridge', () => {
 
   it('disables native window controls and rejects their operations without side effects', () => {
     const win = mutableWindow()
-    win.__HERMES_SESSION_TOKEN__ = 'served-token'
+    seedWebappSession('served-token')
     const fetchMock = vi.fn()
     const closeMock = vi.spyOn(window, 'close').mockImplementation(() => undefined)
     vi.stubGlobal('fetch', fetchMock)
@@ -275,7 +275,7 @@ describe('browser-hosted Desktop bridge', () => {
 
   it('keeps clipboard writes on the browser-native method captured before renderer shims', async () => {
     const win = mutableWindow()
-    win.__HERMES_SESSION_TOKEN__ = 'served-token'
+    seedWebappSession('served-token')
     const nativeWriteText = vi.fn().mockResolvedValue(undefined)
     const laterShim = vi.fn().mockRejectedValue(new Error('recursive clipboard shim'))
     Object.defineProperty(navigator, 'clipboard', {
@@ -296,7 +296,7 @@ describe('browser-hosted Desktop bridge', () => {
 
   it('remembers the selected browser profile in the launch URL without losing its route', async () => {
     const win = mutableWindow()
-    win.__HERMES_SESSION_TOKEN__ = 'served-token'
+    seedWebappSession('served-token')
     window.history.replaceState(null, '', '/hermes?view=chat#/session-1')
 
     expect(installBrowserDesktopBridge()).toBe(true)
@@ -320,7 +320,8 @@ describe('browser-hosted Desktop bridge', () => {
 
   it('opens session windows on the owning profile HashRouter route with spectator flags before the hash', async () => {
     const win = mutableWindow()
-    win.__HERMES_SESSION_TOKEN__ = 'served-token'
+    // A gated host opens the window directly; a launch-link tab hands it a session first.
+    win.__HERMES_AUTH_REQUIRED__ = true
     window.history.replaceState(null, '', '/?profile=work#/existing')
     const open = vi.spyOn(window, 'open').mockImplementation(() => null)
 
@@ -340,7 +341,7 @@ describe('browser-hosted Desktop bridge', () => {
   })
 
   it('hands only the schemes Electron opens externally to window.open', async () => {
-    mutableWindow().__HERMES_SESSION_TOKEN__ = 'served-token'
+    seedWebappSession('served-token')
     const open = vi.spyOn(window, 'open').mockImplementation(() => null)
 
     expect(installBrowserDesktopBridge()).toBe(true)
@@ -385,7 +386,8 @@ describe('browser-hosted Desktop bridge', () => {
     { expectedProfile: 'research', name: 'trimmed non-default', opts: { profile: ' research ' } }
   ])('resolves a $name session-window profile against the ambient launch URL', async ({ expectedProfile, opts }) => {
     const win = mutableWindow()
-    win.__HERMES_SESSION_TOKEN__ = 'served-token'
+    // A gated host opens the window directly; a launch-link tab hands it a session first.
+    win.__HERMES_AUTH_REQUIRED__ = true
     window.history.replaceState(null, '', '/?profile=work#/existing')
     const open = vi.spyOn(window, 'open').mockImplementation(() => null)
 
@@ -398,8 +400,8 @@ describe('browser-hosted Desktop bridge', () => {
 
   it('exposes one same-origin registry source for Bot profile routing', async () => {
     const win = mutableWindow()
-    win.__HERMES_SESSION_TOKEN__ = 'served-token'
     win.__HERMES_BASE_PATH__ = '/hermes'
+    seedWebappSession('served-token')
     vi.stubGlobal(
       'fetch',
       vi.fn().mockImplementation(async (url: URL) =>
@@ -448,8 +450,8 @@ describe('browser-hosted Desktop bridge', () => {
 
   it('maps REST requests to the loopback API with token and profile scoping', async () => {
     const win = mutableWindow()
-    win.__HERMES_SESSION_TOKEN__ = 'served-token'
     win.__HERMES_BASE_PATH__ = '/hermes'
+    seedWebappSession('served-token')
 
     const fetchMock = vi.fn().mockResolvedValue(
       new Response(JSON.stringify({ ok: true }), {
@@ -476,8 +478,8 @@ describe('browser-hosted Desktop bridge', () => {
 
   it('routes Git through the browser transport and resolves the profile at call time', async () => {
     const win = mutableWindow()
-    win.__HERMES_SESSION_TOKEN__ = 'served-token'
     win.__HERMES_BASE_PATH__ = '/hermes'
+    seedWebappSession('served-token')
     $connection.set({ profile: 'launch-profile' } as never)
 
     const worktrees = [{ branch: 'main', detached: false, isMain: true, locked: false, path: '/srv/my repo' }]
@@ -523,7 +525,7 @@ describe('browser-hosted Desktop bridge', () => {
 
   it('keeps recovery and filesystem bridge methods safe in browser mode', async () => {
     const win = mutableWindow()
-    win.__HERMES_SESSION_TOKEN__ = 'served-token'
+    seedWebappSession('served-token')
     $connection.set({ profile: 'active-files' } as never)
 
     const fetchMock = vi.fn().mockResolvedValue(
@@ -576,9 +578,14 @@ describe('browser-hosted Desktop bridge', () => {
   it.each(['token', 'cookie'])('downloads browser files with %s auth on the original profile', async auth => {
     const win = mutableWindow()
     const token = auth === 'token' ? 'served / token' : ''
-    win.__HERMES_SESSION_TOKEN__ = token
-    win.__HERMES_AUTH_REQUIRED__ = auth === 'cookie'
     win.__HERMES_BASE_PATH__ = '/hermes'
+
+    if (auth === 'cookie') {
+      win.__HERMES_AUTH_REQUIRED__ = true
+    } else {
+      seedWebappSession(token)
+    }
+
     const fetchMock = fileTicketFetch()
     vi.stubGlobal('fetch', fetchMock)
     const downloads: HTMLAnchorElement[] = []
@@ -627,9 +634,14 @@ describe('browser-hosted Desktop bridge', () => {
   it.each(['token', 'cookie'])('streams browser audio/video over HTTP with %s auth', async auth => {
     const win = mutableWindow()
     const token = auth === 'token' ? 'served / token' : ''
-    win.__HERMES_SESSION_TOKEN__ = token
-    win.__HERMES_AUTH_REQUIRED__ = auth === 'cookie'
     win.__HERMES_BASE_PATH__ = '/hermes'
+
+    if (auth === 'cookie') {
+      win.__HERMES_AUTH_REQUIRED__ = true
+    } else {
+      seedWebappSession(token)
+    }
+
     const fetchMock = fileTicketFetch()
     vi.stubGlobal('fetch', fetchMock)
 
@@ -666,7 +678,7 @@ describe('browser-hosted Desktop bridge', () => {
 
   it('persists browser image bytes through the existing chat upload API', async () => {
     const win = mutableWindow()
-    win.__HERMES_SESSION_TOKEN__ = 'served-token'
+    seedWebappSession('served-token')
     $connection.set({ profile: 'active-images' } as never)
 
     const fetchMock = vi.fn().mockResolvedValue(
@@ -695,7 +707,7 @@ describe('browser-hosted Desktop bridge', () => {
 
   it('stages user-selected browser files on the host before returning paths', async () => {
     const win = mutableWindow()
-    win.__HERMES_SESSION_TOKEN__ = 'served-token'
+    seedWebappSession('served-token')
     $connection.set({ profile: 'active-profile' } as never)
 
     const fetchMock = vi.fn().mockResolvedValue(
@@ -735,7 +747,7 @@ describe('browser-hosted Desktop bridge', () => {
 
   it('stages dropped browser file bytes before returning a host attachment path', async () => {
     const win = mutableWindow()
-    win.__HERMES_SESSION_TOKEN__ = 'served-token'
+    seedWebappSession('served-token')
     $connection.set({ profile: 'drop-profile' } as never)
 
     const fetchMock = vi.fn().mockResolvedValue(
@@ -760,7 +772,7 @@ describe('browser-hosted Desktop bridge', () => {
 
   it('stages non-image buffers as browser-local object URLs', async () => {
     const win = mutableWindow()
-    win.__HERMES_SESSION_TOKEN__ = 'served-token'
+    seedWebappSession('served-token')
     const createObjectURL = vi.fn((_blob: Blob | MediaSource) => 'blob:http://127.0.0.1:9119/preview')
     vi.spyOn(URL, 'createObjectURL').mockImplementation(createObjectURL)
     const revoke = vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => {})
@@ -798,7 +810,7 @@ describe('browser-hosted Desktop bridge', () => {
 
   it('rejects API paths that escape the Webapp origin', async () => {
     const win = mutableWindow()
-    win.__HERMES_SESSION_TOKEN__ = 'served-token'
+    seedWebappSession('served-token')
     const fetchMock = vi.fn()
     vi.stubGlobal('fetch', fetchMock)
 
@@ -812,8 +824,8 @@ describe('browser-hosted Desktop bridge', () => {
 
   it('rejects API paths that escape the configured base path', async () => {
     const win = mutableWindow()
-    win.__HERMES_SESSION_TOKEN__ = 'served-token'
     win.__HERMES_BASE_PATH__ = '/hermes'
+    seedWebappSession('served-token')
     const fetchMock = vi.fn()
     vi.stubGlobal('fetch', fetchMock)
 
@@ -827,8 +839,8 @@ describe('browser-hosted Desktop bridge', () => {
 
   it('maps the browser-hosted terminal rail onto an authenticated host-shell PTY socket', async () => {
     const win = mutableWindow()
-    win.__HERMES_SESSION_TOKEN__ = 'served-token'
     win.__HERMES_BASE_PATH__ = '/hermes'
+    seedWebappSession('served-token')
     $connection.set({ profile: 'active-terminal' } as never)
 
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify({ ok: true }), { status: 200 })))
@@ -922,7 +934,7 @@ describe('browser-hosted Desktop bridge', () => {
 
   it('buffers early host-shell output until Desktop registers its terminal data listener', async () => {
     const win = mutableWindow()
-    win.__HERMES_SESSION_TOKEN__ = 'served-token'
+    seedWebappSession('served-token')
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify({ ok: true }), { status: 200 })))
 
     class PromptWebSocket {
@@ -965,7 +977,7 @@ describe('browser-hosted Desktop bridge', () => {
 
   it('exposes a profile-scoped gateway URL for Desktop boot', async () => {
     const win = mutableWindow()
-    win.__HERMES_SESSION_TOKEN__ = 'served-token'
+    seedWebappSession('served-token')
 
     expect(installBrowserDesktopBridge()).toBe(true)
 
@@ -982,7 +994,7 @@ describe('browser-hosted Desktop bridge', () => {
 
   it("surfaces the gateway's own verdict when the profile's gateway cannot take the socket", async () => {
     const win = mutableWindow()
-    win.__HERMES_SESSION_TOKEN__ = 'served-token'
+    seedWebappSession('served-token')
     vi.stubGlobal(
       'fetch',
       vi.fn().mockResolvedValue(

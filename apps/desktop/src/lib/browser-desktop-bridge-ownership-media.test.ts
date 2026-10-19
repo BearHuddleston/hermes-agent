@@ -3,11 +3,12 @@ import { afterEach, expect, it, vi } from 'vitest'
 
 import { setApiRequestConnection, setApiRequestProfile } from '@/api/client'
 import { $connection } from '@/store/session'
+import { clearWebappSession, seedWebappSession } from '@/test/webapp-session'
 
 import { installBrowserDesktopBridge } from './browser-desktop-bridge'
 import { resolveMediaDisplaySrc, resolveMediaPlaybackSrc } from './media'
 
-const win = window as Window & { __HERMES_SESSION_TOKEN__?: string }
+const win = window
 
 // Each served profile's backend answers for its own roots: the shared path holds
 // different bytes per profile, and only the tile owner's backend admits its outputs dir.
@@ -20,7 +21,7 @@ const BACKENDS: Record<string, Record<string, string>> = {
 }
 
 afterEach(() => {
-  delete win.__HERMES_SESSION_TOKEN__
+  clearWebappSession()
   Reflect.deleteProperty(win, 'hermesDesktop')
   document.documentElement.removeAttribute('data-hermes-desktop-host')
   setApiRequestConnection(null)
@@ -36,7 +37,7 @@ it.each([
   { name: 'background tile, same path with other bytes', owner: 'tile-owner', path: '/srv/shared/shot.png' },
   { name: 'background tile, path only its backend admits', owner: 'tile-owner', path: '/srv/tile-owner/outputs/plot.png' }
 ])('reads local-connection media on the owning browser profile: $name', async ({ owner, path }) => {
-  win.__HERMES_SESSION_TOKEN__ = 'served-token'
+  seedWebappSession('served-token')
 
   const fetchMock = vi.fn(async (input: URL, _init?: RequestInit) => {
     const dataUrl = BACKENDS[input.searchParams.get('profile') || '']?.[input.searchParams.get('path') || '']
@@ -62,9 +63,10 @@ it.each([
 })
 
 it.each(['clip.mp3', 'clip.mp4'])('streams background-tile %s through the owning browser profile', async file => {
-  win.__HERMES_SESSION_TOKEN__ = 'served-token'
+  seedWebappSession('served-token')
 
   const ticketProfiles: unknown[] = []
+
   const fetchMock = vi.fn(async (input: URL, init?: RequestInit) => {
     if (input.pathname === '/api/files/ticket') {
       ticketProfiles.push(JSON.parse(String(init?.body ?? '{}')).profile)

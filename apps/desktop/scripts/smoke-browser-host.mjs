@@ -123,7 +123,6 @@ const stateExpression = `(() => {
     requiredBridgeMethods: requiredBridgeMethods.every(key => typeof window.hermesDesktop?.[key] === 'function'),
     rootError: text.includes('Something broke in the interface'),
     scrollWidth: document.documentElement.scrollWidth,
-    sessionToken: Boolean(window.__HERMES_SESSION_TOKEN__),
     privateSession: window.__HERMES_UI_SURFACE__ === 'webapp',
     title: document.title
   }
@@ -378,7 +377,7 @@ try {
     const failures = []
     if (httpStatus === null || httpStatus >= 400) failures.push(`HTTP ${httpStatus ?? 'no response'}`)
     if (state.host !== 'browser' || !state.bridge) failures.push('browser Desktop bridge did not install')
-    if (!state.sessionToken && !state.authRequired && !state.privateSession) {
+    if (!state.authRequired && !state.privateSession) {
       failures.push('browser auth bootstrap was not injected')
     }
     if (!authenticated) failures.push('browser Desktop API authentication failed')

@@ -1,20 +1,21 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { clearWebappSession, seedWebappSession } from '@/test/webapp-session'
+
 import { installBrowserDesktopBridge } from './browser-desktop-bridge'
 import { createBrowserZoom } from './browser-zoom'
 
-type BootstrapWindow = Window & { __HERMES_SESSION_TOKEN__?: string }
-const win = window as unknown as BootstrapWindow
+const win = window
 
 beforeEach(() => {
-  win.__HERMES_SESSION_TOKEN__ = 'served-token'
+  seedWebappSession('served-token')
   localStorage.clear()
   vi.stubGlobal('devicePixelRatio', 1.5)
 })
 
 afterEach(() => {
   Reflect.deleteProperty(win, 'hermesDesktop')
-  delete win.__HERMES_SESSION_TOKEN__
+  clearWebappSession()
   document.documentElement.style.removeProperty('zoom')
   delete document.documentElement.dataset.hermesDesktopHost
   localStorage.clear()

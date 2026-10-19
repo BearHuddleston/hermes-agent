@@ -1,25 +1,27 @@
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 
 import { $connection } from '@/store/session'
+import { clearWebappSession, seedWebappSession } from '@/test/webapp-session'
 
 import { installBrowserDesktopBridge } from './browser-desktop-bridge'
 
 const bootstrap = window as Window & {
+  __HERMES_AUTH_REQUIRED__?: boolean
   __HERMES_BASE_PATH__?: string
-  __HERMES_SESSION_TOKEN__?: string
 }
 
 beforeEach(() => {
   window.localStorage.clear()
-  bootstrap.__HERMES_SESSION_TOKEN__ = 'test-session'
   bootstrap.__HERMES_BASE_PATH__ = '/hermes'
+  seedWebappSession('test-session')
   window.history.replaceState(null, '', '/hermes?profile=active#/session-1')
 })
 
 afterEach(() => {
   Reflect.deleteProperty(window, 'hermesDesktop')
+  delete bootstrap.__HERMES_AUTH_REQUIRED__
   delete bootstrap.__HERMES_BASE_PATH__
-  delete bootstrap.__HERMES_SESSION_TOKEN__
+  clearWebappSession()
   document.documentElement.removeAttribute('data-hermes-desktop-host')
   window.localStorage.clear()
   window.history.replaceState(null, '', '/#/')
@@ -63,6 +65,8 @@ it('persists the default separately from the active chat and synchronizes only t
 })
 
 it('opens the requested profile on this host without carrying another session or spectator flags', async () => {
+  // A gated host opens the window directly; a launch-link tab hands it a session first.
+  bootstrap.__HERMES_AUTH_REQUIRED__ = true
   window.history.replaceState(null, '', '/hermes?profile=active&win=secondary&watch=1#/session-1')
   const open = vi.spyOn(window, 'open').mockImplementation(() => null)
   expect(installBrowserDesktopBridge()).toBe(true)
