@@ -7,6 +7,10 @@ lasting verdict to the browser, and restart an owner running other code once, th
 """
 import asyncio
 import logging
+import os
+import threading
+from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -88,3 +92,85 @@ def test_an_owner_running_other_code_is_restarted_once_then_attached_as_is(ladde
     state['owner'] = _endpoint(home, code_sha=None)
     asyncio.run(owner.owner_endpoint(home))
     assert calls['restart'] == ['default']
+
+
+def _canon(path):
+    return os.path.normcase(str(Path(path).resolve()))
+
+
+@pytest.fixture
+def host(monkeypatch, tmp_path):
+    """A Hermes root with a plain named profile, one whose folder is a link to storage outside the
+    root, and one that opts out of the multiplexer. Discovery answers as main's does: the default
+    gateway serves ``<root>/profiles/<name>`` judged by the folder's resolved path. Ensure records
+    every home it is asked to start and blocks until ``release`` is set."""
+    root = tmp_path / 'hermes'
+    (root / 'profiles').mkdir(parents=True)
+    (root / 'config.yaml').write_text('model:\n  default: x\n', encoding='utf-8')
+    plain = root / 'profiles' / 'beta'
+    plain.mkdir()
+    outside = tmp_path / 'other-disk' / 'linked'
+    outside.mkdir(parents=True)
+    linked = root / 'profiles' / 'linked'
+    if os.name == 'nt':
+        import _winapi
+        _winapi.CreateJunction(str(outside), str(linked))
+    else:
+        linked.symlink_to(outside, target_is_directory=True)
+    standalone = root / 'profiles' / 'solo'
+    standalone.mkdir()
+    (standalone / 'config.yaml').write_text('gateway:\n  standalone: true\n', encoding='utf-8')
+
+    running = set()
+    ensured = []
+    release = threading.Event()
+    release.set()
+
+    def served(home):
+        canon = Path(_canon(home))
+        return canon == Path(_canon(root)) or canon.parent == Path(_canon(root / 'profiles'))
+
+    def discover(home, timeout=2.0):
+        if _canon(home) in running or (_canon(root) in running and served(home) and _canon(home) != _canon(standalone)):
+            return GatewayDiscovery('ready', _endpoint(home))
+        return GatewayDiscovery('absent')
+
+    def ensure(home, *, timeout=60.0, idle_exit=False):
+        ensured.append(_canon(home))
+        release.wait(5)
+        running.add(_canon(home))
+        return GatewayDiscovery('ready', _endpoint(home))
+
+    monkeypatch.setattr(gateway_runtime, 'discover_gateway_endpoint', discover)
+    monkeypatch.setattr(gateway_runtime, 'ensure_gateway_runtime', ensure)
+    monkeypatch.setattr(version_info, 'get_code_identity', lambda refresh=False: {'sha': 'same-code'})
+    monkeypatch.setattr(owner, '_restarts', {})
+    monkeypatch.setattr(owner, '_warned_unsupervised', set())
+    return SimpleNamespace(root=root, plain=plain, linked=linked, standalone=standalone,
+                           ensured=ensured, release=release)
+
+
+def test_a_profile_the_default_gateway_serves_never_gets_a_gateway_of_its_own(host):
+    asyncio.run(owner.owner_endpoint(host.plain))
+    # The linked folder resolves outside the root, so the default gateway cannot answer for it; that
+    # is this profile's error, and starting a second owner for it would stop the default gateway.
+    with pytest.raises(owner.GatewayAttachError):
+        asyncio.run(owner.owner_endpoint(host.linked))
+    assert set(host.ensured) == {_canon(host.root)}
+
+
+def test_profiles_dialled_together_share_one_gateway_start(host):
+    host.release.clear()
+
+    async def boot():  # the browser's boot asks for the primary and every profile at once
+        return await asyncio.gather(owner.owner_endpoint(host.root), owner.owner_endpoint(host.root),
+                                    owner.owner_endpoint(host.plain))
+
+    threading.Timer(0.5, host.release.set).start()
+    assert len(asyncio.run(boot())) == 3
+    assert host.ensured == [_canon(host.root)]
+
+
+def test_a_standalone_profile_still_starts_its_own_gateway(host):
+    asyncio.run(owner.owner_endpoint(host.standalone))
+    assert host.ensured == [_canon(host.standalone)]

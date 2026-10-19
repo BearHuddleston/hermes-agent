@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import subprocess
 import sys
 import threading
@@ -23,6 +24,7 @@ _RESTART_TIMEOUT_S = 15 * 60
 _restarts: dict[tuple, threading.Event] = {}
 _restarts_lock = threading.Lock()
 _warned_unsupervised: set[str] = set()
+_ensuring: dict[str, asyncio.Future] = {}
 
 
 class GatewayAttachError(RuntimeError):
@@ -37,15 +39,23 @@ class GatewayAttachError(RuntimeError):
 
 
 async def owner_endpoint(home: Path):
-    """The ready owner serving *home*, started if absent; raises :class:`GatewayAttachError`."""
-    from hermes_cli.gateway_runtime import (
-        attachable, discover_gateway_endpoint, ensure_gateway_runtime, gateway_profile_home,
-    )
+    """The ready owner serving *home*, started if absent; raises :class:`GatewayAttachError`.
+
+    A named profile the default gateway serves is routed the way Desktop routes it: when nothing
+    answers for it, the default gateway is started, never a gateway of the profile's own. The
+    choice is made from the profile's ``profiles/<name>`` path, because a profile folder that links
+    to storage elsewhere resolves outside the root, and a second owner started for it would stop
+    the default gateway from reserving its profiles."""
+    from hermes_cli.gateway_runtime import attachable, discover_gateway_endpoint, gateway_profile_home
+    from hermes_cli.gateway_runtime_multiplex import implied_host_root
+    host = implied_host_root(Path(home))
     home = gateway_profile_home(home)
     result = await asyncio.to_thread(discover_gateway_endpoint, home)
     started = result.state == "absent"
     if not attachable(result):
-        result = await asyncio.to_thread(ensure_gateway_runtime, home, idle_exit=False)
+        result = await _ensure_once(host or home)
+        if host is not None and attachable(result):
+            result = await asyncio.to_thread(discover_gateway_endpoint, home)
     if not attachable(result):
         raise GatewayAttachError(result.state, result.reason_code, result.detail)
     endpoint = result.endpoint
@@ -60,6 +70,22 @@ async def owner_endpoint(home: Path):
                                  "The gateway serving this profile predates browser attach; restart it on this "
                                  "Hermes version (`hermes gateway restart`).")
     return endpoint
+
+
+async def _ensure_once(home: Path):
+    """``ensure_gateway_runtime`` for *home*, shared by every request that needs it meanwhile.
+
+    A browser's boot asks for the primary and every profile at once; each ensure that finds no
+    owner starts one, the extras exit with errors, and their requests answer 503."""
+    from hermes_cli.gateway_runtime import ensure_gateway_runtime
+    key = os.path.normcase(str(home))
+    pending = _ensuring.get(key)
+    if pending is None:
+        pending = _ensuring[key] = asyncio.ensure_future(
+            asyncio.to_thread(ensure_gateway_runtime, home, idle_exit=False))
+        pending.add_done_callback(lambda _done: _ensuring.pop(key, None))
+    # Shielded: a browser that leaves mid-start does not cancel the start other requests wait on.
+    return await asyncio.shield(pending)
 
 
 def _owner_profile(endpoint) -> str | None:
