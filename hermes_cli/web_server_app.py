@@ -124,10 +124,9 @@ async def standalone_lifespan(app: "FastAPI"):
         except Exception:
             logger.exception("Desktop startup: orphan gateway reap failed")
 
-    # Desktop-spawned backends and standalone Webapp fire cron jobs themselves: no
-    # gateway runs their scheduler. Webapp reuses the profile-aware ticker without
-    # adopting Electron's gateway cleanup; plain dashboard relies on its own gateway.
-    if desktop_owned or policy(app.state).cron_ticker:
+    # Desktop-spawned backends fire cron jobs themselves: no gateway runs their scheduler.
+    # Plain dashboard relies on its own gateway; the Webapp attaches to one (attach_lifespan).
+    if desktop_owned:
         cron_stop = threading.Event()
         cron_thread = threading.Thread(
             target=_start_desktop_cron_ticker,
@@ -238,7 +237,55 @@ async def http_lifespan(app: FastAPI):
 
 
 @asynccontextmanager
+async def attach_lifespan(app: FastAPI):
+    """A gateway-attached Webapp: the profile's gateway owns turns, rooms, cron, inference
+    services and onboarding (``webapp_gateway_relay``). This server keeps only what is its own: its
+    read-only store probes, PTY reaper, host shells and self-test. It never reaps or stops a
+    gateway, whatever launched it: that gateway is the owner it attaches to."""
+    from gateway.code_skew import record_boot_fingerprint
+    from hermes_cli.web_host_terminal_sessions import host_terminal_lifespan
+    from hermes_cli.web_server import (
+        _dashboard_selftest_loop, _eager_reconcile_own_session_db, _probe_install_before_state_db,
+    )
+    from hermes_cli.web_server_chat import PTY_REGISTRY
+    from hermes_cli.web_server_surface import policy
+
+    app.state.event_channels = {}
+    app.state.event_lock = asyncio.Lock()
+    app.state.pty_active_session_files = {}
+    app.state.chat_argv_lock = asyncio.Lock()
+    _probe_install_before_state_db()
+    # Read-only first (#140315): the owner, not this view, upgrades a store it holds. Joined at exit.
+    from agent.memory_provider import spawn_context_thread
+    eager_reconcile_thread = spawn_context_thread(_eager_reconcile_own_session_db, name="statedb-eager-reconcile",
+                                                  daemon=False)
+    eager_reconcile_thread.start()
+    record_boot_fingerprint()
+    PTY_REGISTRY._closed = False  # a prior lifespan's close_all() refuses spawns until reopened
+    tasks = [asyncio.create_task(run_reaper(PTY_REGISTRY), name="webapp-pty-reaper"),
+             asyncio.create_task(_dashboard_selftest_loop(), name="webapp-selftest")]
+    host_terminals = host_terminal_lifespan(app) if policy(app.state).host_terminal else nullcontext()
+    await host_terminals.__aenter__()
+    try:
+        yield
+    finally:
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        eager_reconcile_thread.join()
+        await PTY_REGISTRY.close_all()
+        await host_terminals.__aexit__(None, None, None)
+        _unlink_pty_markers(app)
+
+
+@asynccontextmanager
 async def app_lifespan(app: FastAPI):
-    lifespan = http_lifespan if getattr(app.state, "gateway_runner", None) is not None else standalone_lifespan
+    from hermes_cli.web_server_surface import policy
+    if getattr(app.state, "gateway_runner", None) is not None:
+        lifespan = http_lifespan
+    elif policy(app.state).gateway_attach:
+        lifespan = attach_lifespan
+    else:
+        lifespan = standalone_lifespan
     async with lifespan(app):
         yield

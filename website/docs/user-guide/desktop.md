@@ -104,6 +104,28 @@ an error without navigating away; open the image in a separate tab to save it
 instead. These limits do not apply to browser-managed same-origin file downloads,
 inline media streams, blob/data URLs, or native Electron downloads.
 
+### Webapp chats run on the profile's gateway
+
+Chats in the Webapp run on the profile's gateway: the same process that serves
+messaging, scheduled jobs and the native Desktop, so every surface sees one
+conversation with one queue. The Webapp serves the page, signs you in, and
+relays the browser's live connection; the browser never connects to the gateway
+directly.
+
+- If no gateway is running, the Webapp starts one (your installed gateway
+  service, if there is one). The gateway keeps running when the Webapp stops. On
+  a server, install the gateway as its own service (`hermes gateway install`) so
+  it does not live inside the Webapp's service.
+- Run the Webapp as the same OS user as the gateway.
+- A gateway still running an older Hermes is restarted once onto this version
+  when the Webapp attaches, as the native Desktop does.
+- The browser acts as the account you signed in with, not as the host's OS
+  user. Chats written before the gateway owned sessions show their history but
+  cannot be continued from the browser until they are adopted: run
+  `hermes sessions adopt` once on the host (`hermes -p <profile> sessions adopt`
+  for another profile), or open them once in the native Desktop, TUI or CLI.
+  Store-wide prune stays a host action.
+
 ### Terminal continuity in Webapp
 
 Refreshing the page or temporarily losing the browser connection detaches the

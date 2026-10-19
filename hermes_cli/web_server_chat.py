@@ -236,8 +236,7 @@ def _ws_auth_reason(ws: WebSocket, *, allow_internal: bool = False) -> tuple[Opt
         # Lazy import — keeps this function importable in test harnesses
         # that don't bring in the dashboard_auth layer.
         from hermes_cli.dashboard_auth.audit import AuditEvent, audit_log
-        from hermes_cli.dashboard_auth.ws_tickets import (
-            TicketInvalid, consume_internal_credential, consume_ticket)
+        from hermes_cli.dashboard_auth.ws_tickets import TicketInvalid, consume_internal_credential
 
         def _reject(reason: str) -> None:
             audit_log(
@@ -267,28 +266,9 @@ def _ws_auth_reason(ws: WebSocket, *, allow_internal: bool = False) -> tuple[Opt
                 _reject(f"internal: {exc}")
                 return "internal_invalid", "internal"
 
-        protocol_ticket, protocol_reason = _gateway_ws_ticket_from_subprotocol(ws)
-        if protocol_reason == "invalid":
-            return "ticket_invalid", "ticket-subprotocol"
-        ticket = protocol_ticket or ws.query_params.get("ticket", "")
-        if ticket:
-            try:
-                info = consume_ticket(ticket)
-                if info.get("provider") == "bot-desktop":
-                    # A display ticket admits one RFB bridge on /api/display/ws (a watch-only
-                    # capability handed to a screen viewer); it must not double as a login here.
-                    raise TicketInvalid("display ticket presented as a gateway login")
-                _stamp_identity(info)
-                if protocol_ticket:
-                    # Select only the stable public protocol during accept. The
-                    # ticket-bearing protocol is a credential and must never be
-                    # reflected back to the browser or retained after admission.
-                    ws._hermes_ws_subprotocol = _GATEWAY_WS_PROTOCOL
-                    return None, "ticket-subprotocol"
-                return None, "ticket"
-            except TicketInvalid as exc:
-                _reject(str(exc))
-                return "ticket_invalid", "ticket"
+        consumed = _consume_ws_ticket(ws, _reject)
+        if consumed is not None:
+            return consumed
 
         # A user session access token (``?token=``) is verified against the
         # dashboard auth session providers — the SAME ``verify_session`` seam
@@ -337,12 +317,53 @@ def _ws_auth_reason(ws: WebSocket, *, allow_internal: bool = False) -> tuple[Opt
 
         return "no_credential", "none"
 
+    # Loopback: a one-use ticket the Webapp minted for the session-token owner (its gateway socket),
+    # else the legacy ``?token=``.
+    consumed = _consume_ws_ticket(ws, lambda reason: None)
+    if consumed is not None:
+        return consumed
     token = ws.query_params.get("token", "")
     if not token:
         return "no_credential", "none"
     if hmac.compare_digest(token.encode(), _SESSION_TOKEN.encode()):
         return None, "token"
     return "token_mismatch", "token"
+
+
+def _consume_ws_ticket(ws: WebSocket, reject) -> Optional[tuple[Optional[str], str]]:
+    """A one-use ticket offered as the ``hermes-gateway-ticket.`` subprotocol or ``?ticket=``:
+    ``(reason, credential)`` once judged, or None when the upgrade presents none. An accepted ticket
+    stamps the server-minted identity (and, for a Webapp gateway ticket, the gateway home its route
+    ensured) onto the socket; the client never supplies either through RPC params."""
+    from hermes_cli.dashboard_auth.ws_tickets import TicketInvalid, consume_ticket
+    protocol_ticket, protocol_reason = _gateway_ws_ticket_from_subprotocol(ws)
+    if protocol_reason == "invalid":
+        return "ticket_invalid", "ticket-subprotocol"
+    ticket = protocol_ticket or ws.query_params.get("ticket", "")
+    if not ticket:
+        return None
+    try:
+        info = consume_ticket(ticket)
+    except TicketInvalid as exc:
+        reject(str(exc))
+        return "ticket_invalid", "ticket"
+    if info.get("provider") == "bot-desktop":
+        # A display ticket admits one RFB bridge on /api/display/ws (a watch-only capability handed
+        # to a screen viewer); it must not double as a login here.
+        reject("display ticket presented as a gateway login")
+        return "ticket_invalid", "ticket"
+    # Only identity fields are carried; bookkeeping such as ``minted_at`` is not part of it.
+    ws._hermes_auth_identity = {"user_id": info.get("user_id"), "provider": info.get("provider")}
+    if info.get("issuer"):
+        ws._hermes_auth_identity["issuer"] = info["issuer"]
+    if info.get("gateway_home"):
+        ws._hermes_gateway_home = info["gateway_home"]
+    if not protocol_ticket:
+        return None, "ticket"
+    # Select only the stable public protocol during accept. The ticket-bearing protocol is a
+    # credential and must never be reflected back to the browser or retained after admission.
+    ws._hermes_ws_subprotocol = _GATEWAY_WS_PROTOCOL
+    return None, "ticket-subprotocol"
 
 
 def _ws_auth_ok(ws: WebSocket, *, allow_internal: bool = False) -> bool:

@@ -1,4 +1,9 @@
-"""Scheduler ownership belongs to the backend surface, not gateway ownership."""
+"""Scheduler ownership belongs to the backend surface, not gateway ownership.
+
+A Desktop-spawned backend fires cron itself; a plain dashboard leaves it to its gateway. The Webapp
+attaches to its profile's gateway (``attach_lifespan``): that gateway runs cron, rooms and inference
+services, so the Webapp starts none of them and never reaps or stops a gateway, whoever launched it.
+"""
 
 import asyncio
 import os
@@ -10,16 +15,16 @@ import pytest
 
 
 @pytest.mark.parametrize(
-    "surface, desktop, owns_scheduler",
+    "surface, desktop, owns_scheduler, manages_gateway",
     [
-        ("webapp", False, True),
-        ("dashboard", True, True),
-        ("webapp", True, True),
-        ("dashboard", False, False),
+        ("webapp", False, False, False),
+        ("dashboard", True, True, True),
+        ("webapp", True, False, False),
+        ("dashboard", False, False, False),
     ],
 )
 def test_lifespan_owns_scheduler_without_adopting_native_gateway(
-    monkeypatch, tmp_path, surface, desktop, owns_scheduler
+    monkeypatch, tmp_path, surface, desktop, owns_scheduler, manages_gateway
 ):
     from cron import scheduler_provider
     from hermes_cli import gateway, web_server, web_server_app, web_server_chat
@@ -51,9 +56,10 @@ def test_lifespan_owns_scheduler_without_adopting_native_gateway(
     monkeypatch.setattr(scheduler_provider, "resolve_cron_scheduler", lambda: provider)
     monkeypatch.setattr(web_server, "_eager_reconcile_own_session_db", lambda: None)
     monkeypatch.setattr(web_server, "_warm_gateway_module", lambda: None)
-    monkeypatch.setattr(methods_groups, "start_hosted_room_service", lambda: None)
+    hosted = []
+    monkeypatch.setattr(methods_groups, "start_hosted_room_service", lambda: hosted.append("rooms"))
     monkeypatch.setattr(methods_groups, "stop_hosted_room_service", lambda **kw: None)
-    monkeypatch.setattr(bootstrap, "ensure_local_runtime", lambda config: None)
+    monkeypatch.setattr(bootstrap, "ensure_local_runtime", lambda config: hosted.append("local-runtime"))
     monkeypatch.setattr(bootstrap, "shutdown_local_runtime", lambda: None)
     monkeypatch.setattr(web_server_chat, "PTY_REGISTRY", SimpleNamespace(close_all=AsyncMock()))
 
@@ -77,7 +83,7 @@ def test_lifespan_owns_scheduler_without_adopting_native_gateway(
                 assert not starts[0].is_set()
             else:
                 assert not starts
-            assert reap.call_count == int(desktop)
+            assert reap.call_count == int(manages_gateway)
             assert not terminate.called
             assert os.getenv("HERMES_DESKTOP") == ("1" if desktop else None)
 
@@ -85,4 +91,7 @@ def test_lifespan_owns_scheduler_without_adopting_native_gateway(
     if owns_scheduler:
         assert starts[0].is_set(), "backend shutdown did not signal its scheduler"
         assert stopped.wait(2), "scheduler did not observe backend shutdown"
-    assert terminate.call_count == int(desktop)
+    assert terminate.call_count == int(manages_gateway)
+    if surface == "webapp":
+        # Rooms and the managed local runtime belong to the gateway this Webapp attaches to.
+        assert hosted == []

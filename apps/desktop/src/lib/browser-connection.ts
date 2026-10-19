@@ -3,12 +3,12 @@ import { LOCAL_CONNECTION_ID } from '@hermes/shared'
 import type { HermesApiRequest, HermesConnection } from '@/global'
 import { WEBAPP_LAUNCH_REQUIRED } from '@/lib/browser-launch-session'
 import {
-  authenticatedWebsocketUrl,
   type BrowserBootstrap,
   BrowserReauthRequiredError,
   endpointUrl,
-  navigateToBrowserLogin,
-  websocketUrl
+  gatewaySocketUrl,
+  gatewayWebsocketUrl,
+  navigateToBrowserLogin
 } from '@/lib/browser-transport'
 import { windowProfileOverride } from '@/store/windows'
 
@@ -40,9 +40,9 @@ function connectionFor(bootstrap: BrowserBootstrap, profile?: null | string): He
     source: 'settings',
     token: bootstrap.token,
     windowButtonPosition: null,
-    wsUrl: bootstrap.authRequired
-      ? ''
-      : websocketUrl(bootstrap.basePath, '/api/ws', { token: bootstrap.token }, profile)
+    // The gateway's canonical socket, relayed by the Webapp: credential-free here, every dial
+    // mints its own ticket (getGatewayWsUrl). `native_dial` selects the canonical contract.
+    wsUrl: gatewaySocketUrl(bootstrap, profile)
   }
 }
 
@@ -96,7 +96,7 @@ export function createBrowserConnectionBridge({ api, bootstrap }: BrowserConnect
     try {
       return {
         ok: true as const,
-        wsUrl: await authenticatedWebsocketUrl(bootstrap, '/api/ws', profile)
+        wsUrl: await gatewayWebsocketUrl(bootstrap, profile)
       }
     } catch (error) {
       if (error instanceof BrowserReauthRequiredError) {

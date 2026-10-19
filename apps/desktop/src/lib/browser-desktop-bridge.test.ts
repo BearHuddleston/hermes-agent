@@ -107,7 +107,11 @@ describe('browser-hosted Desktop bridge', () => {
     expect(connection.authMode).toBe('oauth')
     expect(connection.mode).toBe('remote')
     expect(connection.token).toBe('')
-    expect(connection.wsUrl).toBe('')
+    // The gateway's canonical socket, relayed by the Webapp: no credential in the descriptor.
+    const ws = new URL(connection.wsUrl)
+    expect(ws.pathname).toBe('/hermes/api/ws')
+    expect(ws.searchParams.get('native_dial')).toBe('browser')
+    expect(ws.searchParams.has('ticket') || ws.searchParams.has('token')).toBe(false)
   })
 
   // About renders `Version <appVersion>` / `v<appVersion>`: it must carry the
@@ -131,7 +135,7 @@ describe('browser-hosted Desktop bridge', () => {
     await expect(win.hermesDesktop!.getVersion()).resolves.toMatchObject({ appVersion: '' })
   })
 
-  it('mints a fresh single-use ticket for each gated WebSocket URL', async () => {
+  it('mints a fresh gateway ticket for each WebSocket dial', async () => {
     const win = mutableWindow()
     win.__HERMES_AUTH_REQUIRED__ = true
     win.__HERMES_BASE_PATH__ = '/hermes'
@@ -154,11 +158,17 @@ describe('browser-hosted Desktop bridge', () => {
     const firstUrl = new URL(wsUrl(first))
     const secondUrl = new URL(wsUrl(second))
     expect(firstUrl.pathname).toBe('/hermes/api/ws')
+    // native_dial: the client speaks the gateway's canonical contract and moves the ticket into
+    // the socket's subprotocol.
+    expect(firstUrl.searchParams.get('native_dial')).toBe('browser')
     expect(firstUrl.searchParams.get('ticket')).toBe('ticket-one')
     expect(firstUrl.searchParams.has('token')).toBe(false)
     expect(firstUrl.searchParams.get('profile')).toBe('worker-a')
     expect(secondUrl.searchParams.get('ticket')).toBe('ticket-two')
     expect(fetchMock).toHaveBeenCalledTimes(2)
+    const minted = fetchMock.mock.calls.map(([url]) => url as URL)
+    expect(minted.every(url => url.pathname === '/hermes/api/webapp/gateway-ticket')).toBe(true)
+    expect(minted.every(url => url.searchParams.get('profile') === 'worker-a')).toBe(true)
     expect(fetchMock.mock.calls.every(([, init]) => init?.method === 'POST')).toBe(true)
     expect(fetchMock.mock.calls.every(([, init]) => init?.credentials === 'same-origin')).toBe(true)
   })
@@ -392,11 +402,13 @@ describe('browser-hosted Desktop bridge', () => {
     win.__HERMES_BASE_PATH__ = '/hermes'
     vi.stubGlobal(
       'fetch',
-      vi.fn().mockImplementation(async () =>
+      vi.fn().mockImplementation(async (url: URL) =>
         new Response(
-          JSON.stringify({
-            profiles: [{ name: 'default' }, { name: 'research' }]
-          }),
+          JSON.stringify(
+            url.pathname.endsWith('/api/webapp/gateway-ticket')
+              ? { ticket: 'research-ticket' }
+              : { profiles: [{ name: 'default' }, { name: 'research' }] }
+          ),
           { status: 200 }
         )
       )
@@ -962,7 +974,29 @@ describe('browser-hosted Desktop bridge', () => {
     expect(connection.mode).toBe('remote')
     expect(connection.profile).toBe('worker-a')
     expect(ws.pathname).toBe('/api/ws')
-    expect(ws.searchParams.get('token')).toBe('served-token')
+    expect(ws.searchParams.get('native_dial')).toBe('browser')
+    // The session token never rides the socket URL: every dial mints its own one-use ticket.
+    expect(ws.searchParams.has('token')).toBe(false)
     expect(ws.searchParams.get('profile')).toBe('worker-a')
+  })
+
+  it("surfaces the gateway's own verdict when the profile's gateway cannot take the socket", async () => {
+    const win = mutableWindow()
+    win.__HERMES_SESSION_TOKEN__ = 'served-token'
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue(
+        new Response(
+          JSON.stringify({ detail: 'still booting after 60s', reason_code: 'deadline', state: 'starting' }),
+          { status: 503 }
+        )
+      )
+    )
+
+    expect(installBrowserDesktopBridge()).toBe(true)
+
+    await expect(win.hermesDesktop!.getGatewayWsUrl('worker-a')).rejects.toThrow(
+      'Gateway starting (deadline). still booting after 60s'
+    )
   })
 })

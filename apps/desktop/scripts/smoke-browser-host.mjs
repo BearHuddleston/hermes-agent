@@ -314,6 +314,10 @@ try {
     client.on('Network.requestWillBeSent', params => {
       requestUrls.set(params.requestId, params.request?.url || '')
     })
+    const gatewaySockets = []
+    client.on('Network.webSocketCreated', params => {
+      if (String(params.url || '').includes('/api/ws')) gatewaySockets.push(new URL(params.url))
+    })
     client.on('Network.responseReceived', params => {
       if (params.type === 'Document' && params.response?.url === documentUrl.href) httpStatus = params.response.status
     })
@@ -372,6 +376,14 @@ try {
     if (state.rootError) failures.push('renderer reached its root error boundary')
     if (!allowGatewayFailure && state.desktopBootFailed)
       failures.push('Desktop could not connect to the Hermes gateway')
+    // The Webapp relays the browser to its profile's gateway: the live socket speaks the canonical
+    // contract (native_dial) and never carries the session token.
+    if (!allowGatewayFailure && state.privateSession) {
+      if (!gatewaySockets.some(socket => socket.searchParams.has('native_dial')))
+        failures.push(`Webapp gateway socket is not the canonical relay: ${gatewaySockets.map(String).join(', ') || 'none'}`)
+      if (gatewaySockets.some(socket => socket.searchParams.has('token')))
+        failures.push('Webapp gateway socket carried the session token in its URL')
+    }
     if (viewport.width === 1280 && !layoutState.ok) {
       failures.push(`configured layout reverted after leaving edit mode: ${JSON.stringify(layoutState)}`)
     }

@@ -142,6 +142,33 @@ async def issue_window_ticket(request: Request):
     return JSONResponse({"ticket": ticket}, headers={"Cache-Control": "no-store"})
 
 
+@router.post("/api/webapp/gateway-ticket")
+async def issue_gateway_ticket(request: Request, profile: str | None = None):
+    """The browser's one-use ticket for its live socket to *profile*'s gateway.
+
+    Minted only once that owner is reachable (started if absent), so a lasting cause reaches the
+    browser as this 503's verdict rather than as a socket that keeps closing; the ticket pins the
+    home so ``/api/ws`` dials exactly that owner, for this caller's login."""
+    from hermes_cli.dashboard_auth.ws_tickets import TTL_SECONDS, mint_ticket
+    from hermes_cli.web_server_cron import _cron_profile_home
+    from hermes_cli.web_server_surface import policy
+    from hermes_cli.webapp_gateway_owner import GatewayAttachError, owner_endpoint
+    from hermes_cli.webapp_gateway_relay import principal_identity
+
+    if not policy(request.app.state).gateway_attach:
+        raise HTTPException(404, "Gateway attach is unavailable on this surface")
+    identity = principal_identity(request)
+    home = _cron_profile_home(profile)[1]
+    no_store = {"Cache-Control": "no-store"}
+    try:
+        await owner_endpoint(home)
+    except GatewayAttachError as exc:
+        return JSONResponse(exc.verdict(), status_code=503, headers=no_store)
+    ticket = mint_ticket(user_id=identity["user_id"], provider=identity["provider"], issuer=identity["issuer"],
+                         extra={"gateway_home": str(home)})
+    return JSONResponse({"ticket": ticket, "ttl_seconds": TTL_SECONDS}, headers=no_store)
+
+
 @router.post("/webapp/window-session")
 async def redeem_window_ticket(request: Request):
     from hermes_cli.web_server import _SESSION_TOKEN

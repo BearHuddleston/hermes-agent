@@ -21,19 +21,20 @@ class SurfacePolicy:
     html_token: bool
     #: ``/api/host-terminal`` may open host shells (still gated per request).
     host_terminal: bool
-    #: Ticks cron in-process: no gateway runs this surface's scheduled jobs.
-    cron_ticker: bool
     #: An unauthenticated start hands the operator a private launch link.
     launch_link: bool
+    #: Browser live sockets attach to the profile's canonical gateway through this server's relay
+    #: (``webapp_gateway_relay``); the gateway owns turns, cron and rooms, never this server.
+    gateway_attach: bool
 
 
 POLICIES: dict[str, SurfacePolicy] = {
     "serve": SurfacePolicy(
-        serves_spa=False, html_token=True, host_terminal=False, cron_ticker=False, launch_link=False),
+        serves_spa=False, html_token=True, host_terminal=False, launch_link=False, gateway_attach=False),
     "dashboard": SurfacePolicy(
-        serves_spa=True, html_token=True, host_terminal=False, cron_ticker=False, launch_link=False),
+        serves_spa=True, html_token=True, host_terminal=False, launch_link=False, gateway_attach=False),
     "webapp": SurfacePolicy(
-        serves_spa=True, html_token=False, host_terminal=True, cron_ticker=True, launch_link=True),
+        serves_spa=True, html_token=False, host_terminal=True, launch_link=True, gateway_attach=True),
 }
 
 

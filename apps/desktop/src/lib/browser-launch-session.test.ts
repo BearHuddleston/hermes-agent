@@ -39,7 +39,9 @@ it('uses one private session for REST, RPC and terminal across reload without lo
   }
 
   vi.stubGlobal('WebSocket', Socket)
-  const fetchMock = vi.fn().mockResolvedValue(new Response('{"ok":true}', { status: 200 }))
+  const fetchMock = vi.fn().mockImplementation(async (url: URL) =>
+    new Response(url.pathname.endsWith('/api/webapp/gateway-ticket') ? '{"ticket":"rpc-ticket"}' : '{"ok":true}', { status: 200 })
+  )
   vi.stubGlobal('fetch', fetchMock)
   expect(installBrowserDesktopBridge()).toBe(true)
   expect(window.location.hash).toBe('')
@@ -48,7 +50,16 @@ it('uses one private session for REST, RPC and terminal across reload without lo
   await desktop.api({ path: '/api/fs/read-text' })
   expect(new Headers(fetchMock.mock.calls[0][1].headers).get('X-Hermes-Session-Token')).toBe(token)
   expect((await desktop.getConnection()).token).toBe(token)
-  expect(new URL((await desktop.getConnection()).wsUrl).searchParams.get('token')).toBe(token)
+  // RPC: the gateway socket's one-use ticket is minted over REST with the same private session;
+  // the session token itself never rides a socket URL.
+  expect(new URL((await desktop.getConnection()).wsUrl).searchParams.has('token')).toBe(false)
+  // As the boot dial does (resolveGatewayWsUrl): mint for the descriptor's own profile.
+  const rpc = await desktop.getGatewayWsUrl((await desktop.getConnection()).profile)
+  const rpcUrl = new URL(typeof rpc === 'string' ? rpc : rpc.ok ? rpc.wsUrl : '')
+  expect(rpcUrl.searchParams.get('ticket')).toBe('rpc-ticket')
+  expect(rpcUrl.searchParams.get('profile')).toBe('coder')
+  const mint = fetchMock.mock.calls.find(([url]) => (url as URL).pathname === '/one/api/webapp/gateway-ticket')!
+  expect(new Headers(mint[1].headers).get('X-Hermes-Session-Token')).toBe(token)
   await desktop.terminal.start({ cwd: '/work' })
   expect(urls[0].pathname).toBe('/one/api/host-terminal')
   expect(urls[0].searchParams.get('token')).toBe(token)

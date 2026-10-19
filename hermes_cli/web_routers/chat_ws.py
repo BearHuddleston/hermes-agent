@@ -632,6 +632,12 @@ async def pty_ws(ws: WebSocket) -> None:
 async def gateway_ws(ws: WebSocket) -> None:
     if not await _close_unless_sidecar_allowed(ws, allow_internal=True):
         return
+    from hermes_cli.web_server_surface import policy
+    if policy(ws.app.state).gateway_attach:
+        # The profile's gateway runs this socket's sessions (and their MCP servers); this server
+        # only relays it, as the login its upgrade gate just verified.
+        from hermes_cli.webapp_gateway_relay import relay_gateway_ws
+        return await relay_gateway_ws(ws)
     from hermes_cli.mcp_startup import start_deferred_mcp_discovery_now
     from tui_gateway.ws import handle_ws
 

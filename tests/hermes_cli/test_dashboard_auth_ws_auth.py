@@ -235,6 +235,26 @@ class TestWsAuthOkLoopback:
         ws = _fake_ws(query={"token": web_server._SESSION_TOKEN})
         assert _web_server_chat._ws_auth_ok(ws) is True
 
+    def test_webapp_gateway_ticket_is_accepted_once_with_its_pinned_home(self, loopback_app):
+        """A gateway-attached Webapp on a loopback bind mints the browser's one-use socket ticket
+        (``POST /api/webapp/gateway-ticket``): the gate takes it once, keeps the gateway home the
+        route pinned, and selects only the public protocol. A Bot Desktop screen ticket is never a
+        login here either."""
+        ticket = mint_ticket(user_id="legacy-token-owner", provider="session-token",
+                             extra={"gateway_home": "/srv/hermes"})
+        protocols = (
+            _web_server_chat._GATEWAY_WS_PROTOCOL,
+            f"{_web_server_chat._GATEWAY_WS_TICKET_PROTOCOL_PREFIX}{ticket}",
+        )
+        ws_one = _fake_ws(query={}, path="/api/ws", protocols=protocols)
+        assert _web_server_chat._ws_auth_ok(ws_one) is True
+        assert ws_one._hermes_gateway_home == "/srv/hermes"
+        assert ws_one._hermes_auth_identity == {"user_id": "legacy-token-owner", "provider": "session-token"}
+        assert ws_one._hermes_ws_subprotocol == _web_server_chat._GATEWAY_WS_PROTOCOL
+        assert _web_server_chat._ws_auth_ok(_fake_ws(query={}, path="/api/ws", protocols=protocols)) is False
+        screen = mint_ticket(user_id="display:v", provider="bot-desktop", extra={"hermes_home": "/srv/hermes"})
+        assert _web_server_chat._ws_auth_ok(_fake_ws(query={"ticket": screen}, path="/api/ws")) is False
+
 
 class TestWsAuthOkGated:
     """Gate ON — ticket path only."""

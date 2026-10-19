@@ -263,9 +263,73 @@ export async function fileEndpointUrl(
   return url
 }
 
+/** Ensuring the gateway may start it (the server's ensure waits up to 60 s), like Electron's dial. */
+const GATEWAY_TICKET_TIMEOUT_MS = 75_000
+
+interface GatewayVerdict {
+  detail?: null | string
+  reason_code?: null | string
+  state?: string
+}
+
+function gatewayVerdictMessage(text: string): string {
+  let verdict: GatewayVerdict = {}
+
+  try {
+    verdict = JSON.parse(text) as GatewayVerdict
+  } catch {
+    return `Gateway unavailable: ${text}`
+  }
+
+  const reason = verdict.reason_code ? ` (${verdict.reason_code})` : ''
+  const detail = verdict.detail ? ` ${verdict.detail}` : ''
+
+  return `Gateway ${verdict.state || 'unavailable'}${reason}.${detail} Use hermes gateway status on the host to check it.`
+}
+
+/**
+ * The live socket to the profile's gateway, relayed by the Webapp (the browser cannot reach the
+ * gateway itself). Its one-use ticket is minted only once that gateway is reachable, so a lasting
+ * cause arrives here as the route's verdict; `native_dial` makes the client speak the gateway's
+ * canonical contract and move the ticket into the socket's subprotocol.
+ */
+export async function gatewayWebsocketUrl(bootstrap: BrowserBootstrap, profile?: null | string): Promise<string> {
+  const { response, text } = await browserFetch(bootstrap, {
+    method: 'POST',
+    path: '/api/webapp/gateway-ticket',
+    profile,
+    timeoutMs: GATEWAY_TICKET_TIMEOUT_MS
+  })
+
+  if (response.status === 503) {
+    throw new Error(gatewayVerdictMessage(text))
+  }
+
+  if (!response.ok) {
+    throw new Error(`${response.status}: ${text || response.statusText}`)
+  }
+
+  const ticket = String((JSON.parse(text) as { ticket?: string }).ticket || '').trim()
+
+  if (!ticket) {throw new Error('Hermes did not return a gateway ticket')}
+
+  const url = new URL(gatewaySocketUrl(bootstrap, profile))
+  url.searchParams.set('ticket', ticket)
+
+  return url.toString()
+}
+
+/** The credential-free canonical socket URL a browser connection descriptor reports. */
+export function gatewaySocketUrl(bootstrap: BrowserBootstrap, profile?: null | string): string {
+  const url = new URL(websocketUrl(bootstrap.basePath, '/api/ws', {}, profile))
+  url.searchParams.set('native_dial', 'browser')
+
+  return url.toString()
+}
+
 export async function authenticatedWebsocketUrl(
   bootstrap: BrowserBootstrap,
-  path: '/api/host-terminal' | '/api/ws',
+  path: '/api/host-terminal',
   profile?: null | string
 ): Promise<string> {
   if (!bootstrap.authRequired) {
