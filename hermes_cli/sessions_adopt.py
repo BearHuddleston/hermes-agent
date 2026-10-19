@@ -57,17 +57,19 @@ def adoptable_sessions(path) -> list[dict]:
 
 async def adopt_sessions(rows, *, report=print) -> tuple[int, Counter]:
     """Resume each row once over this host's native connection (the owner adopts it), then detach
-    without ending it. ``(adopted, skipped-by-owner-reason)``; a row the owner refuses is skipped,
+    without ending it. ``(adopted, skipped-by-refusal)``; a row the owner refuses is skipped,
     never retried as another principal."""
     from hermes_cli.gateway_client import GatewayRPCError, connect_gateway
+    from hermes_cli.web_server_boundary import _DESKTOP_ATTACHMENT_WS_MAX_BYTES
 
     adopted, skipped = 0, Counter()
-    async with connect_gateway() as client:
+    # The owner answers a resume with the session's whole history; a long chat outgrows the default frame.
+    async with connect_gateway(max_size=_DESKTOP_ATTACHMENT_WS_MAX_BYTES) as client:
         for done, row in enumerate(rows, 1):
             try:
-                snapshot = await client.rpc('session.resume', session_id=row['id'], omit_messages=True)
+                snapshot = await client.rpc('session.resume', session_id=row['id'])
             except GatewayRPCError as exc:
-                skipped[str(exc)] += 1
+                skipped[_refusal(exc)] += 1
                 continue
             await client.rpc('session.detach', session_id=snapshot.get('session_id') or row['id'],
                              subscription_id=snapshot['subscription_id'])
@@ -81,6 +83,14 @@ _SKIP_HINTS = {
     'launch_credentials_unavailable': 'its saved model route is gone; open it once and pick a model',
     'not_found': 'not adoptable here (another identity or profile owns it)',
 }
+
+
+def _refusal(exc) -> str:
+    """One owner refusal as the report prints it: the reason code, then why. A field-level refusal
+    (a launch directory that no longer exists) names the field and the owner's bounded detail."""
+    reason, field, detail = str(exc), exc.data.get('field'), exc.data.get('detail')
+    why = _SKIP_HINTS.get(reason) or (f'{field}: {detail}' if field and detail else 'refused by the gateway')
+    return f'{reason} ({why})'
 
 
 def cmd_adopt(args) -> int:
@@ -109,8 +119,8 @@ def cmd_adopt(args) -> int:
         print('Error: ' + message, file=sys.stderr)
         return 1
     print(f'Adopted {adopted} chat(s).')
-    for reason, count in sorted(skipped.items()):
-        print(f"Skipped {count}: {reason} ({_SKIP_HINTS.get(reason, 'refused by the gateway')}).")
+    for refusal, count in sorted(skipped.items()):
+        print(f'Skipped {count}: {refusal}.')
     return 0
 
 

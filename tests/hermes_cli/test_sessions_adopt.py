@@ -42,12 +42,13 @@ def _adopt(capsys, *argv):
 async def _browser_resume(home, descriptor, sid):
     """What the Webapp's relay opens for the browser: an exposure socket as the logged-in user."""
     from websockets.asyncio.client import connect
+    from hermes_cli.web_server_boundary import _DESKTOP_ATTACHMENT_WS_MAX_BYTES
     from tests.gateway.test_normal_runtime_boot import control
     grant = control(home, 'session-ticket', {'profile_id': str(home.resolve()), 'instance_id': descriptor['instance_id'],
                                              'purpose': 'exposure', 'scope': 'host', 'subject': ALICE})
     url = descriptor['api_origin'].replace('http:', 'ws:') + '/api/ws'
     async with connect(url, subprotocols=['hermes-gateway-v1', 'hermes-gateway-ticket.' + grant['ticket']],
-                       proxy=None) as socket:
+                       proxy=None, max_size=_DESKTOP_ATTACHMENT_WS_MAX_BYTES) as socket:
         return await _rpc(socket, 'session.resume', session_id=sid)
 
 
@@ -72,3 +73,30 @@ def test_adopting_old_chats_lets_the_browser_login_continue_them(tmp_path, model
 
         status, out = _adopt(capsys)
         assert status == 0 and 'Nothing to adopt' in out, out
+
+
+def _seed_long_and_moved(home):
+    from hermes_state import SessionDB
+    db = SessionDB(db_path=home / 'state.db')
+    try:
+        # The owner's resume reply always carries the whole history: this one is over the 8 MiB a
+        # default native client accepts in one frame.
+        db.create_session('long-desktop', source='desktop', model='old-model', cwd=str(home))
+        db.append_message('long-desktop', role='user', content='x' * (9 * 1024 * 1024))
+        db.create_session('moved-desktop', source='desktop', model='old-model', cwd=str(home / 'deleted-worktree'))
+        db.append_message('moved-desktop', role='user', content='MOVED')
+        for sid in ('long-desktop', 'moved-desktop'):
+            db.end_session(sid, 'session_switch')
+    finally:
+        db.close()
+
+
+@pytest.mark.platforms("linux")
+def test_adopt_survives_a_long_history_and_names_what_the_owner_refused(tmp_path, model_peer, monkeypatch, capsys):
+    with running_owner(tmp_path, model_peer, prepare=_seed_long_and_moved) as (home, descriptor, _env):
+        monkeypatch.setenv('HERMES_HOME', str(home))
+        status, out = _adopt(capsys)
+        assert status == 0 and 'Adopted 1 chat(s).' in out, out
+        assert 'Skipped 1: invalid_params (cwd: must be an absolute path to an existing directory).' in out, out
+        resumed = asyncio.run(_browser_resume(home, descriptor, 'long-desktop'))
+        assert resumed.get('result', {}).get('session_id') == 'long-desktop', str(resumed)[:300]
