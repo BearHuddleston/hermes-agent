@@ -15,6 +15,9 @@ const documentUrl = new URL(url)
 documentUrl.hash = ''
 const allowGatewayFailure = process.env.HERMES_BROWSER_ALLOW_GATEWAY_FAILURE === '1'
 const requireTerminal = process.env.HERMES_BROWSER_REQUIRE_TERMINAL === '1'
+// A cold Webapp starts the profile's gateway on the first ticket mint, so its relayed socket can open
+// long after the shell paints (the renderer allows the mint 75 s).
+const GATEWAY_SOCKET_TIMEOUT_MS = 90_000
 
 function findExecutable() {
   const explicit = process.env.HERMES_BROWSER_EXECUTABLE?.trim()
@@ -338,6 +341,13 @@ try {
     await client.send('Page.navigate', { url })
     await domReady
     await sleep(4_000)
+    const socketDeadline = Date.now() + GATEWAY_SOCKET_TIMEOUT_MS
+    while (
+      !allowGatewayFailure &&
+      !gatewaySockets.some(socket => socket.searchParams.has('native_dial')) &&
+      Date.now() < socketDeadline
+    )
+      await sleep(250)
 
     // Mobile browser controls shrink the small viewport without changing the
     // legacy 100vh size. Apply this after navigation so Chromium recalculates
