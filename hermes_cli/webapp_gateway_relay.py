@@ -21,7 +21,6 @@ _log = logging.getLogger("hermes_cli.web_server")
 CLOSE_RELOAD = 4426
 #: Codes a peer receives but no endpoint may send; mapped before mirroring an owner close.
 _UNSENDABLE = {1005: 1000, 1006: 1012, 1015: 1012, 1004: 1011}
-_TOKEN_OWNER = {"user_id": "legacy-token-owner", "provider": "session-token", "issuer": ""}
 
 
 def principal_identity(request) -> dict:
@@ -35,7 +34,8 @@ def principal_identity(request) -> dict:
     if not getattr(request.app.state, "auth_required", False):
         from hermes_cli.web_server import _has_valid_session_token
         if _has_valid_session_token(request):
-            return dict(_TOKEN_OWNER)
+            from gateway.session_identity import SESSION_TOKEN_OWNER
+            return {**SESSION_TOKEN_OWNER, "issuer": ""}
     raise HTTPException(status_code=401, detail="Unauthorized")
 
 
@@ -90,7 +90,7 @@ async def relay_gateway_ws(ws) -> None:
     if getattr(ws, "_hermes_ws_subprotocol", None) != GATEWAY_WS_PROTOCOL or not home:
         await ws.close(code=CLOSE_RELOAD, reason="Reload: this Webapp now attaches to the gateway")
         return
-    identity = getattr(ws, "_hermes_auth_identity", None) or _TOKEN_OWNER
+    identity = ws._hermes_auth_identity  # stamped with the gateway home checked above (_consume_ws_ticket)
     # Every refusal is reported AFTER accept, so its code and reason reach the browser in a close
     # frame instead of an opaque failed handshake: 1013 retries (the renderer re-dials and the
     # ticket route explains a lasting cause), 4403 means the owner would not take this login.

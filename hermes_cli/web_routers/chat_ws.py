@@ -653,7 +653,8 @@ async def gateway_ws(ws: WebSocket) -> None:
     if authority is not None and identity is None:
         # The upgrade gate above has already verified the legacy token. Do not
         # infer owner permissions from an identityless connection downstream.
-        identity = {'user_id': 'legacy-token-owner', 'provider': 'session-token',
+        from gateway.session_identity import SESSION_TOKEN_OWNER
+        identity = {**SESSION_TOKEN_OWNER,
                     'profile_id': authority.profile_id, 'instance_id': authority.instance_id,
                     'capabilities': ['session:create', 'session:read', 'session:submit',
                                      'session:control', 'session:approve', 'session:respond']}
