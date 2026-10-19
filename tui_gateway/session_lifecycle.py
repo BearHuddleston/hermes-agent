@@ -649,9 +649,17 @@ def _pop_session_by_id(sid: str) -> dict | None:
 def _teardown_popped_session(
     session: dict | None, *, end_reason: str = "tui_close"
 ) -> bool:
-    """Finish a close after the caller has atomically detached the session."""
+    """Finish a close after the caller has atomically detached the session. True when there was one
+    to close: ``session.close`` reports ``closed`` from this, and False means the id was already gone."""
     if session is None:
         return False
+    _settle_and_teardown(session, end_reason=end_reason)
+    return True
+
+
+def _settle_and_teardown(session: dict, *, end_reason: str) -> bool:
+    """Give the session's turn and agent-build threads the bounded grace, then tear it down. Returns
+    whether they all settled in time; only profile retirement needs that answer."""
     settled = True
     if end_reason != "tui_shutdown":
         for label, thread in (
@@ -737,16 +745,20 @@ def retire_profile_home(
             logger.debug("failed closing launch profile SessionDB", exc_info=True)
             return 0
 
+    def _close_settled(sid: str) -> bool:
+        # The delete proceeds only when this closed the session AND its turn settled: a session another
+        # close took first may still be running, so it counts as unsettled too.
+        with _sessions_lock:
+            session = _pop_session_by_id(sid)
+        return session is not None and _settle_and_teardown(session, end_reason="profile_deleted")
+
     return _profile_lifecycle.retire_sessions(
         profile_home,
         profile_incarnation,
         launch_home=_hermes_home,
         sessions=_sessions,
         sessions_lock=_sessions_lock,
-        close_session=lambda sid: _close_session_by_id(
-            sid,
-            end_reason="profile_deleted",
-        ),
+        close_session=_close_settled,
         close_launch_db=_close_launch_db,
     )
 
