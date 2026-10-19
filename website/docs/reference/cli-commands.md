@@ -1783,6 +1783,7 @@ Subcommands:
 | `archive` | Bulk-archive (soft-hide, no deletion) sessions matching the same filters as `prune`. Requires at least one filter. |
 | `stats` | Show session-store statistics. |
 | `rename <session-id> <title>` | Set or change a session title. |
+| `adopt [--dry-run]` | Bring this profile's pre-gateway local chats (CLI, TUI and Desktop history written before the gateway owned sessions) under its gateway in one pass, so remote clients such as the Webapp can continue them. A native client on the host adopts a chat the first time it opens it; remote logins never make that first claim. Run it as the gateway's OS user (`hermes -p <profile> sessions adopt` for another profile); `--dry-run` only counts. Chats whose saved model route is gone are reported for you to open once and pick a model. |
 | `optimize` | Reclaim disk space: merge FTS5 index segments + VACUUM. Non-destructive — no session data changes. |
 | `optimize-storage` | Migrate the full-text search index to the compact v23 external-content layout; on large databases this reclaims a large fraction of `state.db`. |
 | `repair` | Repair a malformed `state.db` schema (e.g. `table messages_fts already exists`) so hidden sessions reappear; a backup is made first. |

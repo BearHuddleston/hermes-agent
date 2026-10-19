@@ -8,12 +8,6 @@ must not replace remote callers' credentials with its own native grant"), so the
 """
 import asyncio
 import json
-import os
-from pathlib import Path
-import signal
-import subprocess
-import sys
-import time
 from types import SimpleNamespace
 
 import pytest
@@ -139,49 +133,11 @@ async def _dial_owner(home, descriptor, **binding):
 def test_a_real_owner_attaches_an_exposure_socket_as_its_login(tmp_path, model_peer):
     """The owner's listener redeems an exposure ticket at the same WS boundary as a native one, and
     the socket it opens reads sessions but cannot run a native-owner verb the native socket can."""
-    from tests.gateway.test_normal_runtime_boot import control
-    home = tmp_path / 'state'
-    home.mkdir(mode=0o700)
-    user = tmp_path / 'user'
-    user.mkdir()
-    model_url = f'http://127.0.0.1:{model_peer.server_port}/v1'
-    (home / 'config.yaml').write_text(json.dumps({
-        'gateway': {'multiplex_profiles': False},
-        'model': {'provider': 'custom', 'default': 'local-wire-stub', 'base_url': model_url},
-        'auxiliary': {'title_generation': {'enabled': False}},
-    }))
-    root = Path(__file__).resolve().parents[2]
-    env = {k: os.environ[k] for k in ('PATH', 'LANG', 'TZ', 'TIRITH_ENABLED') if k in os.environ}
-    env.update(HOME=str(user), USERPROFILE=str(user), HERMES_HOME=str(home), PYTHONPATH=str(root),
-               PYTHONUNBUFFERED='1', OPENAI_API_KEY='loopback-only', OPENAI_BASE_URL=model_url)
-    with (tmp_path / 'gateway.log').open('w+') as log:
-        process = subprocess.Popen([sys.executable, '-m', 'gateway.run'], cwd=root, env=env,
-                                   stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT)
-        try:
-            descriptor, deadline = {}, time.monotonic() + 35
-            while process.poll() is None and time.monotonic() < deadline:
-                try:
-                    descriptor = control(home, 'identify')
-                    if descriptor.get('state') == 'ready':
-                        break
-                except (OSError, ValueError, AssertionError):
-                    pass
-                time.sleep(.1)
-            log.flush()
-            log.seek(0)
-            assert descriptor.get('state') == 'ready', (descriptor, log.read())
-            assert 'delegated-attach-v1' in descriptor['capabilities']
-            listed, pruned = asyncio.run(_dial_owner(home, descriptor, purpose='exposure', scope='host',
-                                                     subject=ALICE))
-            assert 'result' in listed, listed
-            assert pruned.get('error', {}).get('message') == 'permission_denied', pruned
-            _listed, native_pruned = asyncio.run(_dial_owner(home, descriptor, purpose='interactive'))
-            assert native_pruned.get('result', {}).get('deleted') == 0, native_pruned
-        finally:
-            if process.poll() is None:
-                process.send_signal(signal.SIGINT)
-                try:
-                    process.wait(timeout=20)
-                except subprocess.TimeoutExpired:
-                    process.kill()
-                    process.wait(timeout=5)
+    from tests.gateway.fixtures.owner_process import running_owner
+    with running_owner(tmp_path, model_peer) as (home, descriptor, _env):
+        assert 'delegated-attach-v1' in descriptor['capabilities']
+        listed, pruned = asyncio.run(_dial_owner(home, descriptor, purpose='exposure', scope='host', subject=ALICE))
+        assert 'result' in listed, listed
+        assert pruned.get('error', {}).get('message') == 'permission_denied', pruned
+        _listed, native_pruned = asyncio.run(_dial_owner(home, descriptor, purpose='interactive'))
+        assert native_pruned.get('result', {}).get('deleted') == 0, native_pruned
