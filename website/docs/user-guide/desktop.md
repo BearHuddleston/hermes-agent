@@ -152,8 +152,8 @@ Useful build/lifecycle flags:
 - `--skip-build` reuses `apps/desktop/dist-webapp`.
 - `--force-build` rebuilds even when the renderer's build receipt is current.
 - `--build-only` prepares the renderer without starting a server.
-- `--status` and `--stop` inspect or stop Webapp processes only; they do not
-  stop the native Desktop app's headless `hermes serve` backend.
+- `--status` and `--stop` inspect or stop Webapp processes only. They never stop
+  a gateway, including one the Webapp started, or a native Desktop backend.
 
 The renderer's npm dependencies install into `.build/webapp-workspace` in the
 checkout, separate from the native Desktop install, and are reinstalled only

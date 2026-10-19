@@ -1,6 +1,6 @@
 """Sessions in a named profile linked outside the Hermes root can open their store.
 
-A multiplexed server (the Webapp, the dashboard) opens a linked profile's store through its
+A multiplexed server (`hermes serve`, the dashboard) opens a linked profile's store through its
 ``profiles/<name>`` path, where the agent build and every token-bound writer RPC admit the
 session's incarnation token.
 """

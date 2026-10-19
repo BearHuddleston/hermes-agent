@@ -109,8 +109,8 @@ def test_manual_gateway_drains_over_real_control_transport_before_deletion(layou
     assert not thread.is_alive()
 
 
-# Every web-server surface writes under the homes it serves: the webapp's in-process cron ticker
-# recreates cron/ state within a minute of a wipe that went ahead under it.
+# Every web-server surface writes under the homes it serves (the Webapp its host shells and staged
+# uploads), so a wipe must not go ahead under any of them.
 @pytest.mark.parametrize("purpose", ["serve", "dashboard", "webapp"])
 @pytest.mark.parametrize("profile", ["", "sibling"])
 def test_backend_initial_profile_is_not_its_write_scope(layout, capsys, profile, purpose):  # health: allow F811 -- pytest injects the imported layout fixture by parameter name

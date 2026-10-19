@@ -50,6 +50,8 @@ pre-authority history needs a native adoption first (`hermes sessions adopt`).
 `/api/display/ws` is relayed the same way because the owner minted its Bot
 Desktop ticket. A socket without a gateway ticket (a tab from before the
 cutover) is closed with 4426 to reload; the Webapp never hosts turns itself.
+The dashboard's embedded chat sockets (`/api/pty` and its `/api/pub` +
+`/api/events` feed) answer 4404 on the Webapp.
 
 ## Session and input identities
 

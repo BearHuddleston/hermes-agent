@@ -1,6 +1,7 @@
-"""Webapp-only routes: the host terminal (loopback or authenticated binds) and
-the one-use handoffs (child window, auto-opened launch tab) for the private,
-loopback Webapp session."""
+"""Webapp-only routes: the host terminal (loopback or authenticated binds), the
+gateway ticket each browser socket dial mints (``/api/webapp/gateway-ticket``, which
+ensures the profile's gateway), and the one-use handoffs (child window, auto-opened
+launch tab) for the private, loopback Webapp session."""
 from __future__ import annotations
 
 import ipaddress

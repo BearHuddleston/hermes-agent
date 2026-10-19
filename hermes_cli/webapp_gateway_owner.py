@@ -5,7 +5,7 @@ like local Electron Desktop (``apps/desktop/electron/local-gateway.ts``): ``ensu
 an installed service, else a daemon), require the session-authority and delegated-attach
 capabilities, and restart an owner still running other code once. A browser can reach none of it;
 the Webapp's relay (``webapp_gateway_relay``) dials on its behalf. There is never a fallback to
-hosting turns in the Webapp itself (``apps/desktop/src/AGENTS.md``).
+hosting turns in the Webapp itself (``apps/desktop/docs/canonical-gateway-protocol.md``).
 """
 from __future__ import annotations
 

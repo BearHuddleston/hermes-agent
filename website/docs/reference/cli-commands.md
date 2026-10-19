@@ -1883,7 +1883,9 @@ hermes webapp [options]
 Build and launch the current Hermes Desktop workspace in a normal browser. It
 uses the same hardened FastAPI server and authentication gate as
 `hermes dashboard`, but serves the Desktop renderer instead of the dashboard
-admin UI. See [Desktop App → Use the Desktop workspace from a browser](../user-guide/desktop.md#use-the-desktop-workspace-from-a-browser).
+admin UI. Chats run on the profile's gateway, which the Webapp starts if none is
+running and relays the browser to; the Webapp itself runs no turns. See
+[Desktop App → Use the Desktop workspace from a browser](../user-guide/desktop.md#use-the-desktop-workspace-from-a-browser).
 
 For a loopback launch, use the **private launch link** printed by the command
 (including with `--no-open`). Its fragment carries the existing session token
@@ -1913,7 +1915,7 @@ second use shows instructions instead of granting access.
 | `--force-build` | off | Rebuild even when the renderer's build receipt is current |
 | `--build-only` | off | Build the renderer but do not start the server |
 | `--isolated` | off | Keep a named-profile launch scoped to that profile instead of routing to the machine server |
-| `--stop` | — | Stop browser-hosted Desktop Webapp processes and exit (native Desktop `serve` backends are not touched) |
+| `--stop` | — | Stop browser-hosted Desktop Webapp processes and exit (gateways and native Desktop `serve` backends are not touched) |
 | `--status` | — | List browser-hosted Desktop Webapp processes and exit |
 
 ```bash
