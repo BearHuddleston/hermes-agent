@@ -23,7 +23,7 @@ def _login(provider, user, issuer=''):
 ALICE = _login('basic', 'alice')
 
 
-async def _authority_with_old_desktop_chat(tmp_path, monkeypatch):
+async def _authority_with_old_desktop_chat(tmp_path, monkeypatch, cwd=None):
     from gateway import run
     from gateway.config import GatewayConfig
     from gateway.session import SessionStore
@@ -32,7 +32,7 @@ async def _authority_with_old_desktop_chat(tmp_path, monkeypatch):
     monkeypatch.setattr(run, '_load_gateway_config', lambda: {'platform_toolsets': {'gui': []}})
     store = SessionStore(tmp_path / 'sessions', GatewayConfig())
     db = store._db
-    db.create_session('old-desktop', source='desktop', model='old-model', cwd=str(tmp_path))
+    db.create_session('old-desktop', source='desktop', model='old-model', cwd=str(cwd or tmp_path))
     db.append_message('old-desktop', role='user', content='OLD-DESKTOP')
     db.end_session('old-desktop', 'session_switch')
     runner = SimpleNamespace(session_store=store, _session_db=db, adapters={}, _draining=False,

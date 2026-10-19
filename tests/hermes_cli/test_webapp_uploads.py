@@ -11,7 +11,6 @@ import re
 import shutil
 import tempfile
 import threading
-from types import SimpleNamespace
 from zipfile import ZIP_DEFLATED, ZipFile
 
 import pytest
@@ -72,11 +71,14 @@ def _docx_upload(text: str) -> bytes:
 def test_browser_document_upload_remains_extractable_after_file_attach(
     tmp_path: Path, monkeypatch
 ):
+    """The upload route's receipt, attached by the profile's gateway (the browser's only route to a
+    session), leaves a document the file tool still extracts."""
     filename = "отчёт.docx"
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     with _client(tmp_path, monkeypatch) as client:
+        from gateway.runtime_bootstrap import TicketStore
         from hermes_cli import install_identity
-        from tui_gateway import server
+        from tests.gateway.test_delegated_attach import _attach, _authority_with_old_desktop_chat
         from tools.file_tools import read_file_tool
         from tools.terminal_tool import clear_task_env_overrides, register_task_env_overrides
         from tools.terminal_tool_lifecycle import cleanup_vm
@@ -84,15 +86,7 @@ def test_browser_document_upload_remains_extractable_after_file_attach(
         home = tmp_path / "hermes-home"
         workspace = tmp_path / "workspace"
         workspace.mkdir()
-        sid = "browser-document-upload"
-        monkeypatch.setattr(server, "_hermes_home", home)
-        monkeypatch.setattr(server, "_sessions", {sid: {
-            "agent": SimpleNamespace(),
-            "session_key": sid,
-            "cwd": str(workspace),
-            "profile_home": str(home),
-            "profile_incarnation": profile_incarnation.ensure_profile_incarnation(home),
-        }})
+        sid = "old-desktop"
         monkeypatch.setattr(install_identity, "_INSTALL_ID_CACHE", {"root": None, "value": None})
         text = "Browser document content survives upload and attachment"
         payload = _docx_upload(text)
@@ -103,15 +97,15 @@ def test_browser_document_upload_remains_extractable_after_file_attach(
         )
         assert response.status_code == 200, response.text
         source = Path(response.json()["path"])
-        attached = server.handle_request({
-            "id": "attach-document",
-            "method": "file.attach",
-            "params": {
-                "session_id": sid,
-                "name": filename,
-                "staged_upload": response.json()["staged_upload"],
-            },
-        })
+
+        async def attach():
+            authority = await _authority_with_old_desktop_chat(home, monkeypatch, cwd=workspace)
+            host = _attach(authority, TicketStore("first", frozenset({authority.profile_id})), "interactive", "uid:1000")
+            await host.dispatch({"id": "resume", "method": "session.resume", "params": {"session_id": sid}})
+            return await host.dispatch({"id": "attach", "method": "file.attach", "params": {
+                "session_id": sid, "name": filename, "staged_upload": response.json()["staged_upload"]}})
+
+        attached = asyncio.run(attach())
         assert "error" not in attached, attached
         stored = Path(attached["result"]["path"])
         assert source.parent == home / "uploads"

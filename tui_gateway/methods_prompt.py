@@ -1147,15 +1147,12 @@ def _(rid, params: dict) -> dict:
         return err
     raw, data_url, name = (
         str(params.get(k, "") or "").strip() for k in ("path", "data_url", "name"))
-    staged_upload = params.get("staged_upload")
-    if not raw and not data_url and staged_upload is None:
+    # A browser's staged_upload never comes here: the Webapp relays it to the gateway's file.attach.
+    if not raw and not data_url:
         return _err(rid, 4015, "path or data_url required")
     try:
-        if staged_upload is not None:
-            stored_path, uploaded = _stage_browser_file_attachment(session, staged_upload, name, owner=owner)
-        else:
-            stored_path, uploaded = _stage_session_file_attachment(
-                session, raw_path=raw, data_url=data_url, name=name, owner=owner)
+        stored_path, uploaded = _stage_session_file_attachment(
+            session, raw_path=raw, data_url=data_url, name=name, owner=owner)
         ref_path = _attachment_ref_path(session, stored_path)
         return _ok(rid, {
             "attached": True, "name": stored_path.name, "path": str(stored_path),
