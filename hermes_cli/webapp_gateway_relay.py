@@ -112,18 +112,28 @@ async def relay_gateway_ws(ws) -> None:
 
 async def relay_display_ws(ws, profile: str | None) -> None:
     """``/api/display/ws`` on a gateway-attached Webapp: the Bot Desktop ticket was minted by the
-    owner's ``display.observe``, so only the owner's own route can redeem it; pass the RFB bytes."""
+    owner's ``display.observe``, so only the owner's own route can redeem it; pass the RFB bytes.
+
+    A real ticket therefore arrives while its owner runs. The relay only looks that owner up: a
+    socket the owner has not yet authenticated never starts or restarts a gateway."""
     from urllib.parse import urlencode
     from fastapi import HTTPException
     from websockets.asyncio.client import connect
     from websockets.exceptions import InvalidHandshake
+    from hermes_cli.gateway_runtime import attachable, discover_gateway_endpoint
     from hermes_cli.web_server_cron import _cron_profile_home
-    from hermes_cli.webapp_gateway_owner import GatewayAttachError, owner_endpoint
+    from hermes_cli.webapp_gateway_owner import GatewayAttachError
     await ws.accept()
-    query = urlencode({"display_ticket": ws.query_params.get("display_ticket", "")})
+    ticket = ws.query_params.get("display_ticket", "")
+    if not ticket:
+        await ws.close(code=4401, reason="display ticket missing, expired or used")
+        return
+    query = urlencode({"display_ticket": ticket})
     try:
-        endpoint = await owner_endpoint(_cron_profile_home(profile)[1])
-        upstream = await connect(endpoint.api_origin.replace("http:", "ws:") + "/api/display/ws?" + query,
+        found = await asyncio.to_thread(discover_gateway_endpoint, _cron_profile_home(profile)[1])
+        if not attachable(found):
+            raise GatewayAttachError(found.state, found.reason_code, found.detail)
+        upstream = await connect(found.endpoint.api_origin.replace("http:", "ws:") + "/api/display/ws?" + query,
                                  open_timeout=10, max_size=None, compression=None, ping_interval=None, proxy=None)
     except (GatewayAttachError, HTTPException, InvalidHandshake, OSError, TimeoutError) as exc:
         _log.warning("webapp display relay could not reach its owner: %s", exc)

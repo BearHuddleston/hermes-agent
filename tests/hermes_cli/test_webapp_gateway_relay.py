@@ -84,3 +84,47 @@ def test_a_browser_socket_runs_its_turn_on_the_gateway_as_its_login(tmp_path, mo
 def test_the_gateway_ticket_route_needs_the_webapp_credential(monkeypatch, tmp_path):
     client, _token = _webapp(monkeypatch, tmp_path)
     assert client.post('/api/webapp/gateway-ticket', headers={'host': 'testclient'}).status_code == 401
+
+
+@pytest.fixture
+def owner_calls(monkeypatch):
+    """Every owner lookup and start the Webapp makes; no gateway runs."""
+    from hermes_cli import gateway_runtime
+    from hermes_cli.gateway_runtime import GatewayDiscovery
+    calls = {'discover': [], 'ensure': []}
+
+    def discover(home, timeout=2.0):
+        calls['discover'].append(str(home))
+        return GatewayDiscovery('absent')
+
+    def ensure(home, **_kw):
+        calls['ensure'].append(str(home))
+        return GatewayDiscovery('absent')
+
+    monkeypatch.setattr(gateway_runtime, 'discover_gateway_endpoint', discover)
+    monkeypatch.setattr(gateway_runtime, 'ensure_gateway_runtime', ensure)
+    return calls
+
+
+def _screen_close_code(client, query):
+    with pytest.raises(WebSocketDisconnect) as closed:
+        with client.websocket_connect('/api/display/ws?' + query, headers={'host': 'testclient'}) as screen:
+            screen.receive_bytes()
+    return closed.value.code
+
+
+def test_a_screen_socket_without_a_ticket_is_refused_before_any_owner_lookup(monkeypatch, tmp_path, owner_calls):
+    (tmp_path / 'config.yaml').write_text('model:\n  default: x\n', encoding='utf-8')
+    client, _token = _webapp(monkeypatch, tmp_path)
+    assert _screen_close_code(client, 'profile=default') == 4401
+    assert owner_calls == {'discover': [], 'ensure': []}
+
+
+def test_a_screen_socket_never_starts_a_gateway(monkeypatch, tmp_path, owner_calls):
+    """The owner mints screen tickets (``display.observe``), so a real one arrives while it runs: the
+    relay only looks the owner up, and a socket the owner has not authenticated starts nothing."""
+    (tmp_path / 'config.yaml').write_text('model:\n  default: x\n', encoding='utf-8')
+    client, _token = _webapp(monkeypatch, tmp_path)
+    assert _screen_close_code(client, 'profile=default&display_ticket=not-minted') == 1013
+    assert len(owner_calls['discover']) == 1
+    assert owner_calls['ensure'] == []
