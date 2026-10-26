@@ -334,15 +334,28 @@ interface TouchUserBubbleProps {
   children: ReactNode
   className: string
   editable: boolean
+  expandable: boolean
+  expanded: boolean
+  onToggleExpanded: () => void
   showRestore: boolean
   showStop: boolean
 }
 
 /** Touch bubble: the prose stays plain selectable text, so a long press keeps
  *  the platform's selection handles and Copy, and editing is an explicit button
- *  below it instead of a tap on the bubble. The Edit row leaves room for the
- *  Stop/Restore cluster pinned over its end. */
-function TouchUserBubble({ children, className, editable, showRestore, showStop }: TouchUserBubbleProps) {
+ *  below it instead of a tap on the bubble. A clamped prompt gets an explicit
+ *  expand toggle in the same row. The row leaves room for the Stop/Restore
+ *  cluster pinned over its end. */
+function TouchUserBubble({
+  children,
+  className,
+  editable,
+  expandable,
+  expanded,
+  onToggleExpanded,
+  showRestore,
+  showStop
+}: TouchUserBubbleProps) {
   const copy = useI18n().t.assistant.thread
 
   return (
@@ -351,6 +364,21 @@ function TouchUserBubble({ children, className, editable, showRestore, showStop 
         {children}
       </div>
       <div className={cn('flex justify-end', (showStop || showRestore) && 'pr-11')}>
+        {expandable && (
+          <Button
+            aria-expanded={expanded}
+            aria-label={copy.expandMessage}
+            data-slot="aui_user-touch-expand"
+            onClick={() => {
+              triggerHaptic('selection')
+              onToggleExpanded()
+            }}
+            size="icon"
+            variant="ghost"
+          >
+            <Codicon name={expanded ? 'chevron-up' : 'chevron-down'} />
+          </Button>
+        )}
         {editable && (
           <ActionBarPrimitive.Edit asChild>
             <Button
@@ -374,14 +402,15 @@ function TouchUserBubble({ children, className, editable, showRestore, showStop 
  *  clamp lifts on hover / focus (see styles.css). We measure the *unclamped*
  *  inner wrapper so the ResizeObserver only fires on real content / width
  *  changes, not on every frame while the outer max-height animates open.
- *  Touch has no hover to lift it, so a touch bubble is never clamped. */
+ *  Touch and watch windows open no editor on tap, so there an explicit
+ *  `expanded` toggle lifts the clamp instead. */
 function useUserBubbleClamp(readOnly: boolean, touch: boolean) {
   const clampInnerRef = useRef<HTMLDivElement | null>(null)
   const [bodyClamped, setBodyClamped] = useState(false)
   const lastClampHeightRef = useRef(-1)
   const lineHeightRef = useRef(0)
   const [expanded, setExpanded] = useState(false)
-  const clampActive = !touch && !(readOnly && expanded)
+  const clampActive = !(expanded && (readOnly || touch))
 
   const measureClamp = useCallback((entries: readonly ResizeObserverEntry[]) => {
     const inner = clampInnerRef.current
@@ -590,6 +619,9 @@ export const UserMessage: FC<{
                   <TouchUserBubble
                     className={bubbleClassName}
                     editable={!readOnly}
+                    expandable={bodyClamped}
+                    expanded={expanded}
+                    onToggleExpanded={() => setExpanded(value => !value)}
                     showRestore={showRestore}
                     showStop={showStop}
                   >
