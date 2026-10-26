@@ -1498,7 +1498,8 @@ button,
   user-select: text;
 }
 
-[data-slot='aui_user-message-root'] [data-slot='aui_user-touch-edit'] {
+[data-slot='aui_user-message-root'] [data-slot='aui_user-touch-edit'],
+[data-slot='aui_user-message-root'] [data-slot='aui_user-touch-expand'] {
   -webkit-user-select: none;
   user-select: none;
   min-width: 44px;

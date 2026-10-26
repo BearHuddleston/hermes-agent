@@ -397,18 +397,20 @@ function TouchUserBubble({
   )
 }
 
-/** Sticky human bubbles clamp to ~2 lines with a soft fade so a long prompt
- *  doesn't dominate the viewport while the response streams underneath; the
- *  clamp lifts on hover / focus (see styles.css). We measure the *unclamped*
- *  inner wrapper so the ResizeObserver only fires on real content / width
- *  changes, not on every frame while the outer max-height animates open.
+/** Sticky human bubbles clamp with a soft fade so a long prompt doesn't
+ *  dominate the viewport while the response streams underneath. On a mouse the
+ *  clamp lifts only in the edit composer (see styles.css), never on hover.
  *  Touch and watch windows open no editor on tap, so there an explicit
- *  `expanded` toggle lifts the clamp instead. */
+ *  `expanded` toggle lifts the clamp instead. We measure the *unclamped* inner
+ *  wrapper so the ResizeObserver only fires on real content / width changes,
+ *  not on every frame while the outer max-height animates open, and compare it
+ *  with the clamp's own max-height so the fade and toggle only appear when
+ *  text is actually hidden. */
 function useUserBubbleClamp(readOnly: boolean, touch: boolean) {
   const clampInnerRef = useRef<HTMLDivElement | null>(null)
   const [bodyClamped, setBodyClamped] = useState(false)
   const lastClampHeightRef = useRef(-1)
-  const lineHeightRef = useRef(0)
+  const clampHeightRef = useRef(0)
   const [expanded, setExpanded] = useState(false)
   const clampActive = !(expanded && (readOnly || touch))
 
@@ -433,15 +435,20 @@ function useUserBubbleClamp(readOnly: boolean, touch: boolean) {
 
     lastClampHeightRef.current = fullHeight
 
-    // Line-height is stable for the life of the bubble (font settings don't
-    // change under it) — resolve the computed style once.
-    if (!lineHeightRef.current) {
-      const styles = getComputedStyle(inner)
-      lineHeightRef.current = parseFloat(styles.lineHeight) || 1.5 * parseFloat(styles.fontSize) || 20
+    // The clamp height is stable for the life of the bubble (font settings
+    // don't change under it), so read it from the stylesheet once, while the
+    // clamp class is on. Without a resolved max-height (jsdom) fall back to
+    // two lines of the wrapper's line-height.
+    if (!clampHeightRef.current) {
+      const styles = getComputedStyle(outer)
+      const max = parseFloat(styles.maxHeight)
+      const lineHeight = parseFloat(getComputedStyle(inner).lineHeight) || 20
+
+      clampHeightRef.current = Number.isFinite(max) ? max : lineHeight * 2
     }
 
     outer.style.setProperty('--human-msg-full', `${fullHeight}px`)
-    setBodyClamped(fullHeight > lineHeightRef.current * 2 + 1)
+    setBodyClamped(fullHeight > clampHeightRef.current + 1)
   }, [])
 
   useResizeObserver(measureClamp, clampInnerRef)
