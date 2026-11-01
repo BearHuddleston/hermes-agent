@@ -26,22 +26,24 @@ function isWebappPage(url) {
   return pathname === base || pathname.startsWith(`${base}/`)
 }
 
-/** Bring the Webapp tab used last forward and have it open *sessionId*; with no tab open, open the Webapp. */
+/** Bring the Webapp tab used last forward and have it open *sessionId*; with no tab open, open the Webapp at it. */
 async function openHermes(sessionId) {
+  const session = typeof sessionId === 'string' && sessionId ? sessionId : ''
   // Focused first, then by most recent focus. A tab opened before this worker registered is not
   // controlled by it, and still counts.
   const windows = await self.clients.matchAll({ includeUncontrolled: true, type: 'window' })
   const tab = windows.find(client => isWebappPage(client.url))
 
   if (!tab) {
-    await self.clients.openWindow(self.registration.scope)
+    // The chat's route, as sessionRoute() in src/app/routes.ts builds it.
+    await self.clients.openWindow(`${self.registration.scope}${session ? `#/${encodeURIComponent(session)}` : ''}`)
 
     return
   }
 
   // The message goes first: the tab opens the session while the browser brings it forward.
-  if (typeof sessionId === 'string' && sessionId) {
-    tab.postMessage({ sessionId, type: FOCUS_SESSION_MESSAGE })
+  if (session) {
+    tab.postMessage({ sessionId: session, type: FOCUS_SESSION_MESSAGE })
   }
 
   await tab.focus()

@@ -98,14 +98,22 @@ describe('notification worker', () => {
     expect(worker.clients.openWindow).toHaveBeenCalledTimes(webapp ? 0 : 1)
   })
 
-  it('opens the Webapp at its base path when none of its tabs is open', async () => {
+  it("opens the Webapp at the notification's chat when none of its tabs is open", async () => {
     const otherApp = new FakeWindowClient('https://hermes.example/other/')
     const worker = await startWorker([otherApp])
 
-    await worker.click({ focusSessionId: 'stored-1' })
+    await worker.click({ focusSessionId: 'stored 1' })
+
+    expect(worker.clients.openWindow).toHaveBeenCalledWith(`${SCOPE}#/stored%201`)
+    expect(otherApp.focused).toBe(0)
+  })
+
+  it('opens the Webapp at its base path when no tab is open and the notification names no session', async () => {
+    const worker = await startWorker([])
+
+    await worker.click({})
 
     expect(worker.clients.openWindow).toHaveBeenCalledWith(SCOPE)
-    expect(otherApp.focused).toBe(0)
   })
 
   it('only brings the tab forward when the notification names no session', async () => {
